@@ -6,7 +6,16 @@ from pathlib import Path
 
 import scripts.convert_paper_raw_batch as batch
 from scripts.preflight_paper_raw_import import preflight_one
-from src.services.v2_library import PaperRawConverter, V2PaperCommitService, empty_catalog, empty_metadata
+from src.services.v2_library import (
+    PaperRawConverter,
+    V2PaperCommitService,
+    empty_catalog,
+    empty_metadata,
+    write_conversion_manifest_for_existing_assets,
+)
+
+
+PN1 = "0000000000000001"
 
 
 class FakeMinerUConverter:
@@ -41,7 +50,7 @@ class FakeCleaner:
         return images if images.exists() else None
 
 
-def _raw_folder(root: Path, source_id: str = "000001") -> Path:
+def _raw_folder(root: Path, source_id: str = PN1) -> Path:
     folder = root / source_id
     folder.mkdir(parents=True)
     metadata = empty_metadata(source_id)
@@ -66,46 +75,46 @@ def test_repeated_conversion_writes_manifest_then_skips(tmp_path):
     _raw_folder(paper_raw)
     converter, fake = _converter(paper_raw)
 
-    first = converter.convert("000001")
-    second = converter.convert("000001")
+    first = converter.convert(PN1)
+    second = converter.convert(PN1)
 
-    folder = paper_raw / "000001"
-    manifest = json.loads((folder / "000001.conversion.json").read_text(encoding="utf-8"))
+    folder = paper_raw / PN1
+    manifest = json.loads((folder / f"{PN1}.conversion.json").read_text(encoding="utf-8"))
     status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
     assert first["success"] is True
     assert second["skipped"] is True
     assert second["status"] == "skipped_existing"
-    assert fake.calls == ["000001"]
+    assert fake.calls == [PN1]
     assert manifest["status"] == "converted"
     assert manifest["markdown_sha256"]
     assert status["status"] == "converted"
 
 
-def test_legacy_converted_assets_skip_without_manifest(tmp_path):
+def test_converted_assets_without_manifest_are_reconverted(tmp_path):
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw)
-    (folder / "000001.md").write_text("# Legacy", encoding="utf-8")
+    (folder / f"{PN1}.md").write_text("# Legacy", encoding="utf-8")
     (folder / "images").mkdir()
     converter, fake = _converter(paper_raw)
 
-    result = converter.convert("000001")
+    result = converter.convert(PN1)
 
-    assert result["skipped"] is True
-    assert result["conversion_state"] == "converted_legacy"
-    assert "legacy" in result["reason"] or "without conversion manifest" in result["reason"]
-    assert fake.calls == []
+    assert result["success"] is True
+    assert result["conversion_state"] == "converted_current"
+    assert fake.calls == [PN1]
 
 
 def test_stale_manifest_requires_force_and_force_cleans_old_images(tmp_path):
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw)
-    (folder / "000001.md").write_text("# Old", encoding="utf-8")
+    (folder / f"{PN1}.md").write_text("# Old", encoding="utf-8")
     images = folder / "images"
     images.mkdir()
     (images / "old.png").write_bytes(b"old")
-    (folder / "000001.conversion.json").write_text(json.dumps({
+    (folder / f"{PN1}.conversion.json").write_text(json.dumps({
         "status": "converted",
-        "source_id": "000001",
+        "paper_number": PN1,
+        "paper_raw_id": PN1,
         "pdf_sha256": "stale",
         "backend": "hybrid-engine",
         "method": "auto",
@@ -114,13 +123,13 @@ def test_stale_manifest_requires_force_and_force_cleans_old_images(tmp_path):
     }), encoding="utf-8")
     converter, fake = _converter(paper_raw)
 
-    stale = converter.convert("000001")
-    forced = converter.convert("000001", force_reconvert=True)
+    stale = converter.convert(PN1)
+    forced = converter.convert(PN1, force_reconvert=True)
 
     assert stale["success"] is False
     assert stale["status"] == "stale_conversion"
     assert forced["success"] is True
-    assert fake.calls == ["000001"]
+    assert fake.calls == [PN1]
     assert not (images / "old.png").exists()
     assert (images / "new.png").exists()
 
@@ -128,23 +137,24 @@ def test_stale_manifest_requires_force_and_force_cleans_old_images(tmp_path):
 def test_partial_assets_require_force(tmp_path):
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw)
-    (folder / "000001.md").write_text("# Partial", encoding="utf-8")
+    (folder / f"{PN1}.md").write_text("# Partial", encoding="utf-8")
     converter, fake = _converter(paper_raw)
 
-    partial = converter.convert("000001")
-    forced = converter.convert("000001", force_reconvert=True)
+    partial = converter.convert(PN1)
+    forced = converter.convert(PN1, force_reconvert=True)
 
     assert partial["success"] is False
     assert partial["status"] == "partial_conversion"
     assert forced["success"] is True
-    assert fake.calls == ["000001"]
+    assert fake.calls == [PN1]
 
 
 def test_all_skipped_batch_does_not_run_runtime_preflight(monkeypatch, tmp_path):
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw)
-    (folder / "000001.md").write_text("# Done", encoding="utf-8")
+    (folder / f"{PN1}.md").write_text("# Done", encoding="utf-8")
     (folder / "images").mkdir()
+    write_conversion_manifest_for_existing_assets(folder, PN1)
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "false")
 
     def fail_if_called(*args, **kwargs):
@@ -165,16 +175,16 @@ def test_all_skipped_batch_does_not_run_runtime_preflight(monkeypatch, tmp_path)
 def test_preflight_marks_existing_conversion_as_converted(tmp_path):
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw)
-    (folder / "000001.md").write_text("# Done", encoding="utf-8")
+    (folder / f"{PN1}.md").write_text("# Done", encoding="utf-8")
     (folder / "images").mkdir()
 
     item = preflight_one(
         paper_raw,
-        "000001",
+        PN1,
         papers_dir=tmp_path / "papers",
         formal_dois=set(),
         formal_shas=set(),
-        raw_doi_counts={"10.1000/000001": 1},
+        raw_doi_counts={f"10.1000/{PN1}": 1},
         raw_sha_counts={},
     )
 
@@ -184,45 +194,18 @@ def test_preflight_marks_existing_conversion_as_converted(tmp_path):
 
 
 def test_formal_commit_removes_conversion_manifest(tmp_path):
+    from tests.helpers.paper_raw_factory import make_staged_source
+
+    raw = make_staged_source(
+        tmp_path,
+        PN1,
+        title_zh="转换清单",
+        title_original="Manifest Paper",
+        doi="10.1000/manifest",
+        family="wang",
+    )
     pid = "2024_wang_转换清单"
-    raw = tmp_path / "paper_raw" / pid
-    raw.mkdir(parents=True)
-    metadata = empty_metadata(pid)
-    metadata["title"]["original"] = "Manifest Paper"
-    metadata["title"]["translated_zh"] = "转换清单"
-    metadata["title"]["short_zh"] = "转换清单"
-    metadata["year"] = 2024
-    metadata["authors"] = [{"full_name": "wang A", "family": "wang", "given": "A", "orcid": "", "affiliation": ""}]
-    metadata["container"]["journal"] = "Test Journal"
-    metadata["identifiers"]["doi"] = "10.1000/manifest"
-    metadata["metadata_match"]["status"] = "matched"
-    catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = "转换清单"
-    catalog["classification"]["primary_domain"] = "blowing_snow_physics"
-    catalog["screening"]["reason"] = "该文献用于测试转换清单清理。"
-    catalog["research_card"].update({
-        "research_problem": "研究转换清单清理。",
-        "core_question": "正式入库是否移除 conversion manifest？",
-        "hypothesis_or_objective": "验证 transient artifact 不进入正式库。",
-        "study_object": "转换清单文件",
-        "method_summary": "使用 mock paper_raw 执行 commit。",
-        "data_or_experiment": "临时 PDF 与 Markdown。",
-        "main_findings": ["转换清单会被清理。"],
-        "mechanisms": ["commit staging 阶段删除 transient 文件。"],
-        "limitations": ["仅覆盖文件清理。"],
-        "usefulness_for_user": "保障正式库目录干净。",
-    })
-    catalog["content_notes"]["short_summary"] = "转换清单清理测试。"
-    (raw / f"{pid}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-    (raw / f"{pid}.catalog.json").write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
-    (raw / f"{pid}.md").write_text("# Manifest", encoding="utf-8")
-    (raw / f"{pid}.pdf").write_bytes(b"%PDF")
-    (raw / "images").mkdir()
-    # Now we use write_conversion_manifest_for_existing_assets to produce a
-    # real manifest so the formalize conversion gate passes.
-    from src.services.v2_library import write_conversion_manifest_for_existing_assets
-    write_conversion_manifest_for_existing_assets(raw, pid)
-    assert (raw / f"{pid}.conversion.json").exists()
+    assert (raw / f"{PN1}.conversion.json").exists()
 
     from src.services.paper_raw_formalizer import PaperRawFormalizationService
 

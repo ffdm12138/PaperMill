@@ -14,7 +14,7 @@ from src.services.v2_library import (
     empty_metadata,
     validate_catalog_schema,
 )
-from src.services.ingest_state import CATALOG_READY, READY_FOR_COMMIT
+from src.services.ingest_state import CATALOG_READY, READY_FOR_COMMIT, read_import_status
 
 
 def _matched_metadata(source_id: str, *, doi: str = "10.1/test") -> dict:
@@ -69,7 +69,8 @@ def _write_conversion_manifest(folder: Path, source_id: str, pdf_sha: str, md_sh
     atomic_write_json(folder / f"{source_id}.conversion.json", {
         "schema_version": "1.0",
         "status": "converted",
-        "source_id": source_id,
+        "paper_number": source_id,
+        "paper_raw_id": source_id,
         "pdf_sha256": pdf_sha,
         "pdf_file_size": 4,
         "markdown_path": f"{source_id}.md",
@@ -87,24 +88,10 @@ def _write_conversion_manifest(folder: Path, source_id: str, pdf_sha: str, md_sh
     }, indent=2)
 
 
-def _staged_raw(root: Path, source_id: str = "000001", *, doi: str = "10.1/test") -> Path:
-    folder = root / "paper_raw" / source_id
-    folder.mkdir(parents=True)
-    metadata = _matched_metadata(source_id, doi=doi)
-    catalog = _chinese_catalog()
-    (folder / f"{source_id}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (folder / f"{source_id}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
-    (folder / f"{source_id}.md").write_text("# 可信论文\nbody", encoding="utf-8")
-    (folder / f"{source_id}.pdf").write_bytes(b"%PDF")
-    (folder / "images").mkdir()
-    from src.file_fingerprint import compute_sha256
+def _staged_raw(root: Path, source_id: str = "0000000000000001", *, doi: str = "10.1/test") -> Path:
+    from tests.helpers.paper_raw_factory import make_staged_source
 
-    pdf_sha = compute_sha256(folder / f"{source_id}.pdf")
-    import hashlib
-
-    md_sha = hashlib.sha256((folder / f"{source_id}.md").read_bytes()).hexdigest()
-    _write_conversion_manifest(folder, source_id, pdf_sha, md_sha)
-    return folder
+    return make_staged_source(root, source_id, title_zh="可信论文", doi=doi, family="Wang")
 
 
 def _service(tmp_path: Path) -> PaperRawFormalizationService:
@@ -114,6 +101,17 @@ def _service(tmp_path: Path) -> PaperRawFormalizationService:
         ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
         all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
     )
+
+
+def test_test_factory_uses_paper_number_workspace_and_conversion_manifest(tmp_path: Path):
+    from tests.helpers.paper_raw_factory import make_staged_source
+
+    folder = make_staged_source(tmp_path)
+
+    assert folder.name == "0000000000000001"
+    assert (folder / "0000000000000001.conversion.json").exists()
+    assert (folder / "0000000000000001.paper.number").exists()
+    assert read_import_status(folder)["status"] == "catalog_ready"
 
 
 def test_formalize_renames_folder_files_and_reserves_number(tmp_path: Path):
@@ -148,7 +146,7 @@ def test_formalize_renames_folder_files_and_reserves_number(tmp_path: Path):
     assert item["folder_name"] == pid
     assert item["planned_paper_id"] == pid
     assert Path(item["folder_path"]).name == pid
-    assert "000001" not in item["folder_path"]
+    assert "0000000000000001" not in item["folder_path"]
     assert data["max_number"] == number
     marker = json.loads((renamed / f"{number}.paper.number").read_text(encoding="utf-8"))
     assert marker["paper_number"] == number
@@ -176,7 +174,7 @@ def test_formalize_backfills_catalog_links(tmp_path: Path):
 
 
 def test_formalize_reserved_ledger_points_to_renamed_folder(tmp_path: Path):
-    folder = _staged_raw(tmp_path, source_id="000001")
+    folder = _staged_raw(tmp_path, source_id="0000000000000001")
     svc = _service(tmp_path)
 
     result = svc.formalize(folder)
@@ -189,7 +187,7 @@ def test_formalize_reserved_ledger_points_to_renamed_folder(tmp_path: Path):
     assert item["folder_name"] == pid
     assert item["planned_paper_id"] == pid
     assert Path(item["folder_path"]).name == pid
-    assert Path(item["folder_path"]).name != "000001"
+    assert Path(item["folder_path"]).name != "0000000000000001"
 
 
 def test_formalize_idempotent_on_rerun(tmp_path: Path):
@@ -224,9 +222,22 @@ def test_formalize_rejects_stale_conversion(tmp_path: Path, monkeypatch):
     assert status["status"] == "formalize_failed"
 
 
+def test_formalize_rejects_missing_conversion_manifest(tmp_path: Path):
+    folder = _staged_raw(tmp_path)
+    (folder / "0000000000000001.conversion.json").unlink()
+    svc = _service(tmp_path)
+
+    result = svc.formalize(folder)
+
+    assert not result["success"]
+    assert result["status"] == "formalize_failed"
+    assert result["conversion_state"] == "conversion_manifest_missing"
+    assert "conversion_manifest_missing" in "; ".join(result["errors"])
+
+
 def test_formalize_rejects_unmatched_metadata(tmp_path: Path):
     folder = _staged_raw(tmp_path)
-    meta_path = folder / "000001.metadata.json"
+    meta_path = folder / "0000000000000001.metadata.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["metadata_match"]["status"] = "unmatched"
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
@@ -243,7 +254,7 @@ def test_formalize_rejects_unmatched_metadata(tmp_path: Path):
 
 
 def test_formalize_preserve_paper_number(tmp_path: Path):
-    folder = _staged_raw(tmp_path)
+    folder = _staged_raw(tmp_path, "0000000000000007")
     svc = _service(tmp_path)
     result = svc.formalize(folder, preserve_paper_number="0000000000000007")
     assert result["paper_number"] == "0000000000000007"
@@ -251,11 +262,40 @@ def test_formalize_preserve_paper_number(tmp_path: Path):
     assert (renamed / "0000000000000007.paper.number").exists()
     data = svc.ledger.load()
     assert data["max_number"] == "0000000000000007"
+    item = data["items"]["0000000000000007"]
+    assert item["state"] == "reserved"
+    assert item["planned_paper_id"] == result["paper_id"]
+
+
+def test_formalize_preserve_paper_number_rejects_active_number(tmp_path: Path):
+    folder = _staged_raw(tmp_path, "0000000000000007")
+    svc = _service(tmp_path)
+    active_folder = tmp_path / "papers" / "already_active"
+    active_folder.mkdir(parents=True)
+    svc.ledger.save({
+        "schema_version": "1.0",
+        "max_number": "0000000000000007",
+        "items": {
+            "0000000000000007": {
+                "folder_name": active_folder.name,
+                "folder_path": str(active_folder),
+                "state": "active",
+                "planned_paper_id": "already_active",
+                "created_at": "2026-01-01T00:00:00",
+            }
+        },
+    })
+
+    result = svc.formalize(folder, preserve_paper_number="0000000000000007")
+
+    assert not result["success"]
+    assert result["status"] == "formalize_failed"
+    assert any("ledger state active" in err for err in result["errors"])
 
 
 def test_formalize_quarantines_duplicate(tmp_path: Path):
     # commit one paper first to seed the formal library
-    folder1 = _staged_raw(tmp_path, "000001", doi="10.1/dup")
+    folder1 = _staged_raw(tmp_path, "0000000000000001", doi="10.1/dup")
     svc = _service(tmp_path)
     svc.formalize(folder1)
     # Simulate the formal copy existing with that DOI (duplicate gate target)
@@ -268,12 +308,12 @@ def test_formalize_quarantines_duplicate(tmp_path: Path):
     )
 
     # second paper_raw with same DOI
-    folder2 = _staged_raw(tmp_path, "000002", doi="10.1/dup")
+    folder2 = _staged_raw(tmp_path, "0000000000000002", doi="10.1/dup")
     # its paper_id would collide too; tweak title so paper_id differs but DOI dup
-    meta = json.loads((folder2 / "000002.metadata.json").read_text(encoding="utf-8"))
+    meta = json.loads((folder2 / "0000000000000002.metadata.json").read_text(encoding="utf-8"))
     meta["title"]["short_zh"] = "重复论文"
     meta["title"]["translated_zh"] = "重复论文"
-    (folder2 / "000002.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    (folder2 / "0000000000000002.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
 
     result = svc.formalize(folder2)
     assert result["status"] == "possible_duplicate"
@@ -311,3 +351,26 @@ def test_formalize_cli_all_ready_apply(tmp_path: Path):
     assert (tmp_path / "catalog" / "paper_number_ledger.json").exists()
     after = default_ledger.read_text(encoding="utf-8") if default_ledger.exists() else None
     assert after == before, "formalize CLI mutated the real data/catalog/paper_number_ledger.json"
+
+
+def test_formalize_cli_rejects_missing_conversion_manifest(tmp_path: Path):
+    folder = _staged_raw(tmp_path)
+    (folder / "0000000000000001.conversion.json").unlink()
+    import subprocess
+    import os
+
+    project_root = Path(__file__).resolve().parent.parent
+    base_cmd = [
+        "python", "scripts/formalize_paper_raw.py",
+        "--paper-number", "0000000000000001", "--apply",
+        "--paper-raw-dir", str(tmp_path / "paper_raw"),
+        "--papers-dir", str(tmp_path / "papers"),
+        "--ledger-path", str(tmp_path / "catalog" / "paper_number_ledger.json"),
+        "--all-catalog-path", str(tmp_path / "catalog" / "all.catalog.json"),
+    ]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
+    rejected = subprocess.run(base_cmd, capture_output=True, text=True, cwd=str(project_root), env=env)
+    assert rejected.returncode == 1
+    assert "conversion_manifest_missing" in rejected.stdout
+    assert not (tmp_path / "paper_raw" / "2024_Wang_可信论文" / "2024_Wang_可信论文.formalization.json").exists()

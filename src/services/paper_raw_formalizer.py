@@ -4,8 +4,8 @@
 ``data/paper_raw`` and produces a fully formalized workspace:
 
   * canonical ``paper_id`` derived from metadata (year + first author + short_zh)
-  * folder + asset files renamed from ``<source_id>`` to ``<paper_id>``
-  * 16-digit ``paper_number`` reserved in the ledger (``state=reserved``)
+  * folder + asset files renamed from ``<paper_number>`` to ``<paper_id>``
+  * 16-digit ``paper_number`` reserved in the ledger at staging (``state=reserved``)
   * ``<paper_id>.catalog.json`` backfilled with paper_id / paper_number / asset_refs
   * ``<16-digit>.paper.number`` marker
   * ``<paper_id>.formalization.json`` manifest
@@ -39,10 +39,10 @@ from src.services.ingest_state import (
     READY_FOR_COMMIT,
     write_import_status,
 )
+from src.services.ingest_ids import PAPER_NUMBER_RE
 from src.services.v2_library import (
     PaperNumberLedger,
     PaperRawConverter,
-    TEMP_SOURCE_ID_RE,
     assess_paper_raw_commit_readiness,
     backfill_formal_catalog_links,
     load_json_for_gate,
@@ -91,16 +91,16 @@ class PaperRawFormalizationService:
         preserve_paper_number: str | None = None,
     ) -> dict:
         folder = Path(paper_raw_dir)
-        is_temp = bool(TEMP_SOURCE_ID_RE.match(folder.name))
+        is_workspace = bool(PAPER_NUMBER_RE.match(folder.name))
         source_id = folder.name
-        file_prefix = source_id if is_temp else folder.name
+        file_prefix = source_id
 
-        # 1. Conversion gate. Runs on BOTH 6-digit source folders and already-
-        # renamed <paper_id> folders (via inspect_converted_assets, which does
-        # not require a 6-digit name). The only skip is a true idempotent rerun:
+        # 1. Conversion gate. Runs on 16-digit paper_number workspaces and
+        # already-renamed <paper_id> folders (via inspect_converted_assets,
+        # which does not require a 16-digit name). The only skip is a true idempotent rerun:
         # an already-ready_for_commit folder with a formalization.json + marker.
         already_formalized = (
-            not is_temp
+            not is_workspace
             and (folder / f"{folder.name}.formalization.json").exists()
             and self.ledger.paper_number_from_marker(folder) is not None
         )
@@ -111,17 +111,18 @@ class PaperRawFormalizationService:
                 write_import_status(folder, FORMALIZE_FAILED, reason=f"conversion inspect failed: {exc}")
                 return {"success": False, "status": FORMALIZE_FAILED, "errors": [str(exc)]}
             state = inspection["state"]
-            if state not in {"converted_current", "converted_legacy"}:
+            if state != "converted_current":
+                error = f"conversion {state}: {inspection['reason']}"
                 write_import_status(
                     folder,
                     FORMALIZE_FAILED,
-                    reason=f"conversion not current: {state} ({inspection['reason']})",
+                    reason=error,
                     extra={"conversion_state": state},
                 )
                 return {
                     "success": False,
                     "status": FORMALIZE_FAILED,
-                    "errors": [f"conversion {state}: {inspection['reason']}"],
+                    "errors": [error],
                     "conversion_state": state,
                 }
 
@@ -174,15 +175,35 @@ class PaperRawFormalizationService:
 
         # 4. Reserve / reuse paper_number (idempotent).
         number = self.ledger.paper_number_from_marker(folder)
+        if is_workspace and number is None:
+            error = "paper_number workspace is missing reserved .paper.number marker; restage or run migration repair"
+            write_import_status(folder, FORMALIZE_FAILED, reason=error, errors=[error])
+            return {"success": False, "status": FORMALIZE_FAILED, "errors": [error]}
+        if is_workspace and number is not None:
+            item = (self.ledger.load().get("items") or {}).get(number) or {}
+            state = item.get("state") or "active"
+            if state != "reserved":
+                error = f"cannot formalize paper_number {number} in ledger state {state}"
+                write_import_status(folder, FORMALIZE_FAILED, reason=error, errors=[error])
+                return {"success": False, "status": FORMALIZE_FAILED, "errors": [error]}
         if number is None:
-            if preserve_paper_number:
-                number = self.ledger.repoint(preserve_paper_number, folder)
-            else:
-                number = self.ledger.reserve_for_paper_raw(folder, planned_paper_id=pid)
+            try:
+                if preserve_paper_number:
+                    number = self.ledger.reserve_specific_for_paper_raw(
+                        preserve_paper_number,
+                        folder,
+                        planned_paper_id=pid,
+                    )
+                else:
+                    number = self.ledger.reserve_for_paper_raw(folder, planned_paper_id=pid)
+            except Exception as exc:
+                errors = [str(exc)]
+                write_import_status(folder, FORMALIZE_FAILED, reason="; ".join(errors), errors=errors)
+                return {"success": False, "status": FORMALIZE_FAILED, "errors": errors}
 
-        # 5. Rename folder + asset files <source_id>.* -> <pid>.* (only if still temp).
+        # 5. Rename folder + asset files <paper_number>.* -> <pid>.*.
         target = folder
-        if is_temp:
+        if is_workspace:
             target = folder.with_name(pid)
             if target.exists() and target.resolve() != folder.resolve():
                 errors = [f"paper_id target already exists: {pid}"]
@@ -194,10 +215,8 @@ class PaperRawFormalizationService:
                 new = target / f"{pid}.{suffix_name}"
                 if old.exists() and old != new:
                     old.rename(new)
-            # The number was reserved against the 6-digit source folder; repoint
-            # the reserved ledger entry + marker at the renamed <paper_id> folder
-            # so the ledger matches the real workspace at ready_for_commit time.
-            self.ledger.repoint_reserved(number, target, planned_paper_id=pid)
+            repoint_reserved = getattr(self.ledger, "repoint_reserved")
+            repoint_reserved(number, target, planned_paper_id=pid)
 
         # 6. Backfill catalog links in paper_raw.
         backfill_formal_catalog_links(target, pid, number)
@@ -211,7 +230,7 @@ class PaperRawFormalizationService:
         atomic_write_json(target / f"{pid}.formalization.json", {
             "paper_id": pid,
             "paper_number": number,
-            "source_id": readiness["source_id"],
+            "paper_raw_id": readiness["paper_raw_id"],
             "pdf_sha256": readiness["pdf_sha256"],
             "markdown_sha256": readiness["markdown_sha256"],
             "ledger_state": "reserved",
@@ -226,9 +245,9 @@ class PaperRawFormalizationService:
             reason="formalized: renamed, paper_number reserved, catalog backfilled",
             warnings=readiness["warnings"],
             extra={
-                "source_id": readiness["source_id"],
                 "paper_id": pid,
                 "paper_number": number,
+                "paper_raw_id": readiness["paper_raw_id"],
                 "pdf_sha256": readiness["pdf_sha256"],
                 "markdown_sha256": readiness["markdown_sha256"],
             },
@@ -239,5 +258,5 @@ class PaperRawFormalizationService:
             "paper_id": pid,
             "paper_number": number,
             "folder": str(target),
-            "source_id": readiness["source_id"],
+            "paper_raw_id": readiness["paper_raw_id"],
         }

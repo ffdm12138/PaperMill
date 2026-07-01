@@ -1,7 +1,7 @@
 """Formalize paper_raw into ready_for_commit state (rename, reserve number, backfill catalog).
 
 This is the mandatory step between ``curate_paper_raw.py`` (which leaves the
-folder at ``status=catalog_ready`` with a 6-digit source_id) and
+folder at ``status=catalog_ready`` with a 16-digit paper_number workspace) and
 ``commit_paper_raw_to_papers.py`` (which only accepts ``ready_for_commit``
 folders already renamed to ``<paper_id>`` with a ``<16-digit>.paper.number``
 marker and a ``<paper_id>.formalization.json`` manifest).
@@ -22,15 +22,15 @@ from config.settings import (
     PAPERS_DIR,
 )
 from src.services.ingest_state import CATALOG_READY, READY_FOR_COMMIT, read_import_status
+from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.paper_raw_formalizer import PaperRawFormalizationService
-from src.services.v2_library import _TEMP_ID_RE
 
 
 def _candidates(root: Path, args) -> list[Path]:
     if args.paper_dir:
         return [args.paper_dir]
-    if args.source_id:
-        return [root / args.source_id]
+    if args.paper_number:
+        return [root / validate_paper_raw_id(args.paper_number)]
     if args.all_ready:
         out: list[Path] = []
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -39,17 +39,17 @@ def _candidates(root: Path, args) -> list[Path]:
             status = read_import_status(folder).get("status")
             if status == CATALOG_READY:
                 out.append(folder)
-            elif status == READY_FOR_COMMIT and not _TEMP_ID_RE.match(folder.name):
+            elif status == READY_FOR_COMMIT and not PAPER_NUMBER_RE.match(folder.name):
                 # already formalized; include so re-runs are idempotent (no-op)
                 out.append(folder)
         return out
-    raise ValueError("--paper-dir, --source-id, or --all-ready is required")
+    raise ValueError("--paper-dir, --paper-number, or --all-ready is required")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Formalize paper_raw into ready_for_commit state.")
     parser.add_argument("--paper-dir", type=Path, default=None)
-    parser.add_argument("--source-id", default=None)
+    parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all-ready", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
