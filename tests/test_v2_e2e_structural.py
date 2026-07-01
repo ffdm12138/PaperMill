@@ -29,52 +29,24 @@ from scripts.validate_v2_library import validate_v2_library
 
 def _curated_raw(root: Path, pid: str, *, doi: str = "10.1/x", year: int = 2024,
                  family: str | None = None, tz: str | None = None, pdf_content: bytes = b"%PDF-X") -> Path:
-    """Build a complete curated paper_raw folder ready for commit."""
-    folder = root / "paper_raw" / pid
-    folder.mkdir(parents=True)
-    metadata = empty_metadata(pid)
+    """Build a complete 16-digit paper_raw source folder ready for formalize."""
+    from tests.helpers.paper_raw_factory import make_staged_source
+
     parts = pid.split("_")
     family = parts[1] if len(parts) > 1 else (family or "wang")
     tz = tz if tz is not None else ("_".join(parts[2:]) or "测试论文")
-    metadata["title"]["original"] = f"Paper {pid}"
-    metadata["title"]["translated_zh"] = tz
-    metadata["title"]["short_zh"] = tz
-    metadata["year"] = year
-    metadata["authors"] = [
-        {"full_name": f"{family} A", "family": family, "given": "A", "orcid": "", "affiliation": ""}
-    ]
-    metadata["container"]["journal"] = "Test Journal"
-    metadata["identifiers"]["doi"] = doi
-    metadata["metadata_match"] = {
-        "status": "matched", "source": "test", "confidence": 1.0,
-        "matched_at": "2026-01-01", "warnings": [], "candidates": [],
-    }
-    catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = tz
-    catalog["classification"].update({"primary_domain": "test", "topic_tags": ["test"]})
-    catalog["research_card"].update({
-        "research_problem": "一句话摘要",
-        "core_question": "测试核心问题",
-        "hypothesis_or_objective": "测试研究目标",
-        "study_object": "测试研究对象",
-        "method_summary": "测试方法",
-        "data_or_experiment": "测试数据",
-        "main_findings": ["测试发现"],
-        "mechanisms": ["测试机制"],
-        "limitations": ["测试局限"],
-        "usefulness_for_user": "测试用途",
-    })
-    catalog["screening"].update({
-        "relevance_score": 5, "read_decision": "must_read", "reason": "测试",
-    })
-    catalog["content_notes"]["short_summary"] = "一句话摘要"
-    catalog["content_notes"]["possible_use_in_writing"] = ["method"]
-    (folder / f"{pid}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{pid}.catalog.json").write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{pid}.md").write_text(f"# {pid}\nbody content", encoding="utf-8")
-    (folder / f"{pid}.pdf").write_bytes(pdf_content)
-    (folder / "images").mkdir()
-    return folder
+    source_id = PaperNumberLedger(root / "catalog" / "paper_number_ledger.json").peek_next_numbers(1)[0]
+    return make_staged_source(
+        root,
+        source_id,
+        title_zh=tz,
+        title_original=f"Paper {pid}",
+        doi=doi,
+        family=family,
+        year=year,
+        pdf_bytes=pdf_content,
+        catalog_domain="test",
+    )
 
 
 def _commit(papers_dir: Path, all_catalog: Path, ledger: Path, folder: Path) -> dict:
@@ -82,6 +54,7 @@ def _commit(papers_dir: Path, all_catalog: Path, ledger: Path, folder: Path) -> 
     # reserves the next 16-digit paper_number on the shared ledger).
     from src.services.paper_raw_formalizer import PaperRawFormalizationService
 
+    _reserve_staged_marker_on_ledger(ledger, folder)
     formalized = PaperRawFormalizationService(
         paper_raw_dir=folder.parent, papers_dir=papers_dir,
         ledger_path=ledger, all_catalog_path=all_catalog,
@@ -91,10 +64,16 @@ def _commit(papers_dir: Path, all_catalog: Path, ledger: Path, folder: Path) -> 
     return V2PaperCommitService(papers_dir=papers_dir, all_catalog_path=all_catalog, ledger_path=ledger).commit_paper_raw(formalized["folder"])
 
 
+def _reserve_staged_marker_on_ledger(ledger: Path, folder: Path) -> None:
+    number = PaperNumberLedger(ledger).paper_number_from_marker(folder) or folder.name
+    PaperNumberLedger(ledger).reserve_specific_for_paper_raw(number, folder)
+
+
 def _commit_svc(svc: V2PaperCommitService, folder: Path) -> dict:
     """formalize (using svc's ledger) then commit — for tests that hold a svc handle."""
     from src.services.paper_raw_formalizer import PaperRawFormalizationService
 
+    _reserve_staged_marker_on_ledger(svc.ledger.path, folder)
     formalized = PaperRawFormalizationService(
         paper_raw_dir=folder.parent, papers_dir=svc.papers_dir,
         ledger_path=svc.ledger.path, all_catalog_path=svc.all_catalog_path,
@@ -125,11 +104,11 @@ class TestCommit:
             pid = "2024_wang_缺失资产"
             f = _curated_raw(base, pid)
             if asset == "pdf":
-                (f / f"{pid}.pdf").unlink()
+                (f / f"{f.name}.pdf").unlink()
             elif asset == "catalog.json":
-                (f / f"{pid}.catalog.json").unlink()
+                (f / f"{f.name}.catalog.json").unlink()
             elif asset == "md":
-                (f / f"{pid}.md").unlink()
+                (f / f"{f.name}.md").unlink()
             result = _commit(base / "p", base / "c" / "ac.json", base / "c" / "l.json", f)
             assert result["success"] is False
             assert result["status"] in {"assets_incomplete", "catalog_invalid", "formalize_failed"}

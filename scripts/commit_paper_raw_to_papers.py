@@ -22,6 +22,7 @@ from config.settings import (
     PAPERS_DIR,
 )
 from src.services.ingest_state import READY_FOR_COMMIT, read_import_status
+from src.services.ingest_ids import PAPER_NUMBER_RE
 from src.services.v2_library import PaperNumberLedger, V2PaperCommitService
 
 
@@ -30,7 +31,7 @@ def _ready_dirs(root: Path, ledger_path: Path) -> list[Path]:
     ledger = PaperNumberLedger(ledger_path)
     for folder in sorted(p for p in root.iterdir() if p.is_dir()):
         name = folder.name
-        if name.isdigit() and len(name) == 6:
+        if PAPER_NUMBER_RE.match(name):
             continue  # not yet formalized
         if read_import_status(folder).get("status") != READY_FOR_COMMIT:
             continue

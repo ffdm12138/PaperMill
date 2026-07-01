@@ -16,52 +16,20 @@ from src.services.v2_library import (
 )
 
 
-def _staged_raw(root: Path, source_id: str = "000001", *, doi: str = "10.1/atomic") -> Path:
-    from src.file_fingerprint import compute_sha256
-    from src.utils.atomic_io import atomic_write_json
-    from config.settings import MINERU_BACKEND, MINERU_METHOD, MINERU_LANG, MINERU_EFFORT
-    import hashlib
+def _staged_raw(root: Path, source_id: str = "0000000000000001", *, doi: str = "10.1/atomic") -> Path:
+    from tests.helpers.paper_raw_factory import make_staged_source
 
-    folder = root / "paper_raw" / source_id
-    folder.mkdir(parents=True)
-    metadata = empty_metadata(source_id)
-    metadata["title"]["original"] = "Atomic Paper"
-    metadata["title"]["translated_zh"] = "原子提交"
-    metadata["title"]["short_zh"] = "原子提交"
-    metadata["year"] = 2024
-    metadata["authors"] = [{"full_name": "Wang A", "family": "Wang", "given": "A", "orcid": "", "affiliation": ""}]
-    metadata["container"]["journal"] = "Test Journal"
-    metadata["identifiers"]["doi"] = doi
-    metadata["metadata_match"] = {"status": "matched", "source": "test", "confidence": 1.0,
-                                  "matched_at": "2026-01-01", "warnings": [], "candidates": []}
-    catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = "原子提交"
-    catalog["classification"].update({"primary_domain": "test", "topic_tags": ["test"]})
-    catalog["research_card"].update({
-        "research_problem": "研究原子提交回滚。", "core_question": "如何回滚？",
-        "hypothesis_or_objective": "验证回滚。", "study_object": "提交",
-        "method_summary": "模拟测试方法。", "data_or_experiment": "临时数据。",
-        "main_findings": ["回滚"], "mechanisms": ["回滚"], "limitations": ["回滚"],
-        "usefulness_for_user": "回滚",
-    })
-    catalog["screening"].update({"reason": "该文献用于测试原子提交回滚。"})
-    catalog["content_notes"]["short_summary"] = "原子提交回滚测试。"
-    (folder / f"{source_id}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{source_id}.catalog.json").write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{source_id}.md").write_text("# Atomic", encoding="utf-8")
-    (folder / f"{source_id}.pdf").write_bytes(b"%PDF-atomic")
-    (folder / "images").mkdir()
-    pdf_sha = compute_sha256(folder / f"{source_id}.pdf")
-    md_sha = hashlib.sha256((folder / f"{source_id}.md").read_bytes()).hexdigest()
-    atomic_write_json(folder / f"{source_id}.conversion.json", {
-        "schema_version": "1.0", "status": "converted", "source_id": source_id,
-        "pdf_sha256": pdf_sha, "pdf_file_size": 11, "markdown_path": f"{source_id}.md",
-        "markdown_sha256": md_sha, "images_dir": "images", "images_count": 0,
-        "backend": MINERU_BACKEND, "method": MINERU_METHOD, "lang": MINERU_LANG,
-        "effort": MINERU_EFFORT, "runner": "", "api_url": "", "output_dir": "",
-        "converted_at": "2026-01-01T00:00:00",
-    }, indent=2)
-    return folder
+    return make_staged_source(
+        root,
+        source_id,
+        title_zh="原子提交",
+        title_original="Atomic Paper",
+        doi=doi,
+        family="Wang",
+        pdf_bytes=b"%PDF-atomic",
+        md_text="# Atomic",
+        catalog_domain="test",
+    )
 
 
 def _svc(tmp_path: Path):
@@ -149,8 +117,8 @@ def test_commit_rejects_missing_marker(tmp_path: Path):
     assert not (tmp_path / "papers" / formalized["paper_id"]).exists()
 
 
-def test_commit_rejects_six_digit_folder(tmp_path: Path):
-    folder = _staged_raw(tmp_path)  # 000001, not formalized
+def test_commit_rejects_unformalized_paper_number_workspace(tmp_path: Path):
+    folder = _staged_raw(tmp_path)  # 16-digit workspace, not formalized
     svc = _svc(tmp_path)
     with pytest.raises(ValueError):
         svc.commit_paper_raw(folder)
