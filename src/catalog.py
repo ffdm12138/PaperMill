@@ -10,9 +10,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from config.settings import ALL_CATALOG_PATH, PAPERS_DIR
+from config.settings import ALL_CATALOG_PATH, PAPER_NUMBER_LEDGER_PATH, PAPERS_DIR
 from src.services.paper_library import PaperLibrary
-from src.services.v2_library import AllCatalogBuilder
+from src.services.v2_library import AllCatalogBuilder, PaperNumberLedger
 
 
 def _read_json(path: Path, default: dict | None = None) -> dict:
@@ -132,10 +132,17 @@ def build_compact_catalog_text(
 class Catalog:
     """Small compatibility wrapper over the v2 all-catalog file."""
 
-    def __init__(self, path: Path = ALL_CATALOG_PATH, papers_dir: Path = PAPERS_DIR):
+    def __init__(
+        self,
+        path: Path | str = ALL_CATALOG_PATH,
+        *,
+        papers_dir: Path | str = PAPERS_DIR,
+        ledger_path: Path | str = PAPER_NUMBER_LEDGER_PATH,
+    ):
         self.path = Path(path)
-        self.papers_dir = papers_dir
-        self.library = PaperLibrary(all_catalog_path=self.path, papers_dir=papers_dir)
+        self.papers_dir = Path(papers_dir)
+        self.ledger_path = Path(ledger_path)
+        self.library = PaperLibrary(all_catalog_path=self.path, papers_dir=self.papers_dir)
 
     @staticmethod
     def _empty_data() -> dict:
@@ -147,7 +154,11 @@ class Catalog:
         # writes belong to `rebuild_all_catalog.py --apply`, commit, or an
         # explicit `?rebuild=true` API call.
         if not self.path.exists():
-            return AllCatalogBuilder(all_catalog_path=self.path, papers_dir=self.papers_dir).build_readonly_snapshot()
+            return AllCatalogBuilder(
+                all_catalog_path=self.path,
+                papers_dir=self.papers_dir,
+                ledger=PaperNumberLedger(self.ledger_path),
+            ).build_readonly_snapshot()
         return _read_json(self.path, self._empty_data())
 
     def list_papers(self) -> list[dict]:

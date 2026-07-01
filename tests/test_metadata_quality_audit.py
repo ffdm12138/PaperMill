@@ -20,8 +20,8 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def _valid_metadata(pid: str, idx: int) -> dict:
-    metadata = empty_metadata(pid)
+def _valid_metadata(paper_number: str, idx: int) -> dict:
+    metadata = empty_metadata(paper_number)
     metadata["title"]["original"] = f"Metadata Audit Paper {idx}"
     metadata["title"]["short_zh"] = f"元数据审计{idx}"
     metadata["title"]["translated_zh"] = f"元数据审计{idx}"
@@ -93,7 +93,6 @@ def _all_catalog_entry(pid: str, number: str) -> dict:
     return {
         "paper_number": number,
         "paper_id": pid,
-        "source_id": "",
         "asset_refs": {"markdown": "", "pdf": "", "images_dir": "", "figures": []},
         "content_identity": catalog["content_identity"],
         "classification": catalog["classification"],
@@ -118,7 +117,7 @@ def _make_library(tmp_path: Path, mutators=None) -> tuple[Path, Path]:
         folder = papers_dir / pid
         images = folder / "images"
         images.mkdir(parents=True)
-        metadata = _valid_metadata(pid, idx)
+        metadata = _valid_metadata(number, idx)
         mutator = mutators.get(idx)
         if mutator:
             mutator(metadata)

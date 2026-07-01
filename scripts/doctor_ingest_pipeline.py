@@ -82,7 +82,7 @@ def build_report(*, run_tests: bool, paper_raw_dir: Path, project_root: Path) ->
             "returncode": 0,
             "blocking": False,
             "skipped": True,
-            "reason": "no data/paper_raw/<000001> sources",
+            "reason": "no data/paper_raw/<paper_number> sources",
             "stdout": "",
             "stderr": "",
         })

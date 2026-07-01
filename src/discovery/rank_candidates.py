@@ -24,7 +24,7 @@ def _merge(a: PaperCandidate, b: PaperCandidate) -> PaperCandidate:
     raw = dict(a.raw or {})
     raw["sources"] = sources
     raw.setdefault("merged_raw", [])
-    raw["merged_raw"].append({"source": b.source, "source_id": b.source_id, "raw": b.raw})
+    raw["merged_raw"].append({"source": b.source, "provider_id": b.source_id, "raw": b.raw})
     return PaperCandidate(
         title=a.title or b.title,
         year=a.year or b.year,
@@ -86,4 +86,3 @@ def dedupe_and_rank_candidates(
         ranked.append(candidate)
     ranked.sort(key=lambda c: (c.confidence, c.citation_count or 0, c.year or 0), reverse=True)
     return ranked[:max_candidates]
-

@@ -209,7 +209,7 @@ def test_selected_catalog_is_content_only_metadata_in_article(tmp_path):
     all_catalog.write_text(json.dumps({
         "schema_version": "2.0", "updated_at": "",
         "papers": [{
-            "paper_number": number, "paper_id": pid, "source_id": "",
+            "paper_number": number, "paper_id": pid,
             "asset_refs": {"markdown": "", "pdf": "", "images_dir": "", "figures": []},
             "content_identity": catalog["content_identity"],
             "classification": catalog["classification"],

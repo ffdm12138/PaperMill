@@ -67,7 +67,6 @@ def _fake_library(tmp_path: Path) -> tuple[Path, Path, str, str]:
     all_entry = {
         "paper_number": paper_number,
         "paper_id": paper_id,
-        "source_id": "",
         "asset_refs": {"markdown": "", "pdf": "", "images_dir": "", "figures": []},
         "content_identity": catalog["content_identity"],
         "classification": catalog["classification"],

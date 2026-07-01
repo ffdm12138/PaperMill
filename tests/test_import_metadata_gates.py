@@ -26,6 +26,7 @@ def test_network_metadata_requires_doi(tmp_path, monkeypatch):
     input_path = tmp_path / "candidates.jsonl"
     input_path.write_text(json.dumps({"title": "No DOI Paper", "year": 2024}) + "\n", encoding="utf-8")
     paper_raw = tmp_path / "paper_raw"
+    ledger = tmp_path / "catalog" / "paper_number_ledger.json"
     report = tmp_path / "report.json"
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
 
@@ -35,6 +36,7 @@ def test_network_metadata_requires_doi(tmp_path, monkeypatch):
             "stage_network_metadata_to_paper_raw.py",
             "--input", str(input_path),
             "--paper-raw-dir", str(paper_raw),
+            "--ledger-path", str(ledger),
             "--report", str(report),
             "--apply",
         ],
@@ -50,6 +52,7 @@ def test_network_metadata_rejects_invalid_doi(tmp_path, monkeypatch):
     input_path = tmp_path / "candidates.jsonl"
     input_path.write_text(json.dumps({"title": "Bad DOI", "year": 2024, "doi": "not-a-doi"}) + "\n", encoding="utf-8")
     paper_raw = tmp_path / "paper_raw"
+    ledger = tmp_path / "catalog" / "paper_number_ledger.json"
     report = tmp_path / "report.json"
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
 
@@ -59,6 +62,7 @@ def test_network_metadata_rejects_invalid_doi(tmp_path, monkeypatch):
             "stage_network_metadata_to_paper_raw.py",
             "--input", str(input_path),
             "--paper-raw-dir", str(paper_raw),
+            "--ledger-path", str(ledger),
             "--report", str(report),
             "--apply",
         ],
@@ -82,6 +86,7 @@ def test_network_metadata_maps_publication_fields(tmp_path, monkeypatch):
         "page": "45-56",
     }) + "\n", encoding="utf-8")
     paper_raw = tmp_path / "paper_raw"
+    ledger = tmp_path / "catalog" / "paper_number_ledger.json"
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
 
     rc = _run_script(
@@ -90,12 +95,13 @@ def test_network_metadata_maps_publication_fields(tmp_path, monkeypatch):
             "stage_network_metadata_to_paper_raw.py",
             "--input", str(input_path),
             "--paper-raw-dir", str(paper_raw),
+            "--ledger-path", str(ledger),
             "--apply",
         ],
     )
 
     assert rc == 0
-    metadata = json.loads((paper_raw / "000001" / "000001.metadata.json").read_text(encoding="utf-8"))
+    metadata = json.loads((paper_raw / "0000000000000001" / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert metadata["identifiers"]["doi"] == "10.1000/example"
     assert metadata["publication"]["volume"] == "12"
     assert metadata["publication"]["number"] == "3"
@@ -105,11 +111,11 @@ def test_network_metadata_maps_publication_fields(tmp_path, monkeypatch):
 
 def test_fetch_rejects_invalid_doi_before_provider(tmp_path, monkeypatch):
     paper_raw = tmp_path / "paper_raw"
-    folder = paper_raw / "000001"
+    folder = paper_raw / "0000000000000001"
     folder.mkdir(parents=True)
-    metadata = empty_metadata("000001", source_type="network_search")
+    metadata = empty_metadata("0000000000000001", source_type="network_search")
     metadata["identifiers"]["doi"] = "not-a-doi"
-    (folder / "000001.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (folder / "0000000000000001.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
     def _boom(*args, **kwargs):
         raise AssertionError("fetch provider should not be called")
@@ -122,7 +128,7 @@ def test_fetch_rejects_invalid_doi_before_provider(tmp_path, monkeypatch):
         "fetch_pdf_for_paper_raw.py",
         [
             "fetch_pdf_for_paper_raw.py",
-            "--source-id", "000001",
+            "--paper-number", "0000000000000001",
             "--paper-raw-dir", str(paper_raw),
             "--apply",
         ],

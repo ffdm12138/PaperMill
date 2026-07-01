@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -60,7 +60,7 @@ def test_runtime_failure_reports_unavailable_cli_api_proxy(monkeypatch):
 
 def test_batch_api_unavailable_does_not_call_converter(monkeypatch, tmp_path):
     paper_raw = tmp_path / "paper_raw"
-    folder = paper_raw / "000001"
+    folder = paper_raw / "0000000000000001"
     folder.mkdir(parents=True)
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
@@ -148,3 +148,4 @@ def test_check_mineru_processes_warns_on_multiple_api(monkeypatch, capsys):
 
     assert rc == 0
     assert "multiple mineru-api processes detected" in out
+

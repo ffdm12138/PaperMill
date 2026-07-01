@@ -1,4 +1,4 @@
-"""Stage network/discovery metadata records into data/paper_raw/<000001>/."""
+"""Stage network/discovery metadata records into 16-digit paper_raw workspaces."""
 from __future__ import annotations
 
 import argparse
@@ -11,10 +11,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
-from config.settings import PAPER_RAW_DIR
+from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR
 from src.discovery.models import normalize_doi
 from src.services.metadata_quality import is_valid_normalized_doi
-from src.services.v2_library import PaperRawAllocator, empty_metadata, merge_missing_metadata
+from src.services.v2_library import PaperNumberLedger, PaperRawAllocator, empty_metadata, merge_missing_metadata
 
 
 DOI_REQUIRED_ERROR = "network/search metadata import requires metadata.identifiers.doi"
@@ -32,14 +32,8 @@ def _records(path: Path) -> list[dict]:
     return data if isinstance(data, list) else data.get("items") or data.get("papers") or [data]
 
 
-def _next_ids(paper_raw_dir: Path, count: int) -> list[str]:
-    existing = [
-        int(p.name)
-        for p in paper_raw_dir.iterdir()
-        if p.is_dir() and p.name.isdigit() and len(p.name) == 6
-    ] if paper_raw_dir.exists() else []
-    start = (max(existing) if existing else 0) + 1
-    return [f"{start + i:06d}" for i in range(count)]
+def _planned_paper_numbers(ledger_path: Path, count: int) -> list[str]:
+    return PaperNumberLedger(ledger_path).peek_next_numbers(count)
 
 
 def _metadata_from_record(source_id: str, record: dict[str, Any]) -> dict:
@@ -111,6 +105,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Stage network metadata into v2 paper_raw workspaces.")
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
+    parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=None)
@@ -118,11 +113,15 @@ def main() -> int:
 
     write = args.apply and not args.dry_run
     records = _records(args.input)
-    ids = _next_ids(args.paper_raw_dir, len(records))
-    allocator = PaperRawAllocator(args.paper_raw_dir)
+    ids = _planned_paper_numbers(args.ledger_path, len(records))
+    planned_index = 0
+    allocator = PaperRawAllocator(args.paper_raw_dir, ledger_path=args.ledger_path)
     report = []
-    for record, planned_id in zip(records, ids):
-        item = {"planned_source_id": planned_id, "status": "planned", "title": record.get("title", "")}
+    for record in records:
+        item = {
+            "status": "planned",
+            "title": record.get("title", ""),
+        }
         doi = _record_doi(record)
         if not doi:
             item.update({"status": "failed", "error": DOI_REQUIRED_ERROR})
@@ -134,6 +133,10 @@ def main() -> int:
             logger.error("network metadata stage rejected: invalid DOI {}", doi)
             report.append(item)
             continue
+        planned_id = ids[planned_index]
+        planned_index += 1
+        item["planned_paper_number"] = planned_id
+        item["planned_paper_raw_id"] = planned_id
         record = {**record, "doi": doi}
         metadata = _metadata_from_record(planned_id, record)
         if write:

@@ -59,7 +59,8 @@ for d in sorted(os.listdir(DATA)):
 
     # Create .import_status.json
     import_status = {
-        "source_id": pn,
+        "paper_number": pn,
+        "paper_raw_id": pn,
         "status": "converted",  # already converted, just uncommitted
         "converted_at": None,
         "committed_at": None,

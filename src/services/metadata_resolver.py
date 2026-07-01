@@ -1,7 +1,7 @@
 """paper_raw metadata resolver — resolve metadata candidates for unmatched PDFs.
 
 This module closes the PDF-first gap: for manual PDF imports, MinerU conversion
-must produce ``data/paper_raw/<source_id>/<source_id>.md`` before metadata
+must produce ``data/paper_raw/<paper_number>/<paper_number>.md`` before metadata
 resolution runs. The converted Markdown is the primary evidence for DOI/title/
 author/year/venue candidates; PDF filename and PDF text are optional hints, never
 the sole metadata source. With ``--allow-network`` the resolver verifies extracted
@@ -188,7 +188,8 @@ class ResolveReport:
             "local_title_evidence_missing": self.local_title_evidence_missing,
         }
         return {
-            "source_id": self.source_id,
+            "paper_number": self.source_id,
+            "paper_raw_id": self.source_id,
             "folder": self.folder,
             "metadata_path": self.metadata_path,
             "existing_doi": self.existing_doi,
@@ -1186,7 +1187,7 @@ def apply_resolution(
                 break
     if chosen is None or not chosen.doi:
         _write_import_status(folder, STATUS_MANUAL_REVIEW, "no DOI-bearing candidate to apply")
-        return {"applied": False, "status": "no_candidate", "source_id": source_id,
+        return {"applied": False, "status": "no_candidate", "paper_number": source_id, "paper_raw_id": source_id,
                 "chosen_candidate_id": candidate_id or report.best_candidate_id, "warnings": ["no DOI-bearing candidate"]}
 
     formal_doi_set = formal_dois(all_catalog_path, papers_dir)
@@ -1218,7 +1219,7 @@ def apply_resolution(
             "candidate not auto-matched and --manual-confirm not given"
         )
         _write_import_status(folder, status, reason)
-        return {"applied": False, "status": "manual_review_required", "source_id": source_id,
+        return {"applied": False, "status": "manual_review_required", "paper_number": source_id, "paper_raw_id": source_id,
                 "chosen_candidate_id": chosen.candidate_id, "warnings": fail_reasons or [reason]}
 
     # ── Write ──
@@ -1234,7 +1235,7 @@ def apply_resolution(
     schema_errors = validate_metadata_schema(merged)
     if schema_errors:
         _write_import_status(folder, STATUS_MANUAL_REVIEW, "; ".join(schema_errors))
-        return {"applied": False, "status": "schema_error", "source_id": source_id,
+        return {"applied": False, "status": "schema_error", "paper_number": source_id, "paper_raw_id": source_id,
                 "chosen_candidate_id": chosen.candidate_id, "warnings": schema_errors}
 
     atomic_write_json(meta_path, merged, indent=2)
@@ -1244,7 +1245,7 @@ def apply_resolution(
     report.applied_status = new_status
     report.chosen_candidate_id = chosen.candidate_id
 
-    return {"applied": True, "status": new_status, "source_id": source_id,
+    return {"applied": True, "status": new_status, "paper_number": source_id, "paper_raw_id": source_id,
             "chosen_candidate_id": chosen.candidate_id, "doi": chosen.doi, "warnings": merge_warnings}
 
 
@@ -1312,7 +1313,8 @@ def write_metadata_patch_json(folder: Path, report: ResolveReport) -> Path | Non
 def write_candidates_json(folder: Path, report: ResolveReport) -> Path:
     path = folder / f"{report.source_id}.metadata.candidates.json"
     data = {
-        "source_id": report.source_id,
+        "paper_number": report.source_id,
+        "paper_raw_id": report.source_id,
         "generated_at": report.created_at,
         "candidates": [
             {

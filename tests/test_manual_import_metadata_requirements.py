@@ -10,49 +10,25 @@ from scripts.commit_paper_raw_to_papers import _ready_dirs
 
 
 def _raw_folder(tmp_path: Path, pid: str = "2024_wang_手动导入") -> Path:
-    folder = tmp_path / "paper_raw" / pid
-    folder.mkdir(parents=True)
-    metadata = empty_metadata(pid)
+    from tests.helpers.paper_raw_factory import make_staged_source
+
     parts = pid.split("_")
     short_name = "_".join(parts[2:]) or "手动导入"
-    metadata["title"]["original"] = "Manual Import Paper"
-    metadata["title"]["short_zh"] = short_name
-    metadata["year"] = 2024
-    metadata["authors"] = [{"full_name": "wang A", "family": parts[1] if len(parts) > 1 else "wang", "given": "A", "orcid": "", "affiliation": ""}]
-    metadata["container"]["journal"] = "Manual Journal"
-    metadata["identifiers"]["doi"] = "10.1000/manual-import"
-    metadata["metadata_match"] = {
-        "status": "manual_confirmed",
-        "source": "test",
-        "confidence": 1.0,
-        "matched_at": "2026-01-01T00:00:00",
-        "warnings": [],
-        "candidates": [],
-    }
-    catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = "手动导入论文内容标题"
-    catalog["classification"]["primary_domain"] = "snow"
-    catalog["screening"]["read_decision"] = "must_read"
-    catalog["screening"]["reason"] = "该文献与中文综述主题直接相关。"
-    catalog["research_card"].update({
-        "research_problem": "研究手动导入文献的入库边界。",
-        "core_question": "如何阻止不完整 metadata 入库？",
-        "hypothesis_or_objective": "验证手动确认后的正式入库门禁。",
-        "study_object": "手动导入文献",
-        "method_summary": "使用 mock 文献资产验证 metadata gate。",
-        "data_or_experiment": "临时 PDF、Markdown 与 JSON 资产。",
-        "main_findings": ["metadata 不完整时不能入库。"],
-        "mechanisms": ["commit 前统一 readiness gate。"],
-        "limitations": ["只覆盖结构性入库检查。"],
-        "usefulness_for_user": "保障正式库资产质量。",
-    })
-    catalog["content_notes"]["short_summary"] = "用于验证 catalog 草稿不能绕过 metadata gate。"
-    (folder / f"{pid}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{pid}.catalog.json").write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{pid}.md").write_text("# Manual Import Paper", encoding="utf-8")
-    (folder / f"{pid}.pdf").write_bytes(b"%PDF")
-    (folder / "images").mkdir()
-    return folder
+    family = parts[1] if len(parts) > 1 else "wang"
+    paper_raw = tmp_path / "paper_raw"
+    used = {p.name for p in paper_raw.iterdir()} if paper_raw.exists() else set()
+    source_id = next(f"{i:016d}" for i in range(1, 1000) if f"{i:016d}" not in used)
+    return make_staged_source(
+        tmp_path,
+        source_id,
+        title_zh=short_name,
+        title_original="Manual Import Paper",
+        doi="10.1000/manual-import",
+        family=family,
+        journal="Manual Journal",
+        metadata_status="manual_confirmed",
+        catalog_domain="snow",
+    )
 
 
 def _commit(tmp_path: Path, folder: Path) -> dict:
@@ -119,7 +95,14 @@ def test_commit_rejects_paper_id_mismatch(tmp_path):
     metadata["title"]["short_zh"] = "不同名称"
     meta_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
 
-    result = _commit(tmp_path, folder)
+    from src.services.paper_raw_formalizer import PaperRawFormalizationService
+
+    result = PaperRawFormalizationService(
+        paper_raw_dir=folder.parent,
+        papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
+        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
+    ).formalize(folder, paper_id="2024_wang_手动导入")
 
     assert result["success"] is False
     assert result["status"] == "paper_id_mismatch"
@@ -144,7 +127,11 @@ def test_catalog_invalid_type_cannot_commit(tmp_path):
 def test_all_ready_requires_ready_for_commit_status(tmp_path):
     raw = tmp_path / "paper_raw"
     ledger_path = tmp_path / "catalog" / "paper_number_ledger.json"
-    folder = _raw_folder(tmp_path, "2024_wang_状态门禁")
+    folder = raw / "2024_wang_状态门禁"
+    folder.mkdir(parents=True)
+    for suffix in ("metadata.json", "catalog.json", "md", "pdf"):
+        (folder / f"{folder.name}.{suffix}").write_text("{}", encoding="utf-8")
+    (folder / "images").mkdir()
     (folder / ".import_status.json").write_text(json.dumps({"status": "metadata_incomplete"}), encoding="utf-8")
 
     assert folder not in _ready_dirs(raw, ledger_path)

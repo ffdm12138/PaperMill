@@ -31,7 +31,6 @@ def _catalog(idx: int, *, primary_domain: str = "snow_model", topic: str = "blow
         "schema_version": "2.0",
         "paper_number": f"{idx:016d}",
         "paper_id": f"2024_author{idx}_workflow_paper_{idx}",
-        "source_id": "",
         "asset_refs": {"markdown": "", "pdf": "", "images_dir": "", "figures": []},
         "content_identity": {
             "content_title": f"Workflow Paper {idx}",

@@ -83,7 +83,6 @@ def _content_only_all_catalog(pid: str, number: str) -> dict:
     return {
         "paper_number": number,
         "paper_id": pid,
-        "source_id": "",
         "asset_refs": {
             "markdown": "",
             "pdf": "",
@@ -232,4 +231,23 @@ def test_catalog_load_does_not_write_all_catalog_file(tmp_path):
     # the read must not have created the file on disk (content may come from the
     # global papers_dir default, but the point is: no file is written)
     assert not all_catalog.exists(), "Catalog.load() wrote all.catalog.json (read must be side-effect free)"
+    assert isinstance(data.get("papers"), list)
+
+
+def test_catalog_load_fallback_uses_custom_ledger_path_without_writing_default(tmp_path):
+    """Readonly fallback must honor injected ledger path and create no ledger files."""
+    from config.settings import PAPER_NUMBER_LEDGER_PATH
+    from src.catalog import Catalog
+
+    all_catalog = tmp_path / "catalog" / "all.catalog.json"
+    custom_ledger = tmp_path / "catalog" / "custom_ledger.json"
+    default_ledger = Path(PAPER_NUMBER_LEDGER_PATH)
+    before = default_ledger.read_text(encoding="utf-8") if default_ledger.exists() else None
+
+    data = Catalog(path=all_catalog, papers_dir=tmp_path / "papers", ledger_path=custom_ledger).load()
+
+    after = default_ledger.read_text(encoding="utf-8") if default_ledger.exists() else None
+    assert after == before
+    assert not all_catalog.exists()
+    assert not custom_ledger.exists()
     assert isinstance(data.get("papers"), list)

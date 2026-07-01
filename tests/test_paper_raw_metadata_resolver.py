@@ -1,4 +1,4 @@
-"""Tests for the paper_raw metadata resolver service + CLI.
+﻿"""Tests for the paper_raw metadata resolver service + CLI.
 
 Network is always mocked:
 - DOI-enrichment branch: monkeypatch metadata_enrichment_service.query_crossref_by_doi
@@ -23,9 +23,9 @@ from src.services.v2_library import empty_metadata
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-# ── Fixtures ───────────────────────────────────────────────────────────
+# 鈹€鈹€ Fixtures 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-def _make_folder(tmp_path: Path, source_id: str = "000001", *, doi: str = "",
+def _make_folder(tmp_path: Path, source_id: str = "0000000000000001", *, doi: str = "",
                  title: str = "", year=None, authors: list[dict] | None = None,
                  journal: str = "", status: str = "unmatched",
                  pdf_bytes: bytes = b"%PDF-1.4 fake", md_text: str | None = None) -> Path:
@@ -125,7 +125,7 @@ def _seed_formal_paper(tmp_path: Path, pid: str, *, doi: str = "", pdf_sha: str 
     return folder
 
 
-# ── 1. existing-DOI enriches, no overwrite → matched ──────────────────
+# 鈹€鈹€ 1. existing-DOI enriches, no overwrite 鈫?matched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_existing_doi_enriches_via_crossref_no_overwrite(tmp_path, monkeypatch):
     folder = _make_folder(tmp_path, doi="10.5194/tc-8-395-2014",
@@ -144,14 +144,14 @@ def test_existing_doi_enriches_via_crossref_no_overwrite(tmp_path, monkeypatch):
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
     assert res["status"] == "matched"
-    meta = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     # existing non-empty title preserved (not overwritten by Crossref title)
     assert meta["title"]["original"] == "Local kept title"
     assert meta["metadata_match"]["status"] == "matched"
     assert meta["identifiers"]["doi"] == "10.5194/tc-8-395-2014"
 
 
-# ── 2. existing-DOI conflict → stops, unmatched ───────────────────────
+# 鈹€鈹€ 2. existing-DOI conflict 鈫?stops, unmatched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_existing_doi_conflict_stops(tmp_path, monkeypatch):
     folder = _make_folder(tmp_path, doi="10.5194/tc-8-395-2014", title="T", year=2014)
@@ -166,14 +166,14 @@ def test_existing_doi_conflict_stops(tmp_path, monkeypatch):
     assert report.decision == "conflict"
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
-    meta = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["metadata_match"]["status"] == "unmatched"
 
 
-# ── 3. DOI from filename → auto matched ───────────────────────────────
+# 鈹€鈹€ 3. DOI from filename 鈫?auto matched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_doi_from_filename_auto_matches(tmp_path, monkeypatch):
-    folder = _make_folder(tmp_path)  # no metadata doi; pdf named 000001.pdf so filename won't have doi
+    folder = _make_folder(tmp_path)  # no metadata doi; pdf named 0000000000000001.pdf so filename won't have doi
     # give the PDF a DOI-bearing name via a separate file is not possible (must be <source_id>.pdf).
     # Instead mock extract_doi_from_filename.
     monkeypatch.setattr(mr, "extract_doi_from_filename", lambda name: "10.5194/tc-8-395-2014")
@@ -189,11 +189,11 @@ def test_doi_from_filename_auto_matches(tmp_path, monkeypatch):
     assert report.decision == "auto_matched"
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is True and res["status"] == "matched"
-    meta = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["identifiers"]["doi"] == "10.5194/tc-8-395-2014"
 
 
-# ── 4. DOI from PDF text → matched ────────────────────────────────────
+# 鈹€鈹€ 4. DOI from PDF text 鈫?matched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_doi_from_pdf_text_auto_matches(tmp_path, monkeypatch):
     folder = _make_folder(tmp_path)
@@ -212,7 +212,7 @@ def test_doi_from_pdf_text_auto_matches(tmp_path, monkeypatch):
     assert res["applied"] is True and res["status"] == "matched"
 
 
-# ── 5. DOI from markdown header → matched ─────────────────────────────
+# 鈹€鈹€ 5. DOI from markdown header 鈫?matched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_doi_from_markdown_header_auto_matches(tmp_path, monkeypatch):
     md = ("# Simulation of wind-induced snow transport\n\n"
@@ -235,7 +235,7 @@ def test_doi_from_markdown_header_auto_matches(tmp_path, monkeypatch):
     assert res["applied"] is True and res["status"] == "matched"
 
 
-# ── 6. title-search candidate never auto-matched; manual-confirm ok ───
+# 鈹€鈹€ 6. title-search candidate never auto-matched; manual-confirm ok 鈹€鈹€鈹€
 
 def test_title_search_candidate_never_auto_matched(tmp_path, monkeypatch):
     md = ("# Simulation of wind-induced snow transport\n\n"
@@ -262,10 +262,10 @@ def test_title_search_candidate_never_auto_matched(tmp_path, monkeypatch):
     assert report.doi_source == "network_title"
     # NOT auto_matched even though title/year match well
     assert report.decision != "auto_matched"
-    # apply without manual-confirm → not applied
+    # apply without manual-confirm 鈫?not applied
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
-    # apply WITH manual-confirm → manual_confirmed (passes full validation gate)
+    # apply WITH manual-confirm 鈫?manual_confirmed (passes full validation gate)
     res2 = mr.apply_resolution(folder, report, manual_confirm=True,
                                all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res2["applied"] is True and res2["status"] == "manual_confirmed"
@@ -359,7 +359,7 @@ def test_resolve_report_has_structured_local_evidence_and_decision(tmp_path, mon
     assert payload["local_evidence"]["local_title_evidence_missing"] is False
 
 
-# ── 7. title search manual-band → unmatched, candidates written ───────
+# 鈹€鈹€ 7. title search manual-band 鈫?unmatched, candidates written 鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_title_search_manual_band_stays_unmatched(tmp_path, monkeypatch):
     md = "# Some obscure paper title\n\nUnknown Author\n\n2010\n\n"
@@ -381,15 +381,15 @@ def test_title_search_manual_band_stays_unmatched(tmp_path, monkeypatch):
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
                                            all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    # low score → rejected or manual_review; never auto_matched
+    # low score 鈫?rejected or manual_review; never auto_matched
     assert report.decision != "auto_matched"
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
-    meta = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["metadata_match"]["status"] == "unmatched"
 
 
-# ── 8. no-DOI candidates → resolve_failed ─────────────────────────────
+# 鈹€鈹€ 8. no-DOI candidates 鈫?resolve_failed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_no_doi_candidates_resolve_failed(tmp_path, monkeypatch):
     md = "# Some title\n\nAuthor\n\n2020\n\n"
@@ -411,7 +411,7 @@ def test_no_doi_candidates_resolve_failed(tmp_path, monkeypatch):
     assert report.decision in ("no_candidates", "rejected")
 
 
-# ── 9. non-empty field never overwritten ──────────────────────────────
+# 鈹€鈹€ 9. non-empty field never overwritten 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_non_empty_field_never_overwritten(tmp_path, monkeypatch):
     folder = _make_folder(tmp_path, doi="10.5194/tc-8-395-2014",
@@ -428,13 +428,13 @@ def test_non_empty_field_never_overwritten(tmp_path, monkeypatch):
                                            all_catalog_path=cat, papers_dir=tmp_path / "papers")
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
-    meta = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["title"]["original"] == "Pre-existing Title"
     assert meta["container"]["journal"] == "Pre-existing Journal"
     assert any("preserved" in w for w in res["warnings"])
 
 
-# ── 10. duplicate formal DOI blocks both auto and manual ──────────────
+# 鈹€鈹€ 10. duplicate formal DOI blocks both auto and manual 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_duplicate_formal_doi_blocks(tmp_path, monkeypatch):
     folder = _make_folder(tmp_path, doi="10.5194/tc-8-395-2014", title="T", year=2014,
@@ -459,7 +459,7 @@ def test_duplicate_formal_doi_blocks(tmp_path, monkeypatch):
     assert res2["applied"] is False
 
 
-# ── 10b. duplicate PDF sha256 blocks ──────────────────────────────────
+# 鈹€鈹€ 10b. duplicate PDF sha256 blocks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_duplicate_pdf_sha256_blocks(tmp_path, monkeypatch):
     folder = _make_folder(tmp_path, doi="10.5194/tc-8-395-2014", title="T", year=2014,
@@ -470,7 +470,7 @@ def test_duplicate_pdf_sha256_blocks(tmp_path, monkeypatch):
     _patch_crossref_doi(monkeypatch, msg)
     cat = _empty_catalog(tmp_path)
     # compute the paper_raw pdf sha and seed it in a formal paper with a DIFFERENT doi
-    sha = mr.compute_sha256(folder / "000001.pdf")
+    sha = mr.compute_sha256(folder / "0000000000000001.pdf")
     _seed_formal_paper(tmp_path, "2014_other", doi="10.9999/other", pdf_sha=sha)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=False,
@@ -483,7 +483,7 @@ def test_duplicate_pdf_sha256_blocks(tmp_path, monkeypatch):
     assert any("duplicate_pdf_sha256" in w for w in res["warnings"])
 
 
-# ── 11. manual-confirm rejects DOI conflict ───────────────────────────
+# 鈹€鈹€ 11. manual-confirm rejects DOI conflict 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_manual_confirm_rejects_doi_conflict(tmp_path, monkeypatch):
     # Resolve with NO existing metadata DOI; candidate found via markdown DOI = A.
@@ -504,7 +504,7 @@ def test_manual_confirm_rejects_doi_conflict(tmp_path, monkeypatch):
     assert report.candidates, "expected at least one candidate"
     candidate_doi = report.candidates[0].doi
     # Now inject a DIFFERENT existing DOI into metadata on disk, then apply with --manual-confirm.
-    meta_path = folder / "000001.metadata.json"
+    meta_path = folder / "0000000000000001.metadata.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     conflicting_doi = "10.9999/conflict-with-existing"
     assert conflicting_doi != candidate_doi
@@ -520,14 +520,14 @@ def test_manual_confirm_rejects_doi_conflict(tmp_path, monkeypatch):
     assert after["metadata_match"]["status"] == "unmatched"
 
 
-# ── 12. manual-confirm rejects incomplete candidate ───────────────────
+# 鈹€鈹€ 12. manual-confirm rejects incomplete candidate 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_manual_confirm_rejects_incomplete(tmp_path, monkeypatch):
     folder = _make_folder(tmp_path)  # no local metadata
     monkeypatch.setattr(mr, "extract_doi_from_filename", lambda name: None)
     monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
     md = "# Some title\n\nAuthor\n\n2020\n\n"
-    (folder / "000001.md").write_text(md, encoding="utf-8")
+    (folder / "0000000000000001.md").write_text(md, encoding="utf-8")
     # candidate with DOI but no venue
     item = {"DOI": "10.9999/x", "title": ["Some title"], "author": [{"family": "Author"}],
             "container-title": [], "issued": {"date-parts": [[2020]]}}
@@ -543,7 +543,7 @@ def test_manual_confirm_rejects_incomplete(tmp_path, monkeypatch):
     assert res["applied"] is False
 
 
-# ── 12b. --candidate-id chooses specified candidate ───────────────────
+# 鈹€鈹€ 12b. --candidate-id chooses specified candidate 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_candidate_id_chooses_specified(tmp_path, monkeypatch):
     md = "# Simulation of wind-induced snow transport\n\nVionnet, V.\n\nThe Cryosphere 2014\n\n"
@@ -569,7 +569,7 @@ def test_candidate_id_chooses_specified(tmp_path, monkeypatch):
                               all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
     assert res["chosen_candidate_id"] == cand2.candidate_id
-    meta = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["identifiers"]["doi"] == "10.9999/second"
 
 
@@ -588,7 +588,7 @@ def test_candidate_id_invalid_errors(tmp_path, monkeypatch):
                             all_catalog_path=cat, papers_dir=tmp_path / "papers")
 
 
-# ── 13. multi-DOI conflict ────────────────────────────────────────────
+# 鈹€鈹€ 13. multi-DOI conflict 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_multi_doi_conflict(tmp_path, monkeypatch):
     md = ("# Title\n\nhttps://doi.org/10.5194/tc-8-395-2014\n\n"
@@ -605,7 +605,7 @@ def test_multi_doi_conflict(tmp_path, monkeypatch):
     assert res["applied"] is False
 
 
-# ── 14. references-region DOI not auto-matched ────────────────────────
+# 鈹€鈹€ 14. references-region DOI not auto-matched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_references_region_doi_not_used(tmp_path, monkeypatch):
     md = ("# Title\n\nAuthor\n\n2020\n\n## Abstract\ntext\n\n"
@@ -616,13 +616,13 @@ def test_references_region_doi_not_used(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
     report = mr.resolve_metadata_candidates(folder, allow_network=False,
                                            all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    # no header-region DOI → no_candidates (network disabled)
+    # no header-region DOI 鈫?no_candidates (network disabled)
     assert report.decision in ("no_candidates", "rejected")
     # the references DOI must not appear as a chosen candidate doi
     assert not any(c.doi == "10.9999/ref-only" and c.decision == "auto_matched" for c in report.candidates)
 
 
-# ── 14b. local-evidence fallback ──────────────────────────────────────
+# 鈹€鈹€ 14b. local-evidence fallback 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_local_evidence_fallback_auto_matches(tmp_path, monkeypatch):
     # DOI from filename, Crossref returns full metadata, but local md has NO author/year
@@ -637,13 +637,13 @@ def test_local_evidence_fallback_auto_matches(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
     report = mr.resolve_metadata_candidates(folder, allow_network=False,
                                            all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    # local year/author absent → fallback to authoritative completeness → auto_matched
+    # local year/author absent 鈫?fallback to authoritative completeness 鈫?auto_matched
     assert report.decision == "auto_matched", report.reason
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is True and res["status"] == "matched"
 
 
-# ── 15/16/17. CLI three-tier write semantics ──────────────────────────
+# 鈹€鈹€ 15/16/17. CLI three-tier write semantics 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def _run_cli(argv: list[str]) -> int:
     saved = sys.argv
@@ -666,19 +666,19 @@ def test_cli_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
     _patch_crossref_doi(monkeypatch, msg)
     cat = _empty_catalog(tmp_path)
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
-    before = (folder / "000001.metadata.json").read_text(encoding="utf-8")
+    before = (folder / "0000000000000001.metadata.json").read_text(encoding="utf-8")
 
     rc = _run_cli([
-        "resolve_paper_raw_metadata.py", "--source-id", "000001",
+        "resolve_paper_raw_metadata.py", "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
         "--all-catalog", str(cat), "--papers-dir", str(tmp_path / "papers"),
     ])
     assert rc == 0
     # nothing written
-    assert not (folder / "000001.metadata.candidates.json").exists()
-    assert not (folder / "000001.metadata.resolve_report.json").exists()
+    assert not (folder / "0000000000000001.metadata.candidates.json").exists()
+    assert not (folder / "0000000000000001.metadata.resolve_report.json").exists()
     assert not (folder / ".import_status.json").exists()
-    assert (folder / "000001.metadata.json").read_text(encoding="utf-8") == before
+    assert (folder / "0000000000000001.metadata.json").read_text(encoding="utf-8") == before
     out = capsys.readouterr().out
     assert "auto_matched" in out
 
@@ -692,25 +692,25 @@ def test_cli_write_candidates_no_apply(tmp_path, monkeypatch):
     _patch_crossref_doi(monkeypatch, msg)
     cat = _empty_catalog(tmp_path)
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
-    before = (folder / "000001.metadata.json").read_text(encoding="utf-8")
+    before = (folder / "0000000000000001.metadata.json").read_text(encoding="utf-8")
 
     rc = _run_cli([
-        "resolve_paper_raw_metadata.py", "--source-id", "000001",
+        "resolve_paper_raw_metadata.py", "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
         "--all-catalog", str(cat), "--papers-dir", str(tmp_path / "papers"),
         "--write-candidates",
     ])
     assert rc == 0
-    assert (folder / "000001.metadata.candidates.json").exists()
-    assert (folder / "000001.metadata.resolve_report.json").exists()
-    patch_path = folder / "000001.metadata.patch.json"
+    assert (folder / "0000000000000001.metadata.candidates.json").exists()
+    assert (folder / "0000000000000001.metadata.resolve_report.json").exists()
+    patch_path = folder / "0000000000000001.metadata.patch.json"
     assert patch_path.exists()
     patch = json.loads(patch_path.read_text(encoding="utf-8"))
     assert patch["identifiers"]["doi"] == "10.5194/tc-8-395-2014"
     assert "metadata_match" not in patch
     assert (folder / ".import_status.json").exists()
     # metadata.json unchanged
-    assert (folder / "000001.metadata.json").read_text(encoding="utf-8") == before
+    assert (folder / "0000000000000001.metadata.json").read_text(encoding="utf-8") == before
 
 
 def test_cli_default_no_network_no_call(tmp_path, monkeypatch):
@@ -726,25 +726,25 @@ def test_cli_default_no_network_no_call(tmp_path, monkeypatch):
         raise AssertionError("network call attempted with default no-network")
     monkeypatch.setattr(rc.requests, "get", _boom)
     rc2 = _run_cli([
-        "resolve_paper_raw_metadata.py", "--source-id", "000001",
+        "resolve_paper_raw_metadata.py", "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
         "--all-catalog", str(cat), "--papers-dir", str(tmp_path / "papers"),
         "--write-candidates",
     ])
     assert rc2 == 0
-    assert not (folder / "000001.metadata.patch.json").exists()
+    assert not (folder / "0000000000000001.metadata.patch.json").exists()
 
 
-# ── 18. conservative author split ─────────────────────────────────────
+# 鈹€鈹€ 18. conservative author split 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_conservative_author_split_cjk():
-    fam, giv = mr._split_name("王正师")
-    assert fam == "" and giv == ""  # CJK → not split
+    fam, giv = mr._split_name("\u738b\u6b63\u5e05")
+    assert fam == "" and giv == ""  # CJK 鈫?not split
 
 
 def test_conservative_author_split_single_token():
     fam, giv = mr._split_name("NASA")
-    assert fam == "" and giv == ""  # single token / institution-like → not split
+    assert fam == "" and giv == ""  # single token / institution-like 鈫?not split
 
 
 def test_conservative_author_split_normal():
@@ -753,6 +753,7 @@ def test_conservative_author_split_normal():
 
 
 def test_conservative_author_split_initial_last():
-    # "Vionnet V" is ambiguous (Family Initial citation form) → refuse to split
+    # "Vionnet V" is ambiguous (Family Initial citation form) 鈫?refuse to split
     fam, giv = mr._split_name("Vionnet V")
     assert fam == "" and giv == ""
+

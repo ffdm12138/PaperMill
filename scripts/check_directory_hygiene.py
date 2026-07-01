@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR, PROJECT_ROOT
 from src.path_utils import normalize_repo_path
+from src.services.ingest_ids import PAPER_NUMBER_RE
 
 
 WRITE_JOBS_DIR = PROJECT_ROOT / "write" / "jobs"
@@ -106,7 +107,7 @@ def check_directory_hygiene(
     # paper_raw metadata-resolution hygiene (warnings only; never delete).
     if paper_raw_dir.exists():
         for folder in sorted(p for p in paper_raw_dir.iterdir()
-                             if p.is_dir() and p.name.isdigit() and len(p.name) == 6):
+                             if p.is_dir() and PAPER_NUMBER_RE.match(p.name)):
             source_id = folder.name
             meta_path = _metadata_file(folder)
             if not meta_path:

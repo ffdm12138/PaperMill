@@ -8,8 +8,11 @@ import pytest
 
 from src.services.v2_library import empty_catalog, empty_metadata
 
+PN1 = "0000000000000001"
+PN2 = "0000000000000002"
 
-def _matched_raw(folder: Path, source_id: str = "000001") -> Path:
+
+def _matched_raw(folder: Path, source_id: str = PN1) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     metadata = empty_metadata(source_id)
     metadata["title"]["original"] = "Trusted Original"
@@ -65,7 +68,7 @@ def _run_cli(argv: list[str]) -> int:
 
 def test_dry_run_writes_curation_prompt(tmp_path, monkeypatch):
     raw = tmp_path / "paper_raw"
-    folder = _matched_raw(raw / "000001")
+    folder = _matched_raw(raw / PN1)
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
     rc = _run_cli([
         "curate_paper_raw.py",
@@ -84,11 +87,11 @@ def test_dry_run_writes_curation_prompt(tmp_path, monkeypatch):
 
 def test_apply_merges_only_empty_and_keeps_source_folder(tmp_path, monkeypatch):
     raw = tmp_path / "paper_raw"
-    folder = _matched_raw(raw / "000001")
+    folder = _matched_raw(raw / PN1)
     catalog = _fill_chinese_catalog(empty_catalog())
-    catalog_path = folder / "000001.catalog.json"
+    catalog_path = folder / f"{PN1}.catalog.json"
     catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
-    patch = empty_metadata("000001")
+    patch = empty_metadata(PN1)
     patch["abstract"] = "new abstract"
     patch["title"]["original"] = "Overwrite Attempt"
     patch_path = tmp_path / "patch.metadata.json"
@@ -105,10 +108,10 @@ def test_apply_merges_only_empty_and_keeps_source_folder(tmp_path, monkeypatch):
     assert rc == 0
     # curate must NOT rename the folder or files; formalize does that.
     assert folder.exists()
-    assert (folder / "000001.metadata.json").exists()
-    assert (folder / "000001.catalog.json").exists()
+    assert (folder / f"{PN1}.metadata.json").exists()
+    assert (folder / f"{PN1}.catalog.json").exists()
     assert not (raw / "2024_Wang_可信论文").exists()
-    merged = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    merged = json.loads((folder / f"{PN1}.metadata.json").read_text(encoding="utf-8"))
     assert merged["title"]["original"] == "Trusted Original"  # not overwritten
     assert merged["abstract"] == "new abstract"  # empty field filled
     status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
@@ -118,8 +121,8 @@ def test_apply_merges_only_empty_and_keeps_source_folder(tmp_path, monkeypatch):
 
 def test_apply_rejects_unmatched_metadata(tmp_path, monkeypatch):
     raw = tmp_path / "paper_raw"
-    folder = _matched_raw(raw / "000001")
-    meta_path = folder / "000001.metadata.json"
+    folder = _matched_raw(raw / PN1)
+    meta_path = folder / f"{PN1}.metadata.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["metadata_match"]["status"] = "unmatched"
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
@@ -131,8 +134,8 @@ def test_apply_rejects_unmatched_metadata(tmp_path, monkeypatch):
 
 def test_pdf_metadata_without_doi_cannot_curate(tmp_path, monkeypatch):
     raw = tmp_path / "paper_raw"
-    folder = _matched_raw(raw / "000001")
-    meta_path = folder / "000001.metadata.json"
+    folder = _matched_raw(raw / PN1)
+    meta_path = folder / f"{PN1}.metadata.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["metadata_match"]["status"] = "manual_confirmed"
     meta["identifiers"]["doi"] = ""
@@ -149,19 +152,19 @@ def test_pdf_metadata_without_doi_cannot_curate(tmp_path, monkeypatch):
 def test_all_ready_apply_only_processes_curated(tmp_path, monkeypatch):
     raw = tmp_path / "paper_raw"
     # folder A has a curated catalog output
-    folder_a = _matched_raw(raw / "000001")
-    meta_a = json.loads((folder_a / "000001.metadata.json").read_text(encoding="utf-8"))
+    folder_a = _matched_raw(raw / PN1)
+    meta_a = json.loads((folder_a / f"{PN1}.metadata.json").read_text(encoding="utf-8"))
     meta_a["title"]["short_zh"] = "甲论文"
-    (folder_a / "000001.metadata.json").write_text(json.dumps(meta_a), encoding="utf-8")
+    (folder_a / f"{PN1}.metadata.json").write_text(json.dumps(meta_a), encoding="utf-8")
     catalog = _fill_chinese_catalog(empty_catalog(), "甲论文")
-    (folder_a / "000001.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    (folder_a / f"{PN1}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
     # folder B is ready (metadata+md+images) but has NO curated catalog output
-    _matched_raw(raw / "000002")
+    _matched_raw(raw / PN2, PN2)
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
     rc = _run_cli(["curate_paper_raw.py", "--all-ready", "--paper-raw-dir", str(raw), "--apply"])
-    # curate does NOT rename; folder A stays 000001 with catalog_ready status, B skipped
+    # curate does NOT rename; folder A stays PN1 with catalog_ready status, B skipped
     assert folder_a.exists()
-    assert (raw / "000002").exists()  # not processed
+    assert (raw / PN2).exists()  # not processed
     status = json.loads((folder_a / ".import_status.json").read_text(encoding="utf-8"))
     assert status["status"] == "catalog_ready"
     assert rc in (0, 1)
@@ -170,21 +173,21 @@ def test_all_ready_apply_only_processes_curated(tmp_path, monkeypatch):
 def test_all_ready_apply_auto_loads_metadata_patch(tmp_path, monkeypatch):
     """--all-ready --apply must auto-detect <id>.metadata.patch.json alongside catalog."""
     raw = tmp_path / "paper_raw"
-    folder = _matched_raw(raw / "000001")
-    meta_m = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    folder = _matched_raw(raw / PN1)
+    meta_m = json.loads((folder / f"{PN1}.metadata.json").read_text(encoding="utf-8"))
     meta_m["title"]["short_zh"] = "甲论文"
-    (folder / "000001.metadata.json").write_text(json.dumps(meta_m), encoding="utf-8")
+    (folder / f"{PN1}.metadata.json").write_text(json.dumps(meta_m), encoding="utf-8")
     catalog = _fill_chinese_catalog(empty_catalog(), "甲论文")
-    (folder / "000001.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    (folder / f"{PN1}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
     # Write a metadata patch that fills abstract (an empty field)
-    patch = empty_metadata("000001")
+    patch = empty_metadata(PN1)
     patch["abstract"] = "自动加载的摘要"
-    (folder / "000001.metadata.patch.json").write_text(json.dumps(patch), encoding="utf-8")
+    (folder / f"{PN1}.metadata.patch.json").write_text(json.dumps(patch), encoding="utf-8")
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
     rc = _run_cli(["curate_paper_raw.py", "--all-ready", "--paper-raw-dir", str(raw), "--apply"])
-    # curate does NOT rename; folder stays 000001. Patch should be auto-merged.
+    # curate does NOT rename; folder stays PN1. Patch should be auto-merged.
     assert folder.exists()
     assert rc in (0, 1)
     if rc == 0:
-        merged = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+        merged = json.loads((folder / f"{PN1}.metadata.json").read_text(encoding="utf-8"))
         assert merged["abstract"] == "自动加载的摘要", f"patch not auto-merged, abstract={merged.get('abstract')}"

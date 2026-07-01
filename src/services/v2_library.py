@@ -37,15 +37,12 @@ from src.discovery.models import normalize_doi
 from src.file_fingerprint import compute_sha256
 from src.naming import safe_child, sanitize_paper_id, validate_paper_id
 from src.path_utils import normalize_repo_path, resolve_stored_path
+from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.utils.atomic_io import atomic_write_json
 
 
-_TEMP_ID_RE = re.compile(r"^\d{6}$")
-# Public alias (no underscore) for the 6-digit temp source-id pattern. The
-# underscore form is kept for back-compat; new code should use TEMP_SOURCE_ID_RE.
-TEMP_SOURCE_ID_RE = _TEMP_ID_RE
-_PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
+_PAPER_NUMBER_RE = PAPER_NUMBER_RE
 _BAD_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\r\n]+')
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _FORMAL_TRANSIENT_GLOBS = (
@@ -64,10 +61,11 @@ def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def empty_metadata(source_id: str, source_type: str = "manual_pdf") -> dict:
+def empty_metadata(paper_number: str, source_type: str = "manual_pdf") -> dict:
     return {
-        "schema_version": "1.0",
-        "source_id": source_id,
+        "schema_version": "1.1",
+        "paper_number": paper_number if _PAPER_NUMBER_RE.match(str(paper_number or "")) else "",
+        "paper_raw_id": paper_number if _PAPER_NUMBER_RE.match(str(paper_number or "")) else "",
         "source_type": source_type,
         "entry_type": "article",
         "citation_key": None,
@@ -140,7 +138,6 @@ def empty_catalog() -> dict:
         "schema_version": "2.0",
         "paper_number": "",
         "paper_id": "",
-        "source_id": "",
         "asset_refs": {
             "markdown": "",
             "pdf": "",
@@ -317,9 +314,15 @@ def _write_text_atomic(path: Path, text: str) -> None:
 
 def validate_metadata_schema(data: dict) -> list[str]:
     errors: list[str] = []
+    if str(data.get("schema_version") or "") != "1.1":
+        errors.append("metadata.schema_version must be 1.1")
+    legacy_key = "source" + "_id"
+    if legacy_key in data:
+        errors.append("metadata source-id is legacy only and not allowed in schema v1.1")
     required = [
         "schema_version",
-        "source_id",
+        "paper_number",
+        "paper_raw_id",
         "source_type",
         "title",
         "authors",
@@ -338,6 +341,10 @@ def validate_metadata_schema(data: dict) -> list[str]:
     for key in required:
         if key not in data:
             errors.append(f"metadata missing {key}")
+    for key in ("paper_number", "paper_raw_id"):
+        value = str(data.get(key) or "")
+        if not _PAPER_NUMBER_RE.match(value):
+            errors.append(f"metadata.{key} must be 16 digits")
     nested_required = {
         "title": ("original", "translated_zh", "short_zh"),
         "first_author": ("family", "display"),
@@ -742,8 +749,8 @@ def migrate_catalog_to_v2_0(data: dict) -> tuple[dict, list[str]]:
     # provenance
     new["provenance"]["generated_from"] = "mineru_markdown"
     new["provenance"]["notes"] = "migrated from catalog v1.x by migrate_catalog_to_v2_0"
-    # link fields preserved if present (paper_number/paper_id/source_id/asset_refs set by caller/migrator)
-    for k in ("paper_number", "paper_id", "source_id", "asset_refs"):
+    # link fields preserved if present (paper_number/paper_id/asset_refs set by caller/migrator)
+    for k in ("paper_number", "paper_id", "asset_refs"):
         if old.get(k):
             new[k] = old[k]
     return new, removed
@@ -1001,7 +1008,9 @@ def assess_paper_raw_commit_readiness(
         errors.extend(validate_formal_chinese_content(metadata, catalog))
 
     expected_pid = ""
-    final_pid = paper_id or (folder.name if not _TEMP_ID_RE.match(folder.name) else "")
+    folder_is_workspace = bool(_PAPER_NUMBER_RE.match(folder.name))
+    prefix_is_workspace = bool(_PAPER_NUMBER_RE.match(prefix))
+    final_pid = paper_id or (folder.name if not folder_is_workspace else "")
     if metadata and catalog:
         try:
             expected_pid = paper_id_from_metadata_catalog(metadata, catalog)
@@ -1013,9 +1022,9 @@ def assess_paper_raw_commit_readiness(
                 errors.append(f"paper_id mismatch expected={expected_pid} actual={paper_id}")
             if not final_pid:
                 final_pid = expected_pid
-            if not _TEMP_ID_RE.match(folder.name) and folder.name != expected_pid:
+            if not folder_is_workspace and folder.name != expected_pid:
                 errors.append(f"paper_id mismatch expected={expected_pid} actual={folder.name}")
-            if not _TEMP_ID_RE.match(prefix) and prefix != expected_pid:
+            if not prefix_is_workspace and prefix != expected_pid:
                 errors.append(f"file prefix mismatch expected={expected_pid} actual={prefix}")
     elif paper_id:
         final_pid = paper_id
@@ -1050,7 +1059,7 @@ def assess_paper_raw_commit_readiness(
         "status": "ready_for_commit" if ready else _status_from_readiness_errors(errors),
         "errors": errors,
         "warnings": warnings_out,
-        "source_id": str(metadata.get("source_id") or prefix) if isinstance(metadata, dict) else prefix,
+        "paper_raw_id": str(metadata.get("paper_raw_id") or metadata.get("paper_number") or prefix) if isinstance(metadata, dict) else prefix,
         "paper_id": final_pid,
         "expected_paper_id": expected_pid,
         "file_prefix": prefix,
@@ -1063,24 +1072,52 @@ def assess_paper_raw_commit_readiness(
 
 
 class PaperRawAllocator:
-    def __init__(self, paper_raw_dir: str | Path = PAPER_RAW_DIR):
+    def __init__(
+        self,
+        paper_raw_dir: str | Path = PAPER_RAW_DIR,
+        *,
+        ledger_path: str | Path = PAPER_NUMBER_LEDGER_PATH,
+    ):
         self.paper_raw_dir = Path(paper_raw_dir)
+        self.ledger = PaperNumberLedger(ledger_path)
 
     @property
     def _lock_path(self) -> Path:
         return self.paper_raw_dir / ".allocate.lock"
 
     def allocate_id(self) -> str:
+        raise RuntimeError("legacy short-id allocation is legacy only; use allocate_workspace()")
+
+    def allocate_workspace(self, *, planned_paper_id: str = "") -> dict:
+        """Reserve a 16-digit paper_number and create its paper_raw workspace."""
         self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
-            existing = [
-                int(p.name)
-                for p in self.paper_raw_dir.iterdir()
-                if p.is_dir() and _TEMP_ID_RE.match(p.name)
-            ]
-            source_id = f"{(max(existing) if existing else 0) + 1:06d}"
-            safe_child(self.paper_raw_dir, source_id).mkdir(parents=False, exist_ok=False)
-            return source_id
+        with FileLock(str(self.ledger._lock_path)):
+            data = self.ledger.load()
+            number = f"{int(data.get('max_number') or '0') + 1:016d}"
+            folder = safe_child(self.paper_raw_dir, number)
+            if folder.exists():
+                raise FileExistsError(f"paper_raw workspace already exists: {folder}")
+            folder.mkdir(parents=False, exist_ok=False)
+            data["max_number"] = number
+            data.setdefault("items", {})[number] = {
+                "folder_name": folder.name,
+                "folder_path": normalize_repo_path(folder),
+                "planned_paper_id": planned_paper_id,
+                "state": "reserved",
+                "created_at": now_iso(),
+            }
+            self.ledger._save_unlocked(data)
+            atomic_write_json(folder / f"{number}.paper.number", {
+                "paper_number": number,
+                "folder_name": folder.name,
+                "state": "reserved",
+                "planned_paper_id": planned_paper_id,
+            }, indent=2)
+            return {
+                "paper_number": number,
+                "paper_raw_id": number,
+                "folder": str(folder),
+            }
 
     def allocate_from_pdf(
         self,
@@ -1095,15 +1132,18 @@ class PaperRawAllocator:
             raise FileNotFoundError(f"PDF not found: {source_pdf}")
         original_sha = compute_sha256(source_pdf)
         original_size = source_pdf.stat().st_size
-        source_id = self.allocate_id()
-        folder = safe_child(self.paper_raw_dir, source_id)
+        workspace = self.allocate_workspace()
+        source_id = workspace["paper_number"]
+        folder = Path(workspace["folder"])
         dest_pdf = folder / f"{source_id}.pdf"
         if move:
             shutil.move(str(source_pdf), dest_pdf)
         else:
             shutil.copy2(source_pdf, dest_pdf)
         data = metadata or empty_metadata(source_id, source_type=source_type)
-        data["source_id"] = source_id
+        data["paper_number"] = source_id
+        data["paper_raw_id"] = source_id
+        data["schema_version"] = "1.1"
         data["source_type"] = source_type
         data.setdefault("source", {})["kind"] = source_type
         data["pdf"] = {
@@ -1114,9 +1154,11 @@ class PaperRawAllocator:
         }
         atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
         atomic_write_json(folder / "stage_manifest.json", {
-            "source_id": source_id,
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
             "operation": "move" if move else "copy",
             "action": "move" if move else "copy",
+            "source_type": source_type,
             "original_path": str(source_pdf),
             "original_sha256": original_sha,
             "original_file_size": original_size,
@@ -1125,31 +1167,51 @@ class PaperRawAllocator:
             "staged_file_size": data["pdf"]["file_size"],
             "created_at": now_iso(),
         }, indent=2)
-        return {"source_id": source_id, "folder": str(folder), "pdf": str(dest_pdf)}
+        atomic_write_json(folder / ".import_status.json", {
+            "status": "ready_for_convert",
+            "reason": "PDF staged into paper_raw workspace",
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
+            "pdf_sha256": data["pdf"]["sha256"],
+            "created_at": now_iso(),
+        }, indent=2)
+        return {**workspace, "pdf": str(dest_pdf)}
 
     def allocate_metadata(self, metadata: dict | None = None, *, source_type: str = "network_search") -> dict:
-        source_id = self.allocate_id()
-        folder = safe_child(self.paper_raw_dir, source_id)
+        workspace = self.allocate_workspace()
+        source_id = workspace["paper_number"]
+        folder = Path(workspace["folder"])
         data = metadata or empty_metadata(source_id, source_type=source_type)
-        data["source_id"] = source_id
+        data["paper_number"] = source_id
+        data["paper_raw_id"] = source_id
+        data["schema_version"] = "1.1"
         data["source_type"] = source_type
         atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
-        return {"source_id": source_id, "folder": str(folder)}
+        atomic_write_json(folder / ".import_status.json", {
+            "status": "staged_metadata",
+            "reason": "metadata staged into paper_raw workspace",
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
+            "created_at": now_iso(),
+        }, indent=2)
+        return workspace
 
     def attach_pdf(self, source_id: str, source_pdf: str | Path, *, move: bool = False) -> dict:
-        if not _TEMP_ID_RE.match(source_id):
-            raise ValueError(f"invalid paper_raw source id: {source_id}")
-        folder = safe_child(self.paper_raw_dir, source_id)
+        paper_number = validate_paper_raw_id(source_id)
+        folder = safe_child(self.paper_raw_dir, paper_number)
         if not folder.is_dir():
             raise FileNotFoundError(f"paper_raw folder not found: {folder}")
         source_pdf = Path(source_pdf)
-        dest_pdf = folder / f"{source_id}.pdf"
+        dest_pdf = folder / f"{paper_number}.pdf"
         if move:
             shutil.move(str(source_pdf), dest_pdf)
         else:
             shutil.copy2(source_pdf, dest_pdf)
-        meta_path = folder / f"{source_id}.metadata.json"
-        data = _read_json(meta_path, empty_metadata(source_id))
+        meta_path = folder / f"{paper_number}.metadata.json"
+        data = _read_json(meta_path, empty_metadata(paper_number))
+        data["paper_number"] = paper_number
+        data["paper_raw_id"] = paper_number
+        data["schema_version"] = "1.1"
         data["pdf"] = {
             "status": "present",
             "path": normalize_repo_path(dest_pdf),
@@ -1157,7 +1219,7 @@ class PaperRawAllocator:
             "file_size": dest_pdf.stat().st_size,
         }
         atomic_write_json(meta_path, data, indent=2)
-        return {"source_id": source_id, "pdf": str(dest_pdf)}
+        return {"paper_number": paper_number, "paper_raw_id": paper_number, "pdf": str(dest_pdf)}
 
 
 class PaperRawConverter:
@@ -1175,17 +1237,16 @@ class PaperRawConverter:
         value = Path(source_id_or_dir)
         if value.is_dir():
             folder = value
-            source_id = folder.name
+            workspace_id = folder.name
         else:
-            source_id = str(source_id_or_dir)
-            folder = safe_child(self.paper_raw_dir, source_id)
-        if not _TEMP_ID_RE.match(source_id):
-            raise ValueError(f"MinerU v2 input must be data/paper_raw/<000001>: {source_id_or_dir}")
+            workspace_id = str(source_id_or_dir)
+            folder = safe_child(self.paper_raw_dir, workspace_id)
+        validate_paper_raw_id(workspace_id)
         try:
             folder.resolve().relative_to(self.paper_raw_dir.resolve())
         except ValueError:
             raise ValueError(f"MinerU v2 input outside paper_raw: {folder}")
-        return source_id, folder
+        return workspace_id, folder
 
     def _conversion_paths(self, folder: Path, source_id: str) -> dict[str, Path]:
         return {
@@ -1227,7 +1288,7 @@ class PaperRawConverter:
     ) -> dict:
         """Classify the conversion state of a folder by ``file_prefix``.
 
-        Unlike ``inspect_conversion``, this does NOT require a 6-digit source-id
+        Unlike ``inspect_conversion``, this does NOT require a paper_number
         folder name — it inspects ``<file_prefix>.conversion.json`` /
         ``<file_prefix>.md`` / ``images/`` directly, so it works on an already
         formalized ``<paper_id>`` workspace as well as a 6-digit source folder.
@@ -1288,8 +1349,8 @@ class PaperRawConverter:
 
         if md_exists and images_exists:
             result.update({
-                "state": "converted_legacy",
-                "reason": "existing markdown/images present without conversion manifest",
+                "state": "conversion_manifest_missing",
+                "reason": "markdown/images exist but conversion manifest is missing",
             })
             return result
         if target_md.exists() or images_target.exists():
@@ -1347,12 +1408,13 @@ class PaperRawConverter:
             effort=MINERU_EFFORT,
         )
         state = inspection["state"]
-        if skip_existing and not force_reconvert and state in {"converted_current", "converted_legacy"}:
+        if skip_existing and not force_reconvert and state == "converted_current":
             return {
                 "success": True,
                 "skipped": True,
                 "status": "skipped_existing",
-                "source_id": source_id,
+                "paper_number": source_id,
+                "paper_raw_id": source_id,
                 "reason": inspection["reason"],
                 "conversion_state": state,
                 "markdown": inspection["markdown"],
@@ -1363,7 +1425,8 @@ class PaperRawConverter:
             return {
                 "success": False,
                 "status": status,
-                "source_id": source_id,
+                "paper_number": source_id,
+                "paper_raw_id": source_id,
                 "conversion_state": state,
                 "error": f"{inspection['reason']}; pass --force-reconvert to rebuild",
             }
@@ -1380,7 +1443,7 @@ class PaperRawConverter:
             paper_id=source_id,
         )
         if not conv.get("success"):
-            return {**conv, "source_id": source_id}
+            return {**conv, "paper_number": source_id, "paper_raw_id": source_id}
         source_dir = Path(conv["output_dir"])
         md_path = self.cleaner.locate_markdown(
             source_dir,
@@ -1389,7 +1452,7 @@ class PaperRawConverter:
             backend=MINERU_BACKEND,
         )
         if md_path is None:
-            return {"success": False, "source_id": source_id, "error": "MinerU output markdown not found"}
+            return {"success": False, "paper_number": source_id, "paper_raw_id": source_id, "error": "MinerU output markdown not found"}
         text = md_path.read_text(encoding="utf-8").replace("](./images/", "](images/")
         target_md = folder / f"{source_id}.md"
         _write_text_atomic(target_md, text)
@@ -1410,7 +1473,8 @@ class PaperRawConverter:
         manifest = {
             "schema_version": "1.0",
             "status": "converted",
-            "source_id": source_id,
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
             "pdf_sha256": pdf_sha,
             "pdf_file_size": pdf.stat().st_size,
             "markdown_path": f"{source_id}.md",
@@ -1430,14 +1494,16 @@ class PaperRawConverter:
         atomic_write_json(folder / ".import_status.json", {
             "status": "converted",
             "reason": "MinerU conversion completed",
-            "source_id": source_id,
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
             "pdf_sha256": pdf_sha,
             "markdown_sha256": markdown_sha,
             "created_at": now_iso(),
         }, indent=2)
         return {
             "success": True,
-            "source_id": source_id,
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
             "markdown": str(target_md),
             "images_dir": str(images_target),
             "output_dir": str(source_dir),
@@ -1478,7 +1544,7 @@ class PaperCurationService:
             "- catalog 中的自然语言 value 默认使用中文；JSON key 和 schema 枚举值保持英文。\n"
             "- 专业名词、模型名、软件名、数据集名、变量名、公式、单位可保留英文或中英混写。\n"
             "- 不要改写 metadata 书目信息；metadata 保留原始/规范书目事实。\n"
-            "- 不得生成 16 位 paper_number；不得移动或修改 data/papers 正式库；不得入库。\n"
+            "- 不得分配或改写 paper_number；不得移动或修改 data/papers 正式库；不得入库。\n"
             "- 不确定的字段留空，不要编造。\n\n"
             "## 输出文件\n"
             f"在 data/paper_raw/{source_id}/ 下输出：\n"
@@ -1597,8 +1663,9 @@ class PaperCurationService:
         atomic_write_json(folder / ".import_status.json", {
             "status": "catalog_ready",
             "reason": "metadata/catalog validated; run formalize_paper_raw.py next",
-            "source_id": readiness["source_id"],
             "paper_id": final_id,
+            "paper_number": readiness["paper_raw_id"],
+            "paper_raw_id": readiness["paper_raw_id"],
             "pdf_sha256": readiness["pdf_sha256"],
             "markdown_sha256": readiness["markdown_sha256"],
             "warnings": readiness["warnings"],
@@ -1609,7 +1676,8 @@ class PaperCurationService:
             "status": "catalog_ready",
             "paper_id": final_id,
             "folder": str(folder),
-            "source_id": readiness["source_id"],
+            "paper_number": readiness["paper_raw_id"],
+            "paper_raw_id": readiness["paper_raw_id"],
         }
 
 
@@ -1655,42 +1723,6 @@ class PaperNumberLedger:
                 return number
         return None
 
-    def repoint(self, number: str, folder: str | Path) -> str:
-        """Legacy/migration-only. Do not use in ingest-v2.2 formalize/commit/catalog rebuild.
-
-        Re-attach an existing number to a different folder. New code should use
-        ``repoint_reserved`` (formalize rename) or ``deactivate_to_source``
-        (commit rollback). Writes the v2.2 full marker (state/planned_paper_id).
-        """
-        if not _PAPER_NUMBER_RE.match(str(number or "")):
-            raise ValueError(f"invalid paper_number: {number}")
-        folder = Path(folder)
-        with FileLock(str(self._lock_path)):
-            data = self.load()
-            max_number = str(data.get("max_number") or "0000000000000000")
-            if int(number) > int(max_number):
-                data["max_number"] = number
-            existing = data.get("items", {}).get(number) or {}
-            data.setdefault("items", {})[number] = {
-                "folder_name": folder.name,
-                "folder_path": normalize_repo_path(folder),
-                "created_at": existing.get("created_at") or now_iso(),
-                "planned_paper_id": existing.get("planned_paper_id") or "",
-                "state": existing.get("state") or "active",
-                "repointed_at": now_iso(),
-            }
-            self._save_unlocked(data)
-            for marker in folder.glob("*.paper.number"):
-                if marker.name != f"{number}.paper.number":
-                    marker.unlink()
-            atomic_write_json(folder / f"{number}.paper.number", {
-                "paper_number": number,
-                "folder_name": folder.name,
-                "state": existing.get("state") or "active",
-                "planned_paper_id": existing.get("planned_paper_id") or "",
-            }, indent=2)
-            return number
-
     def paper_number_from_marker(self, folder: str | Path) -> str | None:
         """Return the 16-digit number from the folder's ``*.paper.number`` marker, or None."""
         folder = Path(folder)
@@ -1701,6 +1733,14 @@ class PaperNumberLedger:
             if _PAPER_NUMBER_RE.match(candidate):
                 return candidate
         return None
+
+    def peek_next_numbers(self, count: int) -> list[str]:
+        """Return the next ``count`` paper_numbers without mutating the ledger."""
+        if count < 0:
+            raise ValueError("count must be non-negative")
+        data = self.load()
+        start = int(data.get("max_number") or "0") + 1
+        return [f"{start + i:016d}" for i in range(count)]
 
     def reserve_for_paper_raw(self, source_folder: str | Path, planned_paper_id: str = "") -> str:
         """Reserve the next 16-digit paper_number for a paper_raw workspace.
@@ -1733,6 +1773,66 @@ class PaperNumberLedger:
                 "folder_name": source_folder.name,
                 "state": "reserved",
                 "planned_paper_id": planned_paper_id,
+            }, indent=2)
+            return number
+
+    def reserve_specific_for_paper_raw(
+        self,
+        number: str,
+        folder: str | Path,
+        *,
+        planned_paper_id: str = "",
+    ) -> str:
+        """Reserve a specific 16-digit number for a paper_raw workspace.
+
+        This is the formalize-time counterpart to ``reserve_for_paper_raw`` for
+        repair/import flows that must preserve a known number. It never creates
+        an active ledger entry; active numbers and numbers reserved for another
+        folder are rejected.
+        """
+        if not _PAPER_NUMBER_RE.match(str(number or "")):
+            raise ValueError(f"invalid paper_number: {number}")
+        folder = Path(folder)
+        folder_norm = normalize_repo_path(folder)
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            items = data.setdefault("items", {})
+            existing = items.get(number)
+            if existing:
+                state = existing.get("state") or "active"
+                existing_path = existing.get("folder_path") or ""
+                same_folder = (
+                    existing_path == folder_norm
+                    or (not existing_path and existing.get("folder_name") == folder.name)
+                )
+                if state == "active":
+                    raise ValueError(f"paper_number already active: {number}")
+                if state != "reserved":
+                    raise ValueError(f"cannot reserve number {number} in state {state}")
+                if not same_folder:
+                    raise ValueError(f"paper_number already reserved for another folder: {number}")
+                created_at = existing.get("created_at") or now_iso()
+            else:
+                if int(number) > int(str(data.get("max_number") or "0000000000000000")):
+                    data["max_number"] = number
+                created_at = now_iso()
+            planned = planned_paper_id or (existing or {}).get("planned_paper_id") or ""
+            items[number] = {
+                "folder_name": folder.name,
+                "folder_path": folder_norm,
+                "planned_paper_id": planned,
+                "state": "reserved",
+                "created_at": created_at,
+            }
+            self._save_unlocked(data)
+            for marker in folder.glob("*.paper.number"):
+                if marker.name != f"{number}.paper.number":
+                    marker.unlink()
+            atomic_write_json(folder / f"{number}.paper.number", {
+                "paper_number": number,
+                "folder_name": folder.name,
+                "state": "reserved",
+                "planned_paper_id": planned,
             }, indent=2)
             return number
 
@@ -1787,19 +1887,15 @@ class PaperNumberLedger:
         number: str,
         final_folder: str | Path,
         paper_id: str = "",
-        *,
-        allow_adopt_missing: bool = False,
     ) -> str:
         """Flip a reserved number to ``active`` and repoint it at the formal library folder.
 
         Used by ``commit_paper_raw`` after ``os.replace`` installs the formal
         copy. The marker (already copied by copytree) is rewritten with
-        ``state="active"``. By default the number MUST already exist in the
-        ledger as a ``reserved`` entry (formalize reserves before commit); a
-        missing entry raises ``KeyError`` so commit fails+rolls back rather than
-        silently masking a formalize/ledger bug. Pass ``allow_adopt_missing=True``
-        only in legacy/repair/adopt flows that must accept a marker-only folder
-        with no ledger backing.
+        ``state="active"``. The number MUST already exist in the ledger as a
+        ``reserved`` entry (formalize reserves before commit); a missing entry
+        raises ``KeyError`` so commit fails+rolls back rather than silently
+        masking a formalize/ledger bug.
         """
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
@@ -1808,14 +1904,10 @@ class PaperNumberLedger:
             data = self.load()
             items = data.setdefault("items", {})
             if number not in items:
-                if not allow_adopt_missing:
-                    raise KeyError(f"paper_number not in ledger: {number}")
-                # legacy/repair adopt: marker is the voucher, ledger is the index.
-                existing = {}
-            else:
-                existing = items[number] or {}
-            state = existing.get("state") or ("active" if allow_adopt_missing else "reserved")
-            if state not in {"reserved", "active"}:
+                raise KeyError(f"paper_number not in ledger: {number}")
+            existing = items[number] or {}
+            state = existing.get("state") or "reserved"
+            if state != "reserved":
                 raise ValueError(f"cannot activate number {number} in state {state}")
             if int(number) > int(str(data.get("max_number") or "0000000000000000")):
                 data["max_number"] = number
@@ -1864,30 +1956,6 @@ class PaperNumberLedger:
             self._save_unlocked(data)
             return number
 
-    def assign(self, folder: str | Path, *, preserve_number: str | None = None) -> str:
-        folder = Path(folder)
-        if preserve_number:
-            return self.repoint(preserve_number, folder)
-        with FileLock(str(self._lock_path)):
-            data = self.load()
-            existing = self.paper_number_for(folder)
-            if existing:
-                number = existing
-            else:
-                number = f"{int(data.get('max_number') or '0') + 1:016d}"
-                data["max_number"] = number
-                data.setdefault("items", {})[number] = {
-                    "folder_name": folder.name,
-                    "folder_path": normalize_repo_path(folder),
-                    "created_at": now_iso(),
-                }
-                self._save_unlocked(data)
-            for marker in folder.glob("*.paper.number"):
-                if marker.name != f"{number}.paper.number":
-                    marker.unlink()
-            atomic_write_json(folder / f"{number}.paper.number", {"paper_number": number, "folder_name": folder.name}, indent=2)
-            return number
-
     def validate(self, papers_dir: str | Path = PAPERS_DIR) -> tuple[list[str], list[str]]:
         errors: list[str] = []
         warnings: list[str] = []
@@ -1927,7 +1995,7 @@ class AllCatalogBuilder:
         """Build all.catalog (content-only, no metadata) + paper_index.json.
 
         Each all.catalog entry carries ONLY catalog content + link fields
-        (paper_number/paper_id/source_id/asset_refs). Bibliographic facts
+        (paper_number/paper_id/asset_refs). Bibliographic facts
         (DOI/authors/year/journal) are NOT included — consumers read them
         from data/papers/<paper_number>/...metadata.json via paper_index.json.
         """
@@ -1977,12 +2045,10 @@ class AllCatalogBuilder:
                 asset_refs["pdf"] = normalize_repo_path(pdf_path)
                 asset_refs["images_dir"] = normalize_repo_path(images_dir)
                 asset_refs.setdefault("figures", [])
-                source_id = str((catalog.get("source_id") or "") if isinstance(catalog, dict) else "")
                 # content-only entry: catalog content + link fields, NO metadata
                 entry = {
                     "paper_number": number,
                     "paper_id": pid,
-                    "source_id": source_id,
                     "asset_refs": asset_refs,
                     "content_identity": catalog.get("content_identity") or {},
                     "classification": catalog.get("classification") or {},
@@ -2018,15 +2084,12 @@ class AllCatalogBuilder:
         return data
 
     def build_readonly_snapshot(self) -> dict:
-        """Build an in-memory all.catalog snapshot WITHOUT any disk side effects.
+        """Build a tolerant in-memory catalog snapshot without writing anything.
 
-        Unlike ``build(write=False)`` (which still backfills per-paper catalog
-        links when ``write`` is False — wait, it doesn't, but it does surface
-        missing-number errors), this never touches the ledger, never writes
-        marker files, never backfills per-paper catalogs, and silently skips
-        folders that lack a paper_number / valid catalog instead of recording
-        errors. Used by ``Catalog.load`` and the read-only server endpoints so a
-        missing ``all.catalog.json`` does not silently mutate the ledger.
+        This method is used by read-only API fallbacks when all.catalog is
+        missing. It scans formal paper folders, skips invalid or unnumbered
+        folders, and never writes ledger entries, paper.number markers,
+        per-paper catalog files, all.catalog, or paper_index.
         """
         papers: list[dict] = []
         if not self.papers_dir.exists():
@@ -2057,11 +2120,9 @@ class AllCatalogBuilder:
             asset_refs["pdf"] = normalize_repo_path(pdf_path)
             asset_refs["images_dir"] = normalize_repo_path(images_dir)
             asset_refs.setdefault("figures", [])
-            source_id = str((catalog.get("source_id") or "") if isinstance(catalog, dict) else "")
             papers.append({
                 "paper_number": number,
                 "paper_id": pid,
-                "source_id": source_id,
                 "asset_refs": asset_refs,
                 "content_identity": catalog.get("content_identity") or {},
                 "classification": catalog.get("classification") or {},
@@ -2137,7 +2198,8 @@ def write_conversion_manifest_for_existing_assets(folder: str | Path, file_prefi
     manifest = {
         "schema_version": "1.0",
         "status": "converted",
-        "source_id": file_prefix,
+        "paper_number": file_prefix if _PAPER_NUMBER_RE.match(str(file_prefix or "")) else "",
+        "paper_raw_id": file_prefix if _PAPER_NUMBER_RE.match(str(file_prefix or "")) else "",
         "pdf_sha256": compute_sha256(pdf_path),
         "pdf_file_size": pdf_path.stat().st_size,
         "markdown_path": f"{file_prefix}.md",
@@ -2207,8 +2269,8 @@ class V2PaperCommitService:
         src = Path(paper_raw_dir)
         pid = paper_id or src.name
         validate_paper_id(pid)
-        if _TEMP_ID_RE.match(pid):
-            raise ValueError("formal commit requires a formalized <paper_id> folder, not a 6-digit paper_raw source id")
+        if _PAPER_NUMBER_RE.match(pid):
+            raise ValueError("formal commit requires a formalized <paper_id> folder, not an unformalized paper_raw workspace")
 
         # GATE: must be a formalized paper_raw (formalize_paper_raw output).
         formalization_path = src / f"{pid}.formalization.json"

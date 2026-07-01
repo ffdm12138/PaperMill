@@ -1,4 +1,4 @@
-"""Stage root data/raw/*.pdf files into data/paper_raw/<000001>/."""
+"""Stage root data/raw/*.pdf files into 16-digit paper_raw workspaces."""
 from __future__ import annotations
 
 import argparse
@@ -10,9 +10,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
-from config.settings import PAPER_RAW_DIR, RAW_DIR
+from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, RAW_DIR
 from src.file_fingerprint import compute_sha256
-from src.services.v2_library import PaperRawAllocator
+from src.services.v2_library import PaperNumberLedger, PaperRawAllocator
 
 
 def _is_pdf(path: Path) -> bool:
@@ -22,20 +22,15 @@ def _is_pdf(path: Path) -> bool:
         return False
 
 
-def _next_ids(paper_raw_dir: Path, count: int) -> list[str]:
-    existing = [
-        int(p.name)
-        for p in paper_raw_dir.iterdir()
-        if p.is_dir() and p.name.isdigit() and len(p.name) == 6
-    ] if paper_raw_dir.exists() else []
-    start = (max(existing) if existing else 0) + 1
-    return [f"{start + i:06d}" for i in range(count)]
+def _planned_paper_numbers(ledger_path: Path, count: int) -> list[str]:
+    return PaperNumberLedger(ledger_path).peek_next_numbers(count)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Stage data/raw/*.pdf into v2 paper_raw workspaces.")
     parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
+    parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
     parser.add_argument("--copy", action="store_true", help="copy PDFs into paper_raw (default)")
     parser.add_argument("--move", action="store_true", help="move PDFs into paper_raw")
     parser.add_argument("--apply", action="store_true", help="write changes; default is dry-run")
@@ -45,9 +40,9 @@ def main() -> int:
 
     write = args.apply and not args.dry_run
     pdfs = sorted(p for p in args.raw_dir.glob("*.pdf") if p.is_file())
-    ids = _next_ids(args.paper_raw_dir, len(pdfs))
+    ids = _planned_paper_numbers(args.ledger_path, len(pdfs))
     report: list[dict] = []
-    allocator = PaperRawAllocator(args.paper_raw_dir)
+    allocator = PaperRawAllocator(args.paper_raw_dir, ledger_path=args.ledger_path)
     if args.copy and args.move:
         parser.error("--copy and --move are mutually exclusive")
     move = bool(args.move)
@@ -68,7 +63,8 @@ def main() -> int:
     for pdf, planned_id in zip(pdfs, ids):
         item = {
             "source_pdf": str(pdf),
-            "planned_source_id": planned_id,
+            "planned_paper_number": planned_id,
+            "planned_paper_raw_id": planned_id,
             "operation": operation,
             "staging_mode": operation,
             "move": move,

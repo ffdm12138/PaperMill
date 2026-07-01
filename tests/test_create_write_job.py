@@ -26,7 +26,6 @@ def _catalog(idx: int, *, topic: str = "blowing snow") -> dict:
         "schema_version": "2.0",
         "paper_number": f"{idx:016d}",
         "paper_id": f"2026_author{idx}_writer_paper_{idx}",
-        "source_id": "",
         "asset_refs": {"markdown": "", "pdf": "", "images_dir": "", "figures": []},
         "content_identity": {"content_title": f"Writer Paper {idx}"},
         "classification": {

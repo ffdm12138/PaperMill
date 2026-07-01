@@ -1,4 +1,4 @@
-import json
+﻿import json
 import sys
 from pathlib import Path
 
@@ -27,13 +27,13 @@ def test_directory_hygiene_reports_warnings_without_deleting_files(tmp_path):
             {"paper_number": "0000000000000001", "paper_id": "missing_folder"},
         ]
     })
-    _write_json(paper_raw_dir / "000001" / "000001.metadata.json", {"identifiers": {"doi": "10.1/duplicate"}})
+    _write_json(paper_raw_dir / "0000000000000001" / "0000000000000001.metadata.json", {"identifiers": {"doi": "10.1/duplicate"}})
 
     job = write_jobs_dir / "job"
     (job / "tex").mkdir(parents=True)
-    (job / "tex" / "main.tex").write_text("% data/paper_raw/000001\n", encoding="utf-8")
+    (job / "tex" / "main.tex").write_text("% data/paper_raw/0000000000000001\n", encoding="utf-8")
     _write_json(job / "selected_catalog.json", {
-        "papers": [{"source_dir": "data/paper_raw/000001", "paper_number": "0000000000000001"}]
+        "papers": [{"source_dir": "data/paper_raw/0000000000000001", "paper_number": "0000000000000001"}]
     })
 
     report = check_directory_hygiene(
@@ -58,15 +58,15 @@ def _hygiene_with_paper_raw(tmp_path, paper_raw_meta: dict, *, md: bool = False,
                             import_status: str | None = None):
     paper_raw_dir = tmp_path / "data" / "paper_raw"
     all_catalog = tmp_path / "data" / "catalog" / "all.catalog.json"
-    folder = paper_raw_dir / "000001"
+    folder = paper_raw_dir / "0000000000000001"
     folder.mkdir(parents=True)
-    _write_json(folder / "000001.metadata.json", paper_raw_meta)
+    _write_json(folder / "0000000000000001.metadata.json", paper_raw_meta)
     if md:
-        (folder / "000001.md").write_text("# title", encoding="utf-8")
+        (folder / "0000000000000001.md").write_text("# title", encoding="utf-8")
     if candidates:
-        _write_json(folder / "000001.metadata.candidates.json", {"candidates": []})
+        _write_json(folder / "0000000000000001.metadata.candidates.json", {"candidates": []})
     if resolve_report:
-        _write_json(folder / "000001.metadata.resolve_report.json", {"decision": "manual_review"})
+        _write_json(folder / "0000000000000001.metadata.resolve_report.json", {"decision": "manual_review"})
     if import_status is not None:
         _write_json(folder / ".import_status.json", {"status": import_status})
     _write_json(all_catalog, {"papers": []})
@@ -86,7 +86,7 @@ def test_hygiene_warns_md_present_but_unmatched(tmp_path):
     assert report["valid"] is True
     assert any("has markdown but metadata_match.status is unmatched" in w for w in report["warnings"])
     # no files deleted
-    assert ((tmp_path / "data" / "paper_raw" / "000001" / "000001.md")).exists()
+    assert ((tmp_path / "data" / "paper_raw" / "0000000000000001" / "0000000000000001.md")).exists()
 
 
 def test_hygiene_warns_unresolved_candidates(tmp_path):
@@ -127,5 +127,5 @@ def test_hygiene_warns_stale_write_job_dir(tmp_path):
 
     assert report["valid"] is True
     assert any("stale write runtime artifact present" in w for w in report["warnings"])
-    # 不删除
-    assert (legacy_job / "tex" / "main.tex").exists()
+    # 涓嶅垹闄?    assert (legacy_job / "tex" / "main.tex").exists()
+
