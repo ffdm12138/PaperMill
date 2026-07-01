@@ -1,4 +1,11 @@
-"""Commit curated v2 paper_raw folders into data/papers and rebuild all.catalog."""
+"""Commit formalized v2 paper_raw folders into data/papers (transactional install).
+
+commit only accepts folders already formalized by formalize_paper_raw.py:
+``.import_status.json status=ready_for_commit``, folder named <paper_id>,
+``<paper_id>.formalization.json`` + ``<16-digit>.paper.number`` marker
+present. commit does final validation + atomic install + all.catalog rebuild;
+it never generates paper_id / paper_number / catalog links.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,14 +16,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import PAPER_RAW_DIR
-from src.services.v2_library import V2PaperCommitService
+from src.services.ingest_state import READY_FOR_COMMIT, read_import_status
+from src.services.v2_library import PaperNumberLedger, V2PaperCommitService
 
 
 def _ready_dirs(root: Path) -> list[Path]:
     out = []
+    ledger = PaperNumberLedger()
     for folder in sorted(p for p in root.iterdir() if p.is_dir()):
         name = folder.name
         if name.isdigit() and len(name) == 6:
+            continue  # not yet formalized
+        if read_import_status(folder).get("status") != READY_FOR_COMMIT:
+            continue
+        # formalize outputs: formalization.json + paper.number marker + 4 assets + images
+        if not (folder / f"{name}.formalization.json").exists():
+            continue
+        if ledger.paper_number_from_marker(folder) is None:
             continue
         if all((folder / f"{name}.{suffix}").exists() for suffix in ("metadata.json", "catalog.json", "md", "pdf")) and (folder / "images").is_dir():
             out.append(folder)

@@ -153,7 +153,11 @@ class PaperRawFormalizationService:
                 warnings=readiness["warnings"],
                 extra={"readiness_status": readiness["status"], "paper_id": readiness["paper_id"]},
             )
-            return {"success": False, "status": FORMALIZE_FAILED, "errors": errors, "readiness_status": readiness["status"]}
+            # Return the specific readiness status (metadata_incomplete /
+            # catalog_invalid / paper_id_mismatch / assets_incomplete / not_ready)
+            # so callers can branch on the precise failure; .import_status.json
+            # is recorded as formalize_failed with readiness_status in extra.
+            return {"success": False, "status": readiness["status"], "errors": errors, "readiness_status": readiness["status"]}
 
         pid = readiness["paper_id"]
         validate_paper_id(pid)

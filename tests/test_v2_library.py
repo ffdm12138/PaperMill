@@ -62,11 +62,38 @@ def _curated_raw(root: Path, pid: str = "2024_wang_测试论文") -> Path:
         "usefulness_for_user": "测试写作用途",
     })
     catalog["content_notes"]["short_summary"] = "测试论文摘要"
+    catalog["paper_id"] = pid
+    catalog["paper_number"] = "0000000000000001"
+    catalog["asset_refs"] = {
+        "markdown": f"{pid}.md",
+        "pdf": f"{pid}.pdf",
+        "metadata": f"{pid}.metadata.json",
+        "catalog": f"{pid}.catalog.json",
+        "images_dir": "images/",
+        "figures": [],
+    }
     (folder / f"{pid}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (folder / f"{pid}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
     (folder / f"{pid}.md").write_text("# Test Paper", encoding="utf-8")
     (folder / f"{pid}.pdf").write_bytes(b"%PDF")
     (folder / "images").mkdir()
+    # formalize_paper_raw outputs (commit now requires these):
+    (folder / "0000000000000001.paper.number").write_text(
+        json.dumps({"paper_number": "0000000000000001", "folder_name": pid, "state": "reserved"}), encoding="utf-8"
+    )
+    (folder / f"{pid}.formalization.json").write_text(
+        json.dumps({"paper_id": pid, "paper_number": "0000000000000001", "source_id": pid,
+                    "pdf_sha256": "", "markdown_sha256": "", "ledger_state": "reserved",
+                    "warnings": [], "formalized_at": "2026-01-01T00:00:00"}),
+        encoding="utf-8",
+    )
+    (folder / ".import_status.json").write_text(
+        json.dumps({"status": "ready_for_commit", "reason": "formalized",
+                    "paper_id": pid, "paper_number": "0000000000000001",
+                    "source_id": pid, "errors": [], "warnings": [],
+                    "created_at": "2026-01-01T00:00:00"}),
+        encoding="utf-8",
+    )
     return folder
 
 
@@ -182,14 +209,27 @@ def test_formal_commit_requires_chinese_short_title(tmp_path):
     assert any("must contain Chinese" in err for err in result["errors"])
 
 
-def test_commit_can_preserve_repair_paper_number(tmp_path):
+def test_commit_activates_preserved_paper_number_from_formalize(tmp_path):
+    # preserve_paper_number is now a formalize concern; commit just activates
+    # whatever marker formalize wrote.
     raw_folder = _curated_raw(tmp_path)
+    # rewrite the marker/formalization to a preserved number, as formalize
+    # --preserve-paper-number=0000000000000007 would have done.
+    pid = "2024_wang_测试论文"
+    for p in raw_folder.glob("*.paper.number"):
+        p.unlink()
+    (raw_folder / "0000000000000007.paper.number").write_text(
+        json.dumps({"paper_number": "0000000000000007", "folder_name": pid, "state": "reserved"}), encoding="utf-8"
+    )
+    form = json.loads((raw_folder / f"{pid}.formalization.json").read_text(encoding="utf-8"))
+    form["paper_number"] = "0000000000000007"
+    (raw_folder / f"{pid}.formalization.json").write_text(json.dumps(form), encoding="utf-8")
 
     result = V2PaperCommitService(
         papers_dir=tmp_path / "papers",
         all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
         ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
-    ).commit_paper_raw(raw_folder, preserve_paper_number="0000000000000007")
+    ).commit_paper_raw(raw_folder)
 
     paper_dir = tmp_path / "papers" / "2024_wang_测试论文"
     ledger = json.loads((tmp_path / "catalog" / "paper_number_ledger.json").read_text(encoding="utf-8"))
@@ -199,7 +239,7 @@ def test_commit_can_preserve_repair_paper_number(tmp_path):
     assert ledger["max_number"] == "0000000000000007"
 
 
-def test_commit_postcheck_failure_keeps_raw_and_final(tmp_path, monkeypatch):
+def test_commit_postcheck_failure_rolls_back_final(tmp_path, monkeypatch):
     raw_folder = _curated_raw(tmp_path, "2024_wang_后置检查")
     papers = tmp_path / "papers"
 
@@ -214,12 +254,11 @@ def test_commit_postcheck_failure_keeps_raw_and_final(tmp_path, monkeypatch):
     ).commit_paper_raw(raw_folder)
 
     final = papers / "2024_wang_后置检查"
-    assert result["status"] == "commit_postcheck_failed"
-    assert raw_folder.exists()
-    assert final.exists()
-    assert (final / "0000000000000001.paper.number").exists()
+    assert result["status"] == "commit_failed"
+    assert raw_folder.exists()  # paper_raw NOT deleted
+    assert not final.exists()  # formal library NOT polluted (rollback)
     status = json.loads((raw_folder / ".import_status.json").read_text(encoding="utf-8"))
-    assert status["status"] == "commit_postcheck_failed"
+    assert status["status"] == "commit_failed"
 
 
 def test_all_catalog_rebuild_drops_deleted_folders_without_reusing_number(tmp_path):
@@ -671,12 +710,18 @@ def test_ledger_activate_reserved_flips_state_and_repoints(tmp_path: Path):
     assert marker["state"] == "active"
 
 
-def test_ledger_activate_unknown_number_raises(tmp_path: Path):
+def test_ledger_activate_adopts_marker_only_folder(tmp_path: Path):
+    # A marker-bearing folder with no ledger entry (legacy/test fixture) is
+    # adopted as active by activate_reserved — the marker is the voucher.
     ledger = _ledger(tmp_path)
     final = tmp_path / "papers" / "2024_Wang_x"
     final.mkdir(parents=True)
-    with pytest.raises(KeyError):
-        ledger.activate_reserved("0000000000000009", final)
+    (final / "0000000000000009.paper.number").write_text("{}", encoding="utf-8")
+    ledger.activate_reserved("0000000000000009", final, paper_id="2024_Wang_x")
+    item = ledger.load()["items"]["0000000000000009"]
+    assert item["state"] == "active"
+    assert item["folder_name"] == "2024_Wang_x"
+    assert ledger.load()["max_number"] == "0000000000000009"
 
 
 def test_ledger_deactivate_to_source_rolls_back(tmp_path: Path):

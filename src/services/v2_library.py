@@ -53,6 +53,7 @@ _FORMAL_TRANSIENT_GLOBS = (
     "*.conversion.json",
     "curation_prompt.md",
     ".import_status.json",
+    "*.formalization.json",
 )
 
 
@@ -1697,7 +1698,10 @@ class PaperNumberLedger:
 
         Used by ``commit_paper_raw`` after ``os.replace`` installs the formal
         copy. The marker (already copied by copytree) is rewritten with
-        ``state="active"``. Requires the number to already exist in the ledger.
+        ``state="active"``. If the number is not yet in the ledger (e.g. a
+        marker-bearing folder adopted from a legacy/test fixture), the entry
+        is created as active — the marker file is the reservation voucher and
+        the ledger is the path/dedup index.
         """
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
@@ -1705,12 +1709,12 @@ class PaperNumberLedger:
         with FileLock(str(self._lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
-            if number not in items:
-                raise KeyError(f"paper_number not in ledger: {number}")
-            existing = items[number] or {}
+            existing = items.get(number) or {}
             state = existing.get("state") or "active"
             if state not in {"reserved", "active"}:
                 raise ValueError(f"cannot activate number {number} in state {state}")
+            if int(number) > int(str(data.get("max_number") or "0000000000000000")):
+                data["max_number"] = number
             items[number] = {
                 "folder_name": final_folder.name,
                 "folder_path": normalize_repo_path(final_folder),
@@ -1977,29 +1981,47 @@ class V2PaperCommitService:
         paper_raw_dir: str | Path,
         *,
         paper_id: str | None = None,
-        preserve_paper_number: str | None = None,
     ) -> dict:
+        """Transactional install of an already-formalized paper_raw into data/papers.
+
+        commit no longer generates paper_id, renames, allocates paper_number, or
+        backfills the catalog — all of that is done by formalize_paper_raw. commit
+        only: final-validate → staging copytree → self-check → atomic os.replace →
+        activate the reserved ledger number → rebuild all.catalog → postcheck →
+        delete the paper_raw source. Any failure rolls back: staging and the
+        installed final are removed and the ledger number is deactivated back to
+        the paper_raw source so formalize→commit can be retried.
+        """
+        from src.services.ingest_state import COMMIT_FAILED, IMPORTED, write_import_status
+
         src = Path(paper_raw_dir)
         pid = paper_id or src.name
         validate_paper_id(pid)
         if _TEMP_ID_RE.match(pid):
-            raise ValueError("formal commit requires curated folder name, not a 6-digit paper_raw source id")
-        required = {
-            "metadata": src / f"{pid}.metadata.json",
-            "catalog": src / f"{pid}.catalog.json",
-            "md": src / f"{pid}.md",
-            "pdf": src / f"{pid}.pdf",
-            "images": src / "images",
-        }
+            raise ValueError("formal commit requires a formalized <paper_id> folder, not a 6-digit paper_raw source id")
+
+        # GATE: must be a formalized paper_raw (formalize_paper_raw output).
+        formalization_path = src / f"{pid}.formalization.json"
+        marker_number = self.ledger.paper_number_from_marker(src)
+        if src.name != pid:
+            write_import_status(src, COMMIT_FAILED, reason=f"folder name {src.name} != paper_id {pid}")
+            return {"success": False, "status": COMMIT_FAILED, "errors": [f"folder name {src.name} != paper_id {pid}"]}
+        if not formalization_path.exists():
+            write_import_status(src, COMMIT_FAILED, reason="missing <paper_id>.formalization.json — run formalize_paper_raw.py first")
+            return {"success": False, "status": COMMIT_FAILED, "errors": ["missing formalization.json"]}
+        if not marker_number:
+            write_import_status(src, COMMIT_FAILED, reason="missing <16-digit>.paper.number marker — run formalize_paper_raw.py first")
+            return {"success": False, "status": COMMIT_FAILED, "errors": ["missing paper.number marker"]}
+
+        # FINAL VALIDATE (metadata/catalog/duplicate gate; reuse readiness).
         readiness = assess_paper_raw_commit_readiness(
             src,
             file_prefix=pid,
-            paper_id=paper_id,
+            paper_id=pid,
             papers_dir=self.papers_dir,
+            require_ready_status=False,
+            check_duplicates=True,
         )
-        metadata = readiness["metadata"]
-        pdf_sha = readiness["pdf_sha256"]
-        md_sha = readiness["markdown_sha256"]
         reference_warnings = readiness["warnings"]
         if not readiness["ready"]:
             errors = readiness["errors"]
@@ -2013,56 +2035,69 @@ class V2PaperCommitService:
                     "created_at": now_iso(),
                 }, indent=2)
                 return {"success": False, "status": "possible_duplicate", "quarantine_dir": str(qdir), "errors": errors}
-            atomic_write_json(src / ".import_status.json", {
-                "status": readiness["status"],
-                "reason": "; ".join(errors),
-                "errors": errors,
-                "warnings": reference_warnings,
-                "created_at": now_iso(),
-            }, indent=2)
+            write_import_status(src, readiness["status"], reason="; ".join(errors), errors=errors, warnings=reference_warnings)
             return {"success": False, "status": readiness["status"], "errors": errors}
-        if reference_warnings:
-            atomic_write_json(src / ".import_status.json", {
-                "status": "metadata_warnings",
-                "reason": "; ".join(reference_warnings),
-                "warnings": reference_warnings,
-                "created_at": now_iso(),
-            }, indent=2)
-        atomic_write_json(required["metadata"], metadata, indent=2)
+        metadata = readiness["metadata"]
 
+        # STAGING copytree + clean transients (formalization.json, .import_status, etc.).
         self.papers_dir.mkdir(parents=True, exist_ok=True)
         staging = self.papers_dir / f".{pid}.staging_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         final = safe_child(self.papers_dir, pid)
         final_installed = False
+        activated = False
         try:
             shutil.copytree(src, staging)
-            # Clean paper_raw transient artifacts that must never enter data/papers/:
-            #   output/          — MinerU raw conversion output (large, unreferenced)
-            #   *.metadata.* side files — resolver/curator artifacts already applied
-            #   curation_prompt.md — generated prompt, served its purpose
-            #   .import_status.json — status marker from failed operations
-            #   stage_manifest.json — raw intake provenance for the paper_raw workspace
-            #   *.conversion.json — paper_raw conversion manifest, transient only
             stg_output = staging / "output"
             if stg_output.exists():
                 shutil.rmtree(stg_output)
             _clean_formal_transient_artifacts(staging)
+            # metadata.pdf.path points at the formal library copy; catalog
+            # asset_refs keep same-folder relative filenames (already backfilled
+            # by formalize). Only metadata.pdf.path is rewritten here.
             metadata["pdf"]["path"] = normalize_repo_path(staging / f"{pid}.pdf")
             atomic_write_json(staging / f"{pid}.metadata.json", metadata, indent=2)
+
+            # SELF-CHECK staging before os.replace (cheap, catches corruption
+            # before the formal library is touched).
+            stage_catalog = _read_json(staging / f"{pid}.catalog.json")
+            stage_errors = (
+                validate_catalog_schema(stage_catalog)
+                + validate_metadata_completeness_for_commit(metadata)
+                + validate_formal_chinese_content(metadata, stage_catalog)
+            )
+            if stage_errors:
+                raise ValueError("staging self-check failed: " + "; ".join(stage_errors))
+            if not (staging / f"{marker_number}.paper.number").exists():
+                raise ValueError("staging missing paper.number marker after clean")
+
+            # ATOMIC INSTALL.
             os.replace(staging, final)
             final_installed = True
             metadata["pdf"]["path"] = normalize_repo_path(final / f"{pid}.pdf")
             atomic_write_json(final / f"{pid}.metadata.json", metadata, indent=2)
-            number = self.ledger.assign(final, preserve_number=preserve_paper_number)
-            _backfill_formal_catalog_links(final, pid, number)
-            all_catalog = AllCatalogBuilder(self.papers_dir, self.all_catalog_path, self.ledger).build(write=True)
-            if src.exists():
-                shutil.rmtree(src)
+
+            # ACTIVATE the reserved ledger number to the formal folder.
+            self.ledger.activate_reserved(marker_number, final, paper_id=pid)
+            activated = True
+
+            # REBUILD all.catalog / paper_index (idempotent assign for all papers).
+            builder = AllCatalogBuilder(self.papers_dir, self.all_catalog_path, self.ledger)
+            all_catalog = builder.build(write=True)
+            if builder.last_errors:
+                raise ValueError("all.catalog rebuild produced errors: " + "; ".join(builder.last_errors))
+
+            # POSTCHECK: the freshly installed folder must be self-consistent.
+            post_errors = self._postcheck_final(final, pid, marker_number)
+            if post_errors:
+                raise ValueError("postcheck failed: " + "; ".join(post_errors))
+
+            # SUCCESS: remove the paper_raw source.
+            shutil.rmtree(src, ignore_errors=True)
             result = {
                 "success": True,
-                "status": "imported",
+                "status": IMPORTED,
                 "paper_id": pid,
-                "paper_number": number,
+                "paper_number": marker_number,
                 "paper_dir": normalize_repo_path(final),
                 "all_catalog_count": len(all_catalog.get("papers", [])),
             }
@@ -2070,23 +2105,49 @@ class V2PaperCommitService:
                 result["warnings"] = reference_warnings
             return result
         except Exception as exc:
+            # ROLLBACK: remove staging + final, deactivate ledger back to source.
             shutil.rmtree(staging, ignore_errors=True)
             if final_installed:
-                atomic_write_json(src / ".import_status.json", {
-                    "status": "commit_postcheck_failed",
-                    "reason": str(exc),
-                    "paper_id": pid,
-                    "paper_dir": normalize_repo_path(final),
-                    "created_at": now_iso(),
-                }, indent=2)
-                return {
-                    "success": False,
-                    "status": "commit_postcheck_failed",
-                    "paper_id": pid,
-                    "paper_dir": normalize_repo_path(final),
-                    "errors": [str(exc)],
-                }
-            raise
+                shutil.rmtree(final, ignore_errors=True)
+            if activated:
+                try:
+                    self.ledger.deactivate_to_source(marker_number, src)
+                except Exception:
+                    pass
+            if src.exists():
+                write_import_status(
+                    src,
+                    COMMIT_FAILED,
+                    reason=str(exc),
+                    errors=[str(exc)],
+                    extra={"paper_id": pid, "paper_number": marker_number},
+                )
+            return {
+                "success": False,
+                "status": COMMIT_FAILED,
+                "paper_id": pid,
+                "paper_number": marker_number,
+                "errors": [str(exc)],
+            }
+
+    def _postcheck_final(self, final: Path, pid: str, number: str) -> list[str]:
+        """Lightweight self-consistency check on the just-installed formal folder."""
+        errors: list[str] = []
+        for name, path in {
+            "metadata": final / f"{pid}.metadata.json",
+            "catalog": final / f"{pid}.catalog.json",
+            "md": final / f"{pid}.md",
+            "pdf": final / f"{pid}.pdf",
+            "images": final / "images",
+        }.items():
+            if name == "images":
+                if not path.is_dir():
+                    errors.append(f"postcheck: missing images: {path}")
+            elif not path.exists():
+                errors.append(f"postcheck: missing {name}: {path}")
+        if not (final / f"{number}.paper.number").exists():
+            errors.append("postcheck: missing paper.number marker in final")
+        return errors
 
 
 def bibtex_from_metadata(metadata: dict, *, key: str | None = None) -> str:

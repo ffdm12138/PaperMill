@@ -28,11 +28,14 @@ from scripts.validate_v2_library import validate_v2_library
 
 
 def _curated_raw(root: Path, pid: str, *, doi: str = "10.1/x", year: int = 2024,
-                 family: str = "Wang", tz: str = "测试论文", pdf_content: bytes = b"%PDF-X") -> Path:
+                 family: str | None = None, tz: str | None = None, pdf_content: bytes = b"%PDF-X") -> Path:
     """Build a complete curated paper_raw folder ready for commit."""
     folder = root / "paper_raw" / pid
     folder.mkdir(parents=True)
     metadata = empty_metadata(pid)
+    parts = pid.split("_")
+    family = parts[1] if len(parts) > 1 else (family or "wang")
+    tz = tz if tz is not None else ("_".join(parts[2:]) or "测试论文")
     metadata["title"]["original"] = f"Paper {pid}"
     metadata["title"]["translated_zh"] = tz
     metadata["title"]["short_zh"] = tz
@@ -47,11 +50,18 @@ def _curated_raw(root: Path, pid: str, *, doi: str = "10.1/x", year: int = 2024,
         "matched_at": "2026-01-01", "warnings": [], "candidates": [],
     }
     catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = f"Paper {pid}"
+    catalog["content_identity"]["content_title"] = tz
     catalog["classification"].update({"primary_domain": "test", "topic_tags": ["test"]})
     catalog["research_card"].update({
         "research_problem": "一句话摘要",
+        "core_question": "测试核心问题",
+        "hypothesis_or_objective": "测试研究目标",
+        "study_object": "测试研究对象",
         "method_summary": "测试方法",
+        "data_or_experiment": "测试数据",
+        "main_findings": ["测试发现"],
+        "mechanisms": ["测试机制"],
+        "limitations": ["测试局限"],
         "usefulness_for_user": "测试用途",
     })
     catalog["screening"].update({
@@ -68,7 +78,30 @@ def _curated_raw(root: Path, pid: str, *, doi: str = "10.1/x", year: int = 2024,
 
 
 def _commit(papers_dir: Path, all_catalog: Path, ledger: Path, folder: Path) -> dict:
-    return V2PaperCommitService(papers_dir=papers_dir, all_catalog_path=all_catalog, ledger_path=ledger).commit_paper_raw(folder)
+    # commit now requires a formalized folder; run formalize first (idempotent,
+    # reserves the next 16-digit paper_number on the shared ledger).
+    from src.services.paper_raw_formalizer import PaperRawFormalizationService
+
+    formalized = PaperRawFormalizationService(
+        paper_raw_dir=folder.parent, papers_dir=papers_dir,
+        ledger_path=ledger, all_catalog_path=all_catalog,
+    ).formalize(folder)
+    if not formalized.get("success"):
+        return formalized
+    return V2PaperCommitService(papers_dir=papers_dir, all_catalog_path=all_catalog, ledger_path=ledger).commit_paper_raw(formalized["folder"])
+
+
+def _commit_svc(svc: V2PaperCommitService, folder: Path) -> dict:
+    """formalize (using svc's ledger) then commit — for tests that hold a svc handle."""
+    from src.services.paper_raw_formalizer import PaperRawFormalizationService
+
+    formalized = PaperRawFormalizationService(
+        paper_raw_dir=folder.parent, papers_dir=svc.papers_dir,
+        ledger_path=svc.ledger.path, all_catalog_path=svc.all_catalog_path,
+    ).formalize(folder)
+    if not formalized.get("success"):
+        return formalized
+    return svc.commit_paper_raw(formalized["folder"])
 
 
 class TestCommit:
@@ -89,15 +122,17 @@ class TestCommit:
         for asset in ("pdf", "catalog.json", "md"):
             base = tmp_path / asset
             base.mkdir(parents=True, exist_ok=True)
-            f = _curated_raw(base, "2024_wang_x")
+            pid = "2024_wang_缺失资产"
+            f = _curated_raw(base, pid)
             if asset == "pdf":
-                (f / "2024_wang_x.pdf").unlink()
+                (f / f"{pid}.pdf").unlink()
             elif asset == "catalog.json":
-                (f / "2024_wang_x.catalog.json").unlink()
+                (f / f"{pid}.catalog.json").unlink()
             elif asset == "md":
-                (f / "2024_wang_x.md").unlink()
-            with pytest.raises((FileNotFoundError, ValueError)):
-                _commit(base / "p", base / "c" / "ac.json", base / "c" / "l.json", f)
+                (f / f"{pid}.md").unlink()
+            result = _commit(base / "p", base / "c" / "ac.json", base / "c" / "l.json", f)
+            assert result["success"] is False
+            assert result["status"] in {"assets_incomplete", "catalog_invalid", "formalize_failed"}
 
 
 class TestDedup:
@@ -109,26 +144,26 @@ class TestDedup:
             all_catalog_path=tmp_path / "c" / "all.catalog.json",
             ledger_path=tmp_path / "c" / "l.json",
         )
-        r1 = svc.commit_paper_raw(f1)
+        r1 = _commit_svc(svc, f1)
         assert r1["status"] == "imported"
-        r2 = svc.commit_paper_raw(f2)
+        r2 = _commit_svc(svc, f2)
         assert r2["status"] == "possible_duplicate"
         assert Path(r2["quarantine_dir"]).exists()
         assert not (tmp_path / "papers" / "2024_li_论文B").exists()
 
     def test_pdf_sha_duplicate_quarantined(self, tmp_path):
-        f1 = _curated_raw(tmp_path, "2024_wang_A", doi="10.1/uniq1", pdf_content=b"%PDF-same-sha")
-        f2 = _curated_raw(tmp_path, "2024_wang_B", doi="10.1/uniq2", pdf_content=b"%PDF-same-sha",
-                          tz="不同标题", year=2023, family="Li")
+        f1 = _curated_raw(tmp_path, "2024_wang_论文A", doi="10.1/uniq1", pdf_content=b"%PDF-same-sha")
+        f2 = _curated_raw(tmp_path, "2023_li_不同标题", doi="10.1/uniq2", pdf_content=b"%PDF-same-sha",
+                          year=2023)
         svc = V2PaperCommitService(
             papers_dir=tmp_path / "papers",
             all_catalog_path=tmp_path / "c" / "all.json",
             ledger_path=tmp_path / "c" / "l.json",
         )
-        assert svc.commit_paper_raw(f1)["status"] == "imported"
-        r2 = svc.commit_paper_raw(f2)
+        assert _commit_svc(svc, f1)["status"] == "imported"
+        r2 = _commit_svc(svc, f2)
         assert r2["status"] == "possible_duplicate"
-        assert not (tmp_path / "papers" / "2024_wang_B").exists()
+        assert not (tmp_path / "papers" / "2024_li_不同标题").exists()
 
 
 class TestNumberingAndRebuild:
@@ -141,8 +176,8 @@ class TestNumberingAndRebuild:
         f1 = _curated_raw(tmp_path, "2024_wang_论文A")
         f2 = _curated_raw(tmp_path, "2024_li_论文B", doi="10.1/b", tz="论文B", family="Li",
                           pdf_content=b"%PDF-distinct-B")
-        r1 = svc.commit_paper_raw(f1)
-        r2 = svc.commit_paper_raw(f2)
+        r1 = _commit_svc(svc, f1)
+        r2 = _commit_svc(svc, f2)
         assert r1["paper_number"] == "0000000000000001"
         assert r2["paper_number"] == "0000000000000002"
 
@@ -154,8 +189,8 @@ class TestNumberingAndRebuild:
         f1 = _curated_raw(tmp_path, "2024_wang_论文A")
         f2 = _curated_raw(tmp_path, "2024_li_论文B", doi="10.1/b", tz="论文B", family="Li",
                           pdf_content=b"%PDF-B")
-        svc.commit_paper_raw(f1)
-        svc.commit_paper_raw(f2)
+        _commit_svc(svc, f1)
+        _commit_svc(svc, f2)
         # delete first paper
         shutil.rmtree(papers / "2024_wang_论文A")
         AllCatalogBuilder(papers, ac, PaperNumberLedger(lg)).build(write=True)
@@ -170,8 +205,8 @@ class TestNumberingAndRebuild:
         svc = V2PaperCommitService(papers_dir=papers, all_catalog_path=ac, ledger_path=lg)
         f1 = _curated_raw(tmp_path, "2024_wang_论文A")
         f2 = _curated_raw(tmp_path, "2024_li_论文B", doi="10.1/b", tz="论文B", family="Li", pdf_content=b"%PDF-B")
-        svc.commit_paper_raw(f1)
-        svc.commit_paper_raw(f2)
+        _commit_svc(svc, f1)
+        _commit_svc(svc, f2)
         shutil.rmtree(papers / "2024_wang_论文A")
         AllCatalogBuilder(papers, ac, PaperNumberLedger(lg)).build(write=True)
         lg_data = json.loads(lg.read_text(encoding="utf-8"))
@@ -184,7 +219,7 @@ class TestCompactCatalog:
         svc = V2PaperCommitService(papers_dir=tmp_path / "papers",
                                     all_catalog_path=tmp_path / "c" / "all.json",
                                     ledger_path=tmp_path / "c" / "l.json")
-        svc.commit_paper_raw(f)
+        _commit_svc(svc, f)
         AllCatalogBuilder(tmp_path / "papers", tmp_path / "c" / "all.json",
                           PaperNumberLedger(tmp_path / "c" / "l.json")).build(write=True)
         data = json.loads((tmp_path / "c" / "all.json").read_text(encoding="utf-8"))
@@ -201,7 +236,7 @@ class TestCompactCatalog:
             assert kw not in txt_content, f"content-only view leaked bibliography: {kw}"
         # include_metadata=True: bibliographic bits joined from metadata (display-layer only)
         txt_meta = build_compact_catalog_text(data["papers"], library=lib, include_metadata=True)
-        for kw in ("0000000000000001", "2024", "Wang", "Test Journal", "10.1/x",
+        for kw in ("0000000000000001", "2024", "wang", "Test Journal", "10.1/x",
                    "must_read", "method:", "usefulness:"):
             assert kw in txt_meta, f"compact catalog (include_metadata) missing: {kw}"
         # catalog must NOT leak its own bibliographic fields into the compact text
@@ -215,7 +250,7 @@ class TestPaperLibraryAccess:
         ac = tmp_path / "c" / "all.json"
         lg = tmp_path / "c" / "l.json"
         svc = V2PaperCommitService(papers_dir=papers, all_catalog_path=ac, ledger_path=lg)
-        svc.commit_paper_raw(f)
+        _commit_svc(svc, f)
         AllCatalogBuilder(papers, ac, PaperNumberLedger(lg)).build(write=True)
 
         library = PaperLibrary(all_catalog_path=ac, papers_dir=papers)
@@ -236,7 +271,7 @@ class TestBibtex:
         svc = V2PaperCommitService(papers_dir=tmp_path / "papers",
                                     all_catalog_path=tmp_path / "c" / "all.json",
                                     ledger_path=tmp_path / "c" / "l.json")
-        svc.commit_paper_raw(f)
+        _commit_svc(svc, f)
         meta = json.loads((tmp_path / "papers" / "2024_wang_测试论文" / "2024_wang_测试论文.metadata.json")
                           .read_text(encoding="utf-8"))
         bib = bibtex_from_metadata(meta)
@@ -254,8 +289,7 @@ class TestDestructive:
         papers = tmp_path / "papers"
         ac = tmp_path / "c" / "all.json"
         lg = tmp_path / "c" / "l.json"
-        svc = V2PaperCommitService(papers_dir=papers, all_catalog_path=ac, ledger_path=lg)
-        svc.commit_paper_raw(f)
+        _commit(papers, ac, lg, f)
         AllCatalogBuilder(papers, ac, PaperNumberLedger(lg)).build(write=True)
 
         (papers / "2024_wang_测试论文" / "paper.md").write_text("legacy", encoding="utf-8")
@@ -267,8 +301,7 @@ class TestDestructive:
         papers = tmp_path / "papers"
         ac = tmp_path / "c" / "all.json"
         lg = tmp_path / "c" / "l.json"
-        svc = V2PaperCommitService(papers_dir=papers, all_catalog_path=ac, ledger_path=lg)
-        svc.commit_paper_raw(f)
+        _commit(papers, ac, lg, f)
         AllCatalogBuilder(papers, ac, PaperNumberLedger(lg)).build(write=True)
 
         cat_path = papers / "2024_wang_测试论文" / "2024_wang_测试论文.catalog.json"
@@ -286,8 +319,7 @@ class TestDestructive:
         papers = tmp_path / "papers"
         ac = tmp_path / "c" / "all.json"
         lg = tmp_path / "c" / "l.json"
-        svc = V2PaperCommitService(papers_dir=papers, all_catalog_path=ac, ledger_path=lg)
-        svc.commit_paper_raw(f)
+        _commit(papers, ac, lg, f)
 
         marker = papers / "2024_wang_测试论文" / "0000000000000001.paper.number"
         # overwrite marker with wrong data then rename

@@ -18,6 +18,7 @@ from src.services.v2_library import (
     metadata_doi,
     validate_all_catalog_entry,
     validate_catalog_schema,
+    validate_formal_chinese_content,
     validate_metadata_completeness_for_commit,
     validate_metadata_schema,
 )
@@ -42,6 +43,18 @@ def _paper_number_from_markers(markers: list[Path]) -> str:
     except Exception:
         data = {}
     return str(data.get("paper_number") or marker.stem)
+
+
+def _load_json_or_error(path: Path, ctx: str, errors: list[str]) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        errors.append(f"{ctx} invalid JSON at {path}: {exc}")
+        return {}
+    if not isinstance(data, dict):
+        errors.append(f"{ctx} JSON must be an object: {path}")
+        return {}
+    return data
 
 
 def _asset_ref_exists(folder: Path, value: str) -> bool:
@@ -102,8 +115,15 @@ def validate_v2_library(
                 errors.append(f"{pid}: formal v2 library must not contain paper.md")
             if (folder / "output").exists():
                 errors.append(f"{pid}: MinerU raw output must be removed before commit (delete output/)")
-            for vestige in folder.glob("*.metadata.patch.json"):
-                errors.append(f"{pid}: paper_raw transient file must not enter formal library: {vestige.name}")
+            for pattern in (
+                "*.metadata.candidates.json",
+                "*.metadata.resolve_report.json",
+                "*.metadata.patch.json",
+                "*.conversion.json",
+                "*.formalization.json",
+            ):
+                for vestige in folder.glob(pattern):
+                    errors.append(f"{pid}: paper_raw transient file must not enter formal library: {vestige.name}")
             for vestige in folder.glob("*.tmp"):
                 errors.append(f"{pid}: temporary file must not enter formal library: {vestige.name}")
             if (folder / "curation_prompt.md").exists():
@@ -120,18 +140,23 @@ def validate_v2_library(
             for name, path in required.items():
                 if not path.exists():
                     errors.append(f"{pid} missing {name}: {path}")
+            metadata = {}
             if required["metadata"].exists():
-                metadata = json.loads(required["metadata"].read_text(encoding="utf-8"))
-                errors.extend([f"{pid} {err}" for err in validate_metadata_schema(metadata)])
-                errors.extend(_formal_metadata_errors(pid, metadata))
-                warnings.extend([f"{pid} {warning}" for warning in metadata_reference_warnings_for_commit(metadata)])
-                doi = metadata_doi(metadata)
-                if doi:
-                    doi_to_paper_ids.setdefault(doi, []).append(pid)
+                metadata = _load_json_or_error(required["metadata"], pid, errors)
+                if metadata:
+                    errors.extend([f"{pid} {err}" for err in validate_metadata_schema(metadata)])
+                    errors.extend(_formal_metadata_errors(pid, metadata))
+                    warnings.extend([f"{pid} {warning}" for warning in metadata_reference_warnings_for_commit(metadata)])
+                    doi = metadata_doi(metadata)
+                    if doi:
+                        doi_to_paper_ids.setdefault(doi, []).append(pid)
             if required["catalog"].exists():
-                catalog = json.loads(required["catalog"].read_text(encoding="utf-8"))
-                errors.extend([f"{pid} {err}" for err in validate_catalog_schema(catalog)])
-                errors.extend(_formal_catalog_errors(pid, folder, catalog, paper_number))
+                catalog = _load_json_or_error(required["catalog"], pid, errors)
+                if catalog:
+                    errors.extend([f"{pid} {err}" for err in validate_catalog_schema(catalog)])
+                    errors.extend(_formal_catalog_errors(pid, folder, catalog, paper_number))
+                    if metadata:
+                        errors.extend([f"{pid} {err}" for err in validate_formal_chinese_content(metadata, catalog)])
             if len(markers) > 1:
                 errors.append(f"{pid} has multiple .paper.number files")
 
@@ -144,7 +169,9 @@ def validate_v2_library(
             errors.append(f"missing all.catalog.json: {all_catalog_path}")
         return errors, warnings
 
-    data = json.loads(all_catalog_path.read_text(encoding="utf-8"))
+    data = _load_json_or_error(all_catalog_path, "all.catalog", errors)
+    if not data:
+        return errors, warnings
     if not isinstance(data, dict):
         errors.append("all.catalog must be an object")
         return errors, warnings
@@ -193,7 +220,7 @@ def validate_v2_library(
     if formal_paper_ids and not index_path.exists():
         errors.append(f"missing paper_index.json: {index_path}")
     if index_path.exists():
-        index_data = json.loads(index_path.read_text(encoding="utf-8"))
+        index_data = _load_json_or_error(index_path, "paper_index", errors)
         for i, item in enumerate(index_data.get("papers", [])):
             ctx = f"paper_index[{i}]"
             forbidden = find_forbidden_catalog_keys(item)
