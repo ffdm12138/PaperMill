@@ -129,7 +129,8 @@ def check_directory_hygiene(
                 warnings.append(
                     f"paper_raw has unresolved metadata candidates (.metadata.candidates.json present): {rel}"
                 )
-            if import_status in {"metadata_candidates_found", "metadata_manual_review_required"}:
+            if import_status in {"metadata_candidates_found", "metadata_manual_review_required",
+                                 "catalog_ready", "formalize_failed", "commit_failed"}:
                 warnings.append(
                     f"paper_raw import_status stuck at {import_status}: {rel}"
                 )
