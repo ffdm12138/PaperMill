@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from src.services.ingest_ids import validate_paper_raw_id
 from src.services.metadata_resolver import (
     STATUS_CANDIDATE_CONFLICT,
     STATUS_CANDIDATES_FOUND,
@@ -31,13 +32,13 @@ LEGACY_NOTICE = (
 
 def _source_ids(root: Path, all_sources: bool, one: str | None) -> list[str]:
     if one:
-        return [one]
+        return [validate_paper_raw_id(one)]
     if all_sources:
         return sorted(
             p.name for p in root.iterdir()
-            if p.is_dir() and p.name.isdigit() and len(p.name) == 6
+            if p.is_dir() and p.name.isdigit() and len(p.name) == 16
         )
-    raise ValueError("--source-id or --all is required")
+    raise ValueError("--paper-number or --all is required")
 
 
 def _status_for_report(report) -> str:
@@ -53,7 +54,8 @@ def _status_for_report(report) -> str:
 def _write_report_status(folder: Path, report) -> None:
     atomic_write_json(folder / ".import_status.json", {
         "status": _status_for_report(report),
-        "source_id": report.source_id,
+        "paper_number": report.source_id,
+        "paper_raw_id": report.source_id,
         "best_decision": report.decision,
         "reason": report.reason,
         "created_at": report.created_at,
@@ -62,7 +64,7 @@ def _write_report_status(folder: Path, report) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Legacy wrapper for canonical v2 paper_raw metadata resolver.")
-    parser.add_argument("--source-id", default=None)
+    parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--all-catalog", type=Path, default=Path(ALL_CATALOG_PATH))
@@ -80,9 +82,9 @@ def main() -> int:
 
     write = args.apply and not args.dry_run
     items = []
-    for source_id in _source_ids(args.paper_raw_dir, args.all, args.source_id):
+    for source_id in _source_ids(args.paper_raw_dir, args.all, args.paper_number):
         folder = args.paper_raw_dir / source_id
-        item = {"source_id": source_id, "status": "planned", "legacy_wrapper": True, "warnings": []}
+        item = {"paper_number": source_id, "paper_raw_id": source_id, "status": "planned", "legacy_wrapper": True, "warnings": []}
         try:
             report = resolve_metadata_candidates(
                 folder,

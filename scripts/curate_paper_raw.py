@@ -1,8 +1,8 @@
 """Generate/apply v2 paper_raw curation prompts and validate curated catalog.
 
 curate only validates metadata/catalog and writes ``status=catalog_ready``;
-it does NOT rename the folder or allocate a paper_number. The rename +
-paper_number reservation is done by ``formalize_paper_raw.py``.
+it does NOT rename the folder. paper_number reservation is done at staging,
+and the paper_id rename is done by ``formalize_paper_raw.py``.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import PAPER_RAW_DIR
+from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.v2_library import PaperCurationService
 
 
@@ -28,12 +29,14 @@ def _write_text_atomic(path: Path, text: str) -> None:
 def _candidates(root: Path, args) -> list[Path]:
     if args.paper_dir:
         return [args.paper_dir]
-    if args.source_id:
-        return [root / args.source_id]
+    if args.paper_number:
+        return [root / validate_paper_raw_id(args.paper_number)]
     if args.all_ready:
         out = []
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name
+            if not PAPER_NUMBER_RE.match(name):
+                continue
             has_meta = (folder / f"{name}.metadata.json").exists()
             has_md = (folder / f"{name}.md").exists()
             has_images = (folder / "images").is_dir()
@@ -47,13 +50,13 @@ def _candidates(root: Path, args) -> list[Path]:
                     continue
             out.append(folder)
         return out
-    raise ValueError("--paper-dir, --source-id, or --all-ready is required")
+    raise ValueError("--paper-dir, --paper-number, or --all-ready is required")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Curate v2 paper_raw metadata/catalog and rename folder.")
     parser.add_argument("--paper-dir", type=Path, default=None)
-    parser.add_argument("--source-id", default=None)
+    parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all-ready", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--metadata", type=Path, default=None, help="curated metadata JSON for single target")

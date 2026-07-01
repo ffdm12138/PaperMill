@@ -14,6 +14,7 @@ from loguru import logger
 
 from config.settings import PAPER_RAW_DIR
 from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_METHOD
+from src.services.ingest_ids import validate_paper_raw_id
 from src.services.v2_library import PaperRawConverter
 
 
@@ -21,13 +22,13 @@ _WRAPPER_ENV = "MINERU_GPU_WRAPPER_ACTIVE"
 
 
 def _source_ids(root: Path, args) -> list[str]:
-    if args.source_id:
-        return [args.source_id]
-    if args.source_ids:
-        return args.source_ids
+    if args.paper_number:
+        return [validate_paper_raw_id(args.paper_number)]
+    if args.paper_numbers:
+        return [validate_paper_raw_id(x) for x in args.paper_numbers]
     if args.all:
-        return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 6)
-    raise ValueError("--source-id, --source-ids, or --all is required")
+        return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 16)
+    raise ValueError("--paper-number, --paper-numbers, or --all is required")
 
 
 def _preflight_status(root: Path, source_id: str) -> str:
@@ -128,8 +129,8 @@ def _print_runtime_summary(runtime: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Convert v2 paper_raw PDFs into md/images.")
-    parser.add_argument("--source-id", default=None)
-    parser.add_argument("--source-ids", nargs="+", default=None)
+    parser.add_argument("--paper-number", default=None)
+    parser.add_argument("--paper-numbers", nargs="+", default=None)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--apply", action="store_true")
@@ -178,7 +179,7 @@ def main() -> int:
         if args.force_reconvert
         or not (
             skip_existing
-            and inspections[source_id]["state"] in {"converted_current", "converted_legacy"}
+            and inspections[source_id]["state"] == "converted_current"
         )
     ]
     runtime = None
@@ -225,7 +226,8 @@ def main() -> int:
     for source_id in source_ids:
         inspection = inspections[source_id]
         item = {
-            "source_id": source_id,
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
             "status": "planned",
             "runtime": runtime,
             "conversion_state": inspection["state"],
@@ -238,7 +240,7 @@ def main() -> int:
                 item["reason"] = "preflight status is not ready_for_convert"
                 report.append(item)
                 continue
-        if skip_existing and not args.force_reconvert and inspection["state"] in {"converted_current", "converted_legacy"}:
+        if skip_existing and not args.force_reconvert and inspection["state"] == "converted_current":
             item["status"] = "skipped"
             item["reason"] = inspection["reason"]
             item["markdown"] = inspection["markdown"]

@@ -8,6 +8,8 @@ from pathlib import Path
 import scripts.convert_paper_raw_batch as batch
 import scripts.convert_paper_raw_gpu as wrapper
 
+PN1 = "0000000000000001"
+PN2 = "0000000000000002"
 
 def _health(ok=True, message="ok", *, api_available=None):
     return type("Health", (), {
@@ -66,7 +68,7 @@ def _run_wrapper(monkeypatch, paper_raw: Path, *args: str) -> int:
 
 
 def test_batch_cli_runner_warns_on_dry_run(monkeypatch, tmp_path, capsys):
-    paper_raw = _paper_raw(tmp_path, "000001", "000002")
+    paper_raw = _paper_raw(tmp_path, PN1, PN2)
     monkeypatch.setenv("MINERU_RUNNER", "cli")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
     monkeypatch.delenv("MINERU_ALLOW_CPU", raising=False)
@@ -85,7 +87,7 @@ def test_batch_cli_runner_warns_on_dry_run(monkeypatch, tmp_path, capsys):
 
 
 def test_batch_cli_api_proxy_no_cold_start_warning(monkeypatch, tmp_path, capsys):
-    paper_raw = _paper_raw(tmp_path, "000001", "000002")
+    paper_raw = _paper_raw(tmp_path, PN1, PN2)
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
     _patch_preflights(monkeypatch)
@@ -99,7 +101,7 @@ def test_batch_cli_api_proxy_no_cold_start_warning(monkeypatch, tmp_path, capsys
 
 
 def test_batch_allow_cpu_warns_and_summary_shows_debug_fallback(monkeypatch, tmp_path, capsys):
-    paper_raw = _paper_raw(tmp_path, "000001")
+    paper_raw = _paper_raw(tmp_path, PN1)
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     _patch_preflights(monkeypatch)
 
@@ -114,7 +116,7 @@ def test_batch_allow_cpu_warns_and_summary_shows_debug_fallback(monkeypatch, tmp
 
 
 def test_gpu_wrapper_hard_overrides_legacy_env(monkeypatch, tmp_path, capsys):
-    paper_raw = _paper_raw(tmp_path, "000001")
+    paper_raw = _paper_raw(tmp_path, PN1)
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "false")
     monkeypatch.setenv("MINERU_ALLOW_CPU", "true")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
@@ -145,7 +147,7 @@ def test_gpu_wrapper_rejects_allow_cpu(monkeypatch, tmp_path, capsys):
 
 
 def test_direct_batch_gpu_false_apply_hard_fails(monkeypatch, tmp_path, capsys):
-    paper_raw = _paper_raw(tmp_path, "000001")
+    paper_raw = _paper_raw(tmp_path, PN1)
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "false")
     monkeypatch.delenv("MINERU_ALLOW_CPU", raising=False)
@@ -160,7 +162,7 @@ def test_direct_batch_gpu_false_apply_hard_fails(monkeypatch, tmp_path, capsys):
 
 
 def test_multi_source_cli_apply_hard_fails_without_escape_hatch(monkeypatch, tmp_path, capsys):
-    paper_raw = _paper_raw(tmp_path, "000001", "000002")
+    paper_raw = _paper_raw(tmp_path, PN1, PN2)
     monkeypatch.setenv("MINERU_RUNNER", "cli")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
     _patch_preflights(monkeypatch)
@@ -174,7 +176,7 @@ def test_multi_source_cli_apply_hard_fails_without_escape_hatch(monkeypatch, tmp
 
 
 def test_batch_report_includes_runtime_and_torch_cuda(monkeypatch, tmp_path):
-    paper_raw = _paper_raw(tmp_path, "000001")
+    paper_raw = _paper_raw(tmp_path, PN1)
     report_path = tmp_path / "convert_report.json"
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")

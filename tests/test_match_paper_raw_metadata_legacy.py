@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import sys
@@ -11,7 +11,7 @@ from src.services.v2_library import empty_metadata
 
 class FakeReport:
     def __init__(self, *, decision: str = "manual_review"):
-        self.source_id = "000001"
+        self.source_id = "0000000000000001"
         self.decision = decision
         self.best_candidate_id = "cand_001"
         self.candidates = []
@@ -22,12 +22,12 @@ class FakeReport:
 
 
 def _make_folder(tmp_path: Path) -> Path:
-    folder = tmp_path / "paper_raw" / "000001"
+    folder = tmp_path / "paper_raw" / "0000000000000001"
     folder.mkdir(parents=True)
-    (folder / "000001.pdf").write_bytes(b"%PDF")
-    (folder / "000001.md").write_text("# Test Title", encoding="utf-8")
-    (folder / "000001.metadata.json").write_text(
-        json.dumps(empty_metadata("000001"), ensure_ascii=False),
+    (folder / "0000000000000001.pdf").write_bytes(b"%PDF")
+    (folder / "0000000000000001.md").write_text("# Test Title", encoding="utf-8")
+    (folder / "0000000000000001.metadata.json").write_text(
+        json.dumps(empty_metadata("0000000000000001"), ensure_ascii=False),
         encoding="utf-8",
     )
     return folder
@@ -48,7 +48,7 @@ def test_legacy_script_calls_canonical_resolver(monkeypatch, tmp_path, capsys):
 
     def fake_resolve(folder, **kwargs):
         calls["resolver"] += 1
-        assert Path(folder).name == "000001"
+        assert Path(folder).name == "0000000000000001"
         assert kwargs["allow_network"] is True
         return FakeReport(decision="manual_review")
 
@@ -56,7 +56,7 @@ def test_legacy_script_calls_canonical_resolver(monkeypatch, tmp_path, capsys):
 
     rc = _run([
         "match_paper_raw_metadata.py",
-        "--source-id", "000001",
+        "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
     ])
 
@@ -91,13 +91,13 @@ def test_legacy_conflict_writes_status_without_applying(monkeypatch, tmp_path):
 
     rc = _run([
         "match_paper_raw_metadata.py",
-        "--source-id", "000001",
+        "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
         "--apply",
     ])
 
     status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
-    metadata = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    metadata = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert rc == 0
     assert status["status"] == STATUS_CANDIDATE_CONFLICT
     assert metadata["metadata_match"]["status"] == "unmatched"
@@ -113,9 +113,10 @@ def test_legacy_require_matched_fails_for_manual_review(monkeypatch, tmp_path):
 
     rc = _run([
         "match_paper_raw_metadata.py",
-        "--source-id", "000001",
+        "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
         "--require-matched",
     ])
 
     assert rc == 1
+

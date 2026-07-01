@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import normalize_doi
 from src.file_fingerprint import compute_sha256
 from src.naming import safe_child
+from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.v2_library import (
     metadata_is_matched,
@@ -23,7 +23,6 @@ from src.services.v2_library import (
 from src.utils.atomic_io import atomic_write_json
 
 
-_SOURCE_ID_RE = re.compile(r"^\d{6}$")
 _BLOCKING_STATUSES = {
     "metadata_missing",
     "metadata_invalid",
@@ -44,12 +43,10 @@ def _read_json(path: Path, default: Any) -> Any:
 
 def _source_ids(root: Path, all_sources: bool, one: str | None) -> list[str]:
     if one:
-        if not _SOURCE_ID_RE.match(one):
-            raise ValueError(f"invalid paper_raw id: {one}")
-        return [one]
+        return [validate_paper_raw_id(one)]
     if all_sources:
-        return sorted(p.name for p in root.iterdir() if p.is_dir() and _SOURCE_ID_RE.match(p.name))
-    raise ValueError("--all or --paper-raw-id is required")
+        return sorted(p.name for p in root.iterdir() if p.is_dir() and PAPER_NUMBER_RE.match(p.name))
+    raise ValueError("--all or --paper-number is required")
 
 
 def _formal_sets(papers_dir: Path) -> tuple[set[str], set[str]]:
@@ -72,7 +69,7 @@ def _paper_raw_counts(root: Path) -> tuple[dict[str, int], dict[str, int]]:
     sha_counts: dict[str, int] = {}
     if not root.exists():
         return doi_counts, sha_counts
-    for folder in sorted(p for p in root.iterdir() if p.is_dir() and _SOURCE_ID_RE.match(p.name)):
+    for folder in sorted(p for p in root.iterdir() if p.is_dir() and PAPER_NUMBER_RE.match(p.name)):
         source_id = folder.name
         metadata = _read_json(folder / f"{source_id}.metadata.json", {})
         doi = normalize_doi(((metadata.get("identifiers") or {}).get("doi") or ""))
@@ -180,7 +177,8 @@ def preflight_one(
     else:
         status = _status_from_errors(errors)
     item = {
-        "source_id": source_id,
+        "paper_number": source_id,
+        "paper_raw_id": source_id,
         "status": status,
         "blocking": status in _BLOCKING_STATUSES,
         "doi": doi,
@@ -198,14 +196,14 @@ def preflight_one(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Preflight v2 paper_raw import workspaces.")
     parser.add_argument("--all", action="store_true")
-    parser.add_argument("--paper-raw-id", default=None)
+    parser.add_argument("--paper-number", default=None)
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    source_ids = _source_ids(args.paper_raw_dir, args.all, args.paper_raw_id)
+    source_ids = _source_ids(args.paper_raw_dir, args.all, args.paper_number)
     formal_dois, formal_shas = _formal_sets(args.papers_dir)
     raw_doi_counts, raw_sha_counts = _paper_raw_counts(args.paper_raw_dir)
     items = [

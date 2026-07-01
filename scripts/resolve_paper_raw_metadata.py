@@ -6,7 +6,7 @@ Three-tier write semantics (do NOT let dry-run pollute paper_raw):
     <id>.metadata.resolve_report.json, <id>.metadata.patch.json when a usable
     best candidate exists, and .import_status.json; does NOT touch metadata.json.
   - --apply (implies candidate/report writing): may modify <id>.metadata.json after gate/validation.
-  - --report <path>: writes a summary JSON of all processed source_ids to <path> (any tier).
+  - --report <path>: writes a summary JSON of all processed paper_numbers to <path> (any tier).
 
 Network is OFF by default (--no-network). Use --allow-network for title search.
 """
@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 
 from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from src.services.ingest_ids import validate_paper_raw_id
 from src.services.metadata_resolver import (
     apply_resolution,
     resolve_metadata_candidates,
@@ -38,11 +39,11 @@ from src.utils.atomic_io import atomic_write_json
 
 def _source_ids(root: Path, all_unmatched: bool, one: str | None) -> list[str]:
     if one:
-        return [one]
+        return [validate_paper_raw_id(one)]
     if all_unmatched:
         out = []
         for p in sorted(root.iterdir()):
-            if not (p.is_dir() and p.name.isdigit() and len(p.name) in (6, 16)):
+            if not (p.is_dir() and p.name.isdigit() and len(p.name) == 16):
                 continue
             meta_path = p / f"{p.name}.metadata.json"
             if not meta_path.exists():
@@ -55,7 +56,7 @@ def _source_ids(root: Path, all_unmatched: bool, one: str | None) -> list[str]:
             if status == "unmatched":
                 out.append(p.name)
         return out
-    raise ValueError("--source-id or --all-unmatched is required")
+    raise ValueError("--paper-number or --all-unmatched is required")
 
 
 def _import_status_for_report(report) -> str:
@@ -72,7 +73,7 @@ def _import_status_for_report(report) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Resolve metadata candidates for v2 paper_raw folders.")
-    parser.add_argument("--source-id", default=None)
+    parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all-unmatched", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--all-catalog", type=Path, default=Path(ALL_CATALOG_PATH))
@@ -83,7 +84,7 @@ def main() -> int:
     parser.add_argument("--max-candidates", type=int, default=5)
     parser.add_argument("--min-confidence", type=float, default=0.70)
     parser.add_argument("--report", type=Path, default=None,
-                        help="write a summary JSON of all processed source_ids to this path")
+                        help="write a summary JSON of all processed paper_numbers to this path")
     parser.add_argument("--write-candidates", action="store_true",
                         help="write <id>.metadata.candidates.json + resolve_report.json + .import_status.json "
                              "(side files only; does not modify metadata.json unless --apply)")
@@ -99,9 +100,9 @@ def main() -> int:
     apply_changes = args.apply and not args.dry_run
 
     items = []
-    for source_id in _source_ids(args.paper_raw_dir, args.all_unmatched, args.source_id):
+    for source_id in _source_ids(args.paper_raw_dir, args.all_unmatched, args.paper_number):
         folder = args.paper_raw_dir / source_id
-        item = {"source_id": source_id, "status": "planned", "warnings": []}
+        item = {"paper_number": source_id, "paper_raw_id": source_id, "status": "planned", "warnings": []}
         try:
             report = resolve_metadata_candidates(
                 folder,
@@ -128,7 +129,8 @@ def main() -> int:
                     status = _import_status_for_report(report)
                     atomic_write_json(folder / ".import_status.json", {
                         "status": status,
-                        "source_id": source_id,
+                        "paper_number": source_id,
+                        "paper_raw_id": source_id,
                         "best_decision": report.decision,
                         "reason": report.reason,
                         "created_at": report.created_at,

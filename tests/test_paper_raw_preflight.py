@@ -7,6 +7,8 @@ from src.services.v2_library import empty_metadata
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+PN1 = "0000000000000001"
+PN2 = "0000000000000002"
 
 
 def _run_script(script: str, argv: list[str]) -> int:
@@ -21,7 +23,7 @@ def _run_script(script: str, argv: list[str]) -> int:
         sys.argv = saved
 
 
-def _raw_folder(root: Path, source_id: str = "000001", *, doi: str = "10.1000/ok",
+def _raw_folder(root: Path, source_id: str = PN1, *, doi: str = "10.1000/ok",
                 matched: bool = True, pdf_bytes: bytes = b"%PDF") -> Path:
     folder = root / source_id
     folder.mkdir(parents=True)
@@ -48,8 +50,8 @@ def _formal_metadata(root: Path, pid: str, *, doi: str, sha: str = "") -> None:
 
 def test_preflight_ready_and_invalid_doi(tmp_path, monkeypatch):
     paper_raw = tmp_path / "paper_raw"
-    ready = _raw_folder(paper_raw, "000001", pdf_bytes=b"%PDF-ready")
-    bad = _raw_folder(paper_raw, "000002", doi="not-a-doi", pdf_bytes=b"%PDF-bad")
+    ready = _raw_folder(paper_raw, PN1, pdf_bytes=b"%PDF-ready")
+    bad = _raw_folder(paper_raw, PN2, doi="not-a-doi", pdf_bytes=b"%PDF-bad")
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
 
     rc = _run_script(
@@ -66,8 +68,8 @@ def test_preflight_ready_and_invalid_doi(tmp_path, monkeypatch):
 
 def test_preflight_detects_formal_and_internal_duplicates(tmp_path, monkeypatch):
     paper_raw = tmp_path / "paper_raw"
-    first = _raw_folder(paper_raw, "000001", doi="10.1000/dup", pdf_bytes=b"%PDF-same")
-    second = _raw_folder(paper_raw, "000002", doi="10.1000/dup", pdf_bytes=b"%PDF-same")
+    first = _raw_folder(paper_raw, PN1, doi="10.1000/dup", pdf_bytes=b"%PDF-same")
+    second = _raw_folder(paper_raw, PN2, doi="10.1000/dup", pdf_bytes=b"%PDF-same")
     formal = tmp_path / "papers"
     _formal_metadata(formal, "2024_wang_existing", doi="10.1000/dup")
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
@@ -94,8 +96,8 @@ def test_preflight_detects_formal_and_internal_duplicates(tmp_path, monkeypatch)
 
 def test_convert_only_preflight_ready_skips_nonready(tmp_path, monkeypatch):
     paper_raw = tmp_path / "paper_raw"
-    ready = paper_raw / "000001"
-    skipped = paper_raw / "000002"
+    ready = paper_raw / PN1
+    skipped = paper_raw / PN2
     ready.mkdir(parents=True)
     skipped.mkdir(parents=True)
     (ready / ".import_status.json").write_text(json.dumps({"status": "ready_for_convert"}), encoding="utf-8")
@@ -118,7 +120,7 @@ def test_convert_only_preflight_ready_skips_nonready(tmp_path, monkeypatch):
 
         def convert(self, source_id, **kwargs):
             calls.append(source_id)
-            return {"success": True, "source_id": source_id}
+            return {"success": True, "paper_number": source_id, "paper_raw_id": source_id}
 
     import src.services.v2_library as v2_library
     monkeypatch.setattr(v2_library, "PaperRawConverter", FakeConverter)
@@ -139,4 +141,4 @@ def test_convert_only_preflight_ready_skips_nonready(tmp_path, monkeypatch):
     )
 
     assert rc == 0
-    assert calls == ["000001"]
+    assert calls == [PN1]

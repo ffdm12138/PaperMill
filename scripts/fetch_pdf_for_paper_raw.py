@@ -1,4 +1,4 @@
-"""Fetch a PDF for existing paper_raw metadata and attach it as <source_id>.pdf."""
+"""Fetch a PDF for existing paper_raw metadata and attach it as <paper_number>.pdf."""
 from __future__ import annotations
 
 import argparse
@@ -15,22 +15,23 @@ from config.settings import PAPER_RAW_DIR
 from src.discovery.models import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 from src.fetch.fetch_pipeline import fetch_pdf
+from src.services.ingest_ids import validate_paper_raw_id
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.v2_library import PaperRawAllocator
 from src.utils.atomic_io import atomic_write_json
 
 
-def _source_ids(root: Path, all_sources: bool, one: str | None) -> list[str]:
+def _paper_numbers(root: Path, all_sources: bool, one: str | None) -> list[str]:
     if one:
-        return [one]
+        return [validate_paper_raw_id(one)]
     if all_sources:
-        return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 6)
-    raise ValueError("--source-id or --all is required")
+        return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 16)
+    raise ValueError("--paper-number or --all is required")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch PDFs into v2 paper_raw folders.")
-    parser.add_argument("--source-id", default=None)
+    parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--access-mode", choices=[m.value for m in AccessMode], default=AccessMode.OA_ONLY.value)
@@ -44,10 +45,10 @@ def main() -> int:
     allocator = PaperRawAllocator(args.paper_raw_dir)
     report = []
 
-    for source_id in _source_ids(args.paper_raw_dir, args.all, args.source_id):
+    for source_id in _paper_numbers(args.paper_raw_dir, args.all, args.paper_number):
         folder = args.paper_raw_dir / source_id
         meta_path = folder / f"{source_id}.metadata.json"
-        item = {"source_id": source_id, "status": "planned"}
+        item = {"paper_number": source_id, "paper_raw_id": source_id, "status": "planned"}
         if not meta_path.exists():
             item.update({"status": "failed", "error": "metadata file missing"})
             report.append(item)
@@ -62,7 +63,8 @@ def main() -> int:
                 atomic_write_json(folder / ".import_status.json", {
                     "status": "doi_invalid",
                     "reason": item["error"],
-                    "source_id": source_id,
+                    "paper_number": source_id,
+                    "paper_raw_id": source_id,
                 }, indent=2)
             report.append(item)
             continue
@@ -72,7 +74,8 @@ def main() -> int:
                 atomic_write_json(folder / ".import_status.json", {
                     "status": "doi_invalid",
                     "reason": item["error"],
-                    "source_id": source_id,
+                    "paper_number": source_id,
+                    "paper_raw_id": source_id,
                     "doi": doi,
                 }, indent=2)
             report.append(item)
