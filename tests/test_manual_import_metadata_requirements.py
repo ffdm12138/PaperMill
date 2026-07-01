@@ -143,18 +143,19 @@ def test_catalog_invalid_type_cannot_commit(tmp_path):
 
 def test_all_ready_requires_ready_for_commit_status(tmp_path):
     raw = tmp_path / "paper_raw"
+    ledger_path = tmp_path / "catalog" / "paper_number_ledger.json"
     folder = _raw_folder(tmp_path, "2024_wang_状态门禁")
     (folder / ".import_status.json").write_text(json.dumps({"status": "metadata_incomplete"}), encoding="utf-8")
 
-    assert folder not in _ready_dirs(raw)
+    assert folder not in _ready_dirs(raw, ledger_path)
 
     # commit also requires formalize outputs (formalization.json + paper.number marker)
     (folder / ".import_status.json").write_text(json.dumps({"status": "ready_for_commit"}), encoding="utf-8")
-    assert folder not in _ready_dirs(raw)  # still missing formalization.json + marker
+    assert folder not in _ready_dirs(raw, ledger_path)  # still missing formalization.json + marker
 
     (folder / f"{folder.name}.formalization.json").write_text("{}", encoding="utf-8")
     (folder / "0000000000000001.paper.number").write_text("{}", encoding="utf-8")
-    assert folder in _ready_dirs(raw)
+    assert folder in _ready_dirs(raw, ledger_path)
 
 
 def test_manual_confirmed_complete_metadata_can_commit(tmp_path):

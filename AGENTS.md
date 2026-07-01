@@ -103,8 +103,14 @@ before PDF title fallback。
 → `formalize_paper_raw.py` → `commit_paper_raw_to_papers.py`（网络 metadata 已有合法 DOI，无需 resolve 步骤）。
 
 v2.2 状态机职责边界：`curate_paper_raw.py` 只校验 metadata/catalog 并写 `status=catalog_ready`，**不再改名、不再分配 paper_number、不再写 ready_for_commit**；
-`formalize_paper_raw.py` 是 commit 前必经步骤，在 `data/paper_raw` 内完成 canonical paper_id 改名、reserve 16 位 paper_number、回填 catalog 链接、写 `<paper_id>.formalization.json` + `<16位>.paper.number` marker，置 `status=ready_for_commit`；
+`formalize_paper_raw.py` 是 commit 前必经步骤，在 `data/paper_raw` 内完成 canonical paper_id 改名、reserve 16 位 paper_number、回填 catalog 链接、写 `<paper_id>.formalization.json` + `<16位>.paper.number` marker，置 `status=ready_for_commit`；rename 后 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `000001`）；
 `commit_paper_raw_to_papers.py` 只接收 `ready_for_commit` 的已正式化文件夹，做 final validate → 事务性安装（staging copytree → 自检 → `os.replace` → activate ledger → rebuild all.catalog → postcheck → 删源），任何后置失败回滚删除 `data/papers/<paper_id>`、不污染正式库。`data/papers` 不允许半成品。
+
+`formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 都支持完整路径隔离参数
+（`--paper-raw-dir` / `--papers-dir` / `--ledger-path` / `--all-catalog-path`）。
+agent / Codex 测试时**必须**传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，避免污染真实 `data/catalog`；
+默认值指向真实 `data/catalog/paper_number_ledger.json` / `all.catalog.json`（被 gitignore，`git status` 看不出，但会静默污染真实编号账本）。
+metadata 标题/作者/单位/摘要/关键词/DOI 候选优先读取转换后 Markdown 的物理前 100 行 front-matter evidence（**first 100 lines，不是 10 行**）。
 
 写作主流程：selected catalog / paper numbers → `write/jobs/<job_id>/article/` → TeX/BibTeX →
 compile/check（`check_write_tex_project.py`）→ quality check（`check_write_quality_text.py`）。

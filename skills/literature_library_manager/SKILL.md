@@ -28,6 +28,9 @@ Network metadata path（metadata 已带 DOI，先行）: stage_network_metadata_
 v2.2 状态机：`curate_paper_raw.py` 只校验并写 `catalog_ready`（不改名、不分配 paper_number）；
 `formalize_paper_raw.py` 是 commit 前必经步骤（改名 + reserve 16 位 paper_number + `ready_for_commit`）；
 `commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。
+`formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离
+（`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传 tmp
+`--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog`。metadata 候选读转换后 Markdown 前 100 行。
 
 Writing workspace creation:
 

@@ -15,14 +15,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import PAPER_RAW_DIR
+from config.settings import (
+    ALL_CATALOG_PATH,
+    PAPER_NUMBER_LEDGER_PATH,
+    PAPER_RAW_DIR,
+    PAPERS_DIR,
+)
 from src.services.ingest_state import READY_FOR_COMMIT, read_import_status
 from src.services.v2_library import PaperNumberLedger, V2PaperCommitService
 
 
-def _ready_dirs(root: Path) -> list[Path]:
+def _ready_dirs(root: Path, ledger_path: Path) -> list[Path]:
     out = []
-    ledger = PaperNumberLedger()
+    ledger = PaperNumberLedger(ledger_path)
     for folder in sorted(p for p in root.iterdir() if p.is_dir()):
         name = folder.name
         if name.isdigit() and len(name) == 6:
@@ -44,16 +49,25 @@ def main() -> int:
     parser.add_argument("--paper-dir", type=Path, default=None)
     parser.add_argument("--all-ready", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
+    parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
+    parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH,
+                        help="paper_number_ledger.json path (tests/agents must pass a tmp path to avoid polluting data/catalog)")
+    parser.add_argument("--all-catalog-path", type=Path, default=ALL_CATALOG_PATH,
+                        help="all.catalog.json path (tests/agents must pass a tmp path to avoid polluting data/catalog)")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args()
 
     write = args.apply and not args.dry_run
-    folders = [args.paper_dir] if args.paper_dir else _ready_dirs(args.paper_raw_dir) if args.all_ready else []
+    folders = [args.paper_dir] if args.paper_dir else _ready_dirs(args.paper_raw_dir, args.ledger_path) if args.all_ready else []
     if not folders:
         raise SystemExit("--paper-dir or --all-ready is required")
-    service = V2PaperCommitService()
+    service = V2PaperCommitService(
+        papers_dir=args.papers_dir,
+        all_catalog_path=args.all_catalog_path,
+        ledger_path=args.ledger_path,
+    )
     report = []
     for folder in folders:
         item = {"folder": str(folder), "status": "planned"}

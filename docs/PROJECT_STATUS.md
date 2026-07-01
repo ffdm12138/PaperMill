@@ -13,6 +13,9 @@
 - 验收：`validate_v2_library.py` / `audit_metadata_quality.py` / `doctor_ingest_pipeline.py` /
   `pytest -q` 全绿。
 - 不修改 catalog/metadata schema。
+- CLI 路径隔离：`formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 都暴露 `--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`；测试/agent 必须传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog`（默认值指向真实账本，被 gitignore，`git status` 看不出）。
+- `ready_for_commit` 阶段 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `000001`），由 `PaperNumberLedger.repoint_reserved` 在 formalize rename 后完成。
+- metadata 候选读转换后 Markdown 前 100 行（first 100 lines，非 10）。
 
 ### writing v0.1 frozen
 

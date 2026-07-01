@@ -186,17 +186,10 @@ class PaperRawFormalizationService:
                 new = target / f"{pid}.{suffix_name}"
                 if old.exists() and old != new:
                     old.rename(new)
-            # ensure marker carries the renamed folder name
-            marker = target / f"{number}.paper.number"
-            if marker.exists():
-                from src.utils.atomic_io import atomic_write_json
-
-                atomic_write_json(marker, {
-                    "paper_number": number,
-                    "folder_name": target.name,
-                    "state": "reserved",
-                    "planned_paper_id": pid,
-                }, indent=2)
+            # The number was reserved against the 6-digit source folder; repoint
+            # the reserved ledger entry + marker at the renamed <paper_id> folder
+            # so the ledger matches the real workspace at ready_for_commit time.
+            self.ledger.repoint_reserved(number, target, planned_paper_id=pid)
 
         # 6. Backfill catalog links in paper_raw.
         _backfill_formal_catalog_links(target, pid, number)

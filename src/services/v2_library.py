@@ -1693,6 +1693,52 @@ class PaperNumberLedger:
             }, indent=2)
             return number
 
+    def repoint_reserved(
+        self,
+        number: str,
+        folder: str | Path,
+        *,
+        planned_paper_id: str = "",
+    ) -> str:
+        """Repoint a reserved ledger entry at a renamed paper_raw folder.
+
+        Used by ``formalize`` after renaming ``000001`` → ``<paper_id>``: the
+        number was reserved against the 6-digit source folder, and this updates
+        the ledger entry + marker to point at the renamed ``<paper_id>`` folder
+        while keeping ``state="reserved"``. Requires the number to already exist
+        in the ledger (raises otherwise, to avoid hiding reservation errors).
+        Unlike ``repoint()``, this writes the full marker
+        (paper_number/folder_name/state/planned_paper_id).
+        """
+        if not _PAPER_NUMBER_RE.match(str(number or "")):
+            raise ValueError(f"invalid paper_number: {number}")
+        folder = Path(folder)
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            items = data.setdefault("items", {})
+            if number not in items:
+                raise KeyError(f"paper_number not in ledger: {number}")
+            existing = items[number] or {}
+            items[number] = {
+                "folder_name": folder.name,
+                "folder_path": normalize_repo_path(folder),
+                "planned_paper_id": planned_paper_id or existing.get("planned_paper_id") or "",
+                "state": "reserved",
+                "created_at": existing.get("created_at") or now_iso(),
+                "repointed_at": now_iso(),
+            }
+            self._save_unlocked(data)
+            for marker in folder.glob("*.paper.number"):
+                if marker.name != f"{number}.paper.number":
+                    marker.unlink()
+            atomic_write_json(folder / f"{number}.paper.number", {
+                "paper_number": number,
+                "folder_name": folder.name,
+                "state": "reserved",
+                "planned_paper_id": planned_paper_id or existing.get("planned_paper_id") or "",
+            }, indent=2)
+            return number
+
     def activate_reserved(self, number: str, final_folder: str | Path, paper_id: str = "") -> str:
         """Flip a reserved number to ``active`` and repoint it at the formal library folder.
 

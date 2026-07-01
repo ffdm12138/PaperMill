@@ -79,7 +79,7 @@ tests, and SWIG/PyMuPDF imports; they did not fail validation.
 - `scripts/start_mineru_services.py` and `scripts/stop_mineru_services.py` are the
   recommended service control entry points. `start_fast_api_mode.bat` delegates
   startup to the Python helper.
-- Metadata title/author search evidence now prefers converted Markdown first 10
+- Metadata title/author search evidence now prefers converted Markdown first 100
   physical lines before PDF title fallback.
 
 ## 2026-07-01 v2.2 state-machine refactor

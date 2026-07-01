@@ -181,3 +181,36 @@ def test_commit_retry_after_failure(tmp_path: Path, monkeypatch):
     r2 = svc.commit_paper_raw(Path(re_formalized["folder"]))
     assert r2["status"] == "imported", r2
     assert (tmp_path / "papers" / formalized["paper_id"]).exists()
+
+
+def test_commit_cli_isolation_uses_tmp_paths_and_does_not_touch_default_ledger(tmp_path: Path):
+    import os
+    import subprocess
+
+    folder = _staged_raw(tmp_path)
+    formalized = _formalize(tmp_path, folder)
+    assert formalized["success"], formalized
+
+    project_root = Path(__file__).resolve().parent.parent
+    default_ledger = project_root / "data" / "catalog" / "paper_number_ledger.json"
+    before = default_ledger.read_text(encoding="utf-8") if default_ledger.exists() else None
+
+    proc = subprocess.run(
+        ["python", "scripts/commit_paper_raw_to_papers.py",
+         "--all-ready", "--apply",
+         "--paper-raw-dir", str(tmp_path / "paper_raw"),
+         "--papers-dir", str(tmp_path / "papers"),
+         "--ledger-path", str(tmp_path / "catalog" / "paper_number_ledger.json"),
+         "--all-catalog-path", str(tmp_path / "catalog" / "all.catalog.json"),
+         "--report", str(tmp_path / "reports" / "commit.json")],
+        capture_output=True, text=True, cwd=str(project_root),
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    # formalized folder is committed into the tmp papers dir
+    assert (tmp_path / "papers" / formalized["paper_id"]).exists()
+    assert (tmp_path / "catalog" / "paper_number_ledger.json").exists()
+    assert (tmp_path / "catalog" / "all.catalog.json").exists()
+    # the real default ledger must NOT have been mutated
+    after = default_ledger.read_text(encoding="utf-8") if default_ledger.exists() else None
+    assert after == before, "commit CLI mutated the real data/catalog/paper_number_ledger.json"

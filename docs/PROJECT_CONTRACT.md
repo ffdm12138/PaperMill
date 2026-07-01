@@ -33,6 +33,9 @@
 - `write/jobs/` 是写作运行时，不提交（只跟踪 `.gitkeep`）；TeX 不得直接引用 `data/papers`、`data/raw` 或 `data/paper_raw`，只能读 job-local 复制副本。
 - Sci-Hub resolver 是 unsafe optional：默认 disabled，不属于 `OA_ONLY` 主流程；仅 `AccessMode.CUSTOM` 且 `allow_scihub=True` 时才启用，且不得放宽该条件。
 - 每次代码改动后必须运行测试并生成 `mineru_snapshot.zip`。
+- CLI 路径隔离：`formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 必须支持 `--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`；测试/agent 运行时必须传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog/paper_number_ledger.json` / `all.catalog.json`。
+- `ready_for_commit` 阶段 ledger reserved entry 必须指向 formalized 后的 `<paper_id>` 工作区（formalize rename 后由 `repoint_reserved` 同步），不得停留在旧 `000001`。
+- metadata 标题/作者/单位/摘要/关键词/DOI 候选优先读取转换后 Markdown 物理前 100 行（first 100 lines）。
 
 ## 唯一正式流程（两条路径）
 

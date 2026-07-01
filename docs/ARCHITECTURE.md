@@ -47,6 +47,15 @@ after conversion, but a formal commit to `data/papers/` requires **both** valid
 metadata and a valid content catalog — incomplete `paper_raw` folders stay
 outside `data/papers/`.
 
+`formalize_paper_raw.py` and `commit_paper_raw_to_papers.py` both expose full
+path-isolation flags (`--paper-raw-dir` / `--papers-dir` / `--ledger-path` /
+`--all-catalog-path`). Tests and agents MUST pass a tmp `--ledger-path` and tmp
+`--all-catalog-path` to avoid polluting the real `data/catalog/`. After
+formalize renames `000001` → `<paper_id>`, the reserved ledger entry is
+repointed to the renamed `<paper_id>` workspace (via `repoint_reserved`), so at
+`ready_for_commit` the ledger matches the real folder. Metadata candidates are
+read from the converted Markdown first 100 physical lines.
+
 Formal conversion enters through `scripts/convert_paper_raw_gpu.py`; the lower-level
 `convert_paper_raw_batch.py` remains for compatibility/debugging and warns on direct
 formal use. The wrapper defaults `MINERU_REQUIRE_GPU=true`, `CUDA_VISIBLE_DEVICES=0`,

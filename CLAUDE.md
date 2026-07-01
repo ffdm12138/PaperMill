@@ -23,7 +23,8 @@
 
 - ingest v2.2 frozen（`ingest-v2.2`）；writing v0.1 frozen（`writing-v0.1`）。
 - `conda run -n mineru` 是唯一真实运行方式。
-- v2.2 状态机：`curate_paper_raw.py` 只写 `catalog_ready`（不改名、不分配 paper_number）；`formalize_paper_raw.py` 是 commit 前必经步骤（改名 + reserve 16 位 paper_number + 回填 catalog + `ready_for_commit`）；`commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。`data/papers` 不允许半成品。
+- v2.2 状态机：`curate_paper_raw.py` 只写 `catalog_ready`（不改名、不分配 paper_number）；`formalize_paper_raw.py` 是 commit 前必经步骤（改名 + reserve 16 位 paper_number + 回填 catalog + `ready_for_commit`，rename 后 ledger reserved entry 指向 `<paper_id>` 工作区）；`commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。`data/papers` 不允许半成品。
+- `formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离（`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传 tmp ledger 与 tmp all.catalog，禁止污染真实 `data/catalog`。Markdown 候选读 first 100 lines（非 10）。
 - `metadata` 是书目信息事实源；`catalog`（schema v2.0）content-only，`all.catalog` 不含书目字段。
 - catalog 自然语言 value 默认尽量中文；JSON key/schema enum 保持英文，技术名词可中英混写。
   metadata 保留原始/规范书目信息，不为 catalog 中文化而改写。

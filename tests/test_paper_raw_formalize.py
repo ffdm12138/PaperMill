@@ -143,8 +143,18 @@ def test_formalize_renames_folder_files_and_reserves_number(tmp_path: Path):
     assert status["paper_number"] == number
 
     data = svc.ledger.load()
-    assert data["items"][number]["state"] == "reserved"
+    item = data["items"][number]
+    assert item["state"] == "reserved"
+    assert item["folder_name"] == pid
+    assert item["planned_paper_id"] == pid
+    assert Path(item["folder_path"]).name == pid
+    assert "000001" not in item["folder_path"]
     assert data["max_number"] == number
+    marker = json.loads((renamed / f"{number}.paper.number").read_text(encoding="utf-8"))
+    assert marker["paper_number"] == number
+    assert marker["state"] == "reserved"
+    assert marker["folder_name"] == pid
+    assert marker["planned_paper_id"] == pid
 
 
 def test_formalize_backfills_catalog_links(tmp_path: Path):
@@ -163,6 +173,23 @@ def test_formalize_backfills_catalog_links(tmp_path: Path):
     assert refs["catalog"] == f"{pid}.catalog.json"
     assert refs["images_dir"] == "images/"
     assert validate_catalog_schema(catalog) == []
+
+
+def test_formalize_reserved_ledger_points_to_renamed_folder(tmp_path: Path):
+    folder = _staged_raw(tmp_path, source_id="000001")
+    svc = _service(tmp_path)
+
+    result = svc.formalize(folder)
+
+    number = result["paper_number"]
+    pid = result["paper_id"]
+    item = svc.ledger.load()["items"][number]
+
+    assert item["state"] == "reserved"
+    assert item["folder_name"] == pid
+    assert item["planned_paper_id"] == pid
+    assert Path(item["folder_path"]).name == pid
+    assert Path(item["folder_path"]).name != "000001"
 
 
 def test_formalize_idempotent_on_rerun(tmp_path: Path):
@@ -261,15 +288,26 @@ def test_formalize_cli_all_ready_apply(tmp_path: Path):
 
     write_import_status(folder, CATALOG_READY, reason="curated")
     import subprocess
+    import os
+
+    project_root = Path(__file__).resolve().parent.parent
+    default_ledger = project_root / "data" / "catalog" / "paper_number_ledger.json"
+    before = default_ledger.read_text(encoding="utf-8") if default_ledger.exists() else None
 
     proc = subprocess.run(
         ["python", "scripts/formalize_paper_raw.py",
          "--all-ready", "--apply",
          "--paper-raw-dir", str(tmp_path / "paper_raw"),
          "--papers-dir", str(tmp_path / "papers"),
+         "--ledger-path", str(tmp_path / "catalog" / "paper_number_ledger.json"),
+         "--all-catalog-path", str(tmp_path / "catalog" / "all.catalog.json"),
          "--report", str(tmp_path / "report.json")],
-        capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True, text=True, cwd=str(project_root),
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert proc.returncode == 0, proc.stderr + proc.stdout
     assert (tmp_path / "paper_raw" / "2024_Wang_可信论文" / "2024_Wang_可信论文.formalization.json").exists()
+    # tmp ledger must exist and the real default ledger must NOT have been touched.
+    assert (tmp_path / "catalog" / "paper_number_ledger.json").exists()
+    after = default_ledger.read_text(encoding="utf-8") if default_ledger.exists() else None
+    assert after == before, "formalize CLI mutated the real data/catalog/paper_number_ledger.json"

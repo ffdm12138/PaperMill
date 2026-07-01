@@ -64,6 +64,9 @@ metadata/catalog 并写 `catalog_ready`（不改名、不分配 paper_number）�
 是 commit 前必经步骤，在 paper_raw 内完成 canonical paper_id 改名、reserve 16 位
 paper_number、回填 catalog、置 `ready_for_commit`；`commit_paper_raw_to_papers` 只接收
 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。`data/papers` 不允许半成品。
+`formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离
+（`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传
+tmp ledger 与 tmp all.catalog，禁止污染真实 `data/catalog`。metadata 候选读转换后 Markdown 前 100 行。
 写作流程按 `paper_number` 复制到 `write/jobs/<job_id>/article/<paper_number>/`。
 
 正式资产只允许位于：

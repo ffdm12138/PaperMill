@@ -15,7 +15,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import PAPER_RAW_DIR, PAPERS_DIR
+from config.settings import (
+    ALL_CATALOG_PATH,
+    PAPER_NUMBER_LEDGER_PATH,
+    PAPER_RAW_DIR,
+    PAPERS_DIR,
+)
 from src.services.ingest_state import CATALOG_READY, READY_FOR_COMMIT, read_import_status
 from src.services.paper_raw_formalizer import PaperRawFormalizationService
 from src.services.v2_library import _TEMP_ID_RE
@@ -48,6 +53,10 @@ def main() -> int:
     parser.add_argument("--all-ready", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
+    parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH,
+                        help="paper_number_ledger.json path (tests/agents must pass a tmp path to avoid polluting data/catalog)")
+    parser.add_argument("--all-catalog-path", type=Path, default=ALL_CATALOG_PATH,
+                        help="all.catalog.json path (tests/agents must pass a tmp path to avoid polluting data/catalog)")
     parser.add_argument("--paper-id", default=None)
     parser.add_argument("--preserve-paper-number", default=None, help="reuse this 16-digit number instead of reserving a new one")
     parser.add_argument("--apply", action="store_true")
@@ -59,6 +68,8 @@ def main() -> int:
     service = PaperRawFormalizationService(
         paper_raw_dir=args.paper_raw_dir,
         papers_dir=args.papers_dir,
+        ledger_path=args.ledger_path,
+        all_catalog_path=args.all_catalog_path,
     )
     report = []
     for folder in _candidates(args.paper_raw_dir, args):
