@@ -16,16 +16,21 @@ from src.services.v2_library import (
     validate_catalog_schema,
 )
 from src.services.paper_library import PaperLibrary
+from scripts.validate_v2_library import validate_v2_library
 
 
 def _curated_raw(root: Path, pid: str = "2024_wang_测试论文") -> Path:
     folder = root / "paper_raw" / pid
     folder.mkdir(parents=True)
     metadata = empty_metadata(pid)
+    parts = pid.split("_")
+    short_name = "_".join(pid.split("_")[2:]) or "测试论文"
     metadata["title"]["original"] = "Test Paper"
-    metadata["title"]["translated_zh"] = "测试论文"
+    metadata["title"]["translated_zh"] = short_name
+    metadata["title"]["short_zh"] = short_name
     metadata["year"] = 2024
-    metadata["authors"] = [{"full_name": "Wang A", "family": "Wang", "given": "A", "orcid": "", "affiliation": ""}]
+    family = parts[1] if len(parts) > 1 else "wang"
+    metadata["authors"] = [{"full_name": f"{family} A", "family": family, "given": "A", "orcid": "", "affiliation": ""}]
     metadata["container"]["journal"] = "Test Journal"
     metadata["identifiers"]["doi"] = "10.1/test"
     metadata["metadata_match"] = {
@@ -37,13 +42,25 @@ def _curated_raw(root: Path, pid: str = "2024_wang_测试论文") -> Path:
         "candidates": [],
     }
     catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = "Test Paper"
+    catalog["content_identity"]["content_title"] = short_name
     catalog["classification"].update({
         "primary_domain": "blowing_snow_physics",
         "secondary_domains": ["blowing_snow_physics"],
         "topic_tags": ["blowing_snow"],
     })
-    catalog["research_card"]["research_problem"] = "测试论文摘要"
+    catalog["screening"]["reason"] = "该文献与中文综述主题相关。"
+    catalog["research_card"].update({
+        "research_problem": "测试论文摘要",
+        "core_question": "测试核心问题",
+        "hypothesis_or_objective": "测试研究目标",
+        "study_object": "测试研究对象",
+        "method_summary": "测试方法摘要",
+        "data_or_experiment": "测试数据或实验",
+        "main_findings": ["测试主要发现"],
+        "mechanisms": ["测试机制"],
+        "limitations": ["测试局限"],
+        "usefulness_for_user": "测试写作用途",
+    })
     catalog["content_notes"]["short_summary"] = "测试论文摘要"
     (folder / f"{pid}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (folder / f"{pid}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
@@ -108,8 +125,82 @@ def test_v2_commit_assigns_number_and_builds_all_catalog(tmp_path):
     assert not raw_folder.exists()
 
 
+def test_v2_commit_removes_resolver_side_files(tmp_path):
+    raw_folder = _curated_raw(tmp_path)
+    (raw_folder / "000001.metadata.candidates.json").write_text("{}", encoding="utf-8")
+    (raw_folder / "000001.metadata.resolve_report.json").write_text("{}", encoding="utf-8")
+    (raw_folder / "000001.metadata.patch.json").write_text("{}", encoding="utf-8")
+
+    result = V2PaperCommitService(
+        papers_dir=tmp_path / "papers",
+        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
+        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
+    ).commit_paper_raw(raw_folder)
+
+    paper_dir = tmp_path / "papers" / "2024_wang_测试论文"
+    assert result["status"] == "imported"
+    assert not list(paper_dir.glob("*.metadata.candidates.json"))
+    assert not list(paper_dir.glob("*.metadata.resolve_report.json"))
+    assert not list(paper_dir.glob("*.metadata.patch.json"))
+
+
+def test_validate_v2_library_rejects_formal_resolver_side_files(tmp_path):
+    raw_folder = _curated_raw(tmp_path)
+    V2PaperCommitService(
+        papers_dir=tmp_path / "papers",
+        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
+        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
+    ).commit_paper_raw(raw_folder)
+    paper_dir = tmp_path / "papers" / "2024_wang_测试论文"
+    (paper_dir / "000001.metadata.candidates.json").write_text("{}", encoding="utf-8")
+
+    errors, _ = validate_v2_library(
+        papers_dir=tmp_path / "papers",
+        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
+        check_paths=False,
+    )
+
+    assert any("paper_raw transient file must not enter formal library" in err for err in errors)
+
+
+def test_formal_commit_requires_chinese_short_title(tmp_path):
+    raw_folder = _curated_raw(tmp_path)
+    meta_path = raw_folder / "2024_wang_测试论文.metadata.json"
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["title"]["short_zh"] = "english title"
+    metadata["title"]["translated_zh"] = "english title"
+    meta_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+    result = V2PaperCommitService(
+        papers_dir=tmp_path / "papers",
+        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
+        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
+    ).commit_paper_raw(raw_folder)
+
+    assert result["success"] is False
+    assert result["status"] == "metadata_incomplete"
+    assert any("must contain Chinese" in err for err in result["errors"])
+
+
+def test_commit_can_preserve_repair_paper_number(tmp_path):
+    raw_folder = _curated_raw(tmp_path)
+
+    result = V2PaperCommitService(
+        papers_dir=tmp_path / "papers",
+        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
+        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
+    ).commit_paper_raw(raw_folder, preserve_paper_number="0000000000000007")
+
+    paper_dir = tmp_path / "papers" / "2024_wang_测试论文"
+    ledger = json.loads((tmp_path / "catalog" / "paper_number_ledger.json").read_text(encoding="utf-8"))
+    assert result["paper_number"] == "0000000000000007"
+    assert (paper_dir / "0000000000000007.paper.number").exists()
+    assert ledger["items"]["0000000000000007"]["folder_name"] == "2024_wang_测试论文"
+    assert ledger["max_number"] == "0000000000000007"
+
+
 def test_commit_postcheck_failure_keeps_raw_and_final(tmp_path, monkeypatch):
-    raw_folder = _curated_raw(tmp_path, "2024_wang_postcheck")
+    raw_folder = _curated_raw(tmp_path, "2024_wang_后置检查")
     papers = tmp_path / "papers"
 
     def _boom(self, *, write=True):
@@ -122,7 +213,7 @@ def test_commit_postcheck_failure_keeps_raw_and_final(tmp_path, monkeypatch):
         ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
     ).commit_paper_raw(raw_folder)
 
-    final = papers / "2024_wang_postcheck"
+    final = papers / "2024_wang_后置检查"
     assert result["status"] == "commit_postcheck_failed"
     assert raw_folder.exists()
     assert final.exists()
@@ -252,8 +343,8 @@ def test_pdf_metadata_without_doi_cannot_commit(tmp_path):
 
 
 def test_commit_normalizes_doi_into_formal_metadata(tmp_path):
-    raw_folder = _curated_raw(tmp_path, "2024_wang_doi标准化")
-    meta_path = raw_folder / "2024_wang_doi标准化.metadata.json"
+    raw_folder = _curated_raw(tmp_path, "2024_wang_DOI标准化")
+    meta_path = raw_folder / "2024_wang_DOI标准化.metadata.json"
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     metadata["identifiers"]["doi"] = "https://doi.org/10.1038/s41586-023-06185-3"
     meta_path.write_text(json.dumps(metadata), encoding="utf-8")
@@ -267,7 +358,7 @@ def test_commit_normalizes_doi_into_formal_metadata(tmp_path):
 
     assert result["status"] == "imported"
     formal = json.loads(
-        (papers / "2024_wang_doi标准化" / "2024_wang_doi标准化.metadata.json").read_text(encoding="utf-8")
+        (papers / "2024_wang_DOI标准化" / "2024_wang_DOI标准化.metadata.json").read_text(encoding="utf-8")
     )
     assert formal["identifiers"]["doi"] == "10.1038/s41586-023-06185-3"
 
@@ -314,8 +405,22 @@ def test_curation_merges_only_empty_metadata_and_renames(tmp_path):
     metadata["metadata_match"]["status"] = "matched"
     metadata["metadata_match"]["confidence"] = 1.0
     catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = "Trusted Original"
+    catalog["content_identity"]["content_title"] = "可信论文"
     catalog["classification"]["primary_domain"] = "blowing_snow"
+    catalog["screening"]["reason"] = "该文献与中文综述主题相关。"
+    catalog["research_card"].update({
+        "research_problem": "研究可信论文的入库流程。",
+        "core_question": "如何验证 curated 文件只补空字段？",
+        "hypothesis_or_objective": "验证 metadata 合并边界。",
+        "study_object": "测试论文",
+        "method_summary": "使用本地 mock 资产测试。",
+        "data_or_experiment": "临时目录中的 PDF 与 Markdown。",
+        "main_findings": ["非空 metadata 字段不会被覆盖。"],
+        "mechanisms": ["通过 merge_missing_metadata 控制补空行为。"],
+        "limitations": ["仅覆盖结构性流程。"],
+        "usefulness_for_user": "用于保障入库流程稳定。",
+    })
+    catalog["content_notes"]["short_summary"] = "测试 curated 文件合并与重命名。"
     (folder / "000001.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (folder / "000001.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
     (folder / "000001.md").write_text("# Trusted", encoding="utf-8")
@@ -336,6 +441,9 @@ def test_curation_merges_only_empty_metadata_and_renames(tmp_path):
     assert merged["title"]["original"] == "Trusted Original"
     assert merged["abstract"] == "new abstract"
     assert (renamed / f"{renamed.name}.catalog.json").exists()
+    status = json.loads((renamed / ".import_status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "ready_for_commit"
+    assert status["paper_id"] == renamed.name
 
 
 def test_v2_commit_does_not_write_pdf_mirror(tmp_path):
@@ -388,6 +496,15 @@ def test_validate_catalog_schema_rejects_forbidden_metadata_keys():
     assert any("forbidden bibliographic key: content_identity.identifiers" in e for e in errors2)
 
 
+def test_validate_catalog_schema_rejects_non_list_evidence_fields():
+    cat = empty_catalog()
+    cat["evidence_profile"]["important_figures"] = {"图1": "not a list"}
+
+    errors = validate_catalog_schema(cat)
+
+    assert any("catalog.evidence_profile.important_figures must be a list" in e for e in errors)
+
+
 def test_migrate_catalog_to_v2_0_strips_forbidden_and_preserves_content():
     old = {
         "schema_version": "1.1",
@@ -436,8 +553,22 @@ def test_accented_author_apply_curated_files_completes_rename(tmp_path):
     metadata["metadata_match"]["status"] = "matched"
     metadata["metadata_match"]["confidence"] = 1.0
     catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = "A Bulk Blowing-Snow Model"
+    catalog["content_identity"]["content_title"] = "体相吹雪模型"
     catalog["classification"]["primary_domain"] = "blowing_snow"
+    catalog["screening"]["reason"] = "该文献与风吹雪中文综述主题相关。"
+    catalog["research_card"].update({
+        "research_problem": "研究体相风吹雪模型。",
+        "core_question": "如何模拟风吹雪过程？",
+        "hypothesis_or_objective": "验证重命名支持重音作者姓氏。",
+        "study_object": "风吹雪模型",
+        "method_summary": "使用 mock catalog 测试 curation。",
+        "data_or_experiment": "临时测试资产。",
+        "main_findings": ["作者姓氏可折叠为 ASCII。"],
+        "mechanisms": ["命名时只折叠作者姓氏。"],
+        "limitations": ["仅测试命名边界。"],
+        "usefulness_for_user": "保障中文 paper_id 生成。",
+    })
+    catalog["content_notes"]["short_summary"] = "体相风吹雪模型命名测试。"
     (folder / "000001.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (folder / "000001.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
     (folder / "000001.md").write_text("# test", encoding="utf-8")
@@ -476,3 +607,116 @@ def test_apply_rejects_catalog_missing_screening_group(tmp_path):
     assert any("screening" in e for e in result["errors"])
     assert (folder / ".import_status.json").exists(), ".import_status.json must be written on failure"
     assert folder.exists(), "folder must NOT be renamed on failure"
+
+
+# --- PaperNumberLedger reserve/activate/deactivate state machine -------------
+
+def _ledger(tmp_path: Path) -> PaperNumberLedger:
+    return PaperNumberLedger(tmp_path / "catalog" / "paper_number_ledger.json")
+
+
+def test_ledger_reserve_writes_marker_and_reserved_state(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    folder = tmp_path / "paper_raw" / "000001"
+    folder.mkdir(parents=True)
+
+    number = ledger.reserve_for_paper_raw(folder, planned_paper_id="2024_Wang_可信论文")
+
+    assert number == "0000000000000001"
+    assert (folder / "0000000000000001.paper.number").exists()
+    data = ledger.load()
+    assert data["max_number"] == "0000000000000001"
+    item = data["items"][number]
+    assert item["state"] == "reserved"
+    assert item["planned_paper_id"] == "2024_Wang_可信论文"
+    assert item["folder_name"] == "000001"
+    assert ledger.paper_number_from_marker(folder) == number
+
+
+def test_ledger_reserve_is_idempotent(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    folder = tmp_path / "paper_raw" / "000001"
+    folder.mkdir(parents=True)
+    first = ledger.reserve_for_paper_raw(folder)
+    second = ledger.reserve_for_paper_raw(folder)
+    assert first == second == "0000000000000001"
+    data = ledger.load()
+    assert len(data["items"]) == 1
+
+
+def test_ledger_activate_reserved_flips_state_and_repoints(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    src = tmp_path / "paper_raw" / "000001"
+    src.mkdir(parents=True)
+    number = ledger.reserve_for_paper_raw(src, planned_paper_id="2024_Wang_可信论文")
+
+    final = tmp_path / "papers" / "2024_Wang_可信论文"
+    final.mkdir(parents=True)
+    # copytree would bring the marker; simulate that here
+    (final / f"{number}.paper.number").write_text("{}", encoding="utf-8")
+
+    ledger.activate_reserved(number, final, paper_id="2024_Wang_可信论文")
+
+    data = ledger.load()
+    item = data["items"][number]
+    assert item["state"] == "active"
+    assert item["folder_name"] == "2024_Wang_可信论文"
+    assert item["activated_at"]
+    marker = json.loads((final / f"{number}.paper.number").read_text(encoding="utf-8"))
+    assert marker["state"] == "active"
+
+
+def test_ledger_activate_unknown_number_raises(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    final = tmp_path / "papers" / "2024_Wang_x"
+    final.mkdir(parents=True)
+    with pytest.raises(KeyError):
+        ledger.activate_reserved("0000000000000009", final)
+
+
+def test_ledger_deactivate_to_source_rolls_back(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    src = tmp_path / "paper_raw" / "000001"
+    src.mkdir(parents=True)
+    number = ledger.reserve_for_paper_raw(src)
+    final = tmp_path / "papers" / "2024_Wang_x"
+    final.mkdir(parents=True)
+    (final / f"{number}.paper.number").write_text("{}", encoding="utf-8")
+    ledger.activate_reserved(number, final)
+
+    ledger.deactivate_to_source(number, src)
+
+    item = ledger.load()["items"][number]
+    assert item["state"] == "reserved"
+    assert item["folder_name"] == "000001"
+    assert item["deactivated_at"]
+
+
+def test_ledger_validate_warns_on_reserved_orphan(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    # reserved number whose folder has been deleted (orphan)
+    data = ledger.empty_data()
+    data["max_number"] = "0000000000000001"
+    data["items"]["0000000000000001"] = {
+        "folder_name": "000001",
+        "folder_path": str(tmp_path / "paper_raw" / "gone"),
+        "state": "reserved",
+        "created_at": "2026-01-01T00:00:00",
+    }
+    ledger.save(data)
+
+    errors, warnings = ledger.validate(papers_dir=tmp_path / "papers")
+    assert not errors
+    assert any("ledger folder missing" in w for w in warnings)
+
+
+def test_ledger_load_backfills_state_for_legacy_entries(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    data = ledger.empty_data()
+    data["items"]["0000000000000001"] = {
+        "folder_name": "2024_Wang_x",
+        "folder_path": str(tmp_path / "papers" / "2024_Wang_x"),
+        "created_at": "2026-01-01T00:00:00",
+    }
+    ledger.save(data)
+    assert ledger.load()["items"]["0000000000000001"]["state"] == "active"

@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import warnings
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,16 @@ from src.utils.atomic_io import atomic_write_json
 _TEMP_ID_RE = re.compile(r"^\d{6}$")
 _PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
 _BAD_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\r\n]+')
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_FORMAL_TRANSIENT_GLOBS = (
+    "*.metadata.candidates.json",
+    "*.metadata.resolve_report.json",
+    "*.metadata.patch.json",
+    "stage_manifest.json",
+    "*.conversion.json",
+    "curation_prompt.md",
+    ".import_status.json",
+)
 
 
 def now_iso() -> str:
@@ -426,7 +437,86 @@ def validate_catalog_schema(data: dict) -> list[str]:
     forbidden = find_forbidden_catalog_keys(data)
     for key_path in forbidden:
         errors.append(f"catalog contains forbidden bibliographic key: {key_path}")
+    list_fields = {
+        "classification.secondary_domains": (classification, "secondary_domains"),
+        "classification.topic_tags": (classification, "topic_tags"),
+        "classification.methods_tags": (classification, "methods_tags"),
+        "classification.phenomena_tags": (classification, "phenomena_tags"),
+        "classification.material_tags": (classification, "material_tags"),
+        "classification.model_tags": (classification, "model_tags"),
+        "research_card.main_findings": (card, "main_findings"),
+        "research_card.mechanisms": (card, "mechanisms"),
+        "research_card.limitations": (card, "limitations"),
+        "evidence_profile.key_claims": (evidence, "key_claims"),
+        "evidence_profile.important_equations": (evidence, "important_equations"),
+        "evidence_profile.important_figures": (evidence, "important_figures"),
+        "evidence_profile.important_tables": (evidence, "important_tables"),
+        "evidence_profile.quoted_terms": (evidence, "quoted_terms"),
+        "evidence_profile.page_or_section_evidence": (evidence, "page_or_section_evidence"),
+    }
+    notes = data.get("content_notes") or {}
+    for key in ("possible_use_in_writing", "open_questions", "warnings"):
+        if key in notes:
+            list_fields[f"content_notes.{key}"] = (notes, key)
+    for path, (parent, key) in list_fields.items():
+        if key in parent and not isinstance(parent.get(key), list):
+            errors.append(f"catalog.{path} must be a list")
     return errors
+
+
+def _has_cjk(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_CJK_RE.search(value))
+    if isinstance(value, list):
+        return any(_has_cjk(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_cjk(item) for item in value.values())
+    return False
+
+
+def validate_formal_chinese_content(metadata: dict, catalog: dict) -> list[str]:
+    errors: list[str] = []
+    title = metadata.get("title") or {}
+    if not _has_cjk(title.get("short_zh") or title.get("translated_zh") or ""):
+        errors.append("metadata.title.short_zh or translated_zh must contain Chinese for formal commit")
+
+    identity = catalog.get("content_identity") or {}
+    if not _has_cjk(identity.get("content_title") or ""):
+        errors.append("catalog.content_identity.content_title must contain Chinese")
+
+    card = catalog.get("research_card") or {}
+    for key in (
+        "research_problem",
+        "core_question",
+        "hypothesis_or_objective",
+        "study_object",
+        "method_summary",
+        "data_or_experiment",
+        "main_findings",
+        "mechanisms",
+        "limitations",
+        "usefulness_for_user",
+    ):
+        if not _has_cjk(card.get(key)):
+            errors.append(f"catalog.research_card.{key} must contain Chinese")
+
+    screening = catalog.get("screening") or {}
+    if not _has_cjk(screening.get("reason") or ""):
+        errors.append("catalog.screening.reason must contain Chinese")
+
+    notes = catalog.get("content_notes") or {}
+    if not _has_cjk(notes.get("short_summary") or ""):
+        errors.append("catalog.content_notes.short_summary must contain Chinese")
+    return errors
+
+
+def _clean_formal_transient_artifacts(folder: Path) -> None:
+    for pattern in _FORMAL_TRANSIENT_GLOBS:
+        for vestige in folder.glob(pattern):
+            if vestige.is_dir():
+                shutil.rmtree(vestige)
+            else:
+                vestige.unlink()
 
 
 def metadata_is_matched(metadata: dict) -> bool:
@@ -694,11 +784,268 @@ def paper_id_from_metadata_catalog(metadata: dict, catalog: dict) -> str:
     bibliographic facts (catalog v2.0 has no display/year/title).
     """
     title = (metadata.get("title") or {}).get("short_zh")
-    title = title or (metadata.get("title") or {}).get("translated_zh") or (metadata.get("title") or {}).get("original")
+    title = title or (metadata.get("title") or {}).get("translated_zh")
+    if not _has_cjk(title or ""):
+        raise ValueError("metadata.title.short_zh or translated_zh must contain Chinese")
     title = _BAD_FILENAME_CHARS.sub("", str(title or "未命名论文")).replace(" ", "_")
     year = (metadata.get("year") or "unknown")
     author = first_author_family(metadata)
     return sanitize_paper_id(f"{year}_{author}_{title}")
+
+
+def _load_json_for_gate(path: Path, label: str) -> tuple[dict, list[str]]:
+    if not path.exists():
+        return {}, [f"missing {label}: {path}"]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {}, [f"{label} JSON invalid at {path}: {exc}"]
+    if not isinstance(data, dict):
+        return {}, [f"{label} must be an object: {path}"]
+    return data, []
+
+
+def _md_sha256_path(path: Path) -> str:
+    digest = __import__("hashlib").sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _norm_duplicate_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _duplicate_errors_for_library(
+    papers_dir: Path,
+    *,
+    paper_id: str,
+    metadata: dict,
+    pdf_sha256: str,
+    md_sha256: str,
+) -> list[str]:
+    errors: list[str] = []
+    doi = str(_metadata_field(metadata, ("identifiers", "doi"), "")).strip().lower()
+    title = _norm_duplicate_text(
+        _metadata_field(metadata, ("title", "original"), "")
+        or _metadata_field(metadata, ("title", "translated_zh"), "")
+    )
+    author = _norm_duplicate_text(first_author_family(metadata))
+    year = metadata.get("year")
+    if not papers_dir.exists():
+        return errors
+    for folder in sorted(p for p in papers_dir.iterdir() if p.is_dir()):
+        existing_pid = folder.name
+        if existing_pid == paper_id:
+            errors.append(f"paper_id already exists in formal library: {paper_id}")
+        meta_path = folder / f"{existing_pid}.metadata.json"
+        try:
+            existing_meta = _read_json(meta_path, {})
+        except Exception:
+            existing_meta = {}
+        if not existing_meta:
+            continue
+        existing_doi = str(_metadata_field(existing_meta, ("identifiers", "doi"), "")).strip().lower()
+        existing_sha = str(_metadata_field(existing_meta, ("pdf", "sha256"), "")).strip().lower()
+        existing_title = _norm_duplicate_text(
+            _metadata_field(existing_meta, ("title", "original"), "")
+            or _metadata_field(existing_meta, ("title", "translated_zh"), "")
+        )
+        existing_author = _norm_duplicate_text(first_author_family(existing_meta))
+        existing_year = existing_meta.get("year")
+        existing_md_sha = str(_metadata_field(existing_meta, ("content", "markdown_sha256"), "")).strip().lower()
+        if not existing_md_sha:
+            md_path = folder / f"{existing_pid}.md"
+            if md_path.exists():
+                try:
+                    existing_md_sha = _md_sha256_path(md_path)
+                except OSError:
+                    existing_md_sha = ""
+        if doi and existing_doi == doi:
+            errors.append(f"duplicate DOI with {existing_pid}: {doi}")
+        if pdf_sha256 and existing_sha == pdf_sha256:
+            errors.append(f"duplicate PDF sha256 with {existing_pid}")
+        if title and year and title == existing_title and str(year) == str(existing_year):
+            errors.append(f"possible duplicate title/year with {existing_pid}: {title}")
+        if author and title and year and author == existing_author and title == existing_title and str(year) == str(existing_year):
+            errors.append(f"possible duplicate title/author/year with {existing_pid}: {title}")
+        if md_sha256 and existing_md_sha and md_sha256 == existing_md_sha:
+            errors.append(f"duplicate Markdown content with {existing_pid}")
+    if safe_child(papers_dir, paper_id).exists():
+        errors.append(f"paper directory already exists: {paper_id}")
+    return errors
+
+
+def _read_import_status(folder: Path) -> dict:
+    path = folder / ".import_status.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"status": "json_invalid"}
+    return data if isinstance(data, dict) else {"status": "json_invalid"}
+
+
+def _status_from_readiness_errors(errors: list[str]) -> str:
+    joined = "\n".join(errors)
+    if any("metadata.metadata_match.status" in err or "metadata_match.status" in err for err in errors):
+        return "metadata_unmatched"
+    if "catalog" in joined:
+        return "catalog_invalid"
+    if any("duplicate" in err or "already exists" in err for err in errors):
+        return "possible_duplicate"
+    if any("missing " in err for err in errors):
+        return "assets_incomplete"
+    if any(err.startswith("metadata.") or "metadata " in err for err in errors):
+        return "metadata_incomplete"
+    if "paper_id" in joined:
+        return "paper_id_mismatch"
+    return "not_ready"
+
+
+def assess_paper_raw_commit_readiness(
+    paper_raw_dir: str | Path,
+    *,
+    file_prefix: str | None = None,
+    paper_id: str | None = None,
+    metadata: dict | None = None,
+    catalog: dict | None = None,
+    papers_dir: str | Path = PAPERS_DIR,
+    check_duplicates: bool = True,
+    require_ready_status: bool = False,
+) -> dict:
+    """Return the single paper_raw readiness decision used by curation and commit."""
+    folder = Path(paper_raw_dir)
+    prefix = file_prefix or folder.name
+    errors: list[str] = []
+    warnings_out: list[str] = []
+    status_data = _read_import_status(folder)
+    if require_ready_status and status_data.get("status") != "ready_for_commit":
+        errors.append(".import_status.json status must be ready_for_commit")
+
+    paths = {
+        "metadata": folder / f"{prefix}.metadata.json",
+        "catalog": folder / f"{prefix}.catalog.json",
+        "md": folder / f"{prefix}.md",
+        "pdf": folder / f"{prefix}.pdf",
+        "images": folder / "images",
+    }
+    for name, path in paths.items():
+        if name == "images":
+            if not path.is_dir():
+                errors.append(f"missing images: {path}")
+        elif not path.exists():
+            errors.append(f"missing {name}: {path}")
+
+    metadata_errors: list[str] = []
+    catalog_errors: list[str] = []
+    if metadata is None:
+        metadata, metadata_errors = _load_json_for_gate(paths["metadata"], "metadata")
+    else:
+        metadata = deepcopy(metadata)
+    if catalog is None:
+        catalog, catalog_errors = _load_json_for_gate(paths["catalog"], "catalog")
+    else:
+        catalog = deepcopy(catalog)
+    errors.extend(metadata_errors)
+    errors.extend(catalog_errors)
+
+    pdf_sha = ""
+    md_sha = ""
+    if paths["pdf"].exists() and paths["pdf"].is_file():
+        try:
+            pdf_sha = compute_sha256(paths["pdf"])
+            metadata.setdefault("pdf", {})
+            metadata["pdf"].update({
+                "status": "present",
+                "sha256": pdf_sha,
+                "file_size": paths["pdf"].stat().st_size,
+            })
+        except OSError as exc:
+            errors.append(f"pdf unreadable: {exc}")
+    if paths["md"].exists() and paths["md"].is_file():
+        try:
+            md_sha = _md_sha256_path(paths["md"])
+            metadata.setdefault("content", {})["markdown_sha256"] = md_sha
+        except OSError as exc:
+            errors.append(f"markdown unreadable: {exc}")
+
+    if metadata:
+        normalized_doi = metadata_doi(metadata)
+        if normalized_doi:
+            metadata.setdefault("identifiers", {})["doi"] = normalized_doi
+        errors.extend(validate_metadata_schema(metadata))
+        completeness_errors = validate_metadata_completeness_for_commit(metadata)
+        errors.extend(completeness_errors)
+        warnings_out.extend(metadata_reference_warnings_for_commit(metadata))
+    if catalog:
+        errors.extend(validate_catalog_schema(catalog))
+
+    if metadata and catalog:
+        errors.extend(validate_formal_chinese_content(metadata, catalog))
+
+    expected_pid = ""
+    final_pid = paper_id or (folder.name if not _TEMP_ID_RE.match(folder.name) else "")
+    if metadata and catalog:
+        try:
+            expected_pid = paper_id_from_metadata_catalog(metadata, catalog)
+            validate_paper_id(expected_pid)
+        except Exception as exc:
+            errors.append(f"paper_id derivation failed: {exc}")
+        else:
+            if paper_id and paper_id != expected_pid:
+                errors.append(f"paper_id mismatch expected={expected_pid} actual={paper_id}")
+            if not final_pid:
+                final_pid = expected_pid
+            if not _TEMP_ID_RE.match(folder.name) and folder.name != expected_pid:
+                errors.append(f"paper_id mismatch expected={expected_pid} actual={folder.name}")
+            if not _TEMP_ID_RE.match(prefix) and prefix != expected_pid:
+                errors.append(f"file prefix mismatch expected={expected_pid} actual={prefix}")
+    elif paper_id:
+        final_pid = paper_id
+
+    if final_pid:
+        try:
+            validate_paper_id(final_pid)
+        except Exception as exc:
+            errors.append(f"paper_id invalid: {exc}")
+
+    if check_duplicates and final_pid and metadata and not any(
+        "metadata.identifiers.doi" in err
+        or "metadata.title.original" in err
+        or "metadata.authors" in err
+        or "metadata.year" in err
+        or "metadata.container" in err
+        or "metadata.metadata_match.status" in err
+        for err in errors
+    ):
+        errors.extend(_duplicate_errors_for_library(
+            Path(papers_dir),
+            paper_id=final_pid,
+            metadata=metadata,
+            pdf_sha256=pdf_sha,
+            md_sha256=md_sha,
+        ))
+
+    errors = list(dict.fromkeys(errors))
+    ready = not errors
+    return {
+        "ready": ready,
+        "status": "ready_for_commit" if ready else _status_from_readiness_errors(errors),
+        "errors": errors,
+        "warnings": warnings_out,
+        "source_id": str(metadata.get("source_id") or prefix) if isinstance(metadata, dict) else prefix,
+        "paper_id": final_pid,
+        "expected_paper_id": expected_pid,
+        "file_prefix": prefix,
+        "pdf_sha256": pdf_sha,
+        "markdown_sha256": md_sha,
+        "metadata": metadata,
+        "catalog": catalog,
+        "import_status": status_data,
+    }
 
 
 class PaperRawAllocator:
@@ -826,7 +1173,128 @@ class PaperRawConverter:
             raise ValueError(f"MinerU v2 input outside paper_raw: {folder}")
         return source_id, folder
 
-    def convert(self, source_id_or_dir: str | Path, *, output_root: str | Path | None = None) -> dict:
+    def _conversion_paths(self, folder: Path, source_id: str) -> dict[str, Path]:
+        return {
+            "pdf": folder / f"{source_id}.pdf",
+            "markdown": folder / f"{source_id}.md",
+            "images": folder / "images",
+            "manifest": folder / f"{source_id}.conversion.json",
+            "output": folder / "output",
+        }
+
+    def _images_count(self, images_dir: Path) -> int:
+        if not images_dir.exists() or not images_dir.is_dir():
+            return 0
+        return sum(1 for p in images_dir.rglob("*") if p.is_file())
+
+    def inspect_conversion(
+        self,
+        source_id_or_dir: str | Path,
+        *,
+        backend: str = MINERU_BACKEND,
+        method: str = MINERU_METHOD,
+        lang: str = MINERU_LANG,
+        effort: str = MINERU_EFFORT,
+    ) -> dict:
+        source_id, folder = self._source_folder(source_id_or_dir)
+        paths = self._conversion_paths(folder, source_id)
+        pdf = paths["pdf"]
+        target_md = paths["markdown"]
+        images_target = paths["images"]
+        manifest_path = paths["manifest"]
+        pdf_sha = compute_sha256(pdf) if pdf.exists() else ""
+        md_exists = target_md.exists() and target_md.stat().st_size > 0
+        images_exists = images_target.exists() and images_target.is_dir()
+        result = {
+            "state": "not_converted",
+            "reason": "no converted Markdown/assets present",
+            "manifest": None,
+            "markdown": str(target_md),
+            "images_dir": str(images_target),
+            "pdf_sha256": pdf_sha,
+        }
+
+        if manifest_path.exists():
+            try:
+                manifest = _read_json(manifest_path, {})
+            except Exception as exc:
+                result.update({
+                    "state": "partial",
+                    "reason": f"conversion manifest is unreadable: {exc}",
+                })
+                return result
+            result["manifest"] = manifest
+            missing: list[str] = []
+            if manifest.get("status") != "converted":
+                missing.append("manifest status is not converted")
+            if not md_exists:
+                missing.append("markdown missing or empty")
+            if not images_exists:
+                missing.append("images directory missing")
+            if missing:
+                result.update({"state": "partial", "reason": "; ".join(missing)})
+                return result
+            stale: list[str] = []
+            if str(manifest.get("pdf_sha256") or "") != pdf_sha:
+                stale.append("PDF sha256 changed")
+            for key, current in {
+                "backend": backend,
+                "method": method,
+                "lang": lang,
+                "effort": effort,
+            }.items():
+                if str(manifest.get(key) or "") != str(current):
+                    stale.append(f"{key} changed")
+            if stale:
+                result.update({"state": "stale", "reason": "; ".join(stale)})
+                return result
+            result.update({"state": "converted_current", "reason": "conversion manifest is current"})
+            return result
+
+        if md_exists and images_exists:
+            result.update({
+                "state": "converted_legacy",
+                "reason": "existing markdown/images present without conversion manifest",
+            })
+            return result
+        if target_md.exists() or images_target.exists():
+            result.update({
+                "state": "partial",
+                "reason": "partial converted assets present without conversion manifest",
+            })
+            return result
+        return result
+
+    def _clear_conversion_outputs(self, folder: Path, source_id: str) -> None:
+        paths = self._conversion_paths(folder, source_id)
+        for file_path in (paths["markdown"], paths["manifest"]):
+            file_path.unlink(missing_ok=True)
+        for dir_path in (paths["images"], paths["output"]):
+            if dir_path.exists():
+                shutil.rmtree(dir_path)
+
+    def _replace_images_dir(self, images_source: Path | None, images_target: Path) -> int:
+        tmp_images_target = images_target.parent / ".images.tmp"
+        shutil.rmtree(tmp_images_target, ignore_errors=True)
+        try:
+            if images_source and images_source.exists():
+                shutil.copytree(images_source, tmp_images_target)
+            else:
+                tmp_images_target.mkdir(parents=True)
+            shutil.rmtree(images_target, ignore_errors=True)
+            os.replace(tmp_images_target, images_target)
+            return self._images_count(images_target)
+        finally:
+            shutil.rmtree(tmp_images_target, ignore_errors=True)
+
+    def convert(
+        self,
+        source_id_or_dir: str | Path,
+        *,
+        output_root: str | Path | None = None,
+        force_reconvert: bool = False,
+        skip_existing: bool = True,
+    ) -> dict:
         source_id, folder = self._source_folder(source_id_or_dir)
         pdf = folder / f"{source_id}.pdf"
         meta = folder / f"{source_id}.metadata.json"
@@ -836,6 +1304,36 @@ class PaperRawConverter:
         schema_errors = validate_metadata_schema(metadata)
         if schema_errors:
             raise ValueError("; ".join(schema_errors))
+        inspection = self.inspect_conversion(
+            folder,
+            backend=MINERU_BACKEND,
+            method=MINERU_METHOD,
+            lang=MINERU_LANG,
+            effort=MINERU_EFFORT,
+        )
+        state = inspection["state"]
+        if skip_existing and not force_reconvert and state in {"converted_current", "converted_legacy"}:
+            return {
+                "success": True,
+                "skipped": True,
+                "status": "skipped_existing",
+                "source_id": source_id,
+                "reason": inspection["reason"],
+                "conversion_state": state,
+                "markdown": inspection["markdown"],
+                "images_dir": inspection["images_dir"],
+            }
+        if not force_reconvert and state in {"stale", "partial"}:
+            status = "stale_conversion" if state == "stale" else "partial_conversion"
+            return {
+                "success": False,
+                "status": status,
+                "source_id": source_id,
+                "conversion_state": state,
+                "error": f"{inspection['reason']}; pass --force-reconvert to rebuild",
+            }
+        if force_reconvert:
+            self._clear_conversion_outputs(folder, source_id)
         output_root = Path(output_root) if output_root else folder / "output"
         conv = self.converter.convert(
             pdf,
@@ -861,16 +1359,55 @@ class PaperRawConverter:
         target_md = folder / f"{source_id}.md"
         _write_text_atomic(target_md, text)
         images_target = folder / "images"
-        images_target.mkdir(exist_ok=True)
         images_source = self.cleaner.locate_images_dir(source_dir, md_path)
-        if images_source and images_source.exists():
-            shutil.copytree(images_source, images_target, dirs_exist_ok=True)
+        images_count = self._replace_images_dir(images_source, images_target)
+        pdf_sha = compute_sha256(pdf)
+        markdown_sha = compute_sha256(target_md)
+        try:
+            from src.mineru_runtime import runtime_config_from_env
+
+            runtime_cfg = runtime_config_from_env()
+            runner = runtime_cfg.runner.value
+            api_url = runtime_cfg.api_url
+        except Exception:
+            runner = ""
+            api_url = ""
+        manifest = {
+            "schema_version": "1.0",
+            "status": "converted",
+            "source_id": source_id,
+            "pdf_sha256": pdf_sha,
+            "pdf_file_size": pdf.stat().st_size,
+            "markdown_path": f"{source_id}.md",
+            "markdown_sha256": markdown_sha,
+            "images_dir": "images",
+            "images_count": images_count,
+            "backend": MINERU_BACKEND,
+            "method": MINERU_METHOD,
+            "lang": MINERU_LANG,
+            "effort": MINERU_EFFORT,
+            "runner": runner,
+            "api_url": api_url,
+            "output_dir": normalize_repo_path(source_dir),
+            "converted_at": now_iso(),
+        }
+        atomic_write_json(folder / f"{source_id}.conversion.json", manifest, indent=2)
+        atomic_write_json(folder / ".import_status.json", {
+            "status": "converted",
+            "reason": "MinerU conversion completed",
+            "source_id": source_id,
+            "pdf_sha256": pdf_sha,
+            "markdown_sha256": markdown_sha,
+            "created_at": now_iso(),
+        }, indent=2)
         return {
             "success": True,
             "source_id": source_id,
             "markdown": str(target_md),
             "images_dir": str(images_target),
             "output_dir": str(source_dir),
+            "conversion_manifest": str(folder / f"{source_id}.conversion.json"),
+            "conversion_state": "converted_current",
         }
 
 
@@ -903,6 +1440,9 @@ class PaperCurationService:
             "- 如正文中出现 DOI，只能写进 evidence_profile.page_or_section_evidence 或 content_notes.warnings，"
             "不得写入 catalog 顶层或 identifiers。\n"
             "- content_identity.content_title 是从 Markdown 正文提取的标题候选，不是 canonical title。\n"
+            "- catalog 中的自然语言 value 默认使用中文；JSON key 和 schema 枚举值保持英文。\n"
+            "- 专业名词、模型名、软件名、数据集名、变量名、公式、单位可保留英文或中英混写。\n"
+            "- 不要改写 metadata 书目信息；metadata 保留原始/规范书目事实。\n"
             "- 不得生成 16 位 paper_number；不得移动或修改 data/papers 正式库；不得入库。\n"
             "- 不确定的字段留空，不要编造。\n\n"
             "## 输出文件\n"
@@ -918,6 +1458,9 @@ class PaperCurationService:
             "quoted_terms / page_or_section_evidence。\n"
             "- content_notes：short_summary / long_summary / possible_use_in_writing / open_questions / warnings。\n"
             "- provenance：generated_from='mineru_markdown'、markdown_path、generated_at、generator。\n\n"
+            "请使用中文生成 catalog 中的自然语言内容。JSON key 和 schema 枚举值保持英文。"
+            "专业名词、模型名、软件名、数据集名、变量名、公式、单位、英文论文原题中的必要片段可以保留英文。"
+            "catalog 只写内容理解、研究价值、方法、证据、局限和分类判断，不要重复 DOI、作者、期刊、年份等书目字段。\n\n"
             "## paper_id 命名规则\n"
             "paper_id = 年份_第一作者姓氏_short_name_zh（snake_case），由项目在 apply 时根据 **metadata** "
             "（metadata.year + metadata.authors[0].family + metadata.title.short_zh）自动生成，你不要输出 paper_id。\n\n"
@@ -944,9 +1487,25 @@ class PaperCurationService:
         source_id = folder.name
         metadata_path = folder / f"{source_id}.metadata.json"
         catalog_path = folder / f"{source_id}.catalog.json"
-        metadata = _read_json(metadata_path)
+        metadata, load_errors = _load_json_for_gate(metadata_path, "metadata")
+        if load_errors:
+            atomic_write_json(folder / ".import_status.json", {
+                "status": "metadata_invalid",
+                "reason": "; ".join(load_errors),
+                "errors": load_errors,
+                "created_at": now_iso(),
+            }, indent=2)
+            return {"success": False, "status": "metadata_invalid", "errors": load_errors}
         if curated_metadata_path:
-            curated_metadata = _read_json(Path(curated_metadata_path))
+            curated_metadata, load_errors = _load_json_for_gate(Path(curated_metadata_path), "metadata patch")
+            if load_errors:
+                atomic_write_json(folder / ".import_status.json", {
+                    "status": "metadata_invalid",
+                    "reason": "; ".join(load_errors),
+                    "errors": load_errors,
+                    "created_at": now_iso(),
+                }, indent=2)
+                return {"success": False, "status": "metadata_invalid", "errors": load_errors}
             metadata, merge_warnings = merge_missing_metadata(metadata, curated_metadata)
             existing_notes = str(metadata.get("notes") or "")
             if merge_warnings:
@@ -965,29 +1524,49 @@ class PaperCurationService:
                 "created_at": now_iso(),
             }, indent=2)
             return {"success": False, "errors": ["curation requires metadata.identifiers.doi"]}
-        catalog = _read_json(Path(curated_catalog_path)) if curated_catalog_path else _read_json(catalog_path)
-        # Curator output must be a complete v2.0 content-only catalog; we do NOT auto-migrate
-        # missing groups here (that would let an incomplete catalog lacking the
-        # critical screening/evidence_profile groups slip into the formal library).
-        # Use scripts/migrate_catalog_to_content_only.py to upgrade old catalogs.
-        errors = validate_metadata_schema(metadata) + validate_catalog_schema(catalog)
-        if errors:
+        catalog_source = Path(curated_catalog_path) if curated_catalog_path else catalog_path
+        catalog, load_errors = _load_json_for_gate(catalog_source, "catalog")
+        if load_errors:
+            errors = load_errors
             atomic_write_json(folder / ".import_status.json", {
                 "status": "catalog_generation_failed",
                 "reason": "; ".join(errors),
                 "created_at": now_iso(),
             }, indent=2)
-            return {"success": False, "errors": errors}
+            return {"success": False, "status": "catalog_invalid", "errors": errors}
+        readiness = assess_paper_raw_commit_readiness(
+            folder,
+            file_prefix=source_id,
+            paper_id=paper_id,
+            metadata=metadata,
+            catalog=catalog,
+        )
+        if not readiness["ready"]:
+            atomic_write_json(folder / ".import_status.json", {
+                "status": readiness["status"],
+                "reason": "; ".join(readiness["errors"]),
+                "errors": readiness["errors"],
+                "warnings": readiness["warnings"],
+                "created_at": now_iso(),
+            }, indent=2)
+            return {"success": False, "status": readiness["status"], "errors": readiness["errors"]}
+        metadata = readiness["metadata"]
+        catalog = readiness["catalog"]
         atomic_write_json(metadata_path, metadata, indent=2)
         atomic_write_json(catalog_path, catalog, indent=2)
-        new_id = paper_id or paper_id_from_metadata_catalog(metadata, catalog)
+        new_id = readiness["paper_id"]
         validate_paper_id(new_id)
         target = folder.with_name(new_id)
-        suffix = 2
-        while target.exists() and target.resolve() != folder.resolve():
-            target = folder.with_name(f"{new_id}_{suffix}")
-            suffix += 1
-        final_id = target.name
+        if target.exists() and target.resolve() != folder.resolve():
+            errors = [f"paper_id target already exists: {new_id}"]
+            atomic_write_json(folder / ".import_status.json", {
+                "status": "paper_id_mismatch",
+                "reason": "; ".join(errors),
+                "errors": errors,
+                "created_at": now_iso(),
+            }, indent=2)
+            return {"success": False, "status": "paper_id_mismatch", "errors": errors}
+        final_id = new_id
         if target.resolve() != folder.resolve():
             folder.rename(target)
         for suffix_name in ("metadata.json", "catalog.json", "md", "pdf"):
@@ -995,7 +1574,17 @@ class PaperCurationService:
             new = target / f"{final_id}.{suffix_name}"
             if old.exists() and old != new:
                 old.rename(new)
-        return {"success": True, "paper_id": final_id, "folder": str(target)}
+        atomic_write_json(target / ".import_status.json", {
+            "status": "ready_for_commit",
+            "reason": "paper_raw passed metadata/catalog/assets/duplicate gates",
+            "source_id": readiness["source_id"],
+            "paper_id": final_id,
+            "pdf_sha256": readiness["pdf_sha256"],
+            "markdown_sha256": readiness["markdown_sha256"],
+            "warnings": readiness["warnings"],
+            "created_at": now_iso(),
+        }, indent=2)
+        return {"success": True, "status": "ready_for_commit", "paper_id": final_id, "folder": str(target)}
 
 
 class PaperNumberLedger:
@@ -1016,6 +1605,11 @@ class PaperNumberLedger:
         base.update(data)
         if not isinstance(base.get("items"), dict):
             base["items"] = {}
+        # Backward-compat: ledger entries written before the reserve/activate
+        # state machine have no ``state`` field; treat them as active.
+        for item in base["items"].values():
+            if isinstance(item, dict) and not item.get("state"):
+                item["state"] = "active"
         return base
 
     def save(self, data: dict) -> None:
@@ -1035,8 +1629,146 @@ class PaperNumberLedger:
                 return number
         return None
 
-    def assign(self, folder: str | Path) -> str:
+    def repoint(self, number: str, folder: str | Path) -> str:
+        if not _PAPER_NUMBER_RE.match(str(number or "")):
+            raise ValueError(f"invalid paper_number: {number}")
         folder = Path(folder)
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            max_number = str(data.get("max_number") or "0000000000000000")
+            if int(number) > int(max_number):
+                data["max_number"] = number
+            existing = data.get("items", {}).get(number) or {}
+            data.setdefault("items", {})[number] = {
+                "folder_name": folder.name,
+                "folder_path": normalize_repo_path(folder),
+                "created_at": existing.get("created_at") or now_iso(),
+                "state": existing.get("state") or "active",
+                "repointed_at": now_iso(),
+            }
+            self._save_unlocked(data)
+            for marker in folder.glob("*.paper.number"):
+                if marker.name != f"{number}.paper.number":
+                    marker.unlink()
+            atomic_write_json(folder / f"{number}.paper.number", {
+                "paper_number": number,
+                "folder_name": folder.name,
+            }, indent=2)
+            return number
+
+    def paper_number_from_marker(self, folder: str | Path) -> str | None:
+        """Return the 16-digit number from the folder's ``*.paper.number`` marker, or None."""
+        folder = Path(folder)
+        for marker in folder.glob("*.paper.number"):
+            # filename is ``<number>.paper.number``; ``.stem`` only strips the
+            # final ``.number`` suffix, so strip the full ``.paper.number``.
+            candidate = marker.name[: -len(".paper.number")] if marker.name.endswith(".paper.number") else marker.stem
+            if _PAPER_NUMBER_RE.match(candidate):
+                return candidate
+        return None
+
+    def reserve_for_paper_raw(self, source_folder: str | Path, planned_paper_id: str = "") -> str:
+        """Reserve the next 16-digit paper_number for a paper_raw workspace.
+
+        Idempotent: if ``source_folder`` already has a ``*.paper.number`` marker,
+        that number is reused. Writes the marker into ``source_folder`` and a
+        ledger item with ``state="reserved"`` pointing at the paper_raw folder.
+        """
+        source_folder = Path(source_folder)
+        existing = self.paper_number_from_marker(source_folder)
+        if existing:
+            return existing
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            number = f"{int(data.get('max_number') or '0') + 1:016d}"
+            data["max_number"] = number
+            data.setdefault("items", {})[number] = {
+                "folder_name": source_folder.name,
+                "folder_path": normalize_repo_path(source_folder),
+                "planned_paper_id": planned_paper_id,
+                "state": "reserved",
+                "created_at": now_iso(),
+            }
+            self._save_unlocked(data)
+            for marker in source_folder.glob("*.paper.number"):
+                if marker.name != f"{number}.paper.number":
+                    marker.unlink()
+            atomic_write_json(source_folder / f"{number}.paper.number", {
+                "paper_number": number,
+                "folder_name": source_folder.name,
+                "state": "reserved",
+                "planned_paper_id": planned_paper_id,
+            }, indent=2)
+            return number
+
+    def activate_reserved(self, number: str, final_folder: str | Path, paper_id: str = "") -> str:
+        """Flip a reserved number to ``active`` and repoint it at the formal library folder.
+
+        Used by ``commit_paper_raw`` after ``os.replace`` installs the formal
+        copy. The marker (already copied by copytree) is rewritten with
+        ``state="active"``. Requires the number to already exist in the ledger.
+        """
+        if not _PAPER_NUMBER_RE.match(str(number or "")):
+            raise ValueError(f"invalid paper_number: {number}")
+        final_folder = Path(final_folder)
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            items = data.setdefault("items", {})
+            if number not in items:
+                raise KeyError(f"paper_number not in ledger: {number}")
+            existing = items[number] or {}
+            state = existing.get("state") or "active"
+            if state not in {"reserved", "active"}:
+                raise ValueError(f"cannot activate number {number} in state {state}")
+            items[number] = {
+                "folder_name": final_folder.name,
+                "folder_path": normalize_repo_path(final_folder),
+                "planned_paper_id": existing.get("planned_paper_id") or paper_id,
+                "state": "active",
+                "created_at": existing.get("created_at") or now_iso(),
+                "activated_at": now_iso(),
+            }
+            self._save_unlocked(data)
+            for marker in final_folder.glob("*.paper.number"):
+                if marker.name != f"{number}.paper.number":
+                    marker.unlink()
+            atomic_write_json(final_folder / f"{number}.paper.number", {
+                "paper_number": number,
+                "folder_name": final_folder.name,
+                "state": "active",
+            }, indent=2)
+            return number
+
+    def deactivate_to_source(self, number: str, source_folder: str | Path) -> str:
+        """Roll an activated number back to ``reserved`` pointing at paper_raw.
+
+        Used by ``commit_paper_raw`` rollback when a post-install step fails:
+        the formal copy is removed and the reserved number is reattached to
+        the still-present paper_raw source so formalize→commit can be retried.
+        """
+        if not _PAPER_NUMBER_RE.match(str(number or "")):
+            raise ValueError(f"invalid paper_number: {number}")
+        source_folder = Path(source_folder)
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            items = data.setdefault("items", {})
+            existing = items.get(number) or {}
+            items[number] = {
+                "folder_name": source_folder.name,
+                "folder_path": normalize_repo_path(source_folder),
+                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "state": "reserved",
+                "created_at": existing.get("created_at") or now_iso(),
+                "activated_at": existing.get("activated_at") or "",
+                "deactivated_at": now_iso(),
+            }
+            self._save_unlocked(data)
+            return number
+
+    def assign(self, folder: str | Path, *, preserve_number: str | None = None) -> str:
+        folder = Path(folder)
+        if preserve_number:
+            return self.repoint(preserve_number, folder)
         with FileLock(str(self._lock_path)):
             data = self.load()
             existing = self.paper_number_for(folder)
@@ -1051,8 +1783,10 @@ class PaperNumberLedger:
                     "created_at": now_iso(),
                 }
                 self._save_unlocked(data)
-            marker = folder / f"{number}.paper.number"
-            atomic_write_json(marker, {"paper_number": number, "folder_name": folder.name}, indent=2)
+            for marker in folder.glob("*.paper.number"):
+                if marker.name != f"{number}.paper.number":
+                    marker.unlink()
+            atomic_write_json(folder / f"{number}.paper.number", {"paper_number": number, "folder_name": folder.name}, indent=2)
             return number
 
     def validate(self, papers_dir: str | Path = PAPERS_DIR) -> tuple[list[str], list[str]]:
@@ -1062,11 +1796,17 @@ class PaperNumberLedger:
         for number, item in data.get("items", {}).items():
             if not _PAPER_NUMBER_RE.match(number):
                 errors.append(f"invalid paper_number: {number}")
+            state = (item or {}).get("state") or "active"
             folder = resolve_stored_path(item.get("folder_path") or "")
             if not folder.exists():
+                # A reserved number whose paper_raw folder is gone is an orphan
+                # (recoverable via audit / re-formalize), not hard corruption.
                 warnings.append(f"ledger folder missing: {number} {folder}")
                 continue
             markers = list(folder.glob("*.paper.number"))
+            if not markers and state == "reserved":
+                warnings.append(f"reserved number missing marker: {number} {folder}")
+                continue
             if markers and markers[0].name != f"{number}.paper.number":
                 errors.append(f"ledger/marker conflict for {folder.name}: {number} vs {markers[0].stem}")
         return errors, warnings
@@ -1105,7 +1845,11 @@ class AllCatalogBuilder:
                 images_dir = folder / "images"
                 if not (metadata_path.exists() and catalog_path.exists() and md_path.exists() and pdf_path.exists() and images_dir.exists()):
                     continue
-                catalog = _read_json(catalog_path)
+                try:
+                    catalog = _read_json(catalog_path)
+                except Exception as exc:
+                    self.last_errors.append(f"{pid}: catalog JSON invalid at {catalog_path}: {exc}")
+                    continue
                 catalog_errors = validate_catalog_schema(catalog)
                 for legacy_key in find_legacy_all_catalog_entry_keys(catalog):
                     catalog_errors.append(f"catalog contains legacy wrapper/path key: {legacy_key}")
@@ -1222,68 +1966,28 @@ class V2PaperCommitService:
 
     @staticmethod
     def _norm_text(value: Any) -> str:
-        return re.sub(r"\s+", " ", str(value or "").strip().lower())
+        return _norm_duplicate_text(value)
 
     @staticmethod
     def _md_sha256(path: Path) -> str:
-        digest = __import__("hashlib").sha256()
-        digest.update(path.read_bytes())
-        return digest.hexdigest()
+        return _md_sha256_path(path)
 
     def _duplicate_errors(self, *, paper_id: str, metadata: dict, pdf_sha256: str, md_sha256: str) -> list[str]:
-        """Check candidate against existing formal papers (read metadata from disk).
-
-        all.catalog no longer embeds metadata, so we read each formal paper's
-        metadata.json directly from data/papers/<pid>/.
-        """
-        errors: list[str] = []
-        doi = str(_metadata_field(metadata, ("identifiers", "doi"), "")).strip().lower()
-        title = self._norm_text(
-            _metadata_field(metadata, ("title", "original"), "")
-            or _metadata_field(metadata, ("title", "translated_zh"), "")
+        return _duplicate_errors_for_library(
+            self.papers_dir,
+            paper_id=paper_id,
+            metadata=metadata,
+            pdf_sha256=pdf_sha256,
+            md_sha256=md_sha256,
         )
-        author = self._norm_text(first_author_family(metadata))
-        year = metadata.get("year")
-        if self.papers_dir.exists():
-            for folder in sorted(p for p in self.papers_dir.iterdir() if p.is_dir()):
-                existing_pid = folder.name
-                if existing_pid == paper_id:
-                    errors.append(f"paper_id already exists in formal library: {paper_id}")
-                meta_path = folder / f"{existing_pid}.metadata.json"
-                existing_meta = _read_json(meta_path, {})
-                if not existing_meta:
-                    continue
-                existing_doi = str(_metadata_field(existing_meta, ("identifiers", "doi"), "")).strip().lower()
-                existing_sha = str(_metadata_field(existing_meta, ("pdf", "sha256"), "")).strip().lower()
-                existing_title = self._norm_text(
-                    _metadata_field(existing_meta, ("title", "original"), "")
-                    or _metadata_field(existing_meta, ("title", "translated_zh"), "")
-                )
-                existing_author = self._norm_text(first_author_family(existing_meta))
-                existing_year = existing_meta.get("year")
-                existing_md_sha = str(_metadata_field(existing_meta, ("content", "markdown_sha256"), "")).strip().lower()
-                if not existing_md_sha:
-                    md_path = folder / f"{existing_pid}.md"
-                    if md_path.exists():
-                        try:
-                            existing_md_sha = self._md_sha256(md_path)
-                        except OSError:
-                            existing_md_sha = ""
-                if doi and existing_doi == doi:
-                    errors.append(f"duplicate DOI with {existing_pid}: {doi}")
-                if pdf_sha256 and existing_sha == pdf_sha256:
-                    errors.append(f"duplicate PDF sha256 with {existing_pid}")
-                if title and year and title == existing_title and str(year) == str(existing_year):
-                    errors.append(f"possible duplicate title/year with {existing_pid}: {title}")
-                if author and title and year and author == existing_author and title == existing_title and str(year) == str(existing_year):
-                    errors.append(f"possible duplicate title/author/year with {existing_pid}: {title}")
-                if md_sha256 and existing_md_sha and md_sha256 == existing_md_sha:
-                    errors.append(f"duplicate Markdown content with {existing_pid}")
-        if safe_child(self.papers_dir, paper_id).exists():
-            errors.append(f"paper directory already exists: {paper_id}")
-        return errors
 
-    def commit_paper_raw(self, paper_raw_dir: str | Path, *, paper_id: str | None = None) -> dict:
+    def commit_paper_raw(
+        self,
+        paper_raw_dir: str | Path,
+        *,
+        paper_id: str | None = None,
+        preserve_paper_number: str | None = None,
+    ) -> dict:
         src = Path(paper_raw_dir)
         pid = paper_id or src.name
         validate_paper_id(pid)
@@ -1296,52 +2000,36 @@ class V2PaperCommitService:
             "pdf": src / f"{pid}.pdf",
             "images": src / "images",
         }
-        missing = [name for name, path in required.items() if not path.exists()]
-        if missing:
-            raise FileNotFoundError(f"paper_raw missing required assets: {missing}")
-        metadata = _read_json(required["metadata"])
-        catalog = _read_json(required["catalog"])
-        schema_errors = validate_metadata_schema(metadata) + validate_catalog_schema(catalog)
-        if schema_errors:
-            raise ValueError("; ".join(schema_errors))
-        normalized_doi = metadata_doi(metadata)
-        if not normalized_doi:
-            errors = ["metadata.identifiers.doi is required for formal commit"]
+        readiness = assess_paper_raw_commit_readiness(
+            src,
+            file_prefix=pid,
+            paper_id=paper_id,
+            papers_dir=self.papers_dir,
+        )
+        metadata = readiness["metadata"]
+        pdf_sha = readiness["pdf_sha256"]
+        md_sha = readiness["markdown_sha256"]
+        reference_warnings = readiness["warnings"]
+        if not readiness["ready"]:
+            errors = readiness["errors"]
+            if readiness["status"] == "possible_duplicate":
+                qdir = src.parent / "quarantine" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{pid}"
+                qdir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), qdir)
+                atomic_write_json(qdir / "duplicate_report.json", {
+                    "decision": "possible_duplicate",
+                    "reasons": errors,
+                    "created_at": now_iso(),
+                }, indent=2)
+                return {"success": False, "status": "possible_duplicate", "quarantine_dir": str(qdir), "errors": errors}
             atomic_write_json(src / ".import_status.json", {
-                "status": "metadata_incomplete",
+                "status": readiness["status"],
                 "reason": "; ".join(errors),
                 "errors": errors,
-                "created_at": now_iso(),
-            }, indent=2)
-            return {"success": False, "status": "metadata_incomplete", "errors": errors}
-        metadata.setdefault("identifiers", {})["doi"] = normalized_doi
-        if not metadata_is_matched(metadata):
-            atomic_write_json(src / ".import_status.json", {
-                "status": "metadata_unmatched",
-                "reason": "metadata_match.status must be matched or manual_confirmed before commit",
-                "created_at": now_iso(),
-            }, indent=2)
-            return {"success": False, "status": "metadata_unmatched", "errors": ["metadata_match.status must be matched or manual_confirmed"]}
-        pdf_sha = compute_sha256(required["pdf"])
-        md_sha = self._md_sha256(required["md"])
-        metadata.setdefault("pdf", {})
-        metadata["pdf"].update({
-            "status": "present",
-            "sha256": pdf_sha,
-            "file_size": required["pdf"].stat().st_size,
-        })
-        metadata.setdefault("content", {})["markdown_sha256"] = md_sha
-        completeness_errors = validate_metadata_completeness_for_commit(metadata)
-        reference_warnings = metadata_reference_warnings_for_commit(metadata)
-        if completeness_errors:
-            atomic_write_json(src / ".import_status.json", {
-                "status": "metadata_incomplete",
-                "reason": "; ".join(completeness_errors),
-                "errors": completeness_errors,
                 "warnings": reference_warnings,
                 "created_at": now_iso(),
             }, indent=2)
-            return {"success": False, "status": "metadata_incomplete", "errors": completeness_errors}
+            return {"success": False, "status": readiness["status"], "errors": errors}
         if reference_warnings:
             atomic_write_json(src / ".import_status.json", {
                 "status": "metadata_warnings",
@@ -1349,17 +2037,7 @@ class V2PaperCommitService:
                 "warnings": reference_warnings,
                 "created_at": now_iso(),
             }, indent=2)
-        duplicate_errors = self._duplicate_errors(paper_id=pid, metadata=metadata, pdf_sha256=pdf_sha, md_sha256=md_sha)
-        if duplicate_errors:
-            qdir = src.parent / "quarantine" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{pid}"
-            qdir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), qdir)
-            atomic_write_json(qdir / "duplicate_report.json", {
-                "decision": "possible_duplicate",
-                "reasons": duplicate_errors,
-                "created_at": now_iso(),
-            }, indent=2)
-            return {"success": False, "status": "possible_duplicate", "quarantine_dir": str(qdir), "errors": duplicate_errors}
+        atomic_write_json(required["metadata"], metadata, indent=2)
 
         self.papers_dir.mkdir(parents=True, exist_ok=True)
         staging = self.papers_dir / f".{pid}.staging_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
@@ -1369,28 +2047,22 @@ class V2PaperCommitService:
             shutil.copytree(src, staging)
             # Clean paper_raw transient artifacts that must never enter data/papers/:
             #   output/          — MinerU raw conversion output (large, unreferenced)
-            #   *.patch.json     — curator metadata patch, served its purpose in curation
+            #   *.metadata.* side files — resolver/curator artifacts already applied
             #   curation_prompt.md — generated prompt, served its purpose
             #   .import_status.json — status marker from failed operations
             #   stage_manifest.json — raw intake provenance for the paper_raw workspace
+            #   *.conversion.json — paper_raw conversion manifest, transient only
             stg_output = staging / "output"
             if stg_output.exists():
                 shutil.rmtree(stg_output)
-            for vestige in staging.glob("*.metadata.patch.json"):
-                vestige.unlink()
-            for vestige in staging.glob("stage_manifest.json"):
-                vestige.unlink()
-            for vestige in staging.glob("curation_prompt.md"):
-                vestige.unlink()
-            for vestige in staging.glob(".import_status.json"):
-                vestige.unlink()
+            _clean_formal_transient_artifacts(staging)
             metadata["pdf"]["path"] = normalize_repo_path(staging / f"{pid}.pdf")
             atomic_write_json(staging / f"{pid}.metadata.json", metadata, indent=2)
             os.replace(staging, final)
             final_installed = True
             metadata["pdf"]["path"] = normalize_repo_path(final / f"{pid}.pdf")
             atomic_write_json(final / f"{pid}.metadata.json", metadata, indent=2)
-            number = self.ledger.assign(final)
+            number = self.ledger.assign(final, preserve_number=preserve_paper_number)
             _backfill_formal_catalog_links(final, pid, number)
             all_catalog = AllCatalogBuilder(self.papers_dir, self.all_catalog_path, self.ledger).build(write=True)
             if src.exists():
