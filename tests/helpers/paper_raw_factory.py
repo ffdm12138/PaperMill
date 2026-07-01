@@ -1,9 +1,9 @@
 """Shared paper_raw ingest test fixtures.
 
-``make_staged_source`` builds a real 6-digit ``data/paper_raw/000001/`` workspace
+``make_staged_source`` builds a real 16-digit ``data/paper_raw/<paper_number>/`` workspace
 with a genuine conversion manifest (computed sha256/file_size, current MINERU_*
 settings), so formalize's conversion gate is exercised for real. Happy-path
-tests must start from a 6-digit source folder and run formalize — not hand-write
+tests must start from a staged paper_number folder and run formalize — not hand-write
 formalization.json / .paper.number / ready_for_commit.
 
 ``formalize_for_test`` / ``commit_for_test`` are thin wrappers that wire a
@@ -12,23 +12,13 @@ never touch the real ``data/catalog``.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
-from config.settings import (
-    ALL_CATALOG_PATH,
-    MINERU_BACKEND,
-    MINERU_EFFORT,
-    MINERU_LANG,
-    MINERU_METHOD,
-    PAPER_NUMBER_LEDGER_PATH,
-    PAPER_RAW_DIR,
-    PAPERS_DIR,
-)
-from src.file_fingerprint import compute_sha256
 from src.services.ingest_state import CATALOG_READY, write_import_status
+from src.services.ingest_ids import PAPER_NUMBER_RE
 from src.services.v2_library import (
+    PaperNumberLedger,
     V2PaperCommitService,
     empty_catalog,
     empty_metadata,
@@ -38,7 +28,7 @@ from src.services.v2_library import (
 
 def make_staged_source(
     root: Path,
-    source_id: str = "000001",
+    source_id: str = "0000000000000001",
     *,
     title_zh: str = "可信论文",
     title_original: str = "Trusted Original",
@@ -50,10 +40,13 @@ def make_staged_source(
     pdf_bytes: bytes = b"%PDF",
     md_text: str | None = None,
     metadata_status: str = "matched",
+    catalog_ready: bool = True,
     catalog_domain: str = "blowing_snow",
 ) -> Path:
     folder = root / "paper_raw" / source_id
     folder.mkdir(parents=True)
+    if PAPER_NUMBER_RE.match(source_id):
+        PaperNumberLedger(root / "catalog" / "paper_number_ledger.json").reserve_specific_for_paper_raw(source_id, folder)
     metadata = empty_metadata(source_id)
     metadata["title"]["original"] = title_original
     metadata["title"]["translated_zh"] = title_zh
@@ -73,6 +66,8 @@ def make_staged_source(
     catalog = empty_catalog()
     catalog["content_identity"]["content_title"] = title_zh
     catalog["classification"]["primary_domain"] = catalog_domain
+    catalog["screening"]["read_decision"] = "must_read"
+    catalog["screening"]["relevance_score"] = 5
     catalog["screening"]["reason"] = f"该文献与{title_zh}主题相关。"
     catalog["research_card"].update({
         "research_problem": f"研究{title_zh}。",
@@ -93,8 +88,8 @@ def make_staged_source(
     (folder / f"{source_id}.pdf").write_bytes(pdf_bytes)
     (folder / "images").mkdir()
     write_conversion_manifest_for_existing_assets(folder, source_id)
-    _ = compute_sha256(folder / f"{source_id}.pdf")  # ensure sha computed for manifest
-    write_import_status(folder, CATALOG_READY, reason="curated")
+    if catalog_ready:
+        write_import_status(folder, CATALOG_READY, reason="curated")
     return folder
 
 

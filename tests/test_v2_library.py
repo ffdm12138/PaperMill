@@ -20,7 +20,7 @@ from scripts.validate_v2_library import validate_v2_library
 
 
 def _curated_raw(root: Path, pid: str = "2024_wang_测试论文", *, no_commit: bool = False) -> Path:
-    """Build a real 6-digit paper_raw source + formalize it against a tmp ledger.
+    """Build a real paper_number paper_raw source + formalize it against a tmp ledger.
 
     Returns the formalized ``<paper_id>`` folder (ready_for_commit, with a real
     reserved ledger entry on root/catalog/paper_number_ledger.json). Formalize's
@@ -36,7 +36,7 @@ def _curated_raw(root: Path, pid: str = "2024_wang_测试论文", *, no_commit: 
     year = parts[0] if parts[0].isdigit() else "2024"
     family = parts[1] if len(parts) > 1 else "wang"
     title_zh = "_".join(parts[2:]) or "测试论文"
-    source_id = "000001"
+    source_id = PaperNumberLedger(root / "catalog" / "paper_number_ledger.json").peek_next_numbers(1)[0]
     # If a previous _curated_raw already created+formalized this source_id at
     # this root, the folder was renamed away — but if not yet committed, the
     # <pid> folder may still exist. Clean it to allow a fresh make_staged_source.
@@ -64,21 +64,24 @@ def _curated_raw(root: Path, pid: str = "2024_wang_测试论文", *, no_commit: 
     return Path(formalized["folder"])
 
 
-def test_paper_raw_allocator_uses_monotonic_six_digit_ids(tmp_path):
+def test_paper_raw_allocator_reserves_monotonic_paper_numbers(tmp_path):
     raw = tmp_path / "data" / "raw"
     raw.mkdir(parents=True)
     pdf = raw / "a.pdf"
     pdf.write_bytes(b"%PDF")
     paper_raw = tmp_path / "data" / "paper_raw"
-    (paper_raw / "000003").mkdir(parents=True)
+    ledger = tmp_path / "data" / "catalog" / "paper_number_ledger.json"
 
-    result = PaperRawAllocator(paper_raw).allocate_from_pdf(pdf)
+    result = PaperRawAllocator(paper_raw, ledger_path=ledger).allocate_from_pdf(pdf)
 
-    assert result["source_id"] == "000004"
-    assert (paper_raw / "000004" / "000004.pdf").exists()
-    metadata = json.loads((paper_raw / "000004" / "000004.metadata.json").read_text(encoding="utf-8"))
+    assert result["paper_number"] == "0000000000000001"
+    assert result["paper_raw_id"] == "0000000000000001"
+    assert (paper_raw / "0000000000000001" / "0000000000000001.pdf").exists()
+    assert (paper_raw / "0000000000000001" / "0000000000000001.paper.number").exists()
+    metadata = json.loads((paper_raw / "0000000000000001" / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
+    assert metadata["paper_number"] == "0000000000000001"
     assert metadata["pdf"]["sha256"]
-    manifest = json.loads((paper_raw / "000004" / "stage_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((paper_raw / "0000000000000001" / "stage_manifest.json").read_text(encoding="utf-8"))
     assert manifest["original_path"] == str(pdf)
     assert manifest["original_sha256"] == manifest["staged_sha256"]
 
@@ -180,7 +183,7 @@ def test_commit_activates_preserved_paper_number_from_formalize(tmp_path):
     """preserve_paper_number is a formalize concern then commit activates it."""
     from tests.helpers.paper_raw_factory import make_staged_source, formalize_for_test
 
-    source = make_staged_source(tmp_path, "000001", title_zh="测试论文", family="wang")
+    source = make_staged_source(tmp_path, "0000000000000007", title_zh="测试论文", family="wang")
     formalized = formalize_for_test(
         tmp_path,
         source,
@@ -190,6 +193,9 @@ def test_commit_activates_preserved_paper_number_from_formalize(tmp_path):
     )
     assert formalized["success"], formalized
     assert formalized["paper_number"] == "0000000000000007"
+    reserved = json.loads((tmp_path / "catalog" / "paper_number_ledger.json").read_text(encoding="utf-8"))
+    assert reserved["items"]["0000000000000007"]["state"] == "reserved"
+    assert reserved["items"]["0000000000000007"]["planned_paper_id"] == formalized["paper_id"]
 
     result = V2PaperCommitService(
         papers_dir=tmp_path / "papers",
@@ -386,26 +392,28 @@ class _FakeRawConverter:
 
 def test_paper_raw_converter_guards_input_and_extracts_images(tmp_path):
     paper_raw = tmp_path / "paper_raw"
-    src = paper_raw / "000001"
+    paper_number = "0000000000000001"
+    src = paper_raw / paper_number
     src.mkdir(parents=True)
-    (src / "000001.pdf").write_bytes(b"%PDF")
-    metadata = empty_metadata("000001")
-    (src / "000001.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (src / f"{paper_number}.pdf").write_bytes(b"%PDF")
+    metadata = empty_metadata(paper_number)
+    (src / f"{paper_number}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
     converter = PaperRawConverter(paper_raw_dir=paper_raw, converter=_FakeRawConverter())
-    result = converter.convert("000001")
+    result = converter.convert(paper_number)
 
     assert result["success"]
-    assert (src / "000001.md").read_text(encoding="utf-8").startswith("![x](images/a.png)")
+    assert (src / f"{paper_number}.md").read_text(encoding="utf-8").startswith("![x](images/a.png)")
     assert (src / "images" / "a.png").exists()
     with pytest.raises(ValueError):
-        converter.convert(tmp_path / "raw" / "000001")
+        converter.convert(tmp_path / "raw" / paper_number)
 
 
 def test_curation_merges_only_empty_metadata_and_keeps_source_folder(tmp_path):
-    folder = tmp_path / "paper_raw" / "000001"
+    paper_number = "0000000000000001"
+    folder = tmp_path / "paper_raw" / paper_number
     folder.mkdir(parents=True)
-    metadata = empty_metadata("000001")
+    metadata = empty_metadata(paper_number)
     metadata["title"]["original"] = "Trusted Original"
     metadata["title"]["short_zh"] = "可信论文"
     metadata["year"] = 2024
@@ -431,12 +439,12 @@ def test_curation_merges_only_empty_metadata_and_keeps_source_folder(tmp_path):
         "usefulness_for_user": "用于保障入库流程稳定。",
     })
     catalog["content_notes"]["short_summary"] = "测试 curated 文件合并与重命名。"
-    (folder / "000001.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (folder / "000001.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
-    (folder / "000001.md").write_text("# Trusted", encoding="utf-8")
-    (folder / "000001.pdf").write_bytes(b"%PDF")
+    (folder / f"{paper_number}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (folder / f"{paper_number}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    (folder / f"{paper_number}.md").write_text("# Trusted", encoding="utf-8")
+    (folder / f"{paper_number}.pdf").write_bytes(b"%PDF")
     (folder / "images").mkdir()
-    patch = empty_metadata("000001")
+    patch = empty_metadata(paper_number)
     patch["title"]["original"] = "Overwrite Attempt"
     patch["abstract"] = "new abstract"
     patch_path = tmp_path / "patch.metadata.json"
@@ -445,13 +453,13 @@ def test_curation_merges_only_empty_metadata_and_keeps_source_folder(tmp_path):
     result = PaperCurationService().apply_curated_files(folder, curated_metadata_path=patch_path)
 
     assert result["success"]
-    # curate does NOT rename; folder stays 000001 with source-id files.
+    # curate does NOT rename; folder stays at the paper_number workspace.
     assert result["status"] == "catalog_ready"
     assert folder.exists()
-    assert (folder / "000001.metadata.json").exists()
-    assert (folder / "000001.catalog.json").exists()
+    assert (folder / f"{paper_number}.metadata.json").exists()
+    assert (folder / f"{paper_number}.catalog.json").exists()
     assert not (tmp_path / "paper_raw" / "2024_Wang_可信论文").exists()
-    merged = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
+    merged = json.loads((folder / f"{paper_number}.metadata.json").read_text(encoding="utf-8"))
     assert merged["title"]["original"] == "Trusted Original"
     assert merged["abstract"] == "new abstract"
     status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
@@ -554,9 +562,10 @@ def test_paper_id_folds_accented_author_family_to_ascii():
 
 def test_accented_author_apply_curated_files_does_not_rename(tmp_path):
     """apply_curated_files must produce the correct ASCII paper_id but must NOT rename (formalize does that)."""
-    folder = tmp_path / "paper_raw" / "000001"
+    paper_number = "0000000000000001"
+    folder = tmp_path / "paper_raw" / paper_number
     folder.mkdir(parents=True)
-    metadata = empty_metadata("000001")
+    metadata = empty_metadata(paper_number)
     metadata["title"]["original"] = "A Bulk Blowing-Snow Model"
     metadata["title"]["short_zh"] = "体相吹雪模型"
     metadata["year"] = 1999
@@ -582,15 +591,15 @@ def test_accented_author_apply_curated_files_does_not_rename(tmp_path):
         "usefulness_for_user": "保障中文 paper_id 生成。",
     })
     catalog["content_notes"]["short_summary"] = "体相风吹雪模型命名测试。"
-    (folder / "000001.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (folder / "000001.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
-    (folder / "000001.md").write_text("# test", encoding="utf-8")
-    (folder / "000001.pdf").write_bytes(b"%PDF")
+    (folder / f"{paper_number}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (folder / f"{paper_number}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    (folder / f"{paper_number}.md").write_text("# test", encoding="utf-8")
+    (folder / f"{paper_number}.pdf").write_bytes(b"%PDF")
     (folder / "images").mkdir()
-    result = PaperCurationService().apply_curated_files(folder, curated_catalog_path=folder / "000001.catalog.json")
+    result = PaperCurationService().apply_curated_files(folder, curated_catalog_path=folder / f"{paper_number}.catalog.json")
     assert result["success"], f"apply_curated_files failed: {result.get('errors', [])}"
     assert result["paper_id"] == "1999_Dery_体相吹雪模型"
-    # curate does NOT rename; folder stays 000001, status catalog_ready.
+    # curate does NOT rename; folder stays at the paper_number workspace.
     assert folder.exists()
     assert not (tmp_path / "paper_raw" / "1999_Dery_体相吹雪模型").exists()
     status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
@@ -681,18 +690,16 @@ def test_ledger_activate_reserved_flips_state_and_repoints(tmp_path: Path):
     assert marker["state"] == "active"
 
 
-def test_ledger_activate_adopts_marker_only_folder(tmp_path: Path):
-    # A marker-bearing folder with no ledger entry (legacy/test fixture) is
-    # adopted as active by activate_reserved when allow_adopt_missing=True.
+def test_ledger_activate_rejects_marker_only_folder(tmp_path: Path):
     ledger = _ledger(tmp_path)
     final = tmp_path / "papers" / "2024_Wang_x"
     final.mkdir(parents=True)
     (final / "0000000000000009.paper.number").write_text("{}", encoding="utf-8")
-    ledger.activate_reserved("0000000000000009", final, paper_id="2024_Wang_x", allow_adopt_missing=True)
-    item = ledger.load()["items"]["0000000000000009"]
-    assert item["state"] == "active"
-    assert item["folder_name"] == "2024_Wang_x"
-    assert ledger.load()["max_number"] == "0000000000000009"
+
+    with pytest.raises(KeyError, match="paper_number not in ledger"):
+        ledger.activate_reserved("0000000000000009", final, paper_id="2024_Wang_x")
+
+    assert "0000000000000009" not in ledger.load()["items"]
 
 
 def test_ledger_deactivate_to_source_rolls_back(tmp_path: Path):
