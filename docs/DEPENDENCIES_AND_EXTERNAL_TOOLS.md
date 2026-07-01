@@ -95,7 +95,7 @@ Windows Store python 别名（会静默退出）：
 ```bash
 conda run -n mineru python scripts/<x>.py
 # 或绝对路径
-C:\Users\Admin\.conda\envs\mineru\python.exe scripts/<x>.py
+%USERPROFILE%\.conda\envs\mineru\python.exe scripts/<x>.py
 ```
 
 Windows 下建议先设置编码，避免中文输出乱码：

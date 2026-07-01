@@ -13,9 +13,9 @@ Generated at: 2026-06-30 10:18 Asia/Shanghai; updated after manual PDF retry at 
 
 ## Initial Baseline Before Network Positive
 
-Note: the shell `python` command currently resolves to `C:\Users\Admin\AppData\Local\Microsoft\WindowsApps\python.exe` and exits as the Windows Store placeholder. I ran the requested commands with the bundled Python executable:
+Note: the shell `python` command currently resolves to `<LOCAL_USER_HOME>\AppData\Local\Microsoft\WindowsApps\python.exe` and exits as the Windows Store placeholder. I ran the requested commands with the bundled Python executable:
 
-`C:\Users\Admin\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`
+`<LOCAL_USER_HOME>\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`
 
 - `scripts/doctor_ingest_pipeline.py`: exit 0, `valid=true`, `blocking_count=0`; ingest subset `69 passed`.
 - `scripts/rebuild_all_catalog.py --apply`: exit 0, `papers=18 written=True`.

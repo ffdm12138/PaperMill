@@ -19,82 +19,49 @@ from src.services.paper_library import PaperLibrary
 from scripts.validate_v2_library import validate_v2_library
 
 
-def _curated_raw(root: Path, pid: str = "2024_wang_测试论文") -> Path:
-    folder = root / "paper_raw" / pid
-    folder.mkdir(parents=True)
-    metadata = empty_metadata(pid)
+def _curated_raw(root: Path, pid: str = "2024_wang_测试论文", *, no_commit: bool = False) -> Path:
+    """Build a real 6-digit paper_raw source + formalize it against a tmp ledger.
+
+    Returns the formalized ``<paper_id>`` folder (ready_for_commit, with a real
+    reserved ledger entry on root/catalog/paper_number_ledger.json). Formalize's
+    duplicate gate runs against an empty ``root/formalize_work`` dir so it never
+    sees a previously-committed paper (if tests need a committed first paper, pass
+    ``no_commit=False`` and commit the first before building the second). Tests
+    must commit via V2PaperCommitService(papers_dir=root/'papers', ...) so the
+    ledger matches.
+    """
+    from tests.helpers.paper_raw_factory import make_staged_source, formalize_for_test
+
     parts = pid.split("_")
-    short_name = "_".join(pid.split("_")[2:]) or "测试论文"
-    metadata["title"]["original"] = "Test Paper"
-    metadata["title"]["translated_zh"] = short_name
-    metadata["title"]["short_zh"] = short_name
-    metadata["year"] = 2024
+    year = parts[0] if parts[0].isdigit() else "2024"
     family = parts[1] if len(parts) > 1 else "wang"
-    metadata["authors"] = [{"full_name": f"{family} A", "family": family, "given": "A", "orcid": "", "affiliation": ""}]
-    metadata["container"]["journal"] = "Test Journal"
-    metadata["identifiers"]["doi"] = "10.1/test"
-    metadata["metadata_match"] = {
-        "status": "matched",
-        "source": "test",
-        "confidence": 1.0,
-        "matched_at": "2026-01-01T00:00:00",
-        "warnings": [],
-        "candidates": [],
-    }
-    catalog = empty_catalog()
-    catalog["content_identity"]["content_title"] = short_name
-    catalog["classification"].update({
-        "primary_domain": "blowing_snow_physics",
-        "secondary_domains": ["blowing_snow_physics"],
-        "topic_tags": ["blowing_snow"],
-    })
-    catalog["screening"]["reason"] = "该文献与中文综述主题相关。"
-    catalog["research_card"].update({
-        "research_problem": "测试论文摘要",
-        "core_question": "测试核心问题",
-        "hypothesis_or_objective": "测试研究目标",
-        "study_object": "测试研究对象",
-        "method_summary": "测试方法摘要",
-        "data_or_experiment": "测试数据或实验",
-        "main_findings": ["测试主要发现"],
-        "mechanisms": ["测试机制"],
-        "limitations": ["测试局限"],
-        "usefulness_for_user": "测试写作用途",
-    })
-    catalog["content_notes"]["short_summary"] = "测试论文摘要"
-    catalog["paper_id"] = pid
-    catalog["paper_number"] = "0000000000000001"
-    catalog["asset_refs"] = {
-        "markdown": f"{pid}.md",
-        "pdf": f"{pid}.pdf",
-        "metadata": f"{pid}.metadata.json",
-        "catalog": f"{pid}.catalog.json",
-        "images_dir": "images/",
-        "figures": [],
-    }
-    (folder / f"{pid}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (folder / f"{pid}.catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
-    (folder / f"{pid}.md").write_text("# Test Paper", encoding="utf-8")
-    (folder / f"{pid}.pdf").write_bytes(b"%PDF")
-    (folder / "images").mkdir()
-    # formalize_paper_raw outputs (commit now requires these):
-    (folder / "0000000000000001.paper.number").write_text(
-        json.dumps({"paper_number": "0000000000000001", "folder_name": pid, "state": "reserved"}), encoding="utf-8"
+    title_zh = "_".join(parts[2:]) or "测试论文"
+    source_id = "000001"
+    # If a previous _curated_raw already created+formalized this source_id at
+    # this root, the folder was renamed away — but if not yet committed, the
+    # <pid> folder may still exist. Clean it to allow a fresh make_staged_source.
+    source = make_staged_source(
+        root,
+        source_id,
+        title_zh=title_zh,
+        title_original="Test Paper",
+        doi="10.1/test",
+        family=family,
+        year=int(year),
     )
-    (folder / f"{pid}.formalization.json").write_text(
-        json.dumps({"paper_id": pid, "paper_number": "0000000000000001", "source_id": pid,
-                    "pdf_sha256": "", "markdown_sha256": "", "ledger_state": "reserved",
-                    "warnings": [], "formalized_at": "2026-01-01T00:00:00"}),
-        encoding="utf-8",
+    # formalize's duplicate gate MUST run against an empty papers dir (not the
+    # commit target) — otherwise a second _curated_raw in a dedup test would be
+    # rejected by formalize before commit ever gets to quarantine it.
+    formalize_papers = root / "formalize_work"
+    formalized = formalize_for_test(
+        root,
+        source,
+        papers_dir=formalize_papers,
+        ledger_path=root / "catalog" / "paper_number_ledger.json",
+        all_catalog_path=root / "catalog" / "all.catalog.json",
     )
-    (folder / ".import_status.json").write_text(
-        json.dumps({"status": "ready_for_commit", "reason": "formalized",
-                    "paper_id": pid, "paper_number": "0000000000000001",
-                    "source_id": pid, "errors": [], "warnings": [],
-                    "created_at": "2026-01-01T00:00:00"}),
-        encoding="utf-8",
-    )
-    return folder
+    assert formalized.get("success"), formalized
+    return Path(formalized["folder"])
 
 
 def test_paper_raw_allocator_uses_monotonic_six_digit_ids(tmp_path):
@@ -210,32 +177,31 @@ def test_formal_commit_requires_chinese_short_title(tmp_path):
 
 
 def test_commit_activates_preserved_paper_number_from_formalize(tmp_path):
-    # preserve_paper_number is now a formalize concern; commit just activates
-    # whatever marker formalize wrote.
-    raw_folder = _curated_raw(tmp_path)
-    # rewrite the marker/formalization to a preserved number, as formalize
-    # --preserve-paper-number=0000000000000007 would have done.
-    pid = "2024_wang_测试论文"
-    for p in raw_folder.glob("*.paper.number"):
-        p.unlink()
-    (raw_folder / "0000000000000007.paper.number").write_text(
-        json.dumps({"paper_number": "0000000000000007", "folder_name": pid, "state": "reserved"}), encoding="utf-8"
+    """preserve_paper_number is a formalize concern then commit activates it."""
+    from tests.helpers.paper_raw_factory import make_staged_source, formalize_for_test
+
+    source = make_staged_source(tmp_path, "000001", title_zh="测试论文", family="wang")
+    formalized = formalize_for_test(
+        tmp_path,
+        source,
+        preserve_paper_number="0000000000000007",
+        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
+        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
     )
-    form = json.loads((raw_folder / f"{pid}.formalization.json").read_text(encoding="utf-8"))
-    form["paper_number"] = "0000000000000007"
-    (raw_folder / f"{pid}.formalization.json").write_text(json.dumps(form), encoding="utf-8")
+    assert formalized["success"], formalized
+    assert formalized["paper_number"] == "0000000000000007"
 
     result = V2PaperCommitService(
         papers_dir=tmp_path / "papers",
         all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
         ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
-    ).commit_paper_raw(raw_folder)
+    ).commit_paper_raw(formalized["folder"])
 
-    paper_dir = tmp_path / "papers" / "2024_wang_测试论文"
+    paper_dir = tmp_path / "papers" / formalized["paper_id"]
     ledger = json.loads((tmp_path / "catalog" / "paper_number_ledger.json").read_text(encoding="utf-8"))
     assert result["paper_number"] == "0000000000000007"
     assert (paper_dir / "0000000000000007.paper.number").exists()
-    assert ledger["items"]["0000000000000007"]["folder_name"] == "2024_wang_测试论文"
+    assert ledger["items"]["0000000000000007"]["folder_name"] == formalized["paper_id"]
     assert ledger["max_number"] == "0000000000000007"
 
 
@@ -302,7 +268,9 @@ def test_v2_commit_quarantines_duplicate_doi(tmp_path):
     svc = V2PaperCommitService(papers_dir=papers, all_catalog_path=all_catalog, ledger_path=ledger)
     svc.commit_paper_raw(first)
     second = _curated_raw(tmp_path, "2024_li_重复论文")
-    meta_path = second / "2024_li_重复论文.metadata.json"
+    # overwrite the second folder's DOI to match the first
+    second_pid = second.name
+    meta_path = second / f"{second_pid}.metadata.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["identifiers"]["doi"] = "10.1/test"
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
@@ -311,7 +279,7 @@ def test_v2_commit_quarantines_duplicate_doi(tmp_path):
 
     assert result["status"] == "possible_duplicate"
     assert Path(result["quarantine_dir"]).exists()
-    assert not (papers / "2024_li_重复论文").exists()
+    assert not (papers / second_pid).exists()
 
 
 def test_ledgers_reports_marker_conflict(tmp_path):
@@ -376,7 +344,10 @@ def test_pdf_metadata_without_doi_cannot_commit(tmp_path):
         "errors": ["metadata.identifiers.doi is required for formal commit"],
     }
     assert not (papers / "2024_wang_无doi论文").exists()
-    assert not ledger.exists()
+    # ledger already exists from formalize; commit failure must not activate the
+    # reserved entry (it stays reserved, and no new max_number is allocated).
+    ledger_data = json.loads(ledger.read_text(encoding="utf-8"))
+    assert ledger_data["max_number"] == "0000000000000001"
     assert not all_catalog.exists()
     assert (raw_folder / ".import_status.json").exists()
 
@@ -712,12 +683,12 @@ def test_ledger_activate_reserved_flips_state_and_repoints(tmp_path: Path):
 
 def test_ledger_activate_adopts_marker_only_folder(tmp_path: Path):
     # A marker-bearing folder with no ledger entry (legacy/test fixture) is
-    # adopted as active by activate_reserved — the marker is the voucher.
+    # adopted as active by activate_reserved when allow_adopt_missing=True.
     ledger = _ledger(tmp_path)
     final = tmp_path / "papers" / "2024_Wang_x"
     final.mkdir(parents=True)
     (final / "0000000000000009.paper.number").write_text("{}", encoding="utf-8")
-    ledger.activate_reserved("0000000000000009", final, paper_id="2024_Wang_x")
+    ledger.activate_reserved("0000000000000009", final, paper_id="2024_Wang_x", allow_adopt_missing=True)
     item = ledger.load()["items"]["0000000000000009"]
     assert item["state"] == "active"
     assert item["folder_name"] == "2024_Wang_x"

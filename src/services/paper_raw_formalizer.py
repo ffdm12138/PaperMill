@@ -42,10 +42,10 @@ from src.services.ingest_state import (
 from src.services.v2_library import (
     PaperNumberLedger,
     PaperRawConverter,
-    _TEMP_ID_RE,
-    _backfill_formal_catalog_links,
-    _load_json_for_gate,
+    TEMP_SOURCE_ID_RE,
     assess_paper_raw_commit_readiness,
+    backfill_formal_catalog_links,
+    load_json_for_gate,
     now_iso,
 )
 
@@ -91,14 +91,22 @@ class PaperRawFormalizationService:
         preserve_paper_number: str | None = None,
     ) -> dict:
         folder = Path(paper_raw_dir)
-        is_temp = bool(_TEMP_ID_RE.match(folder.name))
+        is_temp = bool(TEMP_SOURCE_ID_RE.match(folder.name))
         source_id = folder.name
+        file_prefix = source_id if is_temp else folder.name
 
-        # 1. Conversion gate — MUST run while the folder is still 6-digit
-        #    (PaperRawConverter.inspect_conversion only accepts <000001>).
-        if is_temp:
+        # 1. Conversion gate. Runs on BOTH 6-digit source folders and already-
+        # renamed <paper_id> folders (via inspect_converted_assets, which does
+        # not require a 6-digit name). The only skip is a true idempotent rerun:
+        # an already-ready_for_commit folder with a formalization.json + marker.
+        already_formalized = (
+            not is_temp
+            and (folder / f"{folder.name}.formalization.json").exists()
+            and self.ledger.paper_number_from_marker(folder) is not None
+        )
+        if not already_formalized:
             try:
-                inspection = self.converter.inspect_conversion(folder)
+                inspection = self.converter.inspect_converted_assets(folder, file_prefix=file_prefix)
             except Exception as exc:
                 write_import_status(folder, FORMALIZE_FAILED, reason=f"conversion inspect failed: {exc}")
                 return {"success": False, "status": FORMALIZE_FAILED, "errors": [str(exc)]}
@@ -120,11 +128,11 @@ class PaperRawFormalizationService:
         # 2. Load metadata + catalog.
         metadata_path = folder / f"{source_id}.metadata.json"
         catalog_path = folder / f"{source_id}.catalog.json"
-        metadata, load_errors = _load_json_for_gate(metadata_path, "metadata")
+        metadata, load_errors = load_json_for_gate(metadata_path, "metadata")
         if load_errors:
             write_import_status(folder, FORMALIZE_FAILED, reason="; ".join(load_errors), errors=load_errors)
             return {"success": False, "status": FORMALIZE_FAILED, "errors": load_errors}
-        catalog, catalog_errors = _load_json_for_gate(catalog_path, "catalog")
+        catalog, catalog_errors = load_json_for_gate(catalog_path, "catalog")
         if catalog_errors:
             write_import_status(folder, FORMALIZE_FAILED, reason="; ".join(catalog_errors), errors=catalog_errors)
             return {"success": False, "status": FORMALIZE_FAILED, "errors": catalog_errors}
@@ -192,7 +200,7 @@ class PaperRawFormalizationService:
             self.ledger.repoint_reserved(number, target, planned_paper_id=pid)
 
         # 6. Backfill catalog links in paper_raw.
-        _backfill_formal_catalog_links(target, pid, number)
+        backfill_formal_catalog_links(target, pid, number)
         # metadata.pdf.path / content.markdown_sha256 already set by readiness;
         # write the (possibly DOI-normalized) metadata back.
         from src.utils.atomic_io import atomic_write_json

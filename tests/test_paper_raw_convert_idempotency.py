@@ -218,7 +218,11 @@ def test_formal_commit_removes_conversion_manifest(tmp_path):
     (raw / f"{pid}.md").write_text("# Manifest", encoding="utf-8")
     (raw / f"{pid}.pdf").write_bytes(b"%PDF")
     (raw / "images").mkdir()
-    (raw / f"{pid}.conversion.json").write_text("{}", encoding="utf-8")
+    # Now we use write_conversion_manifest_for_existing_assets to produce a
+    # real manifest so the formalize conversion gate passes.
+    from src.services.v2_library import write_conversion_manifest_for_existing_assets
+    write_conversion_manifest_for_existing_assets(raw, pid)
+    assert (raw / f"{pid}.conversion.json").exists()
 
     from src.services.paper_raw_formalizer import PaperRawFormalizationService
 

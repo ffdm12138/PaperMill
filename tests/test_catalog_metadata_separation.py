@@ -89,6 +89,17 @@ def _build_formal_paper(tmp_path: Path, pid: str = "2024_wang_test", *, doi: str
     (folder / f"{pid}.md").write_text("# A Test Paper", encoding="utf-8")
     (folder / f"{pid}.pdf").write_bytes(b"%PDF")
     (folder / "images").mkdir()
+    # catalog builder v2.2 requires a paper_number marker + ledger entry
+    (folder / "0000000000000001.paper.number").write_text(
+        json.dumps({"paper_number": "0000000000000001", "folder_name": pid,
+                    "state": "active", "planned_paper_id": pid}), encoding="utf-8"
+    )
+    from src.services.v2_library import PaperNumberLedger
+    ledger = PaperNumberLedger(tmp_path / "catalog" / "paper_number_ledger.json")
+    ledger.save({"schema_version": "1.0", "max_number": "0000000000000001",
+                  "items": {"0000000000000001": {"folder_name": pid,
+                     "folder_path": str(folder), "state": "active",
+                     "planned_paper_id": pid, "created_at": "2026-01-01"}}})
     return folder
 
 

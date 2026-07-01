@@ -42,6 +42,9 @@ from src.utils.atomic_io import atomic_write_json
 
 
 _TEMP_ID_RE = re.compile(r"^\d{6}$")
+# Public alias (no underscore) for the 6-digit temp source-id pattern. The
+# underscore form is kept for back-compat; new code should use TEMP_SOURCE_ID_RE.
+TEMP_SOURCE_ID_RE = _TEMP_ID_RE
 _PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
 _BAD_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\r\n]+')
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -806,6 +809,16 @@ def _load_json_for_gate(path: Path, label: str) -> tuple[dict, list[str]]:
     return data, []
 
 
+# Public alias for the JSON gate loader. New code should import ``load_json_for_gate``;
+# the underscore form is kept for back-compat.
+load_json_for_gate = _load_json_for_gate
+
+
+# Public alias (no underscore) for the JSON gate loader. The underscore form is
+# kept for back-compat; new code should use load_json_for_gate.
+load_json_for_gate = _load_json_for_gate
+
+
 def _md_sha256_path(path: Path) -> str:
     digest = __import__("hashlib").sha256()
     with path.open("rb") as fh:
@@ -1198,11 +1211,32 @@ class PaperRawConverter:
         effort: str = MINERU_EFFORT,
     ) -> dict:
         source_id, folder = self._source_folder(source_id_or_dir)
-        paths = self._conversion_paths(folder, source_id)
-        pdf = paths["pdf"]
-        target_md = paths["markdown"]
-        images_target = paths["images"]
-        manifest_path = paths["manifest"]
+        return self.inspect_converted_assets(
+            folder, file_prefix=source_id, backend=backend, method=method, lang=lang, effort=effort
+        )
+
+    def inspect_converted_assets(
+        self,
+        folder: str | Path,
+        *,
+        file_prefix: str,
+        backend: str = MINERU_BACKEND,
+        method: str = MINERU_METHOD,
+        lang: str = MINERU_LANG,
+        effort: str = MINERU_EFFORT,
+    ) -> dict:
+        """Classify the conversion state of a folder by ``file_prefix``.
+
+        Unlike ``inspect_conversion``, this does NOT require a 6-digit source-id
+        folder name — it inspects ``<file_prefix>.conversion.json`` /
+        ``<file_prefix>.md`` / ``images/`` directly, so it works on an already
+        formalized ``<paper_id>`` workspace as well as a 6-digit source folder.
+        """
+        folder = Path(folder)
+        pdf = folder / f"{file_prefix}.pdf"
+        target_md = folder / f"{file_prefix}.md"
+        images_target = folder / "images"
+        manifest_path = folder / f"{file_prefix}.conversion.json"
         pdf_sha = compute_sha256(pdf) if pdf.exists() else ""
         md_exists = target_md.exists() and target_md.stat().st_size > 0
         images_exists = images_target.exists() and images_target.is_dir()
@@ -1622,6 +1656,12 @@ class PaperNumberLedger:
         return None
 
     def repoint(self, number: str, folder: str | Path) -> str:
+        """Legacy/migration-only. Do not use in ingest-v2.2 formalize/commit/catalog rebuild.
+
+        Re-attach an existing number to a different folder. New code should use
+        ``repoint_reserved`` (formalize rename) or ``deactivate_to_source``
+        (commit rollback). Writes the v2.2 full marker (state/planned_paper_id).
+        """
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
         folder = Path(folder)
@@ -1635,6 +1675,7 @@ class PaperNumberLedger:
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
                 "created_at": existing.get("created_at") or now_iso(),
+                "planned_paper_id": existing.get("planned_paper_id") or "",
                 "state": existing.get("state") or "active",
                 "repointed_at": now_iso(),
             }
@@ -1645,6 +1686,8 @@ class PaperNumberLedger:
             atomic_write_json(folder / f"{number}.paper.number", {
                 "paper_number": number,
                 "folder_name": folder.name,
+                "state": existing.get("state") or "active",
+                "planned_paper_id": existing.get("planned_paper_id") or "",
             }, indent=2)
             return number
 
@@ -1739,15 +1782,24 @@ class PaperNumberLedger:
             }, indent=2)
             return number
 
-    def activate_reserved(self, number: str, final_folder: str | Path, paper_id: str = "") -> str:
+    def activate_reserved(
+        self,
+        number: str,
+        final_folder: str | Path,
+        paper_id: str = "",
+        *,
+        allow_adopt_missing: bool = False,
+    ) -> str:
         """Flip a reserved number to ``active`` and repoint it at the formal library folder.
 
         Used by ``commit_paper_raw`` after ``os.replace`` installs the formal
         copy. The marker (already copied by copytree) is rewritten with
-        ``state="active"``. If the number is not yet in the ledger (e.g. a
-        marker-bearing folder adopted from a legacy/test fixture), the entry
-        is created as active — the marker file is the reservation voucher and
-        the ledger is the path/dedup index.
+        ``state="active"``. By default the number MUST already exist in the
+        ledger as a ``reserved`` entry (formalize reserves before commit); a
+        missing entry raises ``KeyError`` so commit fails+rolls back rather than
+        silently masking a formalize/ledger bug. Pass ``allow_adopt_missing=True``
+        only in legacy/repair/adopt flows that must accept a marker-only folder
+        with no ledger backing.
         """
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
@@ -1755,8 +1807,14 @@ class PaperNumberLedger:
         with FileLock(str(self._lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
-            existing = items.get(number) or {}
-            state = existing.get("state") or "active"
+            if number not in items:
+                if not allow_adopt_missing:
+                    raise KeyError(f"paper_number not in ledger: {number}")
+                # legacy/repair adopt: marker is the voucher, ledger is the index.
+                existing = {}
+            else:
+                existing = items[number] or {}
+            state = existing.get("state") or ("active" if allow_adopt_missing else "reserved")
             if state not in {"reserved", "active"}:
                 raise ValueError(f"cannot activate number {number} in state {state}")
             if int(number) > int(str(data.get("max_number") or "0000000000000000")):
@@ -1897,7 +1955,14 @@ class AllCatalogBuilder:
                 if catalog_errors:
                     self.last_errors.extend([f"{pid}: {err}" for err in catalog_errors])
                     continue
-                number = self.ledger.assign(folder)
+                number = self.ledger.paper_number_from_marker(folder)
+                if number is None:
+                    number = self.ledger.paper_number_for(folder)
+                if number is None:
+                    self.last_errors.append(
+                        f"{pid}: missing paper_number marker/ledger entry; run audit/repair or formalize+commit"
+                    )
+                    continue
                 if write:
                     try:
                         catalog = _backfill_formal_catalog_links(folder, pid, number)
@@ -1952,6 +2017,62 @@ class AllCatalogBuilder:
             }, indent=2)
         return data
 
+    def build_readonly_snapshot(self) -> dict:
+        """Build an in-memory all.catalog snapshot WITHOUT any disk side effects.
+
+        Unlike ``build(write=False)`` (which still backfills per-paper catalog
+        links when ``write`` is False — wait, it doesn't, but it does surface
+        missing-number errors), this never touches the ledger, never writes
+        marker files, never backfills per-paper catalogs, and silently skips
+        folders that lack a paper_number / valid catalog instead of recording
+        errors. Used by ``Catalog.load`` and the read-only server endpoints so a
+        missing ``all.catalog.json`` does not silently mutate the ledger.
+        """
+        papers: list[dict] = []
+        if not self.papers_dir.exists():
+            return {"schema_version": "2.0", "updated_at": now_iso(), "papers": papers}
+        for folder in sorted(p for p in self.papers_dir.iterdir() if p.is_dir()):
+            pid = folder.name
+            metadata_path = folder / f"{pid}.metadata.json"
+            catalog_path = folder / f"{pid}.catalog.json"
+            md_path = folder / f"{pid}.md"
+            pdf_path = folder / f"{pid}.pdf"
+            images_dir = folder / "images"
+            if not (metadata_path.exists() and catalog_path.exists() and md_path.exists() and pdf_path.exists() and images_dir.exists()):
+                continue
+            number = self.ledger.paper_number_from_marker(folder)
+            if number is None:
+                number = self.ledger.paper_number_for(folder)
+            if number is None:
+                continue  # silently skip missing-number legacy entries
+            try:
+                catalog = _read_json(catalog_path)
+            except Exception:
+                continue
+            if validate_catalog_schema(catalog):
+                continue
+            catalog_asset_refs = (catalog.get("asset_refs") or {}) if isinstance(catalog, dict) else {}
+            asset_refs = dict(catalog_asset_refs)
+            asset_refs["markdown"] = normalize_repo_path(md_path)
+            asset_refs["pdf"] = normalize_repo_path(pdf_path)
+            asset_refs["images_dir"] = normalize_repo_path(images_dir)
+            asset_refs.setdefault("figures", [])
+            source_id = str((catalog.get("source_id") or "") if isinstance(catalog, dict) else "")
+            papers.append({
+                "paper_number": number,
+                "paper_id": pid,
+                "source_id": source_id,
+                "asset_refs": asset_refs,
+                "content_identity": catalog.get("content_identity") or {},
+                "classification": catalog.get("classification") or {},
+                "screening": catalog.get("screening") or {},
+                "research_card": catalog.get("research_card") or {},
+                "evidence_profile": catalog.get("evidence_profile") or {},
+                "content_notes": catalog.get("content_notes") or {},
+                "provenance": catalog.get("provenance") or {},
+            })
+        return {"schema_version": "2.0", "updated_at": now_iso(), "papers": papers}
+
 
 def _metadata_field(metadata: dict, path: tuple[str, ...], default: Any = "") -> Any:
     cur: Any = metadata
@@ -1991,6 +2112,49 @@ def _backfill_formal_catalog_links(folder: Path, pid: str, paper_number: str) ->
         raise ValueError("; ".join(errors))
     atomic_write_json(catalog_path, catalog, indent=2)
     return catalog
+
+
+# Public alias for the formal catalog-link backfill. New code should import
+# ``backfill_formal_catalog_links``; the underscore form is kept for back-compat.
+backfill_formal_catalog_links = _backfill_formal_catalog_links
+
+
+def write_conversion_manifest_for_existing_assets(folder: str | Path, file_prefix: str) -> dict:
+    """Write a ``<file_prefix>.conversion.json`` manifest for already-present assets.
+
+    Used by tests/factory/repair flows that copy pre-converted md/pdf/images into a
+    paper_raw workspace and need formalize's conversion gate to accept them without
+    re-running MinerU. Computes pdf_sha256/pdf_file_size/markdown_sha256 and reads
+    the MINERU_* settings so the manifest matches ``inspect_conversion`` current-state.
+    """
+    folder = Path(folder)
+    pdf_path = folder / f"{file_prefix}.pdf"
+    md_path = folder / f"{file_prefix}.md"
+    images_dir = folder / "images"
+    if not pdf_path.exists() or not md_path.exists() or not images_dir.is_dir():
+        raise FileNotFoundError(f"conversion manifest requires {file_prefix}.pdf, {file_prefix}.md and images/")
+    images_count = sum(1 for p in images_dir.rglob("*") if p.is_file())
+    manifest = {
+        "schema_version": "1.0",
+        "status": "converted",
+        "source_id": file_prefix,
+        "pdf_sha256": compute_sha256(pdf_path),
+        "pdf_file_size": pdf_path.stat().st_size,
+        "markdown_path": f"{file_prefix}.md",
+        "markdown_sha256": _md_sha256_path(md_path),
+        "images_dir": "images",
+        "images_count": images_count,
+        "backend": MINERU_BACKEND,
+        "method": MINERU_METHOD,
+        "lang": MINERU_LANG,
+        "effort": MINERU_EFFORT,
+        "runner": "",
+        "api_url": "",
+        "output_dir": "",
+        "converted_at": now_iso(),
+    }
+    atomic_write_json(folder / f"{file_prefix}.conversion.json", manifest, indent=2)
+    return manifest
 
 
 class V2PaperCommitService:

@@ -146,7 +146,7 @@ async def get_all_catalog(rebuild: bool = False):
     if rebuild:
         return AllCatalogBuilder().build(write=True)
     if not ALL_CATALOG_PATH.exists():
-        return AllCatalogBuilder().build(write=False)
+        return AllCatalogBuilder().build_readonly_snapshot()
     return json.loads(ALL_CATALOG_PATH.read_text(encoding="utf-8"))
 
 
@@ -194,7 +194,7 @@ async def generate_bibtex(req: BibtexRequest):
     # Read-only: build an in-memory snapshot if all.catalog is missing; do not
     # write to disk from a bibtex request.
     if not ALL_CATALOG_PATH.exists():
-        data = AllCatalogBuilder().build(write=False)
+        data = AllCatalogBuilder().build_readonly_snapshot()
     else:
         data = json.loads(ALL_CATALOG_PATH.read_text(encoding="utf-8"))
     wanted_numbers = set(req.paper_numbers or [])

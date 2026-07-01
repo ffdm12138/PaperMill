@@ -134,6 +134,7 @@ class Catalog:
 
     def __init__(self, path: Path = ALL_CATALOG_PATH, papers_dir: Path = PAPERS_DIR):
         self.path = Path(path)
+        self.papers_dir = papers_dir
         self.library = PaperLibrary(all_catalog_path=self.path, papers_dir=papers_dir)
 
     @staticmethod
@@ -142,10 +143,11 @@ class Catalog:
 
     def load(self) -> dict:
         # Read-only: if all.catalog is absent, build an in-memory snapshot WITHOUT
-        # writing to disk. Disk writes belong to `rebuild_all_catalog.py --apply`,
-        # commit, or an explicit `?rebuild=true` API call.
+        # writing to disk (no ledger / marker / per-paper catalog writes). Disk
+        # writes belong to `rebuild_all_catalog.py --apply`, commit, or an
+        # explicit `?rebuild=true` API call.
         if not self.path.exists():
-            return AllCatalogBuilder(all_catalog_path=self.path).build(write=False)
+            return AllCatalogBuilder(all_catalog_path=self.path, papers_dir=self.papers_dir).build_readonly_snapshot()
         return _read_json(self.path, self._empty_data())
 
     def list_papers(self) -> list[dict]:

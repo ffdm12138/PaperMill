@@ -210,11 +210,11 @@ def test_formalize_rejects_stale_conversion(tmp_path: Path, monkeypatch):
     folder = _staged_raw(tmp_path)
     svc = _service(tmp_path)
 
-    def _stale(self, source_id_or_dir, **kwargs):
+    def _stale(self, folder, *, file_prefix, **kwargs):
         return {"state": "stale", "reason": "PDF sha256 changed", "manifest": None,
                 "markdown": "", "images_dir": "", "pdf_sha256": ""}
 
-    monkeypatch.setattr(PaperRawConverter, "inspect_conversion", _stale)
+    monkeypatch.setattr(PaperRawConverter, "inspect_converted_assets", _stale)
     result = svc.formalize(folder)
 
     assert not result["success"]
