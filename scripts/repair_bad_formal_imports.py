@@ -18,6 +18,7 @@ from src.naming import safe_child, validate_paper_id
 from src.path_utils import normalize_repo_path
 from src.services.v2_library import (
     PaperCurationService,
+    PaperNumberLedger,
     V2PaperCommitService,
     metadata_doi,
     paper_id_from_metadata_catalog,
@@ -27,7 +28,7 @@ from src.services.v2_library import (
 from src.utils.atomic_io import atomic_write_json
 
 
-_SOURCE_ID_RE = re.compile(r"^\d{6}$")
+_PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
@@ -48,12 +49,13 @@ def _paper_number(folder: Path) -> str:
     return str(data.get("paper_number") or markers[0].stem)
 
 
-def _source_id_from_side_files(folder: Path) -> str:
+def _resolver_side_file_prefixes(folder: Path) -> list[str]:
+    prefixes: list[str] = []
     for path in sorted(folder.glob("*.metadata.candidates.json")) + sorted(folder.glob("*.metadata.resolve_report.json")):
         prefix = path.name.split(".", 1)[0]
-        if _SOURCE_ID_RE.match(prefix):
-            return prefix
-    return ""
+        if prefix not in prefixes:
+            prefixes.append(prefix)
+    return prefixes
 
 
 def _contains_cjk(value: Any) -> bool:
@@ -103,8 +105,8 @@ def audit_bad_imports(papers_dir: Path) -> dict:
             issues.append("missing_confirmed_chinese_title")
         items.append({
             "old_paper_id": old_id,
-            "source_id": _source_id_from_side_files(folder),
-            "old_paper_number": _paper_number(folder),
+            "paper_number": _paper_number(folder),
+            "resolver_side_file_prefixes": _resolver_side_file_prefixes(folder),
             "doi": metadata_doi(metadata) if metadata else "",
             "current_title": (metadata.get("title") or {}).get("original") or "",
             "candidate_short_zh": _candidate_zh(metadata, catalog),
@@ -135,40 +137,40 @@ def _load_manifest(path: Path) -> list[dict]:
 def _validate_manifest_item(item: dict) -> list[str]:
     errors: list[str] = []
     old_id = str(item.get("old_paper_id") or "")
-    source_id = str(item.get("source_id") or "")
+    paper_number = str(item.get("paper_number") or item.get("old_paper_number") or "")
     try:
         validate_paper_id(old_id)
     except Exception as exc:
         errors.append(f"invalid old_paper_id: {exc}")
-    if not _SOURCE_ID_RE.match(source_id):
-        errors.append(f"source_id must be 6 digits: {source_id}")
     if item.get("confirmed") is not True:
         errors.append("confirmed must be true")
     if item.get("allow_reimport", True) is not True:
         errors.append("allow_reimport must be true")
     if not _contains_cjk(str(item.get("short_zh") or item.get("translated_zh") or "")):
         errors.append("short_zh or translated_zh must contain Chinese")
-    number = str(item.get("old_paper_number") or item.get("paper_number") or "")
-    if number and not re.match(r"^\d{16}$", number):
-        errors.append(f"old_paper_number must be 16 digits: {number}")
+    if not paper_number or not _PAPER_NUMBER_RE.match(paper_number):
+        errors.append(f"paper_number must be 16 digits: {paper_number}")
     return errors
 
 
-def _copy_assets_to_raw(old_folder: Path, raw_folder: Path, old_id: str, source_id: str, item: dict) -> None:
+def _copy_assets_to_raw(old_folder: Path, raw_folder: Path, old_id: str, item: dict) -> None:
     raw_folder.mkdir(parents=True, exist_ok=False)
+    paper_raw_id = raw_folder.name
     metadata = deepcopy(_read_json(old_folder / f"{old_id}.metadata.json", {}) or {})
-    metadata["source_id"] = source_id
+    metadata["schema_version"] = "1.1"
+    metadata["paper_number"] = paper_raw_id
+    metadata["paper_raw_id"] = paper_raw_id
     metadata.setdefault("title", {})
     metadata["title"]["short_zh"] = str(item.get("short_zh") or metadata["title"].get("short_zh") or "")
     metadata["title"]["translated_zh"] = str(item.get("translated_zh") or metadata["title"].get("translated_zh") or metadata["title"]["short_zh"])
-    atomic_write_json(raw_folder / f"{source_id}.metadata.json", metadata, indent=2)
+    atomic_write_json(raw_folder / f"{paper_raw_id}.metadata.json", metadata, indent=2)
 
     catalog_path = Path(str(item.get("catalog_path") or "")) if item.get("catalog_path") else old_folder / f"{old_id}.catalog.json"
     if not catalog_path.is_absolute():
         catalog_path = Path.cwd() / catalog_path
-    shutil.copy2(catalog_path, raw_folder / f"{source_id}.catalog.json")
-    shutil.copy2(old_folder / f"{old_id}.md", raw_folder / f"{source_id}.md")
-    shutil.copy2(old_folder / f"{old_id}.pdf", raw_folder / f"{source_id}.pdf")
+    shutil.copy2(catalog_path, raw_folder / f"{paper_raw_id}.catalog.json")
+    shutil.copy2(old_folder / f"{old_id}.md", raw_folder / f"{paper_raw_id}.md")
+    shutil.copy2(old_folder / f"{old_id}.pdf", raw_folder / f"{paper_raw_id}.pdf")
     shutil.copytree(old_folder / "images", raw_folder / "images")
     # The assets were copied from a previously-converted formal folder, so the
     # conversion is already complete. Write a conversion manifest so formalize's
@@ -177,16 +179,17 @@ def _copy_assets_to_raw(old_folder: Path, raw_folder: Path, old_id: str, source_
     from src.services.v2_library import _md_sha256_path
     from config.settings import MINERU_BACKEND, MINERU_METHOD, MINERU_LANG, MINERU_EFFORT
 
-    pdf_path = raw_folder / f"{source_id}.pdf"
-    md_path = raw_folder / f"{source_id}.md"
+    pdf_path = raw_folder / f"{paper_raw_id}.pdf"
+    md_path = raw_folder / f"{paper_raw_id}.md"
     images_dir = raw_folder / "images"
-    atomic_write_json(raw_folder / f"{source_id}.conversion.json", {
+    atomic_write_json(raw_folder / f"{paper_raw_id}.conversion.json", {
         "schema_version": "1.0",
         "status": "converted",
-        "source_id": source_id,
+        "paper_number": paper_raw_id,
+        "paper_raw_id": paper_raw_id,
         "pdf_sha256": compute_sha256(pdf_path),
         "pdf_file_size": pdf_path.stat().st_size,
-        "markdown_path": f"{source_id}.md",
+        "markdown_path": f"{paper_raw_id}.md",
         "markdown_sha256": _md_sha256_path(md_path),
         "images_dir": "images",
         "images_count": sum(1 for p in images_dir.rglob("*") if p.is_file()),
@@ -216,12 +219,11 @@ def plan_or_apply_repair(
     results = []
     for item in items:
         old_id = str(item.get("old_paper_id") or "")
-        source_id = str(item.get("source_id") or "")
-        number = str(item.get("old_paper_number") or item.get("paper_number") or "")
-        result = {"old_paper_id": old_id, "source_id": source_id, "status": "planned", "errors": []}
+        number = str(item.get("paper_number") or item.get("old_paper_number") or "")
+        result = {"old_paper_id": old_id, "paper_number": number, "status": "planned", "errors": []}
         errors = _validate_manifest_item(item)
         old_folder = safe_child(papers_dir, old_id) if old_id else papers_dir / "__invalid__"
-        raw_folder = safe_child(paper_raw_dir, source_id) if _SOURCE_ID_RE.match(source_id) else paper_raw_dir / "__invalid__"
+        raw_folder = safe_child(paper_raw_dir, number) if _PAPER_NUMBER_RE.match(number) else paper_raw_dir / "__invalid__"
         if not old_folder.is_dir():
             errors.append(f"formal folder not found: {old_folder}")
         if raw_folder.exists():
@@ -245,7 +247,6 @@ def plan_or_apply_repair(
             results.append(result)
             continue
         result["new_paper_id"] = paper_id_from_metadata_catalog(metadata, catalog)
-        result["paper_number"] = number
         result["quarantine_dir"] = normalize_repo_path(quarantine_root / old_id)
         result["paper_raw_dir"] = normalize_repo_path(raw_folder)
         if not apply:
@@ -256,7 +257,8 @@ def plan_or_apply_repair(
         q_folder = quarantine_root / old_id
         shutil.move(str(old_folder), q_folder)
         try:
-            _copy_assets_to_raw(q_folder, raw_folder, old_id, source_id, item)
+            _copy_assets_to_raw(q_folder, raw_folder, old_id, item)
+            PaperNumberLedger(ledger_path).reserve_specific_for_paper_raw(number, raw_folder)
             curation = PaperCurationService().apply_curated_files(raw_folder)
             if not curation.get("success"):
                 raise RuntimeError("; ".join(curation.get("errors") or [curation.get("status", "curation failed")]))

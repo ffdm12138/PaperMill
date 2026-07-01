@@ -5,10 +5,10 @@ from scripts.repair_bad_formal_imports import audit_bad_imports, plan_or_apply_r
 from src.services.v2_library import empty_catalog, empty_metadata
 
 
-def _formal_bad_import(root: Path, old_id: str = "2024_Wang_Old_English", source_id: str = "000001") -> Path:
+def _formal_bad_import(root: Path, old_id: str = "2024_Wang_Old_English", paper_number: str = "0000000000000042") -> Path:
     folder = root / "papers" / old_id
     folder.mkdir(parents=True)
-    metadata = empty_metadata(source_id)
+    metadata = empty_metadata(paper_number)
     metadata["title"]["original"] = "Old English"
     metadata["title"]["short_zh"] = "旧英文条目"
     metadata["title"]["translated_zh"] = "旧英文条目"
@@ -42,10 +42,10 @@ def _formal_bad_import(root: Path, old_id: str = "2024_Wang_Old_English", source
     (folder / f"{old_id}.md").write_text("# Old English", encoding="utf-8")
     (folder / f"{old_id}.pdf").write_bytes(b"%PDF-repair")
     (folder / "images").mkdir()
-    (folder / f"{source_id}.metadata.candidates.json").write_text("{}", encoding="utf-8")
-    (folder / f"{source_id}.metadata.resolve_report.json").write_text("{}", encoding="utf-8")
-    (folder / "0000000000000042.paper.number").write_text(
-        json.dumps({"paper_number": "0000000000000042", "folder_name": old_id}),
+    (folder / f"{paper_number}.metadata.candidates.json").write_text("{}", encoding="utf-8")
+    (folder / f"{paper_number}.metadata.resolve_report.json").write_text("{}", encoding="utf-8")
+    (folder / f"{paper_number}.paper.number").write_text(
+        json.dumps({"paper_number": paper_number, "folder_name": old_id}),
         encoding="utf-8",
     )
     return folder
@@ -55,8 +55,7 @@ def _manifest(path: Path, old_id: str = "2024_Wang_Old_English") -> Path:
     data = {
         "items": [{
             "old_paper_id": old_id,
-            "source_id": "000001",
-            "old_paper_number": "0000000000000042",
+            "paper_number": "0000000000000042",
             "short_zh": "中文修复条目",
             "translated_zh": "中文修复条目",
             "confirmed": True,
@@ -76,8 +75,8 @@ def test_repair_audit_emits_manifest_template(tmp_path):
     assert len(report["items"]) == 1
     item = report["items"][0]
     assert item["old_paper_id"] == "2024_Wang_Old_English"
-    assert item["source_id"] == "000001"
-    assert item["old_paper_number"] == "0000000000000042"
+    assert item["paper_number"] == "0000000000000042"
+    assert item["resolver_side_file_prefixes"] == ["0000000000000042"]
     assert item["confirmed"] is False
 
 
@@ -97,7 +96,7 @@ def test_repair_dry_run_does_not_mutate(tmp_path):
     assert report["applied"] is False
     assert report["items"][0]["new_paper_id"] == "2024_Wang_中文修复条目"
     assert old.exists()
-    assert not (tmp_path / "paper_raw" / "000001").exists()
+    assert not (tmp_path / "paper_raw" / "0000000000000042").exists()
 
 
 def test_repair_apply_quarantines_rebuilds_and_preserves_number(tmp_path):

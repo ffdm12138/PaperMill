@@ -2,11 +2,11 @@
   "schema_version": "2.0",
   "paper_number": "",
   "paper_id": "",
-  "source_id": "000001",
+  "paper_number": "0000000000000001",
   "asset_refs": {
-    "markdown": "data/paper_raw/000001/000001.md",
-    "pdf": "data/paper_raw/000001/000001.pdf",
-    "images_dir": "data/paper_raw/000001/images",
+    "markdown": "data/paper_raw/0000000000000001/0000000000000001.md",
+    "pdf": "data/paper_raw/0000000000000001/0000000000000001.pdf",
+    "images_dir": "data/paper_raw/0000000000000001/images",
     "figures": []
   },
   "content_identity": {
@@ -66,7 +66,7 @@
   },
   "provenance": {
     "generated_from": "mineru_markdown",
-    "markdown_path": "data/paper_raw/000001/000001.md",
+    "markdown_path": "data/paper_raw/0000000000000001/0000000000000001.md",
     "generated_at": "",
     "generator": "paper_raw_catalog_curator",
     "notes": "示例 v2.0 content-only catalog；书目字段（DOI/作者/年份/期刊/BibTeX）不在 catalog，由 metadata.json 承载，经 paper_number/paper_id 关联。"

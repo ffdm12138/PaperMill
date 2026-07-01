@@ -1,4 +1,8 @@
-"""
+"""LEGACY-ONLY MIGRATION SCRIPT.
+
+This script is not part of ingest-v2.3 normal workflow.
+Do not run from agents unless explicitly repairing old snapshots.
+
 Rename all 16-digit paper_raw directories to paper_id format:
   {year}_{author_lowercase}_{ChineseShortTitle}
 

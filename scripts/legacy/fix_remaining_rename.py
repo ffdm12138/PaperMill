@@ -1,3 +1,8 @@
+"""LEGACY-ONLY MIGRATION SCRIPT.
+
+This script is not part of ingest-v2.3 normal workflow.
+Do not run from agents unless explicitly repairing old snapshots.
+"""
 import json, os, re, unicodedata
 
 RAW = 'data/paper_raw'

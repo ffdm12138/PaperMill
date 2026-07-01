@@ -1,6 +1,6 @@
 # Paper Raw Catalog Curator Skill
 
-Use this skill to curate a single `data/paper_raw/<source_id>/` folder: generate a
+Use this skill to curate a single `data/paper_raw/<paper_number>/` folder: generate a
 v2.0 content-only catalog from MinerU Markdown/PDF/images.
 
 ## Role
@@ -33,18 +33,18 @@ v2.0 content-only catalog from MinerU Markdown/PDF/images.
 ## 输入
 
 ```
-data/paper_raw/<source_id>/
-  <source_id>.metadata.json
-  <source_id>.pdf
-  <source_id>.md
+data/paper_raw/<paper_number>/
+  <paper_number>.metadata.json
+  <paper_number>.pdf
+  <paper_number>.md
   images/
 ```
 
 ## 输出
 
-在同一个 `data/paper_raw/<source_id>/` 文件夹下输出：
+在同一个 `data/paper_raw/<paper_number>/` 文件夹下输出：
 
-1. `<source_id>.catalog.json` —— 符合 `catalog_schema.json`（**v2.0，content-only**）。
+1. `<paper_number>.catalog.json` —— 符合 `catalog_schema.json`（**v2.0，content-only**）。
 
 > catalog curator **不生成 metadata patch**。书目字段（DOI/作者/期刊/年份/BibTeX/citation_key）
 > 由 metadata resolver / enrichment 负责。如需补 metadata 空字段，交给
@@ -87,12 +87,13 @@ catalog 任何层级都不得出现：`doi`、`authors`、`author`、`first_auth
 
 ## 接入
 
-- 生成 prompt：`python scripts/curate_paper_raw.py --source-id <id> --dry-run`
+- 生成 prompt：`python scripts/curate_paper_raw.py --paper-number <paper_number> --dry-run`
   （在文件夹下写出 `curation_prompt.md`）。
-- 应用结果：`python scripts/curate_paper_raw.py --source-id <id> --catalog <path> --apply`。
+- 应用结果：`python scripts/curate_paper_raw.py --paper-number <paper_number> --catalog <path> --apply`。
 
 注意：curation prompt 和 apply 都要求 `metadata_match.status` 为 `matched` 或
 `manual_confirmed`，且 `metadata.identifiers.doi` 非空。网络/搜索 metadata
 导入必须有 DOI；手动 PDF 可以先无 DOI，但不能进入 curation/commit。
 
 Schema 定义见 `catalog_schema.json`（v2.0），示例见 `examples/`。
+

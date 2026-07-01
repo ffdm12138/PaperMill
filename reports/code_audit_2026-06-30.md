@@ -35,7 +35,7 @@
 - `cli_api_proxy` now checks API health before batch conversion and before single
   `MinerUConverter.convert()` subprocess launch.
 - `PaperRawConverter` now inspects conversion state, skips existing converted assets,
-  writes `<source_id>.conversion.json`, updates `.import_status.json`, and supports
+  writes `<paper_number>.conversion.json`, updates `.import_status.json`, and supports
   explicit `--force-reconvert`.
 - Formal commit removes `*.conversion.json` before installing assets into `data/papers`.
 - Resolver action hints now use `stage_raw_pdfs_to_paper_raw.py --move --apply`.
@@ -103,7 +103,26 @@ tests, and SWIG/PyMuPDF imports; they did not fail validation.
 - `PaperNumberLedger` gained `reserve_for_paper_raw` / `activate_reserved` /
   `deactivate_to_source` / `paper_number_from_marker` and an additive `state`
   field (no schema_version bump; legacy entries backfill `state=active`).
-- `audit_paper_raw_formal_imports.py` folds in formal-state checks (marker,
+- `scripts/legacy/audit_paper_raw_formal_imports.py` folds in formal-state checks (marker,
   paper_number consistency, metadata completeness/match, catalog content-only,
   transient files, suspicious paper_id) and a `--quarantine --apply` mode.
 
+## 2026-07-02 ingest-v2.3 paper_raw paper_number workspaces
+
+- New ingest staging reserves a 16-digit `paper_number` immediately and creates
+  `data/paper_raw/<paper_number>/` plus a reserved ledger item and marker.
+- Normal CLI selectors are strict-only (`paper_number` selectors); legacy
+  six-digit directories are handled by migration/repair tools.
+- `formalize_paper_raw.py` accepts `converted_current` only. Converted assets
+  without a current conversion manifest are `conversion_manifest_missing` and
+  must be repaired by current-manifest generation or reconverted.
+- `preserve_paper_number` now reserves the requested number as `state=reserved`
+  for paper_raw and rejects active/conflicting numbers; the formalize path no
+  longer uses legacy `repoint()`.
+- Normal ingest/commit tests start from 16-digit `paper_number` fixtures with real
+  conversion manifests. Handwritten formalization artifacts are limited to
+  repair/audit/corruption negative cases.
+- `Catalog.load()` fallback is a tolerant read-only snapshot and does not write
+  ledger entries, markers, per-paper catalogs, all.catalog, or paper_index.
+- `v2_library.py` remains intentionally unsplit in this patch; future module
+  splitting is tracked in `docs/TECH_DEBT.md`.

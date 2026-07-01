@@ -14,7 +14,7 @@ CPU/no-GPU conversion is debug-only via `MINERU_ALLOW_CPU=true` or explicit
 python scripts/start_mineru_services.py --wait
 python scripts/check_mineru_processes.py
 python scripts/benchmark_mineru.py "E:\papers\test.pdf" --repeat 2
-python scripts/convert_paper_raw_gpu.py --source-id 000001 --apply
+python scripts/convert_paper_raw_gpu.py --paper-number 0000000000000001 --apply
 python scripts/convert_paper_raw_gpu.py --all --apply --report reports/convert_paper_raw.json
 python scripts/stop_mineru_services.py
 ```
@@ -76,6 +76,7 @@ PDF title fallback.
 Formal multi-source conversion must not use `MINERU_RUNNER=cli`, because that
 can cold-start MinerU once per PDF. Use `cli_api_proxy`; single-source CLI is
 kept only for tests/debugging. `paper_raw` conversion is idempotent: existing
-`<source_id>.md` plus `images/` is skipped by default, successful conversion
-writes `<source_id>.conversion.json` and `.import_status.json: converted`, and
+`<paper_number>.md` plus `images/` is skipped by default, successful conversion
+writes `<paper_number>.conversion.json` and `.import_status.json: converted`, and
 stale/partial conversion states require explicit `--force-reconvert`.
+

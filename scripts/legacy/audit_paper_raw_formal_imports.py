@@ -1,4 +1,7 @@
-"""Audit formal papers imported from paper_raw and optionally delete safe bad copies.
+"""LEGACY-ONLY AUDIT SCRIPT.
+
+Audit formal papers imported from legacy paper_raw layouts and optionally delete
+safe bad copies.
 
 Also folds in the formal-ingest state audit: each formal paper is checked for
 marker presence, paper_number consistency, metadata completeness/match,

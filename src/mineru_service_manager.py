@@ -209,7 +209,7 @@ def start_services(
             "log_file": str(MINERU_API_LOG_FILE),
             "health": "ok",
             "message": "mineru-api is already healthy; reused existing service.",
-            "next_command": "python scripts/convert_paper_raw_gpu.py --source-id 000001 --apply",
+            "next_command": "python scripts/convert_paper_raw_gpu.py --paper-number 0000000000000001 --apply",
         }
 
     if port_is_open(host, api_port):
@@ -266,7 +266,7 @@ def start_services(
         "log_file": str(MINERU_API_LOG_FILE),
         "health": health,
         "message": "mineru-api started." if health == "ok" else "mineru-api started but is not ready yet.",
-        "next_command": "python scripts/convert_paper_raw_gpu.py --source-id 000001 --apply",
+        "next_command": "python scripts/convert_paper_raw_gpu.py --paper-number 0000000000000001 --apply",
         "web": web_result,
     }
 

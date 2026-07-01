@@ -4,7 +4,7 @@
 
 ## Project status and documentation map
 
-- **ingest v2.2 已冻结**（tag `ingest-v2.2`；v2.1 已被状态机重构取代：curate 不再改名，新增 `formalize_paper_raw.py`，commit 退化为事务性安装）；**writing v0.1 已冻结**（tag `writing-v0.1`）。本轮不打新 tag。
+- **ingest v2.3 strict-only 为当前增量状态**（不打新 tag）：新 `paper_raw` 工作区统一为 16 位 `paper_number`，staging 第一步 reserve 编号；正常 CLI 只接受 `--paper-number` / `--paper-numbers`，旧 6 位编号仅限 `scripts/legacy/` migration。**ingest v2.2 已冻结**（tag `ingest-v2.2`）；**writing v0.1 已冻结**（tag `writing-v0.1`）。
 - 项目**不使用 RAG / embedding / vector database / ChromaDB**，也不内置 LLM client。
 - 真实入库 / 转换 / 写作必须使用 `conda run -n mineru ...`（PATH 上的 python 是 Windows Store 别名，会静默退出）。
 - snapshot 不包含真实 `data/` 文献资产与 `write/jobs/` 运行产物（只跟踪 `.gitkeep`）。
@@ -67,6 +67,10 @@ paper_number、回填 catalog、置 `ready_for_commit`；`commit_paper_raw_to_pa
 `formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离
 （`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传
 tmp ledger 与 tmp all.catalog，禁止污染真实 `data/catalog`。metadata 候选读转换后 Markdown 前 100 行。
+`formalize_paper_raw.py` 只接受 `converted_current`（存在当前 conversion manifest）；
+缺 manifest 的已转换资产必须先生成当前 manifest 或重新转换。普通 ingest
+测试夹具从 16 位 `paper_number` 工作区开始，`preserve_paper_number` 使用 reserved-specific 语义。
+`Catalog.load()` 的缺失 all.catalog fallback 是 tolerant read-only snapshot，不写 ledger/marker。
 写作流程按 `paper_number` 复制到 `write/jobs/<job_id>/article/<paper_number>/`。
 
 正式资产只允许位于：
@@ -92,9 +96,9 @@ data/papers/<paper_id>/<16位编号>.paper.number
 ## Metadata 完整性门槛
 
 - 网络/搜索 metadata 导入必须有 DOI，并写入 `metadata.identifiers.doi`；没有 DOI 的候选不得 stage 到 `paper_raw`。
-- 手动 PDF 可以先进入 `data/paper_raw/<000001>/` 并保持 `metadata_match.status = unmatched`，但匹配或人工确认没有 DOI 时不得 curation/commit。
+- 手动 PDF 可以先进入 `data/paper_raw/<0000000000000001>/` 并保持 `metadata_match.status = unmatched`，但匹配或人工确认没有 DOI 时不得 curation/commit。
 - 手动 PDF 正常导入时，`data/raw/` is a queue / raw 是待处理队列；成功 stage 会把 PDF 移到
-  `data/paper_raw/<source_id>/<source_id>.pdf`，因此 raw 中对应 PDF 应消失。
+  `data/paper_raw/<paper_number>/<paper_number>.pdf`，因此 raw 中对应 PDF 应消失。
 - curation、formal commit 和正式库 validate 都要求 DOI 非空；不完整的 `paper_raw` 留在原工作区，写 `.import_status.json` 说明原因。
 - LLM/curator 只能补空 metadata 字段，不能编造 DOI，也不能覆盖已有非空 DOI。
 - BibTeX 和 APA 参考文献只从 metadata 读取标题、作者、venue、卷期页、DOI 和 URL，不从 catalog 或 MinerU 正文拼接。
@@ -137,8 +141,8 @@ data/papers/<paper_id>/<16位编号>.paper.number
   大 PDF MinerU 转换没有进程级 timeout，可能运行很久；health/preflight/网络请求和 MinerU lock
   等待 timeout 仍然保留，但它们不是 PDF 转换超时。确认卡死时先运行
   `python scripts/check_mineru_processes.py`，再按需运行 `python scripts/stop_mineru_services.py`。
-  `paper_raw` 转换幂等：已有 `<source_id>.md` + `images/` 默认 skipped；成功转换写
-  `<source_id>.conversion.json` 和 `.import_status.json: converted`；只有显式
+  `paper_raw` 转换幂等：已有 `<paper_number>.md` + `images/` 默认 skipped；成功转换写
+  `<paper_number>.conversion.json` 和 `.import_status.json: converted`；只有显式
   `--force-reconvert` 才清理旧 md/images/output 并重跑 MinerU。
   非 localhost API 暴露必须设置 `MINERU_API_KEY`。
 
@@ -146,13 +150,13 @@ Formal conversion command:
 
 ```bash
 conda run -n mineru python scripts/start_mineru_services.py --wait
-conda run -n mineru python scripts/convert_paper_raw_gpu.py --source-id 000001 --apply
+conda run -n mineru python scripts/convert_paper_raw_gpu.py --paper-number 0000000000000001 --apply
 conda run -n mineru python scripts/convert_paper_raw_gpu.py --all --apply --report reports/convert_paper_raw.json
 conda run -n mineru python scripts/stop_mineru_services.py
 ```
 
 Metadata title/author candidates for manual PDFs come from the converted Markdown first:
-read `data/paper_raw/<source_id>/<source_id>.md` physical first 100 lines as
+read `data/paper_raw/<paper_number>/<paper_number>.md` physical first 100 lines as
 front-matter evidence for title, authors, affiliations, abstract, keywords, and
 DOI candidates before any PDF text title fallback, and keep DOI gates strict.
 
@@ -201,3 +205,4 @@ export MINERU_API_URL=http://127.0.0.1:8000
 `data/raw/`、`data/paper_raw/`、`data/papers/` 中的文献资产按版权数据处理，不进入源码分发。
 真实 `data/papers` 不进入 snapshot，但本地真实库必须通过 `validate_v2_library.py` 和
 `audit_metadata_quality.py` 的硬错误检查。`write/jobs/` 运行产物不提交（只跟踪 `.gitkeep`）。
+

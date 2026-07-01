@@ -21,7 +21,6 @@
     "schema_version": { "type": "string", "const": "2.0" },
     "paper_number": { "type": "string" },
     "paper_id": { "type": "string" },
-    "source_id": { "type": "string" },
     "asset_refs": {
       "type": "object",
       "properties": {

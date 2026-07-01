@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from scripts.audit_paper_raw_formal_imports import audit_formal_imports
+from scripts.legacy.audit_paper_raw_formal_imports import audit_formal_imports
 from scripts.validate_v2_library import validate_v2_library
 from src.services.v2_library import empty_metadata
 

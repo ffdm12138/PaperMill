@@ -1,6 +1,6 @@
 # paper_raw_metadata_resolver
 
-This skill resolves metadata for a `data/paper_raw/<source_id>/` folder whose
+This skill resolves metadata for a `data/paper_raw/<paper_number>/` folder whose
 metadata is unmatched or incomplete. It is the PDF-after-MinerU bibliographic
 metadata resolver: it reads the **converted MinerU Markdown first**, extracts
 DOI/title/authors/year/venue candidates, **verifies them online** (Crossref /
@@ -24,3 +24,4 @@ patch uses the **same metadata schema as network-fetched metadata** (an
 simplified旁路 format. The patch is applied by
 `scripts/resolve_paper_raw_metadata.py --apply`, which re-checks DOI validity,
 duplicates, conflicts, and completeness.
+

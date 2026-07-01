@@ -31,6 +31,10 @@ v2.2 状态机：`curate_paper_raw.py` 只校验并写 `catalog_ready`（不改�
 `formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离
 （`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传 tmp
 `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog`。metadata 候选读转换后 Markdown 前 100 行。
+`formalize_paper_raw.py` 默认只接受 `converted_current`；legacy converted assets 必须在
+缺 manifest 的已转换资产必须先生成当前 manifest 或重新转换。普通 ingest 测试夹具从 16 位 `paper_number`
+开始，保留编号使用 reserved-specific 语义，不走 legacy `repoint()`。`Catalog.load()` fallback
+是 tolerant read-only snapshot，不写 ledger/marker/catalog 索引。
 
 Writing workspace creation:
 
@@ -42,7 +46,7 @@ Manual PDF staging SOP:
 
 - `data/raw/` is the manual PDF queue / raw 是待处理队列.
 - Normal manual ingest uses `stage_raw_pdfs_to_paper_raw.py --move --apply`.
-- Successful staging consumes PDFs from `data/raw/` and places them under `data/paper_raw/<source_id>/<source_id>.pdf`.
+- Successful staging consumes PDFs from `data/raw/` and places them under `data/paper_raw/<paper_number>/<paper_number>.pdf`.
 - Copy mode is only for debugging, backup, tests, or explicit one-off inspection.
 - MinerU conversion requires GPU / MinerU 正式转换必须使用 GPU. Staging does not need GPU; formal
   ingest uses `convert_paper_raw_gpu.py`, which defaults `MINERU_REQUIRE_GPU=true`,
@@ -61,8 +65,8 @@ Manual PDF staging SOP:
   converted Markdown first 100 lines as front-matter evidence before PDF title fallback.
 - Multi-source formal conversion must not use `MINERU_RUNNER=cli`; single-source CLI is for
   debug/test only.
-- `paper_raw` conversion is idempotent. Existing `<source_id>.md` + `images/` is skipped by
-  default, successful conversion writes `<source_id>.conversion.json`, and stale/partial
+- `paper_raw` conversion is idempotent. Existing `<paper_number>.md` + `images/` is skipped by
+  default, successful conversion writes `<paper_number>.conversion.json`, and stale/partial
   conversion states require explicit `--force-reconvert`.
 - Non-localhost API exposure requires `MINERU_API_KEY` unless an explicit unsafe override is set.
 
@@ -78,3 +82,4 @@ Facts:
 - `catalog.json` and `all.catalog.json` are content-only.
 - catalog natural-language values default to Chinese; JSON keys/schema enums stay English, and technical terms may remain English or mixed Chinese-English.
 - metadata remains original/canonical bibliographic facts and is not rewritten for catalog Chinese localization.
+

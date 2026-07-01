@@ -14,9 +14,10 @@
 
 ## 1. 项目状态
 
+- ingest v2.3 strict-only current incremental state（不打新 tag）：新 ingest 的 `data/paper_raw/<id>/` 使用 16 位 `paper_number`，staging 第一步即 reserve 编号并写 `<paper_number>.paper.number` marker；正常 CLI 只接受 `--paper-number` / `--paper-numbers`，旧 6 位编号仅限 `scripts/legacy/` migration。
 - ingest v2.2 frozen，tag `ingest-v2.2`（v2.1 已被状态机重构取代：curate 不再改名/不再 commit，新增 `formalize_paper_raw.py` 在 paper_raw 内完成正式化，`commit` 退化为事务性安装）。
 - writing v0.1 frozen，tag `writing-v0.1`。
-- 不修改 catalog/metadata schema，不修改 writer v0.1 行为。
+- catalog schema 保持 v2.0；新 metadata schema 为 v1.1（`paper_number` / `paper_raw_id`，不生成 `source_id`）；不修改 writer v0.1 行为。
 - 当前增量改动必须文档化，不打新 tag。
 
 ## 2. 不可违反的边界
@@ -87,13 +88,13 @@ Windows 兼容入口 `start_fast_api_mode.bat` 会委托该脚本），
 `nvidia-smi` 与当前 Python 环境的 `torch.cuda.is_available()`。
 `start_fast_api_mode.bat` 是 single-instance helper：已有健康 `mineru-api` 时复用，端口 8000
 被占用但 `/health` 不通时拒绝启动新服务。多篇 formal batch 不允许 `MINERU_RUNNER=cli`
-冷启动；单篇 CLI 仅用于测试/调试。`paper_raw` 转换是幂等的，已有 `<source_id>.md` + `images/`
+冷启动；单篇 CLI 仅用于测试/调试。`paper_raw` 转换是幂等的，已有 `<paper_number>.md` + `images/`
 默认 skipped；只有显式 `--force-reconvert` 才删除旧 md/images/output 并重跑 MinerU。
 大 PDF MinerU 转换没有进程级 timeout，不再因固定秒数被杀；health/preflight/HTTP 请求和
 `MinerULock` 等待 timeout 仍可保留，它们不是 PDF 固定秒数限制。确认卡死时先运行
 `python scripts/check_mineru_processes.py`，再按需运行 `python scripts/stop_mineru_services.py`
 或 `python scripts/stop_mineru_services.py --all-mineru-api`。
-metadata resolver 获取标题/作者/单位/摘要/关键词/DOI 候选时必须优先读取转换后 `<source_id>.md`
+metadata resolver 获取标题/作者/单位/摘要/关键词/DOI 候选时必须优先读取转换后 `<paper_number>.md`
 的物理前 100 行作为 front-matter evidence；Markdown first 100 lines candidates take precedence
 before PDF title fallback。
 非 localhost API 必须设置 `MINERU_API_KEY`，除非显式使用 unsafe override。
@@ -102,8 +103,8 @@ before PDF title fallback。
 与 `fetch_pdf_for_paper_raw.py --all --apply`，再接 `convert_paper_raw_gpu.py` → `curate_paper_raw.py`
 → `formalize_paper_raw.py` → `commit_paper_raw_to_papers.py`（网络 metadata 已有合法 DOI，无需 resolve 步骤）。
 
-v2.2 状态机职责边界：`curate_paper_raw.py` 只校验 metadata/catalog 并写 `status=catalog_ready`，**不再改名、不再分配 paper_number、不再写 ready_for_commit**；
-`formalize_paper_raw.py` 是 commit 前必经步骤，在 `data/paper_raw` 内完成 canonical paper_id 改名、reserve 16 位 paper_number、回填 catalog 链接、写 `<paper_id>.formalization.json` + `<16位>.paper.number` marker，置 `status=ready_for_commit`；rename 后 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `000001`）；
+v2.3 状态机职责边界：`curate_paper_raw.py` 只校验 metadata/catalog 并写 `status=catalog_ready`，**不再改名、不再分配 paper_number、不再写 ready_for_commit**；
+`formalize_paper_raw.py` 是 commit 前必经步骤，在 `data/paper_raw/<paper_number>/` 内使用 staging 已 reserved 的 16 位 paper_number 完成 canonical paper_id 改名、回填 catalog 链接、写 `<paper_id>.formalization.json` + `<16位>.paper.number` marker，置 `status=ready_for_commit`；rename 后 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `0000000000000001`）；
 `commit_paper_raw_to_papers.py` 只接收 `ready_for_commit` 的已正式化文件夹，做 final validate → 事务性安装（staging copytree → 自检 → `os.replace` → activate ledger → rebuild all.catalog → postcheck → 删源），任何后置失败回滚删除 `data/papers/<paper_id>`、不污染正式库。`data/papers` 不允许半成品。
 
 `formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 都支持完整路径隔离参数
@@ -111,6 +112,11 @@ v2.2 状态机职责边界：`curate_paper_raw.py` 只校验 metadata/catalog �
 agent / Codex 测试时**必须**传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，避免污染真实 `data/catalog`；
 默认值指向真实 `data/catalog/paper_number_ledger.json` / `all.catalog.json`（被 gitignore，`git status` 看不出，但会静默污染真实编号账本）。
 metadata 标题/作者/单位/摘要/关键词/DOI 候选优先读取转换后 Markdown 的物理前 100 行 front-matter evidence（**first 100 lines，不是 10 行**）。
+formalize 只接受带当前 `<paper_number>.conversion.json` 的 `converted_current` 资产；缺 manifest 的已转换资产必须先生成当前 manifest 或重新转换。普通 ingest 测试夹具必须从 16 位
+`paper_number` 工作区开始，并通过 formalize 生成 `.formalization.json`、`.paper.number` 与
+`ready_for_commit`，不得手写 happy-path 正式化产物。`preserve_paper_number` 使用 reserved-specific
+语义保留编号，不走 legacy `repoint()`。`Catalog.load()` 缺少 all.catalog 时只构建 tolerant
+read-only snapshot，不写 ledger、marker 或 catalog 索引。
 
 写作主流程：selected catalog / paper numbers → `write/jobs/<job_id>/article/` → TeX/BibTeX →
 compile/check（`check_write_tex_project.py`）→ quality check（`check_write_quality_text.py`）。
@@ -142,3 +148,4 @@ git ls-files data/papers data/paper_raw data/raw data/import_work  # 应仅 .git
 - 确认无真实 data / `write/jobs` runtime 被 staged。
 - 按主题拆 commit，不要把多个主题混进一个 commit。
 - 每次代码改动后运行测试并生成 `mineru_snapshot.zip`。
+

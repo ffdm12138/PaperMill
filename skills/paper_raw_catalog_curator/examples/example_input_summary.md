@@ -1,6 +1,6 @@
 # Example input summary
 
-The curator sees a `data/paper_raw/<source_id>/` folder. This file summarises
+The curator sees a `data/paper_raw/<paper_number>/` folder. This file summarises
 the two inputs the skill reads: the metadata JSON and the MinerU Markdown.
 
 ## metadata (excerpt)
@@ -8,7 +8,8 @@ the two inputs the skill reads: the metadata JSON and the MinerU Markdown.
 ```json
 {
   "schema_version": "1.0",
-  "source_id": "000001",
+  "paper_number": "0000000000000001",
+  "paper_raw_id": "0000000000000001",
   "title": { "original": "A bulk blowing-snow model", "translated_zh": "", "short_zh": "" },
   "authors": [ { "full_name": "Stephen J. Déry", "family": "Déry", "given": "Stephen J.", "orcid": "", "affiliation": "" } ],
   "first_author": { "family": "Déry", "display": "Déry" },
@@ -29,3 +30,5 @@ Boundary-Layer Meteorology (1999)
 
 A one-dimensional bulk model of blowing snow is developed ...
 ```
+
+

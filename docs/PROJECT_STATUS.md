@@ -1,4 +1,4 @@
-# Project Status
+﻿# Project Status
 
 本文档是 MinerU v2 文献资产库的当前状态总览：冻结版本、主流程、边界、待办与禁止事项。
 新 agent 或未来维护者应先读此文件，再进入 `docs/PROJECT_CONTRACT.md` 与
@@ -6,16 +6,25 @@
 
 ## 1. 当前冻结版本
 
+### ingest v2.3 current incremental state
+
+- 新 ingest 的 `data/paper_raw/<id>/` 统一使用 16 位 `paper_number`。PDF-first 与 metadata-first staging 第一步 reserve 编号、创建 `paper_raw/<paper_number>/`、写 ledger reserved item 与 `<paper_number>.paper.number` marker。
+- `--paper-number` / `--paper-numbers` 是正常 CLI 唯一 paper_raw selector；旧 source-id selector 已退出正常流程，6 位目录只允许 `scripts/legacy/` migration 工具处理。
+- 本轮不打新 tag；`ingest-v2.2` 仍是上一冻结 tag。
+
 ### ingest v2.2 frozen
 
 - tag：`ingest-v2.2`（v2.1 已被状态机重构取代）。
 - v2.2 变化：`curate_paper_raw.py` 不再改名/不再分配 paper_number/不再写 `ready_for_commit`，只写 `catalog_ready`；新增 `scripts/formalize_paper_raw.py` 在 `data/paper_raw` 内完成正式化（canonical paper_id 改名 + reserve 16 位 paper_number + 回填 catalog 链接 + `<paper_id>.formalization.json` + `<16位>.paper.number` marker + `ready_for_commit`）；`commit_paper_raw_to_papers.py` 退化为事务性安装（final validate → staging copytree → 自检 → `os.replace` → activate ledger → rebuild all.catalog → postcheck → 删源），后置失败回滚删除 `data/papers/<paper_id>`，不污染正式库。catalog/metadata schema 不变。
 - 验收：`validate_v2_library.py` / `audit_metadata_quality.py` / `doctor_ingest_pipeline.py` /
   `pytest -q` 全绿。
-- 不修改 catalog/metadata schema。
+- catalog schema 保持 v2.0；新 metadata schema 为 v1.1，使用 `paper_number` / `paper_raw_id`，不再生成 `source_id`。
 - CLI 路径隔离：`formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 都暴露 `--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`；测试/agent 必须传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog`（默认值指向真实账本，被 gitignore，`git status` 看不出）。
-- `ready_for_commit` 阶段 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `000001`），由 `PaperNumberLedger.repoint_reserved` 在 formalize rename 后完成。
+- `ready_for_commit` 阶段 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `0000000000000001`），由 `PaperNumberLedger.repoint_reserved` 在 formalize rename 后完成。
 - metadata 候选读转换后 Markdown 前 100 行（first 100 lines，非 10）。
+- formalize 只接受 `converted_current` conversion manifest；缺 manifest 的已转换资产为 `conversion_manifest_missing`，必须先生成当前 manifest 或重新转换。`preserve_paper_number` 走 reserved-specific 保留编号语义，不走 legacy `repoint()`。
+- 普通 ingest/commit 测试夹具从 16 位 `paper_number` 开始，happy path 不手写 `.formalization.json` 或 `ready_for_commit`；marker 必须由 allocator/staging/ledger helper 写入。
+- `Catalog.load()` 缺少 all.catalog 时构建 tolerant read-only snapshot，不写 ledger、marker、per-paper catalog、all.catalog 或 paper_index。
 
 ### writing v0.1 frozen
 
@@ -30,7 +39,7 @@
 Network metadata path（metadata 先行，已有 DOI）:
 ```text
 network metadata (with DOI)
--> data/paper_raw/<000001>/
+-> data/paper_raw/<0000000000000001>/
 -> fetch_pdf_for_paper_raw
 -> MinerU convert（hybrid-engine + medium + auto）
 -> catalog curation（content-only，写 catalog_ready）
@@ -44,7 +53,7 @@ Manual PDF path（先转换，再从转换后的 md 解析 metadata）:
 ```text
 data/raw/*.pdf
 -> stage_raw_pdfs_to_paper_raw --move --apply
--> data/paper_raw/<000001>/
+-> data/paper_raw/<0000000000000001>/
 -> MinerU convert（hybrid-engine + medium + auto）
 -> resolve_paper_raw_metadata（读转换后的 md，抽取候选并联网验证/查询）
 -> catalog curation（content-only，写 catalog_ready）
@@ -120,3 +129,4 @@ selected catalog / paper numbers
 - 不把真实 data / `write/jobs` 运行产物入 snapshot。
 - 不让外部 metadata 直接写正式库（必须经 `paper_raw` + validate/audit）。
 - 不放宽 Sci-Hub 启用条件。
+

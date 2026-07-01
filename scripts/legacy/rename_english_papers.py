@@ -1,4 +1,8 @@
-"""
+"""LEGACY-ONLY MIGRATION SCRIPT.
+
+This script is not part of ingest-v2.3 normal workflow.
+Do not run from agents unless explicitly repairing old snapshots.
+
 将 data/papers 中英文命名的 paper 目录批量重命名为规范格式：
   年份_作者小写_中文短标题
 

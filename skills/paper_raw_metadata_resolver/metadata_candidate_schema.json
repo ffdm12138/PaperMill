@@ -3,10 +3,11 @@
   "title": "paper_raw metadata candidates",
   "description": "Candidates produced by the paper_raw_metadata_resolver skill. Each candidate carries evidence (which Markdown line / DOI / network source it came from). The resolver script scores them and decides auto_matched/manual_review/rejected; the skill itself never sets metadata_match.status.",
   "type": "object",
-  "required": ["source_id", "candidates", "recommendation"],
+  "required": ["paper_number", "paper_raw_id", "candidates", "recommendation"],
   "additionalProperties": true,
   "properties": {
-    "source_id": { "type": "string" },
+    "paper_number": { "type": "string", "pattern": "^\\d{16}$" },
+    "paper_raw_id": { "type": "string", "pattern": "^\\d{16}$" },
     "generated_at": { "type": "string" },
     "candidates": {
       "type": "array",

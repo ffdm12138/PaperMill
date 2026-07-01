@@ -8,7 +8,7 @@ description: Ingest-side metadata resolver for PDFs after MinerU conversion. Rea
 Read converted Markdown first 100 lines for title/author candidates before PDF title fallback.
 Use the same front-matter evidence for affiliation, abstract, keyword, and DOI candidate review.
 
-Use this skill when a `data/paper_raw/<source_id>/` folder has a PDF and/or
+Use this skill when a `data/paper_raw/<paper_number>/` folder has a PDF and/or
 MinerU Markdown but its metadata is **unmatched** or missing fields. The skill
 proposes metadata candidates and a patch; it does NOT apply them to formal
 metadata and does NOT decide `metadata_match.status`.
@@ -23,9 +23,9 @@ patch**，供脚本 (`scripts/resolve_paper_raw_metadata.py --apply`) 在通过�
 
 权威边界见 `docs/PROJECT_CONTRACT.md`；本 skill 不与之冲突。
 
-- 输入**只来自** `data/paper_raw/<source_id>/`。必须先读 `<source_id>.md`
-  （转换后 MinerU Markdown，**候选主证据**），再读 `<source_id>.metadata.json`
-  （目标空壳，判断哪些字段为空、哪些需补），可参考 `<source_id>.metadata.candidates.json`。
+- 输入**只来自** `data/paper_raw/<paper_number>/`。必须先读 `<paper_number>.md`
+  （转换后 MinerU Markdown，**候选主证据**），再读 `<paper_number>.metadata.json`
+  （目标空壳，判断哪些字段为空、哪些需补），可参考 `<paper_number>.metadata.candidates.json`。
 - PDF 文件名、OCR/MinerU 文本片段、既有 candidates 只是**辅助 hint**，不能作为唯一
   metadata 来源；大模型不能凭空补 DOI/作者/期刊/年份。
 - **不得读取** `data/papers`、`data/catalog/`、`all.catalog.json`、`write/`。
@@ -49,7 +49,7 @@ patch**，供脚本 (`scripts/resolve_paper_raw_metadata.py --apply`) 在通过�
 
 ## 证据层级
 
-- **Primary evidence (required)**: converted MinerU Markdown from `data/paper_raw/<source_id>/<source_id>.md`。
+- **Primary evidence (required)**: converted MinerU Markdown from `data/paper_raw/<paper_number>/<paper_number>.md`。
 - **Optional hints**: PDF filename、既有的空壳 metadata.json、DOI-like strings、title-like strings、OCR snippets。PDF filename 绝对不能作为唯一 metadata 来源。
 - **手动 PDF 路径顺序**：先 MinerU 转换，再跑 metadata resolver。For manual PDF imports, do not run metadata resolver before MinerU conversion has produced Markdown（先转换，再解析）。
 - **status 权限区分**：LLM-facing skill 只产出 candidate metadata patch / evidence / source / confidence / mismatch reason，**绝不自己把 `metadata_match.status` 置为 `matched`**。`matched` / `manual_confirmed` 只能由 deterministic apply step (`scripts/resolve_paper_raw_metadata.py --apply`) 在 schema/DOI/title/author/year/venue 校验通过或显式 `--manual-confirm` 后盖章。大模型 skill 不盖章；脚本 apply 层在确定性校验通过或人工确认后才可以盖章。
@@ -77,7 +77,7 @@ resolver 先读转换后的 Markdown 抽取候选，再按下述规则联网验�
 当前环境若无联网能力，resolver 必须 fail-closed：
 
 - 保持 `metadata_match.status = unmatched`（绝不伪造 matched metadata）；
-- 保留已从 Markdown 抽取的候选（写入 `<source_id>.metadata.candidates.json`，附 evidence）；
+- 保留已从 Markdown 抽取的候选（写入 `<paper_number>.metadata.candidates.json`，附 evidence）；
 - `decision` 设为 `manual_review`/`no_candidates`，`.import_status.json` 记为
   `metadata_manual_review_required` / `metadata_resolve_failed`；
 - 请求人工复核，等待联网或人工补全后再走验证/commit 路径。
@@ -85,23 +85,23 @@ resolver 先读转换后的 Markdown 抽取候选，再按下述规则联网验�
 ## 输入
 
 ```
-data/paper_raw/<source_id>/
-  <source_id>.md                # 转换后 MinerU Markdown，候选主证据，必读
-  <source_id>.metadata.json     # 目标空壳 metadata，必读（判断哪些字段为空）
-  <source_id>.pdf
+data/paper_raw/<paper_number>/
+  <paper_number>.md                # 转换后 MinerU Markdown，候选主证据，必读
+  <paper_number>.metadata.json     # 目标空壳 metadata，必读（判断哪些字段为空）
+  <paper_number>.pdf
   images/
-  <source_id>.metadata.candidates.json   # 可选，网络候选参考
+  <paper_number>.metadata.candidates.json   # 可选，网络候选参考
 ```
 
 ## 输出
 
 在同一文件夹下输出两个 JSON：
 
-1. `<source_id>.metadata.candidates.json` —— 符合 `metadata_candidate_schema.json`。
+1. `<paper_number>.metadata.candidates.json` —— 符合 `metadata_candidate_schema.json`。
    保存所有候选，每个候选带 `evidence[]`（证据来自 md 哪一行 / 哪个 DOI / 哪个网络源）
    和 `warnings`；含 `recommendation{best_candidate_id, decision, reason}`。
    `decision ∈ {auto_matched, manual_review, rejected, no_candidates}`。
-2. `<source_id>.metadata.patch.json` —— 符合 `metadata_patch_schema.json`，
+2. `<paper_number>.metadata.patch.json` —— 符合 `metadata_patch_schema.json`，
    只含建议补齐的空字段（结构同 `empty_metadata` 子集），由
    `merge_missing_metadata` 合并。
 
@@ -121,17 +121,18 @@ score = 0.40*title_sim + 0.20*author_sim + 0.15*year_match
 
 - 生成候选/patch 后，由脚本应用：
   ```bash
-  python scripts/resolve_paper_raw_metadata.py --source-id <id> --write-candidates   # 只写候选/报告
-  python scripts/resolve_paper_raw_metadata.py --source-id <id> --apply              # 高置信自动 matched
-  python scripts/resolve_paper_raw_metadata.py --source-id <id> --apply --manual-confirm --candidate-id cand_002
+  python scripts/resolve_paper_raw_metadata.py --paper-number <paper_number> --write-candidates   # 只写候选/报告
+  python scripts/resolve_paper_raw_metadata.py --paper-number <paper_number> --apply              # 高置信自动 matched
+  python scripts/resolve_paper_raw_metadata.py --paper-number <paper_number> --apply --manual-confirm --candidate-id cand_002
   ```
 - 脚本会校验：DOI 是否有效/可解析、是否与 formal library DOI/PDF sha 重复、是否冲突、
   metadata 是否完整、是否覆盖非空字段。任一失败则保持 unmatched。
 
 ## Output Checklist
 
-- `<source_id>.metadata.candidates.json`（含 evidence + recommendation）
-- `<source_id>.metadata.patch.json`（只补空字段）
-- 未修改 `<source_id>.metadata.json`
+- `<paper_number>.metadata.candidates.json`（含 evidence + recommendation）
+- `<paper_number>.metadata.patch.json`（只补空字段）
+- 未修改 `<paper_number>.metadata.json`
 - 未设置 `metadata_match.status`
 - 未编造任何 DOI/作者/年份/期刊/卷期页
+

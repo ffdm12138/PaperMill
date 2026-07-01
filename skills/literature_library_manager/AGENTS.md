@@ -1,6 +1,6 @@
 # Literature Library Manager
 
-Formal imports must use `data/paper_raw/<000001>/` and the v2 CLIs. API and writing read from `all.catalog.json` and `paper_number_ledger.json`.
+Formal imports must use `data/paper_raw/<paper_number>/` 16-digit workspaces and the v2 CLIs. API and writing read from `all.catalog.json` and `paper_number_ledger.json`.
 
 Start/reuse persistent MinerU API with `python scripts/start_mineru_services.py --wait`
 and stop it with `python scripts/stop_mineru_services.py`. MinerU conversion has

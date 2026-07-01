@@ -21,10 +21,12 @@
 
 ## 关键边界速查
 
-- ingest v2.2 frozen（`ingest-v2.2`）；writing v0.1 frozen（`writing-v0.1`）。
+- ingest v2.3 strict-only current incremental state（不打新 tag）：新 `paper_raw` 工作区统一为 16 位 `paper_number`，staging 第一步 reserve 编号；正常 CLI 只接受 `--paper-number` / `--paper-numbers`，旧 6 位编号仅限 `scripts/legacy/` migration。ingest v2.2 frozen（`ingest-v2.2`）；writing v0.1 frozen（`writing-v0.1`）。
 - `conda run -n mineru` 是唯一真实运行方式。
-- v2.2 状态机：`curate_paper_raw.py` 只写 `catalog_ready`（不改名、不分配 paper_number）；`formalize_paper_raw.py` 是 commit 前必经步骤（改名 + reserve 16 位 paper_number + 回填 catalog + `ready_for_commit`，rename 后 ledger reserved entry 指向 `<paper_id>` 工作区）；`commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。`data/papers` 不允许半成品。
+- v2.3 状态机：`curate_paper_raw.py` 只写 `catalog_ready`（不改名、不分配 paper_number）；`formalize_paper_raw.py` 是 commit 前必经步骤（把 `paper_raw/<paper_number>` 改名为 `<paper_id>` + 回填 catalog + `ready_for_commit`，rename 后 ledger reserved entry 指向 `<paper_id>` 工作区）；`commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。`data/papers` 不允许半成品。
 - `formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离（`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传 tmp ledger 与 tmp all.catalog，禁止污染真实 `data/catalog`。Markdown 候选读 first 100 lines（非 10）。
+- `formalize_paper_raw.py` 只接受 `converted_current`；缺 manifest 的已转换资产必须先生成当前 manifest 或重新转换。普通 ingest 测试从 16 位 `paper_number` factory 开始；`preserve_paper_number` 保留 reserved 编号，不走 legacy `repoint()`。
+- `Catalog.load()` 缺少 all.catalog 时只做 tolerant read-only snapshot，不写 ledger、marker、per-paper catalog 或索引。
 - `metadata` 是书目信息事实源；`catalog`（schema v2.0）content-only，`all.catalog` 不含书目字段。
 - catalog 自然语言 value 默认尽量中文；JSON key/schema enum 保持英文，技术名词可中英混写。
   metadata 保留原始/规范书目信息，不为 catalog 中文化而改写。
@@ -39,7 +41,7 @@
 - MinerU PDF conversion has no process-level timeout. Health/preflight/HTTP and `MinerULock` wait timeouts are separate checks.
 - For metadata title/author/affiliation/abstract/keyword/DOI candidates, read converted Markdown first 100 lines as front-matter evidence before PDF title fallback.
 - Multi-source formal batch must not use `MINERU_RUNNER=cli`; single-source CLI is debug/test only.
-- `paper_raw` conversion is idempotent: existing `<source_id>.md` + `images/` is skipped; stale/partial states need explicit `--force-reconvert`.
+- `paper_raw` conversion is idempotent: existing `<paper_number>.md` + `images/` is skipped; stale/partial states need explicit `--force-reconvert`.
 - Non-localhost API exposure requires `MINERU_API_KEY` unless an explicit unsafe override is set.
 
 每次代码改动后运行：`conda run -n mineru pytest -q` 与 `conda run -n mineru python scripts/pack_repo.py`。

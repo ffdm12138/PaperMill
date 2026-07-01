@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Batch-rename paper directories and update all cross-references.
+"""LEGACY-ONLY MIGRATION SCRIPT.
+
+This script is not part of ingest-v2.3 normal workflow.
+Do not run from agents unless explicitly repairing old snapshots.
+
+Batch-rename paper directories and update all cross-references.
 
 Run: /c/Users/Admin/.conda/envs/mineru/python.exe scripts/fix_paper_ids_batch.py
 Dry-run first: scripts/fix_paper_ids_batch.py --dry-run

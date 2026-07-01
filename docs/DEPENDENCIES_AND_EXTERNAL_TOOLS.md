@@ -73,6 +73,10 @@ PDF 获取由 `src/fetch/access_policy.py` + `src/fetch/resolver_registry.py` �
 
 ## 6. Data boundary
 
+In ingest v2.3, normal `data/paper_raw/<id>/` workspaces use the 16-digit
+`paper_number` reserved by staging. Six-digit `source_id` directories are
+legacy/migration only and must be migrated or repaired before normal conversion/formalize.
+
 以下路径是运行时产物 / 版权语料，**不进入源码快照**（`pack_repo.py` 强制排除）：
 
 - `data/raw/`、`data/paper_raw/`、`data/papers/`、`data/import_work/`
@@ -154,8 +158,8 @@ export MINERU_API_URL=http://127.0.0.1:8000
 `MINERU_RUNNER=cli` 只保留给单篇测试/调试；多篇 formal batch 会 hard fail，除非显式传
 `--allow-cold-cli-batch` 做 debug/benchmark。
 
-`paper_raw` conversion is idempotent：已有 `<source_id>.md` + `images/` 的目录默认跳过；
-成功转换会写 `<source_id>.conversion.json` 和 `.import_status.json: converted`。`output/`
+`paper_raw` conversion is idempotent：已有 `<paper_number>.md` + `images/` 的目录默认跳过；
+成功转换会写 `<paper_number>.conversion.json` 和 `.import_status.json: converted`。`output/`
 不是可信 converted 判据；出现 `stale_conversion` 或 `partial_conversion` 时不要反复运行
 转换命令，检查目录后必要时显式加 `--force-reconvert`。
 
@@ -166,7 +170,7 @@ export MINERU_API_URL=http://127.0.0.1:8000
 
 Use `python scripts/start_mineru_services.py --wait` to start or reuse the
 persistent local `mineru-api`, then run `python scripts/convert_paper_raw_gpu.py
---source-id 000001 --apply` or `python scripts/convert_paper_raw_gpu.py --all
+--paper-number 0000000000000001 --apply` or `python scripts/convert_paper_raw_gpu.py --all
 --apply`. Stop the service with `python scripts/stop_mineru_services.py`.
 `start_fast_api_mode.bat` is a compatibility wrapper around the Python starter.
 
@@ -177,3 +181,4 @@ wait timeouts remain allowed because they are not PDF conversion timeouts.
 For manual metadata matching, title/author/affiliation/abstract/keyword/DOI
 candidates come from the converted Markdown first 100 lines as front-matter
 evidence before PDF title fallback. DOI gates stay strict.
+

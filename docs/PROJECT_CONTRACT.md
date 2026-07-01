@@ -6,8 +6,8 @@
 
 - 不做向量库（vector DB）、RAG、embedding 或 ChromaDB。
 - 不内置 LLM client；所有 prompt 和写作步骤只生成文本或模板。
-- 所有新文献先进入 `data/paper_raw/<000001>/`。
-- MinerU 只能处理 `data/paper_raw/<000001>/<000001>.pdf`。
+- 所有新文献先进入 `data/paper_raw/<0000000000000001>/` 这类 16 位 `paper_number` 工作区。
+- MinerU 正常路径只处理 `data/paper_raw/<paper_number>/<paper_number>.pdf`。
 - MinerU conversion requires GPU / MinerU 正式转换必须使用 GPU；formal ingest 使用
   `scripts/convert_paper_raw_gpu.py`，默认 `MINERU_REQUIRE_GPU=true`、`CUDA_VISIBLE_DEVICES=0`，
   并要求 `nvidia-smi` 与当前 Python 环境的 `torch.cuda.is_available()` 均通过。
@@ -33,8 +33,12 @@
 - `write/jobs/` 是写作运行时，不提交（只跟踪 `.gitkeep`）；TeX 不得直接引用 `data/papers`、`data/raw` 或 `data/paper_raw`，只能读 job-local 复制副本。
 - Sci-Hub resolver 是 unsafe optional：默认 disabled，不属于 `OA_ONLY` 主流程；仅 `AccessMode.CUSTOM` 且 `allow_scihub=True` 时才启用，且不得放宽该条件。
 - 每次代码改动后必须运行测试并生成 `mineru_snapshot.zip`。
+- 新 ingest 的 `data/paper_raw/<id>/` 必须使用 16 位 `paper_number`；staging 即 reserve ledger 并写 `<paper_number>.paper.number` marker。正常 CLI 只接受 `--paper-number` / `--paper-numbers`；6 位旧编号只允许 `scripts/legacy/` migration 工具处理。
 - CLI 路径隔离：`formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 必须支持 `--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`；测试/agent 运行时必须传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog/paper_number_ledger.json` / `all.catalog.json`。
-- `ready_for_commit` 阶段 ledger reserved entry 必须指向 formalized 后的 `<paper_id>` 工作区（formalize rename 后由 `repoint_reserved` 同步），不得停留在旧 `000001`。
+- `ready_for_commit` 阶段 ledger reserved entry 必须指向 formalized 后的 `<paper_id>` 工作区（formalize rename 后由 `repoint_reserved` 同步），不得停留在旧 `0000000000000001`。
+- `formalize_paper_raw.py` 只接受 `converted_current` conversion manifest；缺 manifest 的已转换资产必须先生成当前 manifest 或重新转换。`preserve_paper_number` 必须以 `state=reserved` 保留具体编号，不得走 legacy `repoint()` 创建/复用 active 语义。
+- 普通 ingest/commit 测试夹具必须从 16 位 `paper_number` paper_raw 工作区开始；除 repair、audit、corruption 负例外，不得手写 `.formalization.json` 或 `ready_for_commit`，marker 必须来自 allocator/staging/ledger helper。
+- `Catalog.load()` 在 all.catalog 缺失时只能构建 tolerant read-only snapshot，不得写 ledger、marker、per-paper catalog、all.catalog 或 paper_index。
 - metadata 标题/作者/单位/摘要/关键词/DOI 候选优先读取转换后 Markdown 物理前 100 行（first 100 lines）。
 
 ## 唯一正式流程（两条路径）
@@ -42,7 +46,7 @@
 Network metadata path（metadata 先行，已有 DOI）:
 ```text
 network metadata (with DOI)
--> data/paper_raw/<000001>/
+-> data/paper_raw/<0000000000000001>/
 -> PDF fetch
 -> MinerU convert
 -> curation（写 catalog_ready）
@@ -56,7 +60,7 @@ Manual PDF path（先转换，再从转换后的 md 解析 metadata）:
 ```text
 data/raw/*.pdf
 -> stage_raw_pdfs_to_paper_raw --move --apply
--> data/paper_raw/<000001>/
+-> data/paper_raw/<0000000000000001>/
 -> MinerU convert         # 转换在 metadata resolve 之前
 -> resolve metadata       # 读转换后的 md，抽取候选，联网验证/查询
 -> curation（写 catalog_ready）
@@ -70,7 +74,7 @@ data/raw/*.pdf
 （先转换，再解析）。两条路径 curation/commit 前都要求 `metadata_match.status` 为 `matched`
 或 `manual_confirmed` 且 `identifiers.doi` 非空。
 手动 PDF 正常导入时，`data/raw/` is a queue / raw 是待处理队列；成功 stage 必须消费 raw 中的
-PDF，并移动到 `data/paper_raw/<source_id>/<source_id>.pdf`。copy 模式只允许用于调试、备份、
+PDF，并移动到 `data/paper_raw/<paper_number>/<paper_number>.pdf`。copy 模式只允许用于调试、备份、
 测试或明确的一次性检查，不是默认手动导入 SOP。
 `stage_raw_pdfs_to_paper_raw.py` 不需要 GPU；formal MinerU conversion 使用
 `convert_paper_raw_gpu.py`，底层 `convert_paper_raw_batch.py` 仅作兼容/调试入口。批量转换优先
@@ -83,8 +87,8 @@ MinerU PDF 转换进程不设置固定 timeout；health/preflight/HTTP 与 `Mine
 是独立保护，不等同于 PDF 固定秒数限制。metadata 标题/作者/单位/摘要/关键词/DOI 候选必须优先读
 转换后 Markdown 的物理前 100 行作为 front-matter evidence；PDF title fallback 只有在 Markdown
 缺失或前 100 行无可靠候选时才使用。
-`paper_raw` conversion must be idempotent：已有 `<source_id>.md` + `images/` 默认跳过；
-成功转换写 `<source_id>.conversion.json`，该 manifest 是 transient artifact，formal commit
+`paper_raw` conversion must be idempotent：已有 `<paper_number>.md` + `images/` 默认跳过；
+成功转换写 `<paper_number>.conversion.json`，该 manifest 是 transient artifact，formal commit
 必须清理，不能进入 `data/papers/`。
 
 Writing uses only job-local article copies under `write/jobs/<job_id>/article/<paper_number>/`.
@@ -114,3 +118,5 @@ python scripts/pack_repo.py
 
 真实 `data/papers/` 文献资产和本地生成的 catalog 索引不进入源码快照；但本地真实库必须通过
 `validate_v2_library.py` 和 `audit_metadata_quality.py` 的硬错误检查。
+
+

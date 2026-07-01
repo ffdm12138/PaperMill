@@ -1,3 +1,8 @@
+"""LEGACY-ONLY MIGRATION SCRIPT.
+
+This script is not part of ingest-v2.3 normal workflow.
+Do not run from agents unless explicitly repairing old snapshots.
+"""
 import sys, os, json
 sys.path.insert(0, 'e:/1/mineru')
 os.chdir('e:/1/mineru')
