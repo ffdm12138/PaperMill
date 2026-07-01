@@ -1,8 +1,8 @@
 import warnings
 from types import SimpleNamespace
 
-from scripts.match_paper_raw_metadata import _patch_from_enrichment
 from src.services.metadata_enrichment_service import normalize_crossref_metadata
+from src.services.metadata_resolver import patch_from_enrichment
 from src.services.v2_library import bibtex_from_metadata, format_reference_from_metadata
 
 
@@ -72,7 +72,7 @@ def test_patch_from_enrichment_maps_publication_fields_to_metadata():
         authors=[],
     )
 
-    patch = _patch_from_enrichment("000001", result)
+    patch = patch_from_enrichment("000001", result)
 
     assert patch["identifiers"]["doi"] == "10.1/x"
     assert patch["identifiers"]["issn"] == "0028-0836"

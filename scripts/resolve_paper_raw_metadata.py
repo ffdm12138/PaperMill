@@ -42,7 +42,7 @@ def _source_ids(root: Path, all_unmatched: bool, one: str | None) -> list[str]:
     if all_unmatched:
         out = []
         for p in sorted(root.iterdir()):
-            if not (p.is_dir() and p.name.isdigit() and len(p.name) == 6):
+            if not (p.is_dir() and p.name.isdigit() and len(p.name) in (6, 16)):
                 continue
             meta_path = p / f"{p.name}.metadata.json"
             if not meta_path.exists():

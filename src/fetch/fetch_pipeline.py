@@ -41,9 +41,12 @@ def _write_bytes_pdf(content: bytes, target: Path) -> tuple[Path, str]:
     target.parent.mkdir(parents=True, exist_ok=True)
     sha = hashlib.sha256(content).hexdigest()
     tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_bytes(content)
-    os.replace(tmp, target)
-    return target, sha
+    try:
+        tmp.write_bytes(content)
+        os.replace(tmp, target)
+        return target, sha
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _copy_pdf(src: Path, target: Path) -> tuple[Path, str]:

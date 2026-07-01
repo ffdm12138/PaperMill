@@ -4,6 +4,7 @@ echo ========================================
 echo   MinerU 文献资产库 v3.4
 echo   Web服务端口: 8080
 echo   默认 Runner: CLI
+echo   Persistent mineru-api: use scripts\start_mineru_services.py --wait
 echo ========================================
 echo.
 

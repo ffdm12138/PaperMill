@@ -19,21 +19,23 @@ def _mock_converter_deps(subprocess_result=None):
     """
     with patch("src.converter.preflight_gpu",
                return_value=type("H", (), {"ok": True, "message": "ok", "nvidia_smi": True})()):
-        with patch("src.converter.snapshot_nvidia_smi",
-                   return_value={"available": False}):
-            with patch("src.converter.MinerULock.acquire",
-                       return_value=True):
-                with patch("src.converter.MinerULock.release"):
-                    if subprocess_result is not None:
-                        mock_run = MagicMock()
-                        if callable(subprocess_result) and not isinstance(subprocess_result, MagicMock):
-                            mock_run.side_effect = subprocess_result
+        with patch("src.converter.preflight_torch_cuda",
+                   return_value=type("T", (), {"ok": True, "message": "ok"})()):
+            with patch("src.converter.snapshot_nvidia_smi",
+                       return_value={"available": False}):
+                with patch("src.converter.MinerULock.acquire",
+                           return_value=True):
+                    with patch("src.converter.MinerULock.release"):
+                        if subprocess_result is not None:
+                            mock_run = MagicMock()
+                            if callable(subprocess_result) and not isinstance(subprocess_result, MagicMock):
+                                mock_run.side_effect = subprocess_result
+                            else:
+                                mock_run.return_value = subprocess_result
+                            with patch("src.converter.subprocess.run", mock_run):
+                                yield mock_run
                         else:
-                            mock_run.return_value = subprocess_result
-                        with patch("src.converter.subprocess.run", mock_run):
-                            yield
-                    else:
-                        yield
+                            yield None
 
 
 def _make_output(out_dir: Path, stem: str, content: str = "# md"):
@@ -91,21 +93,22 @@ def test_subprocess_failure_returns_all_fields():
             assert result[k] == v
 
 
-def test_timeout_returns_all_fields():
-    """超时返回含全部字段。"""
-    import subprocess
+def test_subprocess_run_has_no_conversion_timeout():
+    """MinerU conversion subprocess is intentionally unbounded."""
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "in.pdf"
         src.write_bytes(b"%PDF-1.4 fake")
+        out = Path(td) / "out"
+        _make_output(out, "in")
         conv = MinerUConverter(log_dir="")
         with _mock_converter_deps(
-            subprocess_result=subprocess.TimeoutExpired(cmd=["mineru"], timeout=1)
-        ):
-            result = conv.convert_via_cli(src, Path(td) / "out", backend="hybrid-engine",
+            subprocess_result=MagicMock(returncode=0, stdout="", stderr="")
+        ) as mock_run:
+            result = conv.convert_via_cli(src, out, backend="hybrid-engine",
                                           method="auto", effort="medium")
-        assert result["success"] is False
-        for k, v in _EXPECTED.items():
-            assert result[k] == v
+        assert result["success"] is True
+        assert mock_run is not None
+        assert "timeout" not in mock_run.call_args.kwargs
 
 
 def test_no_legacy_backend_key():

@@ -39,6 +39,7 @@ from src.mineru_lock import read_mineru_lock_status, clear_stale_mineru_lock
 from src.mineru_runtime import (
     describe_runtime,
     preflight_gpu,
+    preflight_torch_cuda,
     runtime_config_from_env,
     snapshot_nvidia_smi,
 )
@@ -124,6 +125,7 @@ def main() -> int:
     # ── Runtime 信息 ──
     config = runtime_config_from_env()
     gpu_health = preflight_gpu()
+    torch_health = preflight_torch_cuda()
     print("=" * 60)
     print("MinerU 性能基准测试")
     print("=" * 60)
@@ -144,6 +146,11 @@ def main() -> int:
     print(f"  Repeat:       {args.repeat}")
     print(f"  Preflight:    ok={gpu_health.ok} msg={gpu_health.message}")
     print(f"  nvidia-smi:   {gpu_health.nvidia_smi}")
+    print(f"  torch_cuda:   ok={torch_health.ok} msg={torch_health.message}")
+    print(f"  torch.version.cuda: {torch_health.torch_cuda_version or '(empty)'}")
+    print(f"  torch.cuda.is_available(): {torch_health.cuda_available}")
+    print(f"  torch.cuda.device_count(): {torch_health.device_count}")
+    print(f"  torch.cuda.get_device_name(0): {torch_health.device_name or '(empty)'}")
     _print_env_warnings(config)
     print()
 
@@ -281,6 +288,15 @@ def main() -> int:
         "pdf_path": str(pdf_path),
         "file_size": pdf_path.stat().st_size,
         "config": describe_runtime(config),
+        "torch_cuda": {
+            "ok": torch_health.ok,
+            "message": torch_health.message,
+            "torch_version": torch_health.torch_version,
+            "torch_cuda_version": torch_health.torch_cuda_version,
+            "cuda_available": torch_health.cuda_available,
+            "device_count": torch_health.device_count,
+            "device_name": torch_health.device_name,
+        },
         "backend": args.backend,
         "method": args.method,
         "effort": args.effort,

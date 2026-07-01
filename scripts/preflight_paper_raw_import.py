@@ -170,13 +170,23 @@ def preflight_one(
             details.append("PDF sha256 appears multiple times in paper_raw")
 
     errors = sorted(set(errors), key=errors.index)
-    status = _status_from_errors(errors)
+    markdown_path = folder / f"{source_id}.md"
+    images_dir = folder / "images"
+    has_markdown = markdown_path.exists() and markdown_path.stat().st_size > 0
+    has_images_dir = images_dir.exists() and images_dir.is_dir()
+    if not errors and has_markdown and has_images_dir:
+        status = "converted"
+        details.append("paper_raw already has converted Markdown/assets")
+    else:
+        status = _status_from_errors(errors)
     item = {
         "source_id": source_id,
         "status": status,
         "blocking": status in _BLOCKING_STATUSES,
         "doi": doi,
         "pdf_sha256": pdf_sha,
+        "has_markdown": has_markdown,
+        "has_images_dir": has_images_dir,
         "errors": errors,
         "details": details,
         "created_at": now_iso(),

@@ -208,9 +208,11 @@ def test_formalize_rejects_unmatched_metadata(tmp_path: Path):
     result = svc.formalize(folder)
 
     assert not result["success"]
-    assert result["status"] == "formalize_failed"
+    assert result["status"] == "metadata_unmatched"
     assert folder.exists()
     assert not (tmp_path / "paper_raw" / "2024_Wang_可信论文").exists()
+    status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "formalize_failed"
 
 
 def test_formalize_preserve_paper_number(tmp_path: Path):

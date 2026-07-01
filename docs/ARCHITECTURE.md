@@ -9,7 +9,8 @@ network metadata (with DOI)
 -> paper_raw source folder
 -> PDF fetch (by DOI)
 -> MinerU conversion
--> curation
+-> curation（catalog_ready）
+-> formalize（改名 + reserve paper_number + ready_for_commit）
 -> formal paper folder
 -> all catalog rebuild
 ```
@@ -23,7 +24,7 @@ order"（先转换，再从 md 解析 metadata）。
 ```text
 1. Put PDF into data/raw/ (manual PDF queue).
 2. Run stage_raw_pdfs_to_paper_raw.py --move --apply to consume the queue and allocate data/paper_raw/<raw_id>/.
-3. Run MinerU conversion (produces <raw_id>.md).
+3. Run `convert_paper_raw_gpu.py --all --apply` for formal MinerU conversion (produces <raw_id>.md).
 4. Run paper_raw_metadata_resolver:
    - read converted <raw_id>.md,
    - extract DOI/title/authors/year/venue candidates,
@@ -32,8 +33,10 @@ order"（先转换，再从 md 解析 metadata）。
 5. Run paper_raw_catalog_curator:
    - read converted <raw_id>.md,
    - produce a content-only catalog (v2.0).
-6. Human review / commit the formal paper asset only when metadata AND catalog both pass validation.
-7. Rebuild data/catalog/all.catalog.json.
+   `curate_paper_raw.py --apply` validates metadata/catalog and writes `.import_status.json status=catalog_ready`; it does NOT rename the folder or allocate a paper_number.
+6. Run `formalize_paper_raw.py --all-ready --apply`: in `data/paper_raw` rename folder/files to `<paper_id>`, reserve a 16-digit `paper_number`, backfill catalog links, write `<paper_id>.formalization.json` + `<16位>.paper.number`, and set `status=ready_for_commit`.
+7. Run `commit_paper_raw_to_papers.py --all-ready --apply`: transactional install (final validate → staging copytree → self-check → os.replace → activate ledger → rebuild all.catalog → postcheck → delete source). Only `ready_for_commit` folders are accepted; any post-install failure rolls back and removes `data/papers/<paper_id>`.
+8. Rebuild data/catalog/all.catalog.json.
 ```
 
 Both `paper_raw_metadata_resolver` and `paper_raw_catalog_curator` depend on the
@@ -43,6 +46,19 @@ content-only catalog (no DOI/authors/year/journal). They may run in parallel
 after conversion, but a formal commit to `data/papers/` requires **both** valid
 metadata and a valid content catalog — incomplete `paper_raw` folders stay
 outside `data/papers/`.
+
+Formal conversion enters through `scripts/convert_paper_raw_gpu.py`; the lower-level
+`convert_paper_raw_batch.py` remains for compatibility/debugging and warns on direct
+formal use. The wrapper defaults `MINERU_REQUIRE_GPU=true`, `CUDA_VISIBLE_DEVICES=0`,
+and requires both `nvidia-smi` and current-env `torch.cuda.is_available()` to pass.
+If using persistent `mineru-api`, start that server with `CUDA_VISIBLE_DEVICES=0` in
+its own shell; client-side environment changes cannot alter an already-running API process.
+Recommended service control is `python scripts/start_mineru_services.py --wait`
+before conversion and `python scripts/stop_mineru_services.py` after conversion.
+MinerU conversion has no process-level timeout; health/preflight/lock timeouts
+are separate checks. Metadata title/author/affiliation/abstract/keyword/DOI
+candidates come from converted Markdown first 100 lines as front-matter evidence
+before PDF title fallback.
 
 `data/raw/` is a queue / raw 是待处理队列 for manual PDF imports. Successful
 normal staging moves PDFs out of `data/raw/`; copy mode is reserved for
@@ -81,6 +97,7 @@ debugging, backup, tests, or explicit one-off inspection.
 - `data/paper_raw/` is the pre-ingest workspace.
 - `data/papers/` is the only formal asset storage.
 - `data/catalog/all.catalog.json` is the local generated content-only catalog index (per-paper catalog schema v2.0; no bibliographic metadata); the repository commits `all.catalog.template.json` instead of real local state.
+- catalog natural-language values default to Chinese for Chinese search, classification, paper selection, and writing workflows; JSON keys/schema enums stay English, and technical terms may remain English. Metadata remains the original/canonical bibliographic source.
 - `data/catalog/paper_index.json` is the local generated paper_number → asset path index (metadata/catalog/markdown/pdf/images), no bibliographic fields; the repository commits `paper_index.template.json`.
 - `data/catalog/paper_number_ledger.json` owns local long-term numbering; the repository commits `paper_number_ledger.template.json`, not the real ledger.
 - `write/jobs/<job_id>/article/<paper_number>/` is the only model-facing copied article workspace.

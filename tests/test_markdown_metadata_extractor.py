@@ -9,6 +9,7 @@ from src.services.markdown_metadata_extractor import (
     _extract_author_candidates,
     _extract_year_candidates,
     _extract_abstract,
+    extract_front_matter_candidates_from_markdown,
     extract_metadata_from_markdown,
 )
 
@@ -159,6 +160,70 @@ Wind-blown sand movement is a complex process.
 def test_extract_from_missing_file():
     result = extract_metadata_from_markdown("/nonexistent/doc.md")
     assert "not found" in result.warnings[0].lower()
+
+
+def test_front_matter_title_in_first_line(tmp_path):
+    md = tmp_path / "doc.md"
+    md.write_text("# Correct Title About Snow Transport\nAlice Smith, Bob Jones\n", encoding="utf-8")
+    result = extract_front_matter_candidates_from_markdown(md)
+    assert result.title_candidates == ["Correct Title About Snow Transport"]
+    assert result.author_candidates
+
+
+def test_front_matter_title_on_line_50_is_used(tmp_path):
+    md = tmp_path / "doc.md"
+    md.write_text("\n".join([""] * 49 + ["# Correct Title About Snow Transport"]), encoding="utf-8")
+    result = extract_front_matter_candidates_from_markdown(md)
+    assert result.title_candidates == ["Correct Title About Snow Transport"]
+
+
+def test_front_matter_title_on_line_101_is_ignored(tmp_path):
+    md = tmp_path / "doc.md"
+    md.write_text("\n".join([""] * 100 + ["# Correct Title About Snow Transport"]), encoding="utf-8")
+    result = extract_front_matter_candidates_from_markdown(md)
+    assert result.title_candidates == []
+
+
+def test_front_matter_skips_non_title_lines(tmp_path):
+    md = tmp_path / "doc.md"
+    md.write_text(
+        "\n".join([
+            "DOI: 10.1000/example",
+            "alice@example.org",
+            "Department of Physics, University of Somewhere",
+            "Abstract",
+            "Keywords: snow, transport",
+        ]),
+        encoding="utf-8",
+    )
+    result = extract_front_matter_candidates_from_markdown(md)
+    assert result.title_candidates == []
+
+
+def test_front_matter_merges_adjacent_title_lines_within_first_100(tmp_path):
+    md = tmp_path / "doc.md"
+    md.write_text(
+        "# Simulation of wind-induced snow transport\n"
+        "over complex alpine terrain\n"
+        "Vionnet, V.\n",
+        encoding="utf-8",
+    )
+    result = extract_front_matter_candidates_from_markdown(md)
+    assert result.title_candidates
+    assert "complex alpine terrain" in result.title_candidates[0]
+
+
+def test_front_matter_title_merge_does_not_cross_line_100(tmp_path):
+    md = tmp_path / "doc.md"
+    md.write_text(
+        "\n".join([""] * 99 + [
+            "# Boundary Title Within Window",
+            "continuation outside window",
+        ]),
+        encoding="utf-8",
+    )
+    result = extract_front_matter_candidates_from_markdown(md)
+    assert result.title_candidates == ["Boundary Title Within Window"]
 
 
 # ── Edge cases ─────────────────────────────────────────────────────────

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -40,6 +42,17 @@ class MinerURuntimeHealth:
     api_available: bool | None = None
 
 
+@dataclass
+class MinerUCudaHealth:
+    ok: bool
+    message: str
+    torch_version: str = ""
+    torch_cuda_version: str = ""
+    cuda_available: bool | None = None
+    device_count: int | None = None
+    device_name: str = ""
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.environ.get(name, "").strip().lower()
     if not value:
@@ -53,6 +66,10 @@ def runtime_config_from_env() -> MinerURuntimeConfig:
     if runner not in valid:
         raise ValueError(f"invalid MINERU_RUNNER: {runner}. Valid: {sorted(valid)}")
     allow_cpu = _env_bool("MINERU_ALLOW_CPU", False)
+    if allow_cpu:
+        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    else:
+        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "0").strip() or "0"
     return MinerURuntimeConfig(
         runner=MinerURunner(runner),
         api_url=os.environ.get("MINERU_API_URL", "http://127.0.0.1:8000").strip()
@@ -60,7 +77,7 @@ def runtime_config_from_env() -> MinerURuntimeConfig:
         require_gpu=_env_bool("MINERU_REQUIRE_GPU", not allow_cpu),
         allow_cpu=allow_cpu,
         cuda_path=os.environ.get("CUDA_PATH", "").strip(),
-        cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES", "").strip(),
+        cuda_visible_devices=cuda_visible_devices,
         backend=os.environ.get("MINERU_BACKEND", "hybrid-engine").strip() or "hybrid-engine",
         effort=os.environ.get("MINERU_EFFORT", "medium").strip() or "medium",
         method=os.environ.get("MINERU_METHOD", "auto").strip() or "auto",
@@ -161,6 +178,117 @@ def preflight_gpu(require_gpu: bool | None = None) -> MinerURuntimeHealth:
         runner=config.runner.value,
         message=message,
         nvidia_smi=ok,
+    )
+
+
+def preflight_torch_cuda(require_gpu: bool | None = None) -> MinerUCudaHealth:
+    """Verify CUDA availability from the current Python/Torch environment."""
+    config = runtime_config_from_env()
+    required = config.require_gpu if require_gpu is None else require_gpu
+    if not required:
+        return MinerUCudaHealth(
+            ok=True,
+            message="CPU/debug fallback active: torch CUDA check skipped or unavailable.",
+        )
+
+    probe = r"""
+import json
+try:
+    import torch
+    cuda_available = bool(torch.cuda.is_available())
+    device_count = int(torch.cuda.device_count())
+    device_name = ""
+    if cuda_available and device_count > 0:
+        device_name = str(torch.cuda.get_device_name(0))
+    print(json.dumps({
+        "ok": True,
+        "torch_version": str(getattr(torch, "__version__", "") or ""),
+        "torch_cuda_version": str(getattr(torch.version, "cuda", "") or ""),
+        "cuda_available": cuda_available,
+        "device_count": device_count,
+        "device_name": device_name,
+    }, ensure_ascii=False))
+except Exception as exc:
+    print(json.dumps({
+        "ok": False,
+        "error": str(exc),
+        "torch_version": "",
+        "torch_cuda_version": "",
+        "cuda_available": None,
+        "device_count": None,
+        "device_name": "",
+    }, ensure_ascii=False))
+    raise SystemExit(2)
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=build_mineru_env(config),
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return MinerUCudaHealth(ok=False, message="torch CUDA preflight timed out")
+    except Exception as exc:
+        return MinerUCudaHealth(ok=False, message=f"torch CUDA preflight failed: {exc}")
+
+    payload: dict
+    try:
+        payload = json.loads((result.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        payload = {}
+
+    torch_version = str(payload.get("torch_version") or "")
+    torch_cuda_version = str(payload.get("torch_cuda_version") or "")
+    cuda_available = payload.get("cuda_available")
+    device_count_raw = payload.get("device_count")
+    try:
+        device_count = int(device_count_raw) if device_count_raw is not None else None
+    except (TypeError, ValueError):
+        device_count = None
+    device_name = str(payload.get("device_name") or "")
+
+    if result.returncode != 0:
+        error = str(payload.get("error") or result.stderr or "torch CUDA probe failed").strip()
+        return MinerUCudaHealth(
+            ok=False,
+            message=f"torch CUDA preflight failed: {error}",
+            torch_version=torch_version,
+            torch_cuda_version=torch_cuda_version,
+            cuda_available=cuda_available if isinstance(cuda_available, bool) else None,
+            device_count=device_count,
+            device_name=device_name,
+        )
+    errors: list[str] = []
+    if not torch_version:
+        errors.append("torch version is empty")
+    if not torch_cuda_version:
+        errors.append("torch.version.cuda is empty")
+    if cuda_available is not True:
+        errors.append("torch.cuda.is_available() is false")
+    if device_count is None or device_count < 1:
+        errors.append("torch.cuda.device_count() < 1")
+    if errors:
+        return MinerUCudaHealth(
+            ok=False,
+            message="; ".join(errors),
+            torch_version=torch_version,
+            torch_cuda_version=torch_cuda_version,
+            cuda_available=cuda_available if isinstance(cuda_available, bool) else None,
+            device_count=device_count,
+            device_name=device_name,
+        )
+    return MinerUCudaHealth(
+        ok=True,
+        message="torch CUDA ok",
+        torch_version=torch_version,
+        torch_cuda_version=torch_cuda_version,
+        cuda_available=True,
+        device_count=device_count,
+        device_name=device_name,
     )
 
 

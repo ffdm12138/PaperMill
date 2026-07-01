@@ -9,6 +9,7 @@ import pytest
 from scripts.validate_v2_library import validate_v2_library
 from src.services.v2_library import (
     AllCatalogBuilder,
+    PaperCurationService,
     PaperNumberLedger,
     bibtex_from_metadata,
     find_forbidden_catalog_keys,
@@ -22,6 +23,10 @@ from src.services.v2_library import (
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
 def _valid_catalog() -> dict:
@@ -161,6 +166,8 @@ def test_catalog_curator_skill_declares_content_only():
     assert "metadata" in tl and "catalog" in tl and ("都" in text or "both" in tl)
     # must declare it does not produce metadata patch
     assert "不生成 metadata patch" in text or "不负责" in text
+    assert "使用中文" in text or "默认使用中文" in text or "默认中文" in text
+    assert "JSON key" in text and ("保持英文" in text or "stay English" in text)
 
 
 def test_metadata_resolver_skill_declares_metadata_only():
@@ -207,6 +214,22 @@ def test_curator_example_catalog_is_content_only():
     assert find_forbidden_catalog_keys(catalog) == []
     for forbidden in ("doi", "authors", "year", "journal", "venue", "container", "publication", "bibtex"):
         assert forbidden not in json.dumps(catalog), f"example catalog leaked {forbidden}"
+    for value in (
+        catalog["screening"]["reason"],
+        catalog["research_card"]["research_problem"],
+        catalog["research_card"]["method_summary"],
+        catalog["content_notes"]["short_summary"],
+    ):
+        assert _has_cjk(value)
+
+
+def test_catalog_curation_prompt_declares_chinese_values_and_english_keys(tmp_path):
+    folder = _build_formal_paper(tmp_path, pid="000001")
+    prompt = PaperCurationService().build_prompt(folder)
+
+    assert "请使用中文生成 catalog 中的自然语言内容" in prompt
+    assert "JSON key" in prompt and "保持英文" in prompt
+    assert "不要重复 DOI、作者、期刊、年份" in prompt
 
 
 def test_pdf_resolver_simplified_metadata_is_rejected():

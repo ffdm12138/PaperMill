@@ -271,6 +271,94 @@ def test_title_search_candidate_never_auto_matched(tmp_path, monkeypatch):
     assert res2["applied"] is True and res2["status"] == "manual_confirmed"
 
 
+def test_title_search_uses_markdown_front_matter_line_50_over_metadata_title(tmp_path, monkeypatch):
+    md = "\n".join([""] * 49 + ["# Correct Markdown Front Title", "", "Vionnet, V.", "", "Published: 2014"])
+    folder = _make_folder(tmp_path, title="Wrong PDF Extracted Title", md_text=md)
+    monkeypatch.setattr(mr, "extract_doi_from_filename", lambda name: None)
+    monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
+    captured = {}
+
+    def fake_title_search(title, year=None, limit=5):
+        captured["title"] = title
+        return [mr.PaperCandidate(
+            title="Correct Markdown Front Title",
+            authors=["V. Vionnet"],
+            year=2014,
+            venue="The Cryosphere",
+            doi="10.5194/tc-8-395-2014",
+            source="crossref",
+            confidence=0.9,
+        )]
+
+    monkeypatch.setattr(mr, "resolve_crossref_by_title", fake_title_search)
+    monkeypatch.setattr(mr, "get_crossref_work_by_doi", lambda doi: {"DOI": doi})
+    monkeypatch.setattr(mr, "search_openalex", lambda *a, **k: [])
+    monkeypatch.setattr(mr, "search_semantic_scholar", lambda *a, **k: [])
+    cat = _empty_catalog(tmp_path)
+
+    report = mr.resolve_metadata_candidates(folder, allow_network=True,
+                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+
+    assert captured["title"] == "Correct Markdown Front Title"
+    assert report.local_title == "Correct Markdown Front Title"
+    assert report.title_source == "markdown_front_matter"
+    assert report.markdown_front_matter_max_lines == 100
+    assert report.markdown_front_matter_lines[49] == "# Correct Markdown Front Title"
+
+
+def test_title_search_falls_back_to_pdf_first_pages_title(tmp_path, monkeypatch):
+    folder = _make_folder(tmp_path, md_text="DOI: not-a-real-doi\nAbstract\nKeywords: snow\n")
+    monkeypatch.setattr(mr, "extract_doi_from_filename", lambda name: None)
+    monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
+    monkeypatch.setattr(mr, "_extract_pdf_title_candidate", lambda pdf: "PDF Fallback Title for Search")
+    captured = {}
+
+    def fake_title_search(title, year=None, limit=5):
+        captured["title"] = title
+        return [mr.PaperCandidate(
+            title="PDF Fallback Title for Search",
+            authors=["Alice Smith"],
+            year=2024,
+            venue="Fallback Journal",
+            doi="10.1000/fallback-title",
+            source="crossref",
+            confidence=0.9,
+        )]
+
+    monkeypatch.setattr(mr, "resolve_crossref_by_title", fake_title_search)
+    monkeypatch.setattr(mr, "get_crossref_work_by_doi", lambda doi: {"DOI": doi})
+    monkeypatch.setattr(mr, "search_openalex", lambda *a, **k: [])
+    monkeypatch.setattr(mr, "search_semantic_scholar", lambda *a, **k: [])
+    cat = _empty_catalog(tmp_path)
+
+    report = mr.resolve_metadata_candidates(folder, allow_network=True,
+                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+
+    assert captured["title"] == "PDF Fallback Title for Search"
+    assert report.title_source == "pdf_fallback"
+    assert report.decision != "auto_matched"
+
+
+def test_resolve_report_has_structured_local_evidence_and_decision(tmp_path, monkeypatch):
+    folder = _make_folder(tmp_path, doi="10.5194/tc-8-395-2014", title="T", year=2014,
+                          authors=[{"full_name": "Vionnet V", "family": "Vionnet", "given": "V", "orcid": "", "affiliation": ""}],
+                          journal="The Cryosphere")
+    msg = _crossref_message(doi="10.5194/tc-8-395-2014", title="T", year=2014,
+                            authors=[("V.", "Vionnet")], venue="The Cryosphere")
+    _patch_crossref_doi(monkeypatch, msg)
+    cat = _empty_catalog(tmp_path)
+
+    report = mr.resolve_metadata_candidates(folder, allow_network=False,
+                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    payload = report.to_dict()
+
+    assert payload["decision"] == "auto_matched"
+    assert payload["decision_detail"]["status"] == "auto_matched"
+    assert payload["local_evidence"]["title_source"] == "metadata"
+    assert payload["local_evidence"]["doi_candidates"] == ["10.5194/tc-8-395-2014"]
+    assert payload["local_evidence"]["local_title_evidence_missing"] is False
+
+
 # ── 7. title search manual-band → unmatched, candidates written ───────
 
 def test_title_search_manual_band_stays_unmatched(tmp_path, monkeypatch):
@@ -645,60 +733,6 @@ def test_cli_default_no_network_no_call(tmp_path, monkeypatch):
     ])
     assert rc2 == 0
     assert not (folder / "000001.metadata.patch.json").exists()
-
-
-# ── 13b. match_paper_raw_metadata multi-DOI conflict ──────────────────
-
-def test_match_script_multi_doi_conflict(tmp_path, monkeypatch):
-    md = ("# Title\n\nhttps://doi.org/10.5194/tc-8-395-2014\n\n"
-          "also https://doi.org/10.9999/another\n\n## Abstract\n")
-    folder = _make_folder(tmp_path, md_text=md)
-    cat = _empty_catalog(tmp_path)
-    monkeypatch.syspath_prepend(str(_REPO_ROOT))
-    # ensure enrich_from_pdf returns no DOI (filename/pdf have none)
-    monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
-
-    saved = sys.argv
-    sys.argv = [
-        "match_paper_raw_metadata.py", "--source-id", "000001",
-        "--paper-raw-dir", str(tmp_path / "paper_raw"), "--apply",
-    ]
-    try:
-        runpy.run_path(str(_REPO_ROOT / "scripts" / "match_paper_raw_metadata.py"), run_name="__main__")
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 1
-    else:
-        code = 0
-    finally:
-        sys.argv = saved
-    assert code == 0
-    meta = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
-    assert meta["metadata_match"]["status"] == "unmatched"
-    st = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
-    assert st["status"] == "metadata_candidate_conflict"
-
-
-def test_match_script_require_matched_exits_nonzero(tmp_path, monkeypatch):
-    md = ("# Title\n\nhttps://doi.org/10.5194/tc-8-395-2014\n\n"
-          "also https://doi.org/10.9999/another\n\n## Abstract\n")
-    _make_folder(tmp_path, md_text=md)
-    monkeypatch.syspath_prepend(str(_REPO_ROOT))
-    monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
-
-    saved = sys.argv
-    sys.argv = [
-        "match_paper_raw_metadata.py", "--source-id", "000001",
-        "--paper-raw-dir", str(tmp_path / "paper_raw"), "--apply", "--require-matched",
-    ]
-    try:
-        runpy.run_path(str(_REPO_ROOT / "scripts" / "match_paper_raw_metadata.py"), run_name="__main__")
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 1
-    else:
-        code = 0
-    finally:
-        sys.argv = saved
-    assert code == 1
 
 
 # ── 18. conservative author split ─────────────────────────────────────

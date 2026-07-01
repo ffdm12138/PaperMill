@@ -5,6 +5,8 @@ It is not an article-writing skill.
 It is not a catalog curator.
 It resolves bibliographic metadata for imported PDFs by reading the converted
 Markdown first, then verifying or completing the result online.
+Read the converted Markdown physical first 100 lines for title/author/
+affiliation/abstract/keyword/DOI candidates before PDF title fallback.
 
 与 `SKILL.md` 同源。你是 paper_raw metadata resolver：在 PDF 导入、MinerU 转换完成后，
 为 `data/paper_raw/<source_id>/` 生成带证据的 metadata 候选与只补空字段的 patch。

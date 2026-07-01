@@ -104,6 +104,10 @@ def test_status_runtime_ok(monkeypatch):
         lambda: MinerURuntimeHealth(ok=True, runner="cli", message="gpu ok", nvidia_smi=True),
     )
     monkeypatch.setattr(
+        "src.mineru_runtime.preflight_torch_cuda",
+        lambda: type("TorchHealth", (), {"ok": True, "message": "torch ok"})(),
+    )
+    monkeypatch.setattr(
         "src.mineru_runtime.preflight_mineru_cli",
         lambda exe: MinerURuntimeHealth(ok=True, runner="cli", message="cli ok", cli_available=True),
     )
@@ -118,6 +122,7 @@ def test_status_runtime_ok(monkeypatch):
     data = resp.json()
     assert data["runtime"]["backend"] == "hybrid-engine"
     assert "gpu" in data
+    assert "torch_cuda" in data
     assert "cli" in data
     assert "api" in data
 
@@ -139,7 +144,7 @@ def test_catalog_endpoints_ok():
 
 def test_plan_reading_empty_question():
     resp = client.post("/prompt/plan-reading", json={"question": ""})
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_read_fulltext_empty_paper_ids():

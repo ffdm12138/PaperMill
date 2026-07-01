@@ -12,9 +12,17 @@ consumes PDFs from raw. Copy mode is only for debugging, backup, tests, or
 explicit one-off inspection.
 
 MinerU conversion requires GPU / MinerU 正式转换必须使用 GPU. Manual staging does
-not need GPU, but `convert_paper_raw_batch.py` does. Use
-`MINERU_REQUIRE_GPU=true`, `CUDA_VISIBLE_DEVICES=0`, `MINERU_RUNNER=cli_api_proxy`,
-and `MINERU_API_URL=http://127.0.0.1:8000` for formal batch conversion.
+not need GPU; formal ingest uses `convert_paper_raw_gpu.py`. It defaults
+`MINERU_REQUIRE_GPU=true`, `CUDA_VISIBLE_DEVICES=0`, and checks both `nvidia-smi`
+and `torch.cuda.is_available()`. Use `MINERU_RUNNER=cli_api_proxy` and
+`MINERU_API_URL=http://127.0.0.1:8000` for persistent mineru-api batch conversion.
+Start/reuse mineru-api with `python scripts/start_mineru_services.py --wait`
+and stop it with `python scripts/stop_mineru_services.py`. Start mineru-api with
+`CUDA_VISIBLE_DEVICES=0` in its own shell.
+MinerU PDF conversion has no process-level timeout; health/preflight/HTTP and
+lock wait timeouts are separate checks. Metadata title/author/affiliation/
+abstract/keyword/DOI candidates come from converted Markdown first 100 lines as
+front-matter evidence before PDF title fallback.
 `MINERU_ALLOW_CPU=true` / `MINERU_REQUIRE_GPU=false` is debug-only.
 
 Writing starts by creating an ignored job workspace:
@@ -32,3 +40,6 @@ write/jobs/<job_id>/article/<paper_number>/
 BibTeX and citation facts come from per-paper `metadata.json`. Catalog files
 remain content-only and must not receive DOI, authors, year, journal, venue, or
 other bibliographic fields.
+Catalog natural-language values default to Chinese; JSON keys/schema enums stay
+English, technical terms may remain English, and metadata remains the
+original/canonical bibliographic source.

@@ -34,7 +34,7 @@ def test_manual_pdf_path_is_convert_before_resolve():
         ), f"{rel} must describe data/raw as a queue"
 
         # In command-chain / code blocks: resolve_paper_raw_metadata must appear
-        # AFTER convert_paper_raw_batch, never before.
+        # AFTER formal MinerU conversion, never before.
         lines = text.splitlines()
         for i, line in enumerate(lines):
             if "resolve_paper_raw_metadata" in line:
@@ -49,12 +49,12 @@ def test_manual_pdf_path_is_convert_before_resolve():
                 block_lines = lines[block_start : block_end + 1]
                 block_text = "\n".join(block_lines)
                 if (
-                    "convert_paper_raw_batch" in block_text
+                    "convert_paper_raw_gpu" in block_text
                     and "resolve_paper_raw_metadata" in block_text
                 ):
                     # within this block, convert must appear before resolve
                     convert_pos = next(
-                        j for j, l in enumerate(block_lines) if "convert_paper_raw_batch" in l
+                        j for j, l in enumerate(block_lines) if "convert_paper_raw_gpu" in l
                     )
                     resolve_pos = next(
                         j for j, l in enumerate(block_lines) if "resolve_paper_raw_metadata" in l
@@ -62,7 +62,7 @@ def test_manual_pdf_path_is_convert_before_resolve():
                     assert resolve_pos > convert_pos, (
                         f"{rel}: in block starting at line {block_start + 1},"
                         f" resolve_paper_raw_metadata (line {i + 1}) must appear after"
-                        f" convert_paper_raw_batch (line {block_start + convert_pos + 1})"
+                        f" convert_paper_raw_gpu (line {block_start + convert_pos + 1})"
                     )
 
 
@@ -98,3 +98,11 @@ def test_active_docs_do_not_recommend_copy_mode_for_normal_manual_stage():
         assert stale_copy_sop not in text, (
             f"{rel} still recommends manual staging without --move"
         )
+
+
+def test_fetch_resolver_action_hints_require_move_apply():
+    for path in (_ROOT / "src" / "fetch" / "resolvers").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "stage_raw_pdfs_to_paper_raw.py --apply" not in text
+        if "stage_raw_pdfs_to_paper_raw.py" in text:
+            assert "--move --apply" in text, f"{path} has stale staging hint"

@@ -4,17 +4,18 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import API_HOST, API_PORT, ALL_CATALOG_PATH
+from config.settings import API_CORS_ORIGINS, API_HOST, API_PORT, ALL_CATALOG_PATH, MINERU_API_KEY
 from src.catalog import Catalog
 from src.library import PaperLibrary
 from src.naming import validate_job_id, validate_paper_id
@@ -38,9 +39,9 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=API_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 catalog = Catalog()
@@ -49,37 +50,61 @@ prompt_builder = PromptBuilder(catalog=catalog, library=library)
 job_manager = JobManager()
 
 
+_PUBLIC_PATHS = {"/", "/docs", "/openapi.json", "/redoc", "/favicon.ico"}
+ShortStr = Annotated[str, Field(max_length=64)]
+TopicStr = Annotated[str, Field(max_length=500)]
+PaperIdList = Annotated[list[str], Field(max_length=100)]
+PaperNumberList = Annotated[list[str], Field(max_length=100)]
+
+
+@app.middleware("http")
+async def security_headers_and_api_key(request: Request, call_next):
+    if (
+        MINERU_API_KEY
+        and request.method != "OPTIONS"
+        and request.url.path not in _PUBLIC_PATHS
+        and request.headers.get("X-API-Key") != MINERU_API_KEY
+    ):
+        response = JSONResponse({"detail": "invalid or missing API key"}, status_code=401)
+    else:
+        response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 class PlanRequest(BaseModel):
-    question: str
+    question: Annotated[str, Field(min_length=1, max_length=4000)]
 
 
 class FulltextRequest(BaseModel):
-    question: str
-    paper_ids: list[str]
+    question: Annotated[str, Field(min_length=1, max_length=4000)]
+    paper_ids: PaperIdList
 
 
 class CatalogEntryRequest(BaseModel):
-    paper_id: str
+    paper_id: ShortStr
 
 
 class CreateJobRequest(BaseModel):
-    topic: str | None = None
-    input_file: str | None = None
-    language: str = "zh"
-    target: str = "phd_thesis"
+    topic: Annotated[str | None, Field(max_length=1000)] = None
+    input_file: Annotated[str | None, Field(max_length=1000)] = None
+    language: Annotated[str, Field(max_length=16)] = "zh"
+    target: Annotated[str, Field(max_length=64)] = "phd_thesis"
 
 
 class MatchCatalogRequest(BaseModel):
-    topics: list[str] | None = None
+    topics: Annotated[list[TopicStr] | None, Field(max_length=20)] = None
 
 
 class ConfirmPapersRequest(BaseModel):
-    paper_ids: list[str]
-    confirmed_by: str = "api"
+    paper_ids: PaperIdList
+    confirmed_by: Annotated[str, Field(max_length=100)] = "api"
 
 
 class DeepReadRequest(BaseModel):
-    paper_ids: list[str] | None = None
+    paper_ids: Annotated[list[str] | None, Field(max_length=100)] = None
     force: bool = False
 
 
@@ -92,18 +117,18 @@ class BuildStoryRequest(BaseModel):
 
 
 class BuildTexRequest(BaseModel):
-    title: str | None = None
+    title: Annotated[str | None, Field(max_length=1000)] = None
     force: bool = False
     template_only: bool = False
 
 
 class CopyFiguresRequest(BaseModel):
-    figures: list[dict] | None = None
+    figures: Annotated[list[dict] | None, Field(max_length=100)] = None
 
 
 class BibtexRequest(BaseModel):
-    paper_numbers: list[str] | None = None
-    paper_ids: list[str] | None = None
+    paper_numbers: PaperNumberList | None = None
+    paper_ids: PaperIdList | None = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -386,12 +411,20 @@ async def status():
 async def status_runtime():
     from src.converter import MINERU_EXE
     from src.mineru_lock import read_mineru_lock_status
-    from src.mineru_runtime import describe_runtime, preflight_gpu, preflight_mineru_api, preflight_mineru_cli, runtime_config_from_env
+    from src.mineru_runtime import (
+        describe_runtime,
+        preflight_gpu,
+        preflight_mineru_api,
+        preflight_mineru_cli,
+        preflight_torch_cuda,
+        runtime_config_from_env,
+    )
 
     config = runtime_config_from_env()
     return {
         "runtime": describe_runtime(config),
         "gpu": preflight_gpu().__dict__,
+        "torch_cuda": preflight_torch_cuda().__dict__,
         "cli": preflight_mineru_cli(MINERU_EXE).__dict__,
         "api": preflight_mineru_api(config.api_url).__dict__,
         "mineru_lock": read_mineru_lock_status(),

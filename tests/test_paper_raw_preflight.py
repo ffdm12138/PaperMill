@@ -106,12 +106,23 @@ def test_convert_only_preflight_ready_skips_nonready(tmp_path, monkeypatch):
         def __init__(self, paper_raw_dir):
             self.paper_raw_dir = paper_raw_dir
 
-        def convert(self, source_id):
+        def inspect_conversion(self, source_id, **kwargs):
+            return {
+                "state": "not_converted",
+                "reason": "not converted",
+                "manifest": None,
+                "markdown": "",
+                "images_dir": "",
+                "pdf_sha256": "",
+            }
+
+        def convert(self, source_id, **kwargs):
             calls.append(source_id)
             return {"success": True, "source_id": source_id}
 
     import src.services.v2_library as v2_library
     monkeypatch.setattr(v2_library, "PaperRawConverter", FakeConverter)
+    monkeypatch.setenv("MINERU_RUNNER", "cli")
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
 
     rc = _run_script(
@@ -122,6 +133,8 @@ def test_convert_only_preflight_ready_skips_nonready(tmp_path, monkeypatch):
             "--paper-raw-dir", str(paper_raw),
             "--only-preflight-ready",
             "--apply",
+            "--allow-cpu",
+            "--allow-cold-cli-batch",
         ],
     )
 

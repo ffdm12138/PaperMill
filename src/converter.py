@@ -12,7 +12,7 @@ from pathlib import Path
 from loguru import logger
 from src.mineru_runtime import (
     MinerURunner, build_mineru_env, preflight_gpu, preflight_mineru_api,
-    runtime_config_from_env, snapshot_nvidia_smi,
+    preflight_torch_cuda, runtime_config_from_env, snapshot_nvidia_smi,
 )
 from src.mineru_lock import MinerULock, read_mineru_lock_status
 
@@ -54,13 +54,14 @@ class MinerUConverter:
         """
         Args:
             proxy: 代理地址，如 "http://127.0.0.1:7890"，None则不走代理
-            timeout: CLI 转换超时（秒），默认从 config 读取
+            timeout: Deprecated compatibility parameter. Ignored for MinerU
+                     conversion; conversion is intentionally unbounded.
             log_dir: 性能日志输出目录。None 时从 config 读取 MINERU_LOG_DIR；
                      设为 "" 禁用日志写入
         """
         self.proxy = proxy
-        from config.settings import MINERU_TIMEOUT, MINERU_LOG_DIR
-        self.timeout = timeout or MINERU_TIMEOUT
+        self._deprecated_timeout = timeout
+        from config.settings import MINERU_LOG_DIR
         if log_dir is None:
             self._log_dir = MINERU_LOG_DIR
         elif log_dir == "":
@@ -137,6 +138,16 @@ class MinerUConverter:
         # ── cli_api_proxy: CLI + --api-url ──
         if runner == MinerURunner.CLI_API_PROXY:
             proxy_url = api_url or config.api_url
+            health = preflight_mineru_api(proxy_url)
+            if not health.api_available:
+                return {
+                    "success": False,
+                    "error": f"mineru-api unavailable at {proxy_url}: {health.message}",
+                    "backend": backend,
+                    "method": method,
+                    "effort": effort,
+                    "runner": "cli_api_proxy",
+                }
             return self.convert_via_cli(
                 input_path, output_dir, backend, method, lang, effort,
                 paper_id=paper_id, api_url=proxy_url,
@@ -178,6 +189,7 @@ class MinerUConverter:
             return
         config = runtime_config_from_env()
         gpu_health = preflight_gpu()
+        torch_health = preflight_torch_cuda()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_record = {
             "paper_id": paper_id,
@@ -190,6 +202,7 @@ class MinerUConverter:
             "lang": lang,
             "api_url": config.api_url if runner == "api" else None,
             "MINERU_REQUIRE_GPU": config.require_gpu,
+            "MINERU_ALLOW_CPU": config.allow_cpu,
             "CUDA_PATH": config.cuda_path,
             "CUDA_VISIBLE_DEVICES": config.cuda_visible_devices,
             "preflight_gpu": {
@@ -197,7 +210,18 @@ class MinerUConverter:
                 "message": gpu_health.message,
                 "nvidia_smi": getattr(gpu_health, "nvidia_smi", None),
             },
+            "torch_cuda": {
+                "ok": torch_health.ok,
+                "message": torch_health.message,
+                "torch_version": torch_health.torch_version,
+                "torch_cuda_version": torch_health.torch_cuda_version,
+                "cuda_available": torch_health.cuda_available,
+                "device_count": torch_health.device_count,
+                "device_name": torch_health.device_name,
+            },
             "mineru_command": cmd,
+            "conversion_timeout_enabled": False,
+            "conversion_timeout_seconds": None,
             "start_time": datetime.fromtimestamp(start_time).isoformat(),
             "end_time": datetime.fromtimestamp(end_time).isoformat(),
             "elapsed_seconds": round(end_time - start_time, 2),
@@ -299,7 +323,10 @@ class MinerUConverter:
             return _fail(f"文件不存在: {input_path}")
         gpu_health = preflight_gpu()
         if not gpu_health.ok:
-            return _fail(f"GPU preflight failed: {gpu_health.message}")
+            return _fail_with_log(f"GPU preflight failed: {gpu_health.message}")
+        torch_health = preflight_torch_cuda()
+        if not torch_health.ok:
+            return _fail_with_log(f"Torch CUDA preflight failed: {torch_health.message}")
 
         logger.info(f"[converter] runner={effective_runner} | {input_path.name} (backend={backend}, method={method})")
 
@@ -339,7 +366,6 @@ class MinerUConverter:
                     encoding="utf-8",
                     errors="replace",
                     env=self._get_env(),
-                    timeout=self.timeout,
                 )
 
                 gpu_after = snapshot_nvidia_smi()
@@ -415,14 +441,6 @@ class MinerUConverter:
                     "elapsed_seconds": elapsed_sec,
                 }
 
-            except subprocess.TimeoutExpired:
-                return _fail_with_log(
-                    f"转换超时({self.timeout}s)",
-                    gpu_before=gpu_before,
-                    gpu_after=snapshot_nvidia_smi(),
-                    cmd_log=cmd,
-                    stderr_log=f"Timeout after {self.timeout}s",
-                )
             except Exception as e:
                 return _fail_with_log(str(e), gpu_before=gpu_before, cmd_log=cmd, stderr_log=str(e))
         finally:

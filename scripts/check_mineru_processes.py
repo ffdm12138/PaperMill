@@ -22,6 +22,7 @@ from loguru import logger
 from src.mineru_runtime import (
     describe_runtime,
     preflight_gpu,
+    preflight_torch_cuda,
     runtime_config_from_env,
     snapshot_nvidia_smi,
 )
@@ -58,7 +59,18 @@ def _find_mineru_processes() -> list[dict]:
                         pid = parts[-1].strip()
                         name = parts[-2].strip()
                         cmdline = parts[0].strip() if len(parts) > 1 else ""
-                        procs.append({"pid": pid, "name": name, "cmdline": cmdline})
+                        cmd_lower = cmdline.lower()
+                        if "mineru-api" in cmd_lower:
+                            kind = "mineru-api"
+                        elif "watcher" in cmd_lower:
+                            kind = "watcher"
+                        elif "src.server" in cmd_lower:
+                            kind = "python -m src.server"
+                        elif "mineru" in cmd_lower:
+                            kind = "mineru CLI"
+                        else:
+                            kind = "mineru-related"
+                        procs.append({"pid": pid, "name": name, "cmdline": cmdline, "kind": kind})
                 except (ValueError, IndexError):
                     pass
     except Exception:
@@ -129,14 +141,17 @@ def main() -> int:
     if procs:
         for p in procs:
             cmd = p["cmdline"][:120] if p["cmdline"] else "(unknown)"
-            print(f"  PID {p['pid']:>6}  {p['name']:<20}  {cmd}")
+            print(f"  PID {p['pid']:>6}  {p['name']:<20}  {p.get('kind', 'mineru-related'):<22}  {cmd}")
+        mineru_api_count = sum(1 for p in procs if p.get("kind") == "mineru-api")
+        if mineru_api_count > 1:
+            print("  WARNING: multiple mineru-api processes detected. Keep only one persistent mineru-api to avoid GPU OOM.")
     else:
         print("  (no MinerU-related processes found)")
 
     # ── 4. 环境变量 ──
     print("\n[4] MinerU 环境变量")
     for var in ["MINERU_REQUIRE_GPU", "MINERU_RUNNER", "MINERU_API_URL",
-                "CUDA_PATH", "CUDA_VISIBLE_DEVICES", "MINERU_LOCK_TIMEOUT",
+                "MINERU_ALLOW_CPU", "CUDA_PATH", "CUDA_VISIBLE_DEVICES", "MINERU_LOCK_TIMEOUT",
                 "MINERU_BACKEND", "MINERU_EFFORT", "MINERU_METHOD"]:
         val = os.environ.get(var, "")
         print(f"  {var}={val or '(not set)'}")
@@ -150,6 +165,12 @@ def main() -> int:
     print(f"  cuda_visible_devices: {config.cuda_visible_devices or '(not set)'}")
     gpu_health = preflight_gpu()
     print(f"  preflight_gpu: ok={gpu_health.ok} msg={gpu_health.message} nvidia_smi={gpu_health.nvidia_smi}")
+    torch_health = preflight_torch_cuda()
+    print(f"  torch_cuda: ok={torch_health.ok} msg={torch_health.message}")
+    print(f"  torch.cuda.is_available(): {torch_health.cuda_available}")
+    print(f"  torch.version.cuda: {torch_health.torch_cuda_version or '(empty)'}")
+    print(f"  torch.cuda.device_count(): {torch_health.device_count}")
+    print(f"  torch.cuda.get_device_name(0): {torch_health.device_name or '(empty)'}")
 
     # ── 6. Lock 状态 ──
     print("\n[6] MinerU Lock 状态")

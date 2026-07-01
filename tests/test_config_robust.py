@@ -4,13 +4,13 @@ import pytest
 
 
 def test_env_int_bad_value_falls_back():
-    """环境变量 MINERU_TIMEOUT=abc 时不崩，回退默认"""
-    os.environ["MINERU_TIMEOUT"] = "abc"
+    """环境变量 MINERU_MAX_WORKERS=abc 时不崩，回退默认"""
+    os.environ["MINERU_MAX_WORKERS"] = "abc"
     import importlib
     import config.settings
     importlib.reload(config.settings)
-    assert config.settings.MINERU_TIMEOUT == 600  # 回退默认
-    del os.environ["MINERU_TIMEOUT"]
+    assert config.settings.MINERU_MAX_WORKERS == 1  # 回退默认
+    del os.environ["MINERU_MAX_WORKERS"]
     importlib.reload(config.settings)
 
 

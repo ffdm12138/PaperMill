@@ -106,9 +106,17 @@ set PYTHONIOENCODING=utf-8
 
 ## 8. MinerU batch runner
 
-MinerU conversion requires GPU / MinerU 正式转换必须使用 GPU。默认 `MINERU_REQUIRE_GPU=true`；
-`stage_raw_pdfs_to_paper_raw.py` 不需要 GPU，但 `convert_paper_raw_batch.py` / MinerU conversion
-必须 GPU。CPU/no-GPU 只允许调试：显式设置 `MINERU_ALLOW_CPU=true` 或 `MINERU_REQUIRE_GPU=false`。
+MinerU conversion requires GPU / MinerU 正式转换必须使用 GPU。formal ingest 使用
+`scripts/convert_paper_raw_gpu.py`，默认 `MINERU_REQUIRE_GPU=true`、`CUDA_VISIBLE_DEVICES=0`，
+并在转换前检查 `nvidia-smi` 与当前 Python 环境的 `torch.cuda.is_available()`。
+`stage_raw_pdfs_to_paper_raw.py` 不需要 GPU；底层 `convert_paper_raw_batch.py` 仅作兼容/调试入口。
+CPU/no-GPU 只允许调试：显式设置 `MINERU_ALLOW_CPU=true` 或 `MINERU_REQUIRE_GPU=false`。
+
+Formal conversion command:
+
+```bash
+conda run -n mineru python scripts/convert_paper_raw_gpu.py --all --apply --report reports/convert_paper_raw.json
+```
 
 Windows cmd:
 
@@ -139,5 +147,33 @@ export MINERU_API_URL=http://127.0.0.1:8000
 
 批量 MinerU 转换优先使用持久 `mineru-api` 服务，避免每篇 PDF 都冷启动模型。Windows 可用
 `start_fast_api_mode.bat` 启动，或按本地 MinerU 安装启动 `mineru-api` 后设置以上变量。
-`MINERU_RUNNER=cli` 是 fallback；当批量转换多个 `paper_raw` source 时，
-`scripts/convert_paper_raw_batch.py` 会 warning 提醒优先使用 `cli_api_proxy`。
+`mineru-api` 必须在它自己的 shell 中以 `CUDA_VISIBLE_DEVICES=0` 启动；只在 client 进程设置
+`CUDA_VISIBLE_DEVICES` 不能改变已经运行的服务。
+`start_fast_api_mode.bat` 是 single-instance helper：已有健康 `mineru-api` 时复用；端口
+8000 被占用但 `/health` 不通时拒绝再启动，避免重复加载模型或 GPU OOM。
+`MINERU_RUNNER=cli` 只保留给单篇测试/调试；多篇 formal batch 会 hard fail，除非显式传
+`--allow-cold-cli-batch` 做 debug/benchmark。
+
+`paper_raw` conversion is idempotent：已有 `<source_id>.md` + `images/` 的目录默认跳过；
+成功转换会写 `<source_id>.conversion.json` 和 `.import_status.json: converted`。`output/`
+不是可信 converted 判据；出现 `stale_conversion` 或 `partial_conversion` 时不要反复运行
+转换命令，检查目录后必要时显式加 `--force-reconvert`。
+
+本地 FastAPI 默认只绑定 `127.0.0.1`。如设置 `MINERU_API_HOST=0.0.0.0` 或其它非 localhost
+地址，必须设置 `MINERU_API_KEY`，或显式承担风险设置
+`MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true`。
+### Current MinerU service entry
+
+Use `python scripts/start_mineru_services.py --wait` to start or reuse the
+persistent local `mineru-api`, then run `python scripts/convert_paper_raw_gpu.py
+--source-id 000001 --apply` or `python scripts/convert_paper_raw_gpu.py --all
+--apply`. Stop the service with `python scripts/stop_mineru_services.py`.
+`start_fast_api_mode.bat` is a compatibility wrapper around the Python starter.
+
+MinerU PDF conversion has no process-level timeout; large PDFs may run for a long
+time. Health checks, preflight checks, HTTP request timeouts, and `MinerULock`
+wait timeouts remain allowed because they are not PDF conversion timeouts.
+
+For manual metadata matching, title/author/affiliation/abstract/keyword/DOI
+candidates come from the converted Markdown first 100 lines as front-matter
+evidence before PDF title fallback. DOI gates stay strict.

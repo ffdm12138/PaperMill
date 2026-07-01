@@ -23,6 +23,8 @@ def _write_json(path: Path, data: dict) -> None:
 def _valid_metadata(pid: str, idx: int) -> dict:
     metadata = empty_metadata(pid)
     metadata["title"]["original"] = f"Metadata Audit Paper {idx}"
+    metadata["title"]["short_zh"] = f"元数据审计{idx}"
+    metadata["title"]["translated_zh"] = f"元数据审计{idx}"
     metadata["year"] = 2024
     metadata["authors"] = [
         {"full_name": f"Author {idx}", "family": f"Author{idx}", "given": "A", "orcid": "", "affiliation": ""}
@@ -65,10 +67,24 @@ def _catalog(pid: str, number: str) -> dict:
         "images_dir": "images/",
         "figures": [],
     }
-    catalog["content_identity"]["content_title"] = "Metadata Audit Paper"
+    catalog["content_identity"]["content_title"] = "元数据审计论文"
     catalog["classification"]["primary_domain"] = "metadata_audit"
     catalog["screening"]["read_decision"] = "must_read"
     catalog["screening"]["relevance_score"] = 5
+    catalog["screening"]["reason"] = "该文献用于中文元数据审计测试。"
+    catalog["research_card"].update({
+        "research_problem": "研究元数据质量审计。",
+        "core_question": "如何区分硬错误和警告？",
+        "hypothesis_or_objective": "验证 metadata audit 与正式校验边界。",
+        "study_object": "测试文献 metadata",
+        "method_summary": "使用本地构造的正式库测试。",
+        "data_or_experiment": "临时目录中的 JSON、Markdown 和 PDF。",
+        "main_findings": ["缺页码和期号属于 audit warning。"],
+        "mechanisms": ["validate 与 audit 分离职责。"],
+        "limitations": ["仅覆盖 metadata 结构。"],
+        "usefulness_for_user": "保障正式库校验稳定。",
+    })
+    catalog["content_notes"]["short_summary"] = "元数据审计测试摘要。"
     return catalog
 
 
@@ -98,7 +114,7 @@ def _make_library(tmp_path: Path, mutators=None) -> tuple[Path, Path]:
     index_entries = []
     for idx in range(1, len(mutators) + 2):
         number = f"{idx:016d}"
-        pid = f"2024_author{idx}_metadata_audit_{idx}"
+        pid = f"2024_Author{idx}_元数据审计{idx}"
         folder = papers_dir / pid
         images = folder / "images"
         images.mkdir(parents=True)

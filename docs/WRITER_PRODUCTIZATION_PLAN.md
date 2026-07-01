@@ -2,7 +2,8 @@
 
 ## Summary
 
-`ingest v2.1` has been frozen and tagged as `ingest-v2.1`. `writing v0.1`
+`ingest v2.2` has been frozen and tagged as `ingest-v2.2` (v2.1 was superseded
+by the curate→formalize→commit state-machine refactor; schema unchanged). `writing v0.1`
 has also been frozen and tagged as `writing-v0.1` after both the mechanical
 writing loop and the quality sample passed.
 

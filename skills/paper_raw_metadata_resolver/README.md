@@ -9,6 +9,11 @@ lacks enough candidates**. When network lookup is unavailable it fails closed
 (status stays `unmatched`, candidates preserved, manual review requested) — it
 never fabricates matched metadata.
 
+For title/author/affiliation/abstract/keyword/DOI candidates, read the converted
+Markdown physical first 100 lines as front-matter evidence before PDF title
+fallback. DOI extraction remains strict and must not use reference-list DOI
+values as the paper DOI.
+
 It is metadata-first, not catalog-first. It must NOT read `data/papers` or the
 catalog, must NOT invent DOI/author/year/venue (an LLM-guessed DOI is invalid),
 and must NOT set `metadata_match.status` — the final `matched`/`manual_confirmed`

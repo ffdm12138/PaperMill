@@ -25,7 +25,7 @@ def test_readme_links_to_core_docs_exist():
 
 
 _BOUNDARY_TERMS = [
-    "ingest-v2.1",
+    "ingest-v2.2",
     "writing-v0.1",
     "conda run -n mineru",
     "metadata",
@@ -52,7 +52,7 @@ def test_claude_md_contains_boundary_terms():
 
 def test_project_status_covers_required_terms():
     text = _read("docs/PROJECT_STATUS.md")
-    for term in ["ingest-v2.1", "writing-v0.1", "data/paper_raw", "data/papers", "write/jobs"]:
+    for term in ["ingest-v2.2", "writing-v0.1", "data/paper_raw", "data/papers", "write/jobs"]:
         assert term in text, f"PROJECT_STATUS.md missing term: {term}"
 
 
@@ -98,6 +98,8 @@ def test_docs_cover_mineru_gpu_conversion_sop():
         "MINERU_RUNNER=cli_api_proxy",
         "MINERU_API_URL=http://127.0.0.1:8000",
         "MINERU_ALLOW_CPU=true",
+        "scripts/convert_paper_raw_gpu.py",
+        "torch.cuda.is_available",
     ]:
         assert term in text, f"GPU SOP docs missing term: {term}"
     assert (
@@ -106,6 +108,7 @@ def test_docs_cover_mineru_gpu_conversion_sop():
     )
     assert "stage_raw_pdfs_to_paper_raw.py` 不需要 GPU" in text
     assert "convert_paper_raw_batch.py" in text
+    assert "lower-level" in text or "底层" in text
 
 
 def test_readme_does_not_list_write_jobs_as_committable():
@@ -160,3 +163,26 @@ def test_active_docs_only_recommend_write_jobs_article_path():
 def test_removed_legacy_writer_docs_are_absent():
     assert not (ROOT / "docs" / "LLM_USAGE_WORKFLOW.md").exists()
     assert not (ROOT / "skills" / "literature_review_writer").exists()
+
+
+def test_docs_cover_formalize_state_machine():
+    """v2.2 state machine: curate -> formalize -> commit, with formalize mandatory."""
+    docs = [
+        "README.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/PROJECT_STATUS.md",
+        "docs/PROJECT_CONTRACT.md",
+        "docs/ARCHITECTURE.md",
+        "skills/literature_library_manager/SKILL.md",
+    ]
+    text = "\n".join(_read(rel) for rel in docs)
+    for term in [
+        "formalize_paper_raw.py",
+        "ready_for_commit",
+        "catalog_ready",
+    ]:
+        assert term in text, f"v2.2 state-machine docs missing term: {term}"
+    # curate must no longer be described as renaming/committing
+    assert "curate 不再改名" in text or "curate 不再 rename" in text or "不改名" in text
+

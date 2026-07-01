@@ -82,13 +82,24 @@ ELSEVIER_API_KEY = _env_str("ELSEVIER_API_KEY", "")
 # API 配置（默认仅 localhost，防误暴露）
 API_HOST = _env_str("MINERU_API_HOST", "127.0.0.1")
 API_PORT = _env_int("MINERU_API_PORT", 8080, min_val=1, max_val=65535)
+MINERU_API_KEY = _env_str("MINERU_API_KEY", "")
+MINERU_API_CORS_ORIGINS = _env_str(
+    "MINERU_API_CORS_ORIGINS",
+    "http://127.0.0.1:8080,http://localhost:8080",
+)
+API_CORS_ORIGINS = [
+    origin.strip()
+    for origin in MINERU_API_CORS_ORIGINS.split(",")
+    if origin.strip()
+]
+MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API = _env_bool(
+    "MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API",
+    False,
+)
 # 上传大小上限（字节），默认 500MB
 MAX_UPLOAD_SIZE = _env_int("MINERU_MAX_UPLOAD_SIZE", 500 * 1024 * 1024, min_val=1)
 # PDF fetch 下载大小上限（字节），默认 200MB
 MINERU_FETCH_MAX_BYTES = _env_int("MINERU_FETCH_MAX_BYTES", 200 * 1024 * 1024, min_val=1)
-
-# MinerU 解析超时（秒），默认 600
-MINERU_TIMEOUT = _env_int("MINERU_TIMEOUT", 600, min_val=1)
 
 # MinerU 最大并行转换数（默认 1，防 OOM。多 GPU 时可适当调大）
 MINERU_MAX_WORKERS = _env_int("MINERU_MAX_WORKERS", 1, min_val=1)
@@ -165,9 +176,17 @@ for d in [
 ]:
     d.mkdir(parents=True, exist_ok=True)
 
-# 启动时安全检查：若 API_HOST 非 localhost 且无认证，打印 warning
+# 启动时安全检查：若 API_HOST 非 localhost，必须显式配置 API key 或 unsafe override。
 if API_HOST not in ("127.0.0.1", "localhost", "::1"):
-    warnings.warn(
-        f"API_HOST={API_HOST} 非 localhost，当前无认证机制。"
-        f"请确认防火墙已正确配置，或设置环境变量 MINERU_API_HOST=127.0.0.1",
-        RuntimeWarning)
+    if not MINERU_API_KEY and not MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API:
+        raise RuntimeError(
+            f"API_HOST={API_HOST} is not localhost. Set MINERU_API_KEY before exposing "
+            "the API, or explicitly set MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true "
+            "for an unsafe local-only override."
+        )
+    if MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API and not MINERU_API_KEY:
+        warnings.warn(
+            f"API_HOST={API_HOST} is not localhost and MINERU_API_KEY is empty. "
+            "MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true is unsafe; use only behind "
+            "trusted network controls.",
+            RuntimeWarning)

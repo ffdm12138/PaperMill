@@ -4,6 +4,7 @@
 命令输出必须是 JSON，至少包含 ``success``、``pdf_path/pdf_url``、``source``、``message``。
 """
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,14 @@ from loguru import logger
 
 from ..models import FetchResult
 from .base import PdfResolver, ResolveContext
+
+
+_DOI_RE = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Z0-9]+$", re.IGNORECASE)
+_FORBIDDEN_DOI_CHARS = re.compile(r'[\s\x00-\x1f\x7f<>"\\]')
+
+
+def _valid_custom_resolver_doi(doi: str) -> bool:
+    return bool(doi and _DOI_RE.match(doi) and not _FORBIDDEN_DOI_CHARS.search(doi))
 
 
 class ExternalCommandResolver(PdfResolver):
@@ -25,13 +34,29 @@ class ExternalCommandResolver(PdfResolver):
             return FetchResult(
                 doi=context.doi, source="custom", error="custom resolver command_argv is not configured",
             )
+        doi_raw = context.doi or ""
+        doi = doi_raw.strip()
+        if doi_raw != doi:
+            return FetchResult(
+                doi=context.doi, source="custom", error="invalid DOI format for custom resolver",
+            )
+        if not _valid_custom_resolver_doi(doi):
+            return FetchResult(
+                doi=context.doi, source="custom", error="invalid DOI format for custom resolver",
+            )
+        if "{doi}" in self.command_argv[0]:
+            return FetchResult(
+                doi=context.doi,
+                source="custom",
+                error="custom resolver executable cannot contain {doi}",
+            )
         allowed_dir = Path(
             (context.metadata or {}).get("allowed_output_dir")
             or getattr(context.access_policy, "extra", {}).get("allowed_output_dir", "")
             or Path.cwd()
         )
         args = [
-            part.replace("{doi}", context.doi).replace("{output_dir}", str(allowed_dir))
+            part.replace("{doi}", doi).replace("{output_dir}", str(allowed_dir))
             for part in self.command_argv
         ]
         try:

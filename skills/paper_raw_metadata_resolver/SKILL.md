@@ -5,6 +5,9 @@ description: Ingest-side metadata resolver for PDFs after MinerU conversion. Rea
 
 # Paper Raw Metadata Resolver Skill
 
+Read converted Markdown first 100 lines for title/author candidates before PDF title fallback.
+Use the same front-matter evidence for affiliation, abstract, keyword, and DOI candidate review.
+
 Use this skill when a `data/paper_raw/<source_id>/` folder has a PDF and/or
 MinerU Markdown but its metadata is **unmatched** or missing fields. The skill
 proposes metadata candidates and a patch; it does NOT apply them to formal
@@ -35,8 +38,8 @@ patch**，供脚本 (`scripts/resolve_paper_raw_metadata.py --apply`) 在通过�
 - patch 只能补空字段（最终由 `merge_missing_metadata` 合并，不覆盖非空字段）。
 - **不得**把 `metadata_match.status` 改成 `matched` 或 `manual_confirmed`。resolver 只能
   产出 candidates + patch + evidence + confidence + source + mismatch reason；是否
-  matched/manual_confirmed 由现有验证 / 人工确认 / commit 路径
-  （`scripts/resolve_paper_raw_metadata.py --apply`、`commit_paper_raw_to_papers.py`）
+  matched/manual_confirmed 由现有验证 / 人工确认 / formalize→commit 路径
+  （`scripts/resolve_paper_raw_metadata.py --apply`、`formalize_paper_raw.py`、`commit_paper_raw_to_papers.py`）
   根据 DOI 有效性、重复检测、冲突检测、完整性规则决定。
 - 输出 patch 结构同 `empty_metadata` 子集，与网络抓取 metadata **同一 schema**，不分叉；
   BibTeX 由 `bibtex_from_metadata` 从该结构生成，不因来源不同分叉。

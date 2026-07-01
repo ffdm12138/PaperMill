@@ -79,6 +79,7 @@ class ExtractedMetadata:
     abstract_candidate: str = ""
     first_3000_chars: str = ""
     matched_lines: list[str] = field(default_factory=list)
+    front_matter_lines: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -92,6 +93,7 @@ class ExtractedMetadata:
             "abstract_candidate": self.abstract_candidate,
             "first_3000_chars": self.first_3000_chars[:3000],
             "matched_lines": self.matched_lines[:50],
+            "front_matter_lines": self.front_matter_lines[:100],
             "warnings": self.warnings,
         }
 
@@ -146,6 +148,113 @@ def _extract_title_candidates(lines: list[str]) -> list[str]:
     return candidates
 
 
+def _clean_markdown_front_line(line: str) -> str:
+    stripped = line.strip()
+    stripped = re.sub(r"^#{1,6}\s*", "", stripped)
+    stripped = re.sub(r"<[^>]+>", " ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped)
+    return stripped.strip()
+
+
+def _is_obvious_non_title_front_line(line: str) -> bool:
+    stripped = _clean_markdown_front_line(line)
+    if not stripped:
+        return True
+    if line.strip().startswith("!["):
+        return True
+    if _DOI_RE.search(stripped):
+        return True
+    if _EMAIL_RE.search(stripped):
+        return True
+    if _NON_TITLE_PATTERNS.match(stripped):
+        return True
+    if re.match(r"^(?:keywords?|key words)\s*[:：]", stripped, re.IGNORECASE):
+        return True
+    if _AFFILIATION_MARKERS.search(stripped):
+        return True
+    return False
+
+
+def _looks_like_author_front_line(line: str) -> bool:
+    stripped = _clean_markdown_front_line(line)
+    if not stripped or _is_obvious_non_title_front_line(stripped):
+        return False
+    names = _split_author_line(stripped)
+    if not names:
+        return False
+    if "," in stripped or re.search(r"\band\b", stripped, re.IGNORECASE):
+        return True
+    words = stripped.split()
+    return 2 <= len(words) <= 8 and len(names) <= 3
+
+
+def _extract_front_title_candidates(lines: list[str]) -> list[str]:
+    candidates: list[str] = []
+    front = lines[:]
+
+    title_idx: int | None = None
+    title = ""
+    for idx, line in enumerate(front):
+        stripped = line.strip()
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            cleaned = _clean_markdown_front_line(stripped)
+            if len(cleaned) > 10 and not _is_obvious_non_title_front_line(cleaned):
+                title_idx = idx
+                title = cleaned
+                break
+
+    if title_idx is None:
+        for idx, line in enumerate(front):
+            cleaned = _clean_markdown_front_line(line)
+            if len(cleaned) > 15 and not _is_obvious_non_title_front_line(cleaned):
+                if not _looks_like_author_front_line(cleaned):
+                    title_idx = idx
+                    title = cleaned
+                    break
+
+    if title_idx is None or not title:
+        return []
+
+    merged = [title]
+    next_idx = title_idx + 1
+    while next_idx < len(front):
+        cleaned = _clean_markdown_front_line(front[next_idx])
+        if not cleaned:
+            break
+        if _is_obvious_non_title_front_line(cleaned) or _looks_like_author_front_line(cleaned):
+            break
+        if len(cleaned) < 8:
+            break
+        merged.append(cleaned)
+        next_idx += 1
+        if len(merged) >= 3:
+            break
+    candidates.append(" ".join(merged))
+    return candidates
+
+
+def _extract_front_author_candidates(lines: list[str], title_candidates: list[str]) -> list[list[str]]:
+    title = title_candidates[0] if title_candidates else ""
+    start = 0
+    if title:
+        title_prefix = title[:40].lower()
+        for idx, line in enumerate(lines):
+            cleaned = _clean_markdown_front_line(line).lower()
+            if cleaned and (cleaned in title.lower() or title_prefix.startswith(cleaned[:20])):
+                start = idx + 1
+                break
+    for line in lines[start:]:
+        cleaned = _clean_markdown_front_line(line)
+        if not cleaned:
+            continue
+        if _is_obvious_non_title_front_line(cleaned):
+            continue
+        names = _split_author_line(cleaned)
+        if names:
+            return [names]
+    return []
+
+
 def _extract_author_candidates(lines: list[str]) -> list[list[str]]:
     """Extract author name candidates from lines after the title."""
     candidates: list[list[str]] = []
@@ -167,7 +276,7 @@ def _extract_author_candidates(lines: list[str]) -> list[list[str]]:
         if not found_title:
             continue
 
-        # After title, look for author-like lines (within first 10 lines after title)
+        # After title, look for author-like lines within the front-matter window.
         if i > 0 and not in_title_area:
             continue
 
@@ -334,4 +443,43 @@ def extract_metadata_from_markdown(
     if not any([result.doi_candidates, result.title_candidates, result.author_candidates]):
         result.warnings.append("no metadata candidates extracted from markdown")
 
+    return result
+
+
+def extract_front_matter_candidates_from_markdown(
+    markdown_path: str | Path,
+    max_lines: int = 100,
+) -> ExtractedMetadata:
+    """Extract title/author candidates from the physical first N Markdown lines.
+
+    DOI, abstract, and full-document scanning intentionally stay in
+    ``extract_metadata_from_markdown``. This helper is for title/author evidence
+    used before any PDF text fallback.
+    """
+    path = Path(markdown_path)
+    result = ExtractedMetadata(paper_id=path.stem)
+
+    if not path.exists():
+        result.warnings.append(f"markdown file not found: {path}")
+        return result
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as e:
+        result.warnings.append(f"failed to read {path}: {e}")
+        return result
+
+    front_lines = text.splitlines()[:max_lines]
+    result.front_matter_lines = front_lines
+    result.first_3000_chars = "\n".join(front_lines)
+    result.title_candidates = _extract_front_title_candidates(front_lines)
+    result.author_candidates = _extract_author_candidates(front_lines)
+    if not result.author_candidates:
+        result.author_candidates = _extract_front_author_candidates(front_lines, result.title_candidates)
+    if result.title_candidates:
+        result.matched_lines.append(f"Front matter title: {result.title_candidates[0]}")
+    if result.author_candidates:
+        result.matched_lines.append(f"Front matter authors: {result.author_candidates[0]}")
+    if not result.title_candidates and not result.author_candidates:
+        result.warnings.append(f"no front matter title/author candidates extracted from first {max_lines} markdown lines")
     return result

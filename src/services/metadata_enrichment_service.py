@@ -35,6 +35,10 @@ _DOI_CANDIDATE_RE = re.compile(
 
 # Trailing punctuation to strip from DOI matches
 _DOI_TRAILING_RE = re.compile(r"""[.,;)\]};:'"]+$""")
+_REFERENCES_HEADING_RE = re.compile(
+    r"^\s{0,6}(?:#{1,6}\s*)?(references|bibliography|参考文献)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def extract_doi_from_text(text: str) -> str | None:
@@ -120,9 +124,14 @@ def extract_doi_from_pdf_file(pdf_path: str | Path) -> str | None:
         for page_num in range(min(3, len(doc))):
             page = doc[page_num]
             text = page.get_text()
+            ref_match = _REFERENCES_HEADING_RE.search(text)
+            if ref_match:
+                text = text[:ref_match.start()]
             doi = extract_doi_from_text(text)
             if doi:
                 return doi
+            if ref_match:
+                break
     finally:
         doc.close()
     return None

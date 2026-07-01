@@ -24,6 +24,10 @@ v2.0 content-only catalog from MinerU Markdown/PDF/images.
 - 正式 commit 到 `data/papers/` 需要 metadata 和 catalog **都**通过校验（
   metadata 要求 `metadata_match.status` 为 matched/manual_confirmed、DOI 非空、
   title/author/year/venue 齐全；catalog 要求 schema v2.0、无禁止书目字段）。
+- catalog 中的自然语言 value 默认使用中文，方便中文检索、分类、选文和写作 workflow。
+- JSON key 与 schema enum 保持英文；Transformer、WRF、LES、OpenFOAM、变量名、公式、单位、
+  数据集名等专业名词可以保留英文或中英混写。
+- metadata 保留原始/规范书目信息，不为 catalog 中文化而改写 DOI、作者、期刊、年份或 BibTeX。
 - 不确定的字段留空，不要编造。
 
 ## 输入
@@ -48,6 +52,11 @@ data/paper_raw/<source_id>/
 
 ## catalog v2.0 填写要点（只填正文内容，禁止书目字段）
 
+请使用中文生成 catalog 中的自然语言内容。JSON key 和 schema 枚举值保持英文。专业名词、模型名、
+软件名、数据集名、变量名、公式、单位、英文论文原题中的必要片段可以保留英文。不要改写 metadata
+书目信息。catalog 只写内容理解、研究价值、方法、证据、局限和分类判断，不要重复 DOI、作者、期刊、
+年份等书目字段。
+
 - `content_identity.content_title`：从 Markdown 正文标题/首屏提取的标题候选（**非 canonical title**）。
 - `classification`：`primary_domain`、`secondary_domains`、`topic_tags`、`methods_tags`、
   `phenomena_tags`、`material_tags`、`model_tags`。
@@ -71,9 +80,10 @@ catalog 任何层级都不得出现：`doi`、`authors`、`author`、`first_auth
 
 ## paper_id 命名规则
 
-`paper_id = 年份_第一作者姓氏_short_name_zh`（snake_case）。由项目在 `apply` 时**只从 metadata**
-（`metadata.year` + `metadata.authors[0].family` + `metadata.title.short_zh`）自动生成，你不要输出
-`paper_id`，也不要把 short_name_zh/year/author 写进 catalog。
+`paper_id = 年份_第一作者姓氏_short_name_zh`（snake_case）。由 `formalize_paper_raw.py` **只从 metadata**
+（`metadata.year` + `metadata.authors[0].family` + `metadata.title.short_zh`）自动生成；curate 阶段不改名、
+不输出 `paper_id`，也不要把 short_name_zh/year/author 写进 catalog。curate 只写 `catalog_ready`，
+改名与 paper_number 在 formalize 阶段完成。
 
 ## 接入
 

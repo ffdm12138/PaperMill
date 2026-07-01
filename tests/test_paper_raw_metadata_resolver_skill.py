@@ -163,3 +163,8 @@ def test_metadata_resolver_service_docstring_status_authority():
     assert "never sets ``metadata_match.status``" in head
     assert "deterministic ``apply`` step" in head
     assert "explicit --manual-confirm" in head
+
+
+def test_resolver_skill_mentions_markdown_first_100_before_pdf_fallback():
+    text = (_ROOT / "SKILL.md").read_text(encoding="utf-8").lower()
+    assert "read converted markdown first 100 lines for title/author candidates before pdf title fallback" in text
