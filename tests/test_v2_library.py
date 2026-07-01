@@ -392,7 +392,7 @@ def test_paper_raw_converter_guards_input_and_extracts_images(tmp_path):
         converter.convert(tmp_path / "raw" / "000001")
 
 
-def test_curation_merges_only_empty_metadata_and_renames(tmp_path):
+def test_curation_merges_only_empty_metadata_and_keeps_source_folder(tmp_path):
     folder = tmp_path / "paper_raw" / "000001"
     folder.mkdir(parents=True)
     metadata = empty_metadata("000001")
@@ -435,15 +435,18 @@ def test_curation_merges_only_empty_metadata_and_renames(tmp_path):
     result = PaperCurationService().apply_curated_files(folder, curated_metadata_path=patch_path)
 
     assert result["success"]
-    renamed = Path(result["folder"])
-    assert renamed.name == "2024_Wang_可信论文"
-    merged = json.loads((renamed / f"{renamed.name}.metadata.json").read_text(encoding="utf-8"))
+    # curate does NOT rename; folder stays 000001 with source-id files.
+    assert result["status"] == "catalog_ready"
+    assert folder.exists()
+    assert (folder / "000001.metadata.json").exists()
+    assert (folder / "000001.catalog.json").exists()
+    assert not (tmp_path / "paper_raw" / "2024_Wang_可信论文").exists()
+    merged = json.loads((folder / "000001.metadata.json").read_text(encoding="utf-8"))
     assert merged["title"]["original"] == "Trusted Original"
     assert merged["abstract"] == "new abstract"
-    assert (renamed / f"{renamed.name}.catalog.json").exists()
-    status = json.loads((renamed / ".import_status.json").read_text(encoding="utf-8"))
-    assert status["status"] == "ready_for_commit"
-    assert status["paper_id"] == renamed.name
+    status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "catalog_ready"
+    assert status["paper_id"] == "2024_Wang_可信论文"
 
 
 def test_v2_commit_does_not_write_pdf_mirror(tmp_path):
@@ -539,8 +542,8 @@ def test_paper_id_folds_accented_author_family_to_ascii():
     assert pid == "1999_Dery_体相吹雪模型"
 
 
-def test_accented_author_apply_curated_files_completes_rename(tmp_path):
-    """apply_curated_files must not crash and must produce correct ASCII paper_id for accented names."""
+def test_accented_author_apply_curated_files_does_not_rename(tmp_path):
+    """apply_curated_files must produce the correct ASCII paper_id but must NOT rename (formalize does that)."""
     folder = tmp_path / "paper_raw" / "000001"
     folder.mkdir(parents=True)
     metadata = empty_metadata("000001")
@@ -577,9 +580,11 @@ def test_accented_author_apply_curated_files_completes_rename(tmp_path):
     result = PaperCurationService().apply_curated_files(folder, curated_catalog_path=folder / "000001.catalog.json")
     assert result["success"], f"apply_curated_files failed: {result.get('errors', [])}"
     assert result["paper_id"] == "1999_Dery_体相吹雪模型"
-    renamed = Path(result["folder"])
-    assert renamed.exists()
-    assert renamed.name == "1999_Dery_体相吹雪模型"
+    # curate does NOT rename; folder stays 000001, status catalog_ready.
+    assert folder.exists()
+    assert not (tmp_path / "paper_raw" / "1999_Dery_体相吹雪模型").exists()
+    status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "catalog_ready"
 
 
 def test_apply_rejects_catalog_missing_screening_group(tmp_path):

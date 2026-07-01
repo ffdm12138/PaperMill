@@ -1554,29 +1554,14 @@ class PaperCurationService:
         catalog = readiness["catalog"]
         atomic_write_json(metadata_path, metadata, indent=2)
         atomic_write_json(catalog_path, catalog, indent=2)
-        new_id = readiness["paper_id"]
-        validate_paper_id(new_id)
-        target = folder.with_name(new_id)
-        if target.exists() and target.resolve() != folder.resolve():
-            errors = [f"paper_id target already exists: {new_id}"]
-            atomic_write_json(folder / ".import_status.json", {
-                "status": "paper_id_mismatch",
-                "reason": "; ".join(errors),
-                "errors": errors,
-                "created_at": now_iso(),
-            }, indent=2)
-            return {"success": False, "status": "paper_id_mismatch", "errors": errors}
-        final_id = new_id
-        if target.resolve() != folder.resolve():
-            folder.rename(target)
-        for suffix_name in ("metadata.json", "catalog.json", "md", "pdf"):
-            old = target / f"{source_id}.{suffix_name}"
-            new = target / f"{final_id}.{suffix_name}"
-            if old.exists() and old != new:
-                old.rename(new)
-        atomic_write_json(target / ".import_status.json", {
-            "status": "ready_for_commit",
-            "reason": "paper_raw passed metadata/catalog/assets/duplicate gates",
+        final_id = readiness["paper_id"]
+        validate_paper_id(final_id)
+        # curate only validates + writes metadata/catalog; it does NOT rename
+        # the folder/files or allocate a paper_number. formalize_paper_raw.py
+        # performs the rename + paper_number reservation and sets ready_for_commit.
+        atomic_write_json(folder / ".import_status.json", {
+            "status": "catalog_ready",
+            "reason": "metadata/catalog validated; run formalize_paper_raw.py next",
             "source_id": readiness["source_id"],
             "paper_id": final_id,
             "pdf_sha256": readiness["pdf_sha256"],
@@ -1584,7 +1569,13 @@ class PaperCurationService:
             "warnings": readiness["warnings"],
             "created_at": now_iso(),
         }, indent=2)
-        return {"success": True, "status": "ready_for_commit", "paper_id": final_id, "folder": str(target)}
+        return {
+            "success": True,
+            "status": "catalog_ready",
+            "paper_id": final_id,
+            "folder": str(folder),
+            "source_id": readiness["source_id"],
+        }
 
 
 class PaperNumberLedger:

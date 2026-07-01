@@ -1,4 +1,9 @@
-"""Generate/apply v2 paper_raw curation prompts and rename curated folders."""
+"""Generate/apply v2 paper_raw curation prompts and validate curated catalog.
+
+curate only validates metadata/catalog and writes ``status=catalog_ready``;
+it does NOT rename the folder or allocate a paper_number. The rename +
+paper_number reservation is done by ``formalize_paper_raw.py``.
+"""
 from __future__ import annotations
 
 import argparse
