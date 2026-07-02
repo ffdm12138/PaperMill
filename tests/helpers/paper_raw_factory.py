@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.services.ingest_state import CATALOG_READY, write_import_status
+from src.services.ingest_state import CATALOG_READY, METADATA_RESOLVE_FAILED, write_import_status
 from src.services.ingest_ids import PAPER_NUMBER_RE
 from src.services.v2_library import (
     PaperNumberLedger,
@@ -66,7 +66,7 @@ def make_staged_source(
     catalog = empty_catalog()
     catalog["content_identity"]["content_title"] = title_zh
     catalog["classification"]["primary_domain"] = catalog_domain
-    catalog["screening"]["read_decision"] = "must_read"
+    catalog["screening"]["read_decision"] = "pending"
     catalog["screening"]["relevance_score"] = 5
     catalog["screening"]["reason"] = f"该文献与{title_zh}主题相关。"
     catalog["research_card"].update({
@@ -90,6 +90,65 @@ def make_staged_source(
     write_conversion_manifest_for_existing_assets(folder, source_id)
     if catalog_ready:
         write_import_status(folder, CATALOG_READY, reason="curated")
+    return folder
+
+
+def make_legacy_workspace(
+    root: Path,
+    folder_name: str = "1979_sykest_untitled",
+    *,
+    paper_number: str = "0000000000000157",
+    title_zh: str = "遗留论文",
+    title_original: str = "Legacy Original",
+    doi: str = "10.1/legacy",
+    family: str = "Sykest",
+    given: str = "A",
+    year: int = 1979,
+    journal: str = "Legacy Journal",
+    pdf_bytes: bytes = b"%PDF",
+    md_text: str | None = None,
+    catalog_ready: bool = False,
+    import_status: str = METADATA_RESOLVE_FAILED,
+    marker: bool = True,
+) -> Path:
+    """Build a legacy/untitled paper_raw workspace mirroring on-disk reality.
+
+    The folder is named by ``paper_id`` (NOT 16-digit), yet carries a
+    ``*.paper.number`` marker and metadata ``paper_number``/``paper_raw_id``
+    tying it to the numbered system. Unlike ``make_staged_source``, NO ledger
+    entry is reserved for this marker paper_number (legacy folders were not
+    reserved at staging time). The import_status defaults to
+    ``metadata_resolve_failed`` — the most common state of real legacy folders,
+    which outranks a freshly-restaged duplicate's ``ready_for_convert``.
+    """
+    folder = root / "paper_raw" / folder_name
+    folder.mkdir(parents=True)
+    metadata = empty_metadata(folder_name)
+    # legacy folders resolve to a real 16-digit marker number regardless of name
+    metadata["paper_number"] = paper_number
+    metadata["paper_raw_id"] = paper_number
+    metadata["title"]["original"] = title_original
+    metadata["title"]["translated_zh"] = title_zh
+    metadata["title"]["short_zh"] = title_zh
+    metadata["year"] = year
+    metadata["authors"] = [{"full_name": f"{family} {given}", "family": family, "given": given, "orcid": "", "affiliation": ""}]
+    metadata["container"]["journal"] = journal
+    metadata["identifiers"]["doi"] = doi
+    catalog = empty_catalog()
+    catalog["content_identity"]["content_title"] = title_zh
+    catalog["screening"]["read_decision"] = "pending"
+    (folder / f"{folder_name}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    (folder / f"{folder_name}.catalog.json").write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
+    (folder / f"{folder_name}.md").write_text(md_text or f"# {title_zh}\nbody", encoding="utf-8")
+    (folder / f"{folder_name}.pdf").write_bytes(pdf_bytes)
+    (folder / "images").mkdir()
+    (folder / "stage_manifest.json").write_text("{}", encoding="utf-8")
+    if marker:
+        (folder / f"{paper_number}.paper.number").write_text(paper_number, encoding="utf-8")
+    if catalog_ready:
+        write_import_status(folder, CATALOG_READY, reason="curated", extra={"source_id": paper_number})
+    else:
+        write_import_status(folder, import_status, reason="legacy", extra={"source_id": paper_number})
     return folder
 
 
