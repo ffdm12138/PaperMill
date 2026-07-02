@@ -79,7 +79,7 @@ def _should_pack(rel_path: str) -> bool:
             return False
     if rel.startswith("data/locks/") and path.suffix == ".lock":
         return False
-    if rel == "reports/doctor_ingest_pipeline_report.json":
+    if rel.startswith("reports/") and path.suffix.lower() in {".json", ".err"}:
         return False
     # 跳过本地生成的 catalog 索引/账本（含真实库内容，绝不进快照）。
     # 源码快照只提交对应 *.template.json 空模板与 .gitkeep。

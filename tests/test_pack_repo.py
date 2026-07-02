@@ -40,3 +40,12 @@ def test_should_pack_excludes_real_data_dirs():
     assert _should_pack("data/paper_raw/000001/000001.md") is False
     assert _should_pack("data/raw/some.pdf") is False
     assert _should_pack("data/import_work/x/file.pdf") is False
+
+
+def test_should_pack_excludes_reports_runtime_json():
+    assert _should_pack("reports/doctor_ingest_pipeline_report.json") is False
+    assert _should_pack("reports/commit_report.json") is False
+    assert _should_pack("reports/stage_raw_move.json") is False
+    assert _should_pack("reports/dup_dryrun.err") is False
+    assert _should_pack("reports/real_ingest_acceptance.md") is True
+    assert _should_pack("reports/code_audit_2026-06-30.md") is True

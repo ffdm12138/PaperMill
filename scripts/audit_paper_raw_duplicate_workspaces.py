@@ -155,9 +155,10 @@ def _ref_to_workspace(refs_by_folder: dict[str, WorkspaceInfo], folder_str: str)
 def _decide_keep(workspaces: list[WorkspaceInfo]) -> WorkspaceInfo:
     """Pick the workspace to KEEP per the keep-rule. Deterministic, highest-rank wins."""
     def sort_key(info: WorkspaceInfo):
-        # higher rank, then more assets, then legacy-with-marker wins (True sorts
-        # after False under ascending, so negate), then lexicographically lowest name.
-        return (-info.rank, -info.asset_count, info.has_paper_number_marker, info.folder.name)
+        # higher rank, then more assets, then legacy-with-marker wins (marker
+        # present => marker_rank 0 sorts first), then lexicographically lowest name.
+        marker_rank = 0 if info.has_paper_number_marker else 1
+        return (-info.rank, -info.asset_count, marker_rank, info.folder.name)
     return sorted(workspaces, key=sort_key)[0]
 
 
@@ -242,12 +243,13 @@ def _apply_cleanup(report: dict[str, Any], *, paper_raw_dir: Path, ledger_path: 
         for drop in group["drop"]:
             drop_folder = Path(drop["folder"])
             drop_rank = _rank_from_dict(drop)
-            # Hard veto: never drop a workspace whose rank is not strictly lower
-            # than the kept one. Guards against keep-rule regressions / ties.
-            if drop_rank >= keep_rank:
+            # Hard veto: never drop a workspace whose rank is strictly HIGHER
+            # than the kept one. Same-rank duplicates are resolved by the
+            # tie-break (assets -> marker -> name) and cleared normally.
+            if drop_rank > keep_rank:
                 raise RuntimeError(
                     f"refusing to drop {drop_folder.name} (rank {drop_rank}) "
-                    f">= keep {keep_folder.name} (rank {keep_rank}); aborting cleanup"
+                    f"> keep {keep_folder.name} (rank {keep_rank}); aborting cleanup"
                 )
             target = quarantine_root / drop_folder.name
             if target.exists():

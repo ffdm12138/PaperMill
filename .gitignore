@@ -25,7 +25,8 @@ data/catalog/catalog_migration_report.json
 data/catalog/metadata_quality_report.json
 data/cleanup_report.json
 data/locks/*.lock
-reports/doctor_ingest_pipeline_report.json
+reports/*.json
+reports/*.err
 import/
 # 本地导入工作产物（DOI 批量列表等），不进项目快照
 data/import_work/**
