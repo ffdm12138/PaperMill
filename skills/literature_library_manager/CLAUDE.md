@@ -43,3 +43,16 @@ other bibliographic fields.
 Catalog natural-language values default to Chinese; JSON keys/schema enums stay
 English, technical terms may remain English, and metadata remains the
 original/canonical bibliographic source.
+
+## Ingest duplicate guard scope
+
+`build_ingest_duplicate_index()` indexes **every** paper_raw workspace, not only
+16-digit numbered folders. `data/paper_raw/` holds two workspace kinds: (1)
+strict 16-digit `paper_number` staging workspaces, and (2) legacy / untitled /
+formalized workspaces named by `paper_id` (e.g. `1979_sykest_untitled/`, which
+carry a `*.paper.number` marker and `metadata.paper_number` despite the
+non-16-digit folder name). A folder is a workspace via `is_paper_raw_workspace()`
+(asset presence), never via the folder-name regex alone. Duplicate workspaces
+are audited and cleaned by `scripts/audit_paper_raw_duplicate_workspaces.py`
+(moves losers into `data/paper_raw/quarantine/duplicate_workspaces/`; never
+deletes, never recycles paper_numbers, never lowers `max_number`).

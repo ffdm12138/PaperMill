@@ -27,6 +27,11 @@
   两者仅通过 `paper_number`/`paper_id` 关联。
 - catalog 自然语言 value 默认尽量使用中文；JSON key/schema enum 保持英文，技术名词可中英混写。
   metadata 不中文化、不改写 DOI/作者/期刊/年份/BibTeX。
+	catalog 的中文内容（`content_title`、`research_card.mechanisms`、`research_card.limitations`）及
+  metadata 的 `title.short_zh` 必须由 LLM 子代理从 Markdown 正文生成，不得直接拼接或手工填写。
+- 初始 catalog 生成 / paper_raw curator / 入库前 catalog 生成阶段，`screening.read_decision` 必须固定为 `"pending"`。
+  禁止在该阶段写成 `must_read` / `maybe_read` / `skip`；这些值只允许出现在后续 post-triage /
+  writing-stage catalog、人工筛选或精读 triage 阶段。
 - `references.bib` 只从复制的 metadata 生成，绝不从 catalog 或正文拼接。
 - `write/jobs` 是写作运行时，不提交（只跟踪 `.gitkeep`）；TeX 不得直接读 `data/papers`、`data/raw`、
   `data/paper_raw`，只能读 job-local 复制副本。
@@ -40,6 +45,7 @@
 
 - 真实入库 / 转换 / 写作验收命令必须使用 `conda run -n mineru ...`
   （PATH 上的 `python` 是 Windows Store 别名，会静默退出 code 49）。
+  conda mineru 环境实际路径：`C:\Users\Admin\.conda\envs\mineru`（Python 3.10.20）。
 - Windows 控制台先 `set PYTHONIOENCODING=utf-8`，避免 GBK 下中文/JSON 输出失败。
 - MinerU 正式转换必须使用 GPU：默认 `MINERU_REQUIRE_GPU=true`、`CUDA_VISIBLE_DEVICES=0`。
   `stage_raw_pdfs_to_paper_raw.py` 不需要 GPU；formal ingest 使用 `convert_paper_raw_gpu.py`，
@@ -48,7 +54,9 @@
 
 ## 4. 数据边界
 
-- `data/papers`、`data/raw`、`data/paper_raw`、`data/import_work`、`write/jobs` 为运行时 / 真实数据区。
+- **`data/paper_raw` 是工作区（workspace）**：所有处理（staging、转换、metadata 解析、curation、formalize）都在此完成，文件夹可修改、可重跑、可丢弃。
+- **`data/papers` 是正式库（committed library）**：只接受 `ready_for_commit` 资产，事务性安装，不可半成品，不可原地修改。一切处理在 paper_raw 内完成后再入库。
+- `data/raw`、`data/paper_raw`、`data/papers`、`data/import_work`、`write/jobs` 为运行时 / 真实数据区。
 - snapshot 只含 `.gitkeep` 与 catalog `.template.json` 空模板；`pack_repo.py` 强制排除真实数据与生成的
   catalog 索引（`all.catalog.json`、`paper_index.json`、`paper_number_ledger.json`）。
 - 任何 PDF / Markdown / images / TeX 编译产物不进入 snapshot。
@@ -104,6 +112,7 @@ before PDF title fallback。
 → `formalize_paper_raw.py` → `commit_paper_raw_to_papers.py`（网络 metadata 已有合法 DOI，无需 resolve 步骤）。
 
 v2.3 状态机职责边界：`curate_paper_raw.py` 只校验 metadata/catalog 并写 `status=catalog_ready`，**不再改名、不再分配 paper_number、不再写 ready_for_commit**；
+初始 catalog 生成阶段的 `screening.read_decision` 必须保持 `"pending"`，只生成 relevance/novelty/method-quality 评分和中文 reason，不做最终精读决策；
 `formalize_paper_raw.py` 是 commit 前必经步骤，在 `data/paper_raw/<paper_number>/` 内使用 staging 已 reserved 的 16 位 paper_number 完成 canonical paper_id 改名、回填 catalog 链接、写 `<paper_id>.formalization.json` + `<16位>.paper.number` marker，置 `status=ready_for_commit`；rename 后 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `0000000000000001`）；
 `commit_paper_raw_to_papers.py` 只接收 `ready_for_commit` 的已正式化文件夹，做 final validate → 事务性安装（staging copytree → 自检 → `os.replace` → activate ledger → rebuild all.catalog → postcheck → 删源），任何后置失败回滚删除 `data/papers/<paper_id>`、不污染正式库。`data/papers` 不允许半成品。
 
@@ -149,3 +158,13 @@ git ls-files data/papers data/paper_raw data/raw data/import_work  # 应仅 .git
 - 按主题拆 commit，不要把多个主题混进一个 commit。
 - 每次代码改动后运行测试并生成 `mineru_snapshot.zip`。
 
+## 8. ingest 前置重复检测
+
+ingest duplicate guard 是前置硬门禁，不是后置清理：
+
+- 手动 PDF staging 前必须检查待导入 PDF 是否与 `data/paper_raw` 或 `data/papers` 中已有 PDF 内容重复（sha256 + md5）；命中时不得创建新 `paper_raw`、不得占用 ledger、`--move` 下不得移动源 PDF。
+- 网络 metadata staging 前必须检查 DOI 是否已存在于 `data/paper_raw` 或 `data/papers`；同一 input batch 内重复 DOI 也必须阻断，除非显式 `--skip-duplicates` 跳过重复项。
+- metadata resolver 的候选 DOI 必须同时检查 paper_raw 队列和 formal papers；manual confirm 不得绕过 DOI/PDF 内容重复硬门禁。
+- fetch/attach PDF 前必须检查 PDF 内容重复；命中时不得覆盖当前 paper_raw PDF，不得把重复 PDF hash 写入 metadata。
+- `preflight_paper_raw_import.py`、formalize/commit readiness 和 `audit_ingest_duplicates.py --strict` 是最后防线，不是第一道防线。
+- ingest duplicate guard 必须覆盖**所有** paper_raw 工作区，不仅是 16 位编号目录。`data/paper_raw/` 下存在两类工作区：(1) 严格 16 位 `paper_number` staging 工作区（如 `0000000000000206/`），(2) 历史 / untitled / formalized 工作区（如 `1979_sykest_untitled/`，内部带 `.paper.number` marker 与 `metadata.paper_number`）。`build_ingest_duplicate_index()` 通过 `is_paper_raw_workspace()`（依据是否存在 metadata/import_status/stage_manifest/paper.number/pdf/md 等资产）识别工作区，绝不把“不是 16 位编号目录”当成“不是 paper_raw 工作区”。`scripts/audit_paper_raw_duplicate_workspaces.py` 负责审计并清理（移入 `quarantine/duplicate_workspaces/`，不删除、不回收 paper_number、不降 `max_number`）。

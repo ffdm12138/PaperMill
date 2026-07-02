@@ -9,6 +9,7 @@
 - 不修改冻结的 ingest 主链路（tag `ingest-v2.2`），除非用户显式要求。
 - 不修改 writer v0.1 行为（tag `writing-v0.1`）；writer v0.2 增量改动以 `docs/WRITER_PRODUCTIZATION_PLAN.md` 为准。
 - 真实入库 / 转换 / 写作验收必须用 `conda run -n mineru ...`；Windows 先 `set PYTHONIOENCODING=utf-8`。
+  conda mineru 环境实际路径：`C:\Users\Admin\.conda\envs\mineru`（Python 3.10.20）。
 - 不提交运行时数据：`write/jobs` runtime 与真实 `data/papers`/`data/raw`/`data/paper_raw`/`data/import_work`
   不进入 staged / snapshot。
 - 手动 PDF 正常导入时，`data/raw/` is a queue / raw 是待处理队列；stage 必须使用
@@ -21,6 +22,8 @@
 
 ## 关键边界速查
 
+- **`data/paper_raw` = 工作区 / 待处理队列**（staging、转换、metadata、curation、formalize 全部在此完成）。**`data/papers` = 正式库**（只读，commit 后的最终资产，不可半成品）。
+- `data/paper_raw` 下有两类工作区：严格 16 位 `paper_number` staging 工作区，和历史/untitled/formalized 工作区（如 `1979_sykest_untitled/`，内部带 `*.paper.number` marker 与 `metadata.paper_number`）。ingest duplicate guard 通过 `is_paper_raw_workspace()` 识别工作区，必须覆盖两类，绝不把“不是 16 位编号目录”当成“不是 paper_raw 工作区”。重复工作区用 `scripts/audit_paper_raw_duplicate_workspaces.py --apply-cleanup` 清理（移入 quarantine，不删除、不回收编号）。
 - ingest v2.3 strict-only current incremental state（不打新 tag）：新 `paper_raw` 工作区统一为 16 位 `paper_number`，staging 第一步 reserve 编号；正常 CLI 只接受 `--paper-number` / `--paper-numbers`，旧 6 位编号仅限 `scripts/legacy/` migration。ingest v2.2 frozen（`ingest-v2.2`）；writing v0.1 frozen（`writing-v0.1`）。
 - `conda run -n mineru` 是唯一真实运行方式。
 - v2.3 状态机：`curate_paper_raw.py` 只写 `catalog_ready`（不改名、不分配 paper_number）；`formalize_paper_raw.py` 是 commit 前必经步骤（把 `paper_raw/<paper_number>` 改名为 `<paper_id>` + 回填 catalog + `ready_for_commit`，rename 后 ledger reserved entry 指向 `<paper_id>` 工作区）；`commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。`data/papers` 不允许半成品。
@@ -30,6 +33,10 @@
 - `metadata` 是书目信息事实源；`catalog`（schema v2.0）content-only，`all.catalog` 不含书目字段。
 - catalog 自然语言 value 默认尽量中文；JSON key/schema enum 保持英文，技术名词可中英混写。
   metadata 保留原始/规范书目信息，不为 catalog 中文化而改写。
+  catalog 中文内容（`content_title`、`research_card.mechanisms`、`research_card.limitations`）及
+  metadata `title.short_zh` 必须由 LLM 子代理从 Markdown 正文生成，不得直接拼接或手工填写。  
+- 初始 catalog 生成 / paper_raw curator / 入库前 catalog 生成阶段，`screening.read_decision` 必须固定为 `"pending"`。
+  禁止在该阶段写成 `must_read` / `maybe_read` / `skip`；这些值只用于 post-triage / writing-stage catalog、人工筛选或精读 triage。
 - `write/jobs` 是运行时不提交；TeX 不直读 `data/papers`。
 - 不做 RAG / embedding / vector DB / ChromaDB；不内置 LLM client。
 - Sci-Hub 是 unsafe optional，default disabled，不属于 OA_ONLY 主流程。

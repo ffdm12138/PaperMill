@@ -36,7 +36,8 @@ def _candidates(root: Path, args) -> list[Path]:
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name
             if not PAPER_NUMBER_RE.match(name):
-                continue
+                continue  # numbered-workspace gate only by design; legacy/untitled
+                # dedup is handled by ingest_duplicate_guard.
             has_meta = (folder / f"{name}.metadata.json").exists()
             has_md = (folder / f"{name}.md").exists()
             has_images = (folder / "images").is_dir()

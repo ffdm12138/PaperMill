@@ -32,7 +32,8 @@ def _ready_dirs(root: Path, ledger_path: Path) -> list[Path]:
     for folder in sorted(p for p in root.iterdir() if p.is_dir()):
         name = folder.name
         if PAPER_NUMBER_RE.match(name):
-            continue  # not yet formalized
+            continue  # not yet formalized; numbered-workspace gate only by design.
+            # Legacy/untitled dedup is handled by ingest_duplicate_guard.
         if read_import_status(folder).get("status") != READY_FOR_COMMIT:
             continue
         # formalize outputs: formalization.json + paper.number marker + 4 assets + images

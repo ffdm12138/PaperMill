@@ -97,6 +97,8 @@ class PaperRawFormalizationService:
 
         # 1. Conversion gate. Runs on 16-digit paper_number workspaces and
         # already-renamed <paper_id> folders (via inspect_converted_assets,
+        # which accepts both). Legacy/untitled dedup is handled by
+        # ingest_duplicate_guard, not here.
         # which does not require a 16-digit name). The only skip is a true idempotent rerun:
         # an already-ready_for_commit folder with a formalization.json + marker.
         already_formalized = (

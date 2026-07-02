@@ -40,7 +40,9 @@ def _candidates(root: Path, args) -> list[Path]:
             if status == CATALOG_READY:
                 out.append(folder)
             elif status == READY_FOR_COMMIT and not PAPER_NUMBER_RE.match(folder.name):
-                # already formalized; include so re-runs are idempotent (no-op)
+                # already formalized; include so re-runs are idempotent (no-op).
+                # NB: this gate is staging numbered-workspace only by design;
+                # legacy/untitled dedup is handled by ingest_duplicate_guard.
                 out.append(folder)
         return out
     raise ValueError("--paper-dir, --paper-number, or --all-ready is required")

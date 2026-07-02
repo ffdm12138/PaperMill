@@ -2,6 +2,28 @@
 
 本项目是本地文献资产库、AI 可读目录和博士论文级综述写作工作区。它只保留纯 v2 `paper_raw` 工作流，不做向量库、RAG、embedding，也不内置 LLM client。所有 prompt 和写作步骤只生成可复制文本或结构化模板。
 
+## Ingest duplicate guard
+
+New ingest entrypoints run duplicate checks before creating or mutating `data/paper_raw`:
+manual PDF staging and fetch/attach block duplicate PDF content by sha256/md5; network
+metadata staging and metadata resolution block duplicate DOI across both `data/paper_raw`
+and `data/papers`. Duplicate hits do not reserve ledger numbers, create workspaces, move
+source PDFs, overwrite attached PDFs, or write duplicate PDF hashes into metadata.
+`preflight_paper_raw_import.py`, commit readiness, and `audit_ingest_duplicates.py --strict`
+remain final defenses.
+
+The dedup index covers **every** paper_raw workspace, not only 16-digit folders:
+`build_ingest_duplicate_index()` admits any `data/paper_raw/` subdir (except
+`quarantine/`, hidden, `output`/`images`/`__pycache__`) that contains ≥1 asset
+marker (`*.metadata.json`, `.import_status.json`, `stage_manifest.json`,
+`*.paper.number`, `*.pdf`, `*.md`), via `is_paper_raw_workspace()`. Legacy /
+untitled / formalized workspaces (e.g. `1979_sykest_untitled/`, which carry a
+`*.paper.number` marker despite the non-16-digit folder name) are dedup sources
+like any other. Duplicate workspaces are audited and cleaned by
+`scripts/audit_paper_raw_duplicate_workspaces.py` (moves losers into
+`data/paper_raw/quarantine/duplicate_workspaces/`; never deletes, never recycles
+paper_numbers, never lowers `max_number`).
+
 ## Project status and documentation map
 
 - **ingest v2.3 strict-only 为当前增量状态**（不打新 tag）：新 `paper_raw` 工作区统一为 16 位 `paper_number`，staging 第一步 reserve 编号；正常 CLI 只接受 `--paper-number` / `--paper-numbers`，旧 6 位编号仅限 `scripts/legacy/` migration。**ingest v2.2 已冻结**（tag `ingest-v2.2`）；**writing v0.1 已冻结**（tag `writing-v0.1`）。
@@ -38,6 +60,18 @@ conda run -n mineru python scripts/doctor_ingest_pipeline.py
 - no LLM client in code（所有 prompt/写作步骤只生成文本或模板）
 - 不提交真实 data 与 `write/jobs` 运行产物（只跟踪 `.gitkeep`）
 
+
+## 核心数据区分工
+
+```
+data/paper_raw/    ← 工作区 / 待处理队列（可修改、可重跑、可丢弃）
+data/papers/       ← 正式库 / 只读资产（commit 后不可半成品、不可原地修改）
+```
+
+**重要原则：** `data/paper_raw` 是工作区，用于 staging、转换、解析 metadata、curation、
+formalize 等所有处理步骤；`data/papers` 是正式入库，只接受已通过全部校验的 `ready_for_commit`
+资产，由 `commit_paper_raw_to_papers.py` 事务性安装。**一切处理都在 paper_raw 内完成，
+papers 只有最终结果。**
 
 ## 唯一数据流
 
@@ -91,6 +125,8 @@ data/papers/<paper_id>/<16位编号>.paper.number
 - **metadata**（`<paper_id>.metadata.json`）：BibTeX/书目信息事实源（DOI、作者、年份、期刊、卷期页、链接、metadata_match）。
 - **catalog**（`<paper_id>.catalog.json`，schema v2.0，**content-only**）：大模型快速筛选精读文献的内容索引。只含正文内容理解（content_identity、classification、screening、research_card、evidence_profile、content_notes、provenance），**不含** DOI/作者/年份/期刊/卷期页等书目字段（这些只在 metadata）。catalog 与 metadata 仅通过 `paper_number`/`paper_id` 关联。
   catalog 自然语言内容默认尽量使用中文，便于中文检索、分类、选文和写作 workflow；JSON key/schema enum 保持英文，技术名词和专有名词可中英混写，metadata 仍保留原始/规范书目信息。
+  catalog 的中文内容（`content_title`、`research_card.mechanisms`、`research_card.limitations` 等）及 metadata 的 `title.short_zh` 必须由 LLM 子代理从 Markdown 正文生成，不接受直接拼接或手工编写。每次入库前必须运行子代理补全。
+  初始 catalog 生成 / paper_raw curator / 入库前 catalog 生成阶段，`screening.read_decision` 必须固定为 `"pending"`；禁止在该阶段写成 `must_read` / `maybe_read` / `skip`。这些最终精读决策值仅用于 post-triage / writing-stage catalog 或人工筛选后的工作区。
 - **paper_number**（16 位）：API 与写作流程主键。大模型先看 `all.catalog.json`（content-only）选号，再按 `paper_number` 读 metadata 取书目信息。writing 主流程使用 `write/jobs/<job_id>/article/<paper_number>/`，当前主入口为 `create_write_job.py` / `prepare_write_article_workdir.py`。`all.catalog` 是内容索引不是书目库；references/BibTeX 只从 metadata 生成。写作有两层入口：**推荐稳定主入口是 catalog-to-TeX mini loop**（`create_write_job.py` → `write_catalog_tex_article.py` → `check_write_tex_project.py` → `check_write_quality_text.py`）；`write_review.py` 与 `src/server.py` 的 `/write/jobs/*` HTTP API 是 lower-level / experimental 多阶段入口（不是 legacy，但不是默认主入口）。两者共用 `write/jobs/<job_id>/article/<paper_number>/`，都不读已退役的 llm work 目录。
 
 ## Metadata 完整性门槛
@@ -127,6 +163,7 @@ data/papers/<paper_id>/<16位编号>.paper.number
 - `curate_paper_raw.py` 不调用大模型：`--dry-run` 写 curation prompt，`--apply` 应用 content-only catalog；
   metadata 空字段由 `resolve_paper_raw_metadata.py` / enrichment 补齐，不在 curate 阶段处理。详见
   [skills/paper_raw_catalog_curator/](skills/paper_raw_catalog_curator/)。
+  生成阶段提示词要求 `screening.read_decision` 固定为 `"pending"`，只保留相关性、新颖性、方法质量评分与中文理由；不要在入库前 catalog 生成阶段判断最终精读结论。
 - MinerU 默认 `hybrid-engine + medium + auto`，批量转换默认单进程防 GPU OOM。批量转换优先使用
   持久 `mineru-api` 服务：`MINERU_RUNNER=cli_api_proxy` 与 `MINERU_API_URL=http://127.0.0.1:8000`；
   推荐先运行 `python scripts/start_mineru_services.py --wait` 启动或复用服务，转换后用
@@ -194,6 +231,8 @@ export MINERU_API_URL=http://127.0.0.1:8000
 3. Generate the TeX project with `scripts/write_catalog_tex_article.py`.
 4. Validate with `scripts/check_write_tex_project.py` and `scripts/check_write_quality_text.py`.
 
+`must_read` / `maybe_read` / `skip` are post-triage / writing-stage read decisions. New global catalog entries start as `pending`; use `--read-decision` only after a writing job or human screening has annotated that decision.
+
 `skills/catalog_tex_writer` is the default article-writing skill for this path.
 
 `skills/paper_raw_metadata_resolver`, `skills/paper_raw_catalog_curator`, and `skills/literature_library_manager` are support / ingest / library-management skills, not competing article-writing skills.
@@ -205,4 +244,3 @@ export MINERU_API_URL=http://127.0.0.1:8000
 `data/raw/`、`data/paper_raw/`、`data/papers/` 中的文献资产按版权数据处理，不进入源码分发。
 真实 `data/papers` 不进入 snapshot，但本地真实库必须通过 `validate_v2_library.py` 和
 `audit_metadata_quality.py` 的硬错误检查。`write/jobs/` 运行产物不提交（只跟踪 `.gitkeep`）。
-

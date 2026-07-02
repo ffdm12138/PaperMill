@@ -75,7 +75,6 @@ def check_directory_hygiene(
     papers = catalog.get("papers") or []
 
     seen_numbers: dict[str, str] = {}
-    formal_dois: set[str] = set()
     for entry in papers:
         number = str(entry.get("paper_number") or "")
         paper_id = str(entry.get("paper_id") or "")
@@ -93,21 +92,15 @@ def check_directory_hygiene(
             continue
         metadata = _read_json(meta_path, {})
         doi = _metadata_doi(metadata)
-        if doi:
-            formal_dois.add(doi)
-        else:
+        if not doi:
             warnings.append(f"formal paper metadata.identifiers.doi missing: {normalize_repo_path(meta_path)}")
-
-    if paper_raw_dir.exists() and formal_dois:
-        for meta_path in paper_raw_dir.glob("*/*.metadata.json"):
-            doi = _metadata_doi(_read_json(meta_path, {}))
-            if doi and doi in formal_dois:
-                warnings.append(f"paper_raw appears to duplicate formal DOI {doi}: {normalize_repo_path(meta_path)}")
 
     # paper_raw metadata-resolution hygiene (warnings only; never delete).
     if paper_raw_dir.exists():
         for folder in sorted(p for p in paper_raw_dir.iterdir()
                              if p.is_dir() and PAPER_NUMBER_RE.match(p.name)):
+            # numbered-workspace hygiene only; legacy/untitled dedup is handled
+            # by ingest_duplicate_guard.
             source_id = folder.name
             meta_path = _metadata_file(folder)
             if not meta_path:

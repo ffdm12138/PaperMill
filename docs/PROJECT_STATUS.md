@@ -19,12 +19,15 @@
 - 验收：`validate_v2_library.py` / `audit_metadata_quality.py` / `doctor_ingest_pipeline.py` /
   `pytest -q` 全绿。
 - catalog schema 保持 v2.0；新 metadata schema 为 v1.1，使用 `paper_number` / `paper_raw_id`，不再生成 `source_id`。
+- 初始 catalog 生成 / paper_raw curator / 入库前 catalog 生成阶段，`screening.read_decision` 固定为 `"pending"`；`must_read` / `maybe_read` / `skip` 只属于 post-triage / writing-stage catalog 或人工筛选后的精读决策。
 - CLI 路径隔离：`formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 都暴露 `--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`；测试/agent 必须传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog`（默认值指向真实账本，被 gitignore，`git status` 看不出）。
 - `ready_for_commit` 阶段 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `0000000000000001`），由 `PaperNumberLedger.repoint_reserved` 在 formalize rename 后完成。
 - metadata 候选读转换后 Markdown 前 100 行（first 100 lines，非 10）。
 - formalize 只接受 `converted_current` conversion manifest；缺 manifest 的已转换资产为 `conversion_manifest_missing`，必须先生成当前 manifest 或重新转换。`preserve_paper_number` 走 reserved-specific 保留编号语义，不走 legacy `repoint()`。
 - 普通 ingest/commit 测试夹具从 16 位 `paper_number` 开始，happy path 不手写 `.formalization.json` 或 `ready_for_commit`；marker 必须由 allocator/staging/ledger helper 写入。
 - `Catalog.load()` 缺少 all.catalog 时构建 tolerant read-only snapshot，不写 ledger、marker、per-paper catalog、all.catalog 或 paper_index。
+- ingest duplicate guard 已前移到 stage / metadata resolve / fetch / attach 入口：PDF 内容重复用 sha256 + md5 阻断，DOI 重复同时检查 `data/paper_raw` 和 `data/papers`。命中重复不得创建新 workspace、不得占用 ledger、不得移动源 PDF 或覆盖 attach 目标。preflight / formalize / commit readiness / `audit_ingest_duplicates.py --strict` 保留为最后防线。
+- 2026-07-02 修复：`build_ingest_duplicate_index()` 原只索引 16 位编号目录，导致历史/untitled/已 formalized 工作区（如 `1979_sykest_untitled/`）的 PDF 不参与去重，同名 PDF 被 stage 成新 16 位工作区，已产生约 38 个重复工作区。现改为经 `is_paper_raw_workspace()` 按 assets 识别工作区，`resolve_paper_raw_identity()` 解析 marker paper_number，覆盖两类工作区。新增 `scripts/audit_paper_raw_duplicate_workspaces.py` 审计并 `--apply-cleanup` 移入 `quarantine/duplicate_workspaces/`（不删除、不回收编号）。
 
 ### writing v0.1 frozen
 
@@ -99,6 +102,7 @@ selected catalog / paper numbers
 - `catalog`（schema v2.0）是 content-only，不含书目字段。
 - catalog 自然语言 value 默认尽量中文；JSON key/schema enum 保持英文，技术名词可中英混写。
   metadata 保持原始/规范书目事实，不因 catalog 中文化而改写。
+- 初始 `paper_raw` catalog 的 `screening.read_decision` 是 `"pending"`；写作阶段或人工筛选后才允许改为 `must_read` / `maybe_read` / `skip`。
 - `write/jobs/` 是运行时，不提交（只跟踪 `.gitkeep`）。
 - `write/jobs/<job_id>/article/` is the only writing article workspace.
 - TeX 不得直接读 `data/papers`、`data/raw` 或 `data/paper_raw`。

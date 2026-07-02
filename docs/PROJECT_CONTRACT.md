@@ -2,6 +2,10 @@
 
 本仓库是本地文献资产库、AI 可读目录和综述写作工作区。正式入库只允许走 v2 `paper_raw` 工作流。
 
+> **`data/paper_raw` = 工作区 / 待处理队列**（所有处理步骤都在此完成，可修改、可重跑、可丢弃）。
+> **`data/papers` = 正式库**（只读，commit 后的最终资产，不允许半成品，不允许原地修改）。
+> 一切处理在 paper_raw 内完成后再入库，papers 只有最终结果。
+
 ## 不可改变的规则
 
 - 不做向量库（vector DB）、RAG、embedding 或 ChromaDB。
@@ -16,6 +20,8 @@
 - API 与写作只读取本地生成的 `data/catalog/all.catalog.json`、`data/catalog/paper_index.json`、`data/catalog/paper_number_ledger.json` 和 `data/papers/<paper_id>/`；源码快照只提交对应 `.template.json` 空模板，不提交真实库索引。
 - metadata 管书目信息和 BibTeX 事实；catalog（schema v2.0）只管正文内容理解（分类、研究卡片、证据画像、精读筛选 `screening`），**不含** DOI/作者/年份/期刊/卷期页等书目字段。两者仅通过 `paper_number`/`paper_id` 关联。
 - catalog 自然语言 value 默认尽量使用中文，服务中文检索、分类、选文和写作 workflow；JSON key/schema enum 保持英文，专业名词可中英混写。metadata 保留原始/规范书目事实，不因 catalog 中文化而改写。
+  catalog 的中文内容（`content_title`、`research_card.mechanisms`、`research_card.limitations`）及 metadata 的 `title.short_zh` 必须由 LLM 子代理从 Markdown 正文生成，不接受直接拼接或手工填写。每次入库前必须运行子代理补全。
+- 初始 catalog 生成 / paper_raw curator / 入库前 catalog 生成阶段，`screening.read_decision` 必须固定为 `"pending"`；禁止在该阶段写成 `must_read` / `maybe_read` / `skip`。这些最终精读决策值只允许出现在 post-triage / writing-stage catalog、人工筛选或精读 triage 阶段。
 - **metadata is bibliographic truth; catalog is content understanding; paper_number links them. all.catalog is a content index, not a bibliography database.** references/BibTeX 必须从 metadata 生成，绝不从 catalog 生成。
 - catalog 由项目级 skill `paper_raw_catalog_curator` 在 commit 前从 MinerU Markdown 生成（content-only，不生成 metadata patch）；`curate_paper_raw.py` 只校验并写 `catalog_ready`，不改名、不分配 paper_number。metadata 空字段由 metadata resolver/enrichment 补齐，不覆盖非空字段。
 - `data/catalog/all.catalog.json` 只聚合 catalog 内容（content-only，无 metadata）；`data/catalog/paper_index.json` 做 paper_number→路径映射（也不含书目字段）。这些文件由 `scripts/rebuild_all_catalog.py --apply` 在本地生成，需要书目信息时按 paper_number 读正式 paper 文件夹中的 metadata。
@@ -26,7 +32,9 @@
 - 全局 `references.bib` 已移除；写作 per-job `references.bib` 由 `bibtex_from_metadata` 从 metadata 逐篇生成。
 - JSON 写入必须原子化：filelock、临时文件、`os.replace`。
 - 外部输入的 id、文件名和路径必须校验并通过 safe child 解析。
-- commit 前必须本地查重：重复 DOI、PDF sha、标题/作者/年份或正文指纹不得新建正式 paper。
+- ingest duplicate guard 是前置硬门禁：PDF staging / fetch / attach 前必须用 sha256 + md5 检查 `data/paper_raw` 和 `data/papers`；network metadata staging / metadata resolver apply 前必须检查 DOI 是否已存在于 `data/paper_raw` 或 `data/papers`。命中 DOI/PDF 内容重复时，不得创建新 paper_raw、不得占用 ledger、不得移动源 PDF、不得覆盖 PDF、不得写入 catalog。
+- preflight / formalize / commit 前必须本地查重：重复 DOI、PDF sha/md5、标题/作者/年份或正文指纹不得新建正式 paper；这些 gate 是最后防线，不是第一道防线。
+- ingest duplicate guard 必须覆盖**所有** paper_raw 工作区，不仅 16 位编号目录。`data/paper_raw/` 下有两类工作区：严格 16 位 `paper_number` staging 工作区，和历史/untitled/formalized 工作区（folder 名非 16 位，但内部带 `*.paper.number` marker 与 `metadata.paper_number`/`paper_raw_id`）。判断 paper_raw 工作区依据 `is_paper_raw_workspace()`（是否存在 `*.metadata.json`/`.import_status.json`/`stage_manifest.json`/`*.paper.number`/`*.pdf`/`*.md` 等资产），不得仅凭目录名是否为 16 位数字。重复工作区由 `scripts/audit_paper_raw_duplicate_workspaces.py` 审计并清理：移入 `data/paper_raw/quarantine/duplicate_workspaces/`，**绝不删除、绝不回收 paper_number、绝不降低 `max_number`**，ledger 对应 entry 置 `state=quarantined_duplicate` 并 repoint `folder_path` 到 quarantine。
 - `paper_number` 为 16 位长期编号，只递增不回收；在 `formalize_paper_raw.py` 阶段 reserve（state=reserved），commit 成功时 activate（state=active），commit 失败回滚为 reserved。
 - 测试不得访问真实网络；网络 provider 必须 mock。
 - 正式入库必须通过 `validate_v2_library.py` 与 `audit_metadata_quality.py` 的硬错误检查；未通过的 `paper_raw` 不得入库。
@@ -118,5 +126,3 @@ python scripts/pack_repo.py
 
 真实 `data/papers/` 文献资产和本地生成的 catalog 索引不进入源码快照；但本地真实库必须通过
 `validate_v2_library.py` 和 `audit_metadata_quality.py` 的硬错误检查。
-
-
