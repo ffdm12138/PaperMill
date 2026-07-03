@@ -119,8 +119,18 @@ def _parse_provider_min_interval(value: str) -> tuple[str, float]:
 
 
 def _build_rate_limiter(args) -> ProviderRateLimiter | None:
-    """Build a ProviderRateLimiter from config + CLI overrides, or None if network off."""
-    if not args.allow_network:
+    """Build a ProviderRateLimiter from config + CLI overrides.
+
+    The limiter activates when --allow-network is set OR when any rate-limiting
+    override (--paper-interval-seconds / --provider-min-interval) is given, since
+    DOI enrichment always queries Crossref even without --allow-network.
+    Returns None when no rate limiting is requested.
+    """
+    has_override = (
+        args.paper_interval_seconds is not None
+        or bool(args.provider_min_interval)
+    )
+    if not args.allow_network and not has_override:
         return None
     cfg = load_rate_config(args.rate_config)
     rl = ProviderRateLimiter(cfg)
