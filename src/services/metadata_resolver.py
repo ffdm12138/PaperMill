@@ -18,7 +18,7 @@ fills ONLY empty metadata fields (via ``merge_missing_metadata``).
 
 Hard rules:
 - Never fabricate DOI/author/year/venue/volume/pages. Facts come only from an
-  authoritative source (Crossref/OpenAlex/Semantic Scholar), the PDF/Markdown text,
+  authoritative source (Crossref/OpenAlex), the PDF/Markdown text,
   or a human ``--manual-confirm``.
 - No-DOI candidates can never become matched.
 - Network-title-search candidates can NEVER be auto-matched; only ``manual_confirmed``
@@ -31,7 +31,7 @@ Hard rules:
 Reuses existing code (do not duplicate):
 - ``src.discovery.models.normalize_doi/normalize_title/PaperCandidate``
 - ``src.discovery.resolve_crossref`` (title search + DOI lookup)
-- ``src.discovery.search_openalex`` / ``search_semantic_scholar``
+- ``src.discovery.search_openalex`` (network keyword search / verification)
 - ``src.services.metadata_enrichment_service`` (DOI extraction + Crossref enrichment)
 - ``src.services.markdown_metadata_extractor`` (Markdown candidate extraction)
 - ``src.services.v2_library`` (empty_metadata, merge_missing_metadata, validation)
@@ -56,18 +56,20 @@ from src.discovery.resolve_crossref import (
     resolve_crossref_by_title,
 )
 from src.discovery.search_openalex import search_openalex
-from src.discovery.search_semantic_scholar import search_semantic_scholar
 from src.file_fingerprint import compute_sha256
+from src.services.ingest_duplicate_guard import check_doi_duplicate, check_pdf_duplicate
 from src.services.markdown_metadata_extractor import (
     extract_front_matter_candidates_from_markdown,
     extract_metadata_from_markdown,
 )
+from src.services import metadata_enrichment_service as mes
 from src.services.metadata_enrichment_service import (
     EnrichmentResult,
     enrich_from_doi,
     extract_doi_from_filename,
     extract_doi_from_pdf_file,
 )
+from src.services.metadata_quality import bibliographic_identity_gate
 from src.services.v2_library import (
     empty_metadata,
     first_author_family,
@@ -75,6 +77,7 @@ from src.services.v2_library import (
     metadata_doi,
     validate_metadata_schema,
 )
+from src.services.source_records import write_metadata_source_record
 from src.utils.atomic_io import atomic_write_json
 
 
@@ -112,7 +115,7 @@ class ResolvedCandidate:
     authors: list[str]
     year: int | None
     venue: str
-    source: str            # crossref|openalex|semantic_scholar|markdown|pdf_text|filename|network_title
+    source: str            # crossref|openalex|markdown|pdf_text|filename|network_title (semantic_scholar legacy-tolerated)
     doi_source: str        # filename|pdf|markdown|network_title
     confidence: float
     score: float
@@ -174,6 +177,36 @@ class ResolveReport:
     markdown_front_matter_lines: list[str] = field(default_factory=list)
     local_title_evidence_missing: bool = False
     local_doi_candidates: list[str] = field(default_factory=list)
+    post_conversion: bool = False
+
+    def used_markdown(self) -> bool:
+        """True when converted Markdown actually contributed evidence."""
+        return (
+            self.doi_source == "markdown"
+            or self.title_source == "markdown_front_matter"
+            or self.author_source == "markdown_front_matter"
+        )
+
+    def metadata_sources(self) -> list[str]:
+        """Normalized set of sources that contributed evidence (deduped, sorted)."""
+        raw = {self.doi_source, self.title_source, self.author_source}
+        normalized: set[str] = set()
+        for src in raw:
+            if not src or src in {"none", "conflict"}:
+                continue
+            if src.startswith("markdown"):
+                normalized.add("markdown")
+            elif src.startswith("pdf"):
+                normalized.add("pdf")
+            elif src == "metadata":
+                normalized.add("metadata")
+            elif src == "filename":
+                normalized.add("filename")
+            elif src == "network_title":
+                normalized.add("network")
+            else:
+                normalized.add(src)
+        return sorted(normalized)
 
     def to_dict(self) -> dict:
         local_evidence = {
@@ -211,6 +244,9 @@ class ResolveReport:
             "author_source": self.author_source,
             "markdown_front_matter_max_lines": self.markdown_front_matter_max_lines,
             "markdown_front_matter_lines": self.markdown_front_matter_lines,
+            "used_markdown": self.used_markdown(),
+            "metadata_sources": self.metadata_sources(),
+            "post_conversion": self.post_conversion,
             "local_evidence": local_evidence,
             "decision_detail": {
                 "status": self.decision,
@@ -235,10 +271,11 @@ def formal_dois(
     all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
 ) -> set[str]:
-    """Set of normalized DOIs from data/papers/*/*.metadata.json.
+    """Deprecated compatibility helper for formal-only DOI inventories.
 
-    all.catalog no longer embeds metadata, so we read formal metadata files
-    directly. (all_catalog_path kept for signature compat.)
+    Active ingest duplicate checks must use ``ingest_duplicate_guard`` so DOI
+    hits across both data/paper_raw and data/papers are considered.
+    ``all_catalog_path`` is kept for signature compatibility.
     """
     dois: set[str] = set()
     papers_dir = Path(papers_dir)
@@ -255,7 +292,7 @@ def formal_pdf_shas(
     all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
 ) -> set[str]:
-    """Set of pdf.sha256 from data/papers/*/*.metadata.json."""
+    """Deprecated compatibility helper for formal-only PDF sha256 inventories."""
     shas: set[str] = set()
     papers_dir = Path(papers_dir)
     if papers_dir.exists():
@@ -376,6 +413,8 @@ def patch_from_enrichment(source_id: str, result: EnrichmentResult) -> dict:
             else:
                 full = str(author)
                 fam, giv = _split_name(full)
+                if not fam and full and len(full.split()) == 1:
+                    fam = full
                 normalized.append({"full_name": full, "family": fam, "given": giv, "orcid": "", "affiliation": ""})
         patch["authors"] = normalized
         first = normalized[0]
@@ -385,7 +424,7 @@ def patch_from_enrichment(source_id: str, result: EnrichmentResult) -> dict:
         "provider": getattr(result, "source", "") or "",
         "query": "",
         "retrieved_at": _now_iso(),
-        "raw_record": getattr(result, "raw", {}) or {},
+        "raw_record_path": f"source_records/metadata_source.{getattr(result, 'source', '') or 'metadata_resolution'}.json",
     }
     return patch
 
@@ -403,8 +442,6 @@ def patch_from_candidate(source_id: str, candidate: PaperCandidate) -> dict:
         patch["container"]["journal"] = candidate.venue
     if candidate.url:
         patch["links"]["url"] = candidate.url
-    if candidate.abstract:
-        patch["abstract"] = candidate.abstract
     if candidate.authors:
         normalized = []
         for name in candidate.authors:
@@ -419,7 +456,7 @@ def patch_from_candidate(source_id: str, candidate: PaperCandidate) -> dict:
         "provider": candidate.source or "",
         "query": candidate.query or "",
         "retrieved_at": _now_iso(),
-        "raw_record": candidate.raw or {},
+        "raw_record_path": f"source_records/metadata_source.{candidate.source or 'metadata_resolution'}.json",
     }
     return patch
 
@@ -514,9 +551,6 @@ def auto_match_gate(
     local_year: int | None,
     local_first_author_family: str,
     existing_doi: str,
-    formal_doi_set: set[str],
-    pdf_sha256: str,
-    formal_sha_set: set[str],
     authoritative_complete: bool,
 ) -> tuple[bool, list[str]]:
     """Return (passes, reasons). All conditions must hold for auto-match.
@@ -538,12 +572,6 @@ def auto_match_gate(
         return False, reasons
     if existing_doi and normalize_doi(existing_doi) != normalize_doi(doi):
         reasons.append(f"doi conflict: existing {existing_doi} vs candidate {doi}")
-        return False, reasons
-    if normalize_doi(doi) in formal_doi_set:
-        reasons.append(f"duplicate formal DOI: {doi}")
-        return False, reasons
-    if pdf_sha256 and pdf_sha256 in formal_sha_set:
-        reasons.append("duplicate_pdf_sha256: paper_raw PDF sha matches a formal paper")
         return False, reasons
     if not (candidate_venue or "").strip():
         reasons.append("venue empty")
@@ -574,6 +602,57 @@ def auto_match_gate(
             reasons.append("local evidence absent and authoritative source incomplete")
             return False, reasons
     return True, reasons
+
+
+def _duplicate_candidate_reasons(
+    doi: str,
+    *,
+    paper_raw_dir: Path,
+    papers_dir: Path,
+    skip_paper_number: str,
+) -> list[str]:
+    reasons: list[str] = []
+    dup = check_doi_duplicate(
+        doi,
+        paper_raw_dir=paper_raw_dir,
+        papers_dir=papers_dir,
+        skip_paper_number=skip_paper_number,
+    )
+    for ref in dup.refs:
+        if ref.scope == "papers":
+            reasons.append(f"duplicate formal DOI: {doi}")
+        else:
+            reasons.append(f"duplicate paper_raw DOI: {doi} ({ref.paper_number})")
+    return list(dict.fromkeys(reasons))
+
+
+def _duplicate_pdf_reasons(
+    pdf_path: Path,
+    *,
+    paper_raw_dir: Path,
+    papers_dir: Path,
+    skip_paper_number: str,
+) -> list[str]:
+    if not pdf_path.exists():
+        return []
+    try:
+        dup = check_pdf_duplicate(
+            pdf_path,
+            paper_raw_dir=paper_raw_dir,
+            papers_dir=papers_dir,
+            skip_paper_number=skip_paper_number,
+        )
+    except OSError:
+        return []
+    reasons: list[str] = []
+    for ref in dup.refs:
+        if ref.pdf_sha256 == dup.pdf_sha256:
+            reasons.append(f"duplicate_pdf_sha256: {ref.scope}/{ref.paper_number or ref.paper_id}")
+        if ref.pdf_md5 == dup.pdf_md5:
+            reasons.append(f"duplicate_pdf_md5: {ref.scope}/{ref.paper_number or ref.paper_id}")
+    if "pdf_md5_collision_or_inconsistent_hash" in dup.reasons:
+        reasons.append("pdf_md5_collision_or_inconsistent_hash")
+    return list(dict.fromkeys(reasons))
 
 
 # ── Markdown DOI scope ─────────────────────────────────────────────────
@@ -672,13 +751,18 @@ def _extract_pdf_title_candidate(pdf_path: Path) -> str:
 
 # ── Local evidence extraction ──────────────────────────────────────────
 
-def _local_evidence(metadata: dict, md_path: Path | None, pdf_path: Path | None = None) -> tuple[str, int | None, str, str, list[str], str, str, str, list[str]]:
+def _local_evidence(metadata: dict, md_path: Path | None, pdf_path: Path | None = None, *, prefer_markdown: bool = False) -> tuple[str, int | None, str, str, list[str], str, str, str, list[str]]:
     """Return local metadata evidence plus title/author source hints.
 
     Pulls trusted existing metadata first, then converted Markdown first 100
     physical lines, then PDF first-pages title fallback. Markdown DOI evidence is
     limited to that same header/front-matter region before any References
     heading; reference-list DOIs are not local evidence for this paper.
+
+    When ``prefer_markdown`` is True (post-conversion re-resolution), Markdown
+    front-matter title/author evidence is preferred even when existing metadata
+    already carries a DOI/title — the converted Markdown is the freshest source.
+    DOI priority is unchanged: an existing valid metadata DOI still wins.
     """
     local_title = ((metadata.get("title") or {}).get("original") or "").strip()
     existing_metadata_doi = metadata_doi(metadata)
@@ -701,8 +785,11 @@ def _local_evidence(metadata: dict, md_path: Path | None, pdf_path: Path | None 
         md_dois = _collect_dois_from_text(header_text)
         front = extract_front_matter_candidates_from_markdown(md_path, max_lines=100)
         md_front_lines = list(front.front_matter_lines or [])
-        prefer_front_title = not existing_metadata_doi or not local_title
-        prefer_front_author = not existing_metadata_doi or not local_first_author_family
+        # Default: only fall back to Markdown front-matter when metadata lacks
+        # DOI/title. With prefer_markdown (post-convert), always prefer the
+        # freshly-converted Markdown evidence over stale metadata.
+        prefer_front_title = prefer_markdown or (not existing_metadata_doi or not local_title)
+        prefer_front_author = prefer_markdown or (not existing_metadata_doi or not local_first_author_family)
         if front.title_candidates and prefer_front_title:
             local_title = front.title_candidates[0]
             title_source = "markdown_front_matter"
@@ -828,9 +915,10 @@ def _finalize_decisions(
     local_year: int | None,
     local_first_author_family: str,
     existing_doi: str,
-    formal_doi_set: set[str],
-    pdf_sha256: str,
-    formal_sha_set: set[str],
+    paper_raw_dir: Path,
+    papers_dir: Path,
+    source_id: str,
+    duplicate_pdf_reasons: list[str],
     min_confidence: float,
 ) -> None:
     """Set gate_reasons + decision on each candidate in place.
@@ -849,6 +937,15 @@ def _finalize_decisions(
             c.gate_reasons = ["no doi"]
             c.decision = "rejected"
             continue
+        duplicate_reasons = [
+            *_duplicate_candidate_reasons(
+                c.doi,
+                paper_raw_dir=paper_raw_dir,
+                papers_dir=papers_dir,
+                skip_paper_number=source_id,
+            ),
+            *duplicate_pdf_reasons,
+        ]
         if c.authoritative:
             auth_complete = bool(
                 c.title and c.year is not None and c.authors and c.venue and c.doi
@@ -865,13 +962,12 @@ def _finalize_decisions(
                 local_year=local_year,
                 local_first_author_family=local_first_author_family,
                 existing_doi=existing_doi,
-                formal_doi_set=formal_doi_set,
-                pdf_sha256=pdf_sha256,
-                formal_sha_set=formal_sha_set,
                 authoritative_complete=auth_complete,
             )
-            c.gate_reasons = reasons
-            if passes:
+            c.gate_reasons = list(dict.fromkeys([*reasons, *duplicate_reasons]))
+            if duplicate_reasons:
+                c.decision = "rejected"
+            elif passes:
                 c.decision = "auto_matched"
             elif c.score >= min_confidence:
                 c.decision = "manual_review"
@@ -879,8 +975,148 @@ def _finalize_decisions(
                 c.decision = "rejected"
         else:
             # network title-search: never auto_matched
-            c.gate_reasons = ["network title-search candidate: never auto-matched"]
-            c.decision = "manual_review" if (c.doi and c.score >= min_confidence) else "rejected"
+            c.gate_reasons = list(dict.fromkeys(["network title-search candidate: never auto-matched", *duplicate_reasons]))
+            c.decision = "rejected" if duplicate_reasons else (
+                "manual_review" if (c.doi and c.score >= min_confidence) else "rejected"
+            )
+
+
+# ── Rate-limited network wrappers ──────────────────────────────────────
+#
+# When a ``rate_limiter`` is supplied, network calls go through these wrappers
+# which call ``rate_limiter.wait(provider)`` before each request and detect
+# 429/403/timeout to trigger ``rate_limiter.backoff(...)`` with retry. When no
+# rate_limiter is supplied (default, and the path used by existing tests), the
+# original swallowing functions are called directly so behavior is unchanged.
+
+def _rl_request_with_retry(
+    provider: str,
+    do_request,
+    *,
+    rate_limiter,
+    max_retries: int = 5,
+):
+    """Execute ``do_request`` with rate-limit wait + 429/403/timeout backoff.
+
+    ``do_request`` must be a callable returning ``(data, status_code, headers)``
+    where ``data`` is the parsed JSON (or None) and ``status_code`` is the HTTP
+    status (0 for a connection/timeout error). Returns ``data``.
+    """
+    for attempt in range(1, max_retries + 1):
+        rate_limiter.wait(provider)
+        try:
+            data, status, headers = do_request()
+        except Exception:
+            if attempt < max_retries:
+                rate_limiter.backoff(provider, "timeout")
+                continue
+            return None
+        rate_limiter.record_response(provider, headers or {}, status)
+        if status == 429:
+            retry_after = _parse_retry_after(headers or {})
+            rate_limiter.backoff(provider, "429", retry_after=retry_after)
+            if attempt < max_retries:
+                continue
+            return None
+        if status == 403:
+            rate_limiter.backoff(provider, "403")
+            if attempt < max_retries and not rate_limiter.should_stop(provider):
+                continue
+            return None
+        return data
+    return None
+
+
+def _parse_retry_after(headers: dict) -> int | None:
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _rl_crossref_doi_message(doi: str, *, rate_limiter, timeout: int = 20):
+    """Rate-limited Crossref work-by-DOI lookup. Returns the message dict or None."""
+    import requests as _requests
+    from src.discovery.resolve_crossref import CROSSREF_WORKS_URL
+    norm = normalize_doi(doi)
+    if not norm:
+        return None
+    headers = dict(rate_limiter.provider_headers("crossref"))
+
+    def do_request():
+        resp = _requests.get(f"{CROSSREF_WORKS_URL}/{norm}", timeout=timeout, headers=headers)
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        return (data.get("message") if isinstance(data, dict) else None), resp.status_code, dict(resp.headers)
+
+    return _rl_request_with_retry("crossref", do_request, rate_limiter=rate_limiter)
+
+
+def _rl_crossref_title_search(title: str, *, year=None, limit=5, rate_limiter):
+    """Rate-limited Crossref title search. Returns list[PaperCandidate]."""
+    import requests as _requests
+    from src.discovery.resolve_crossref import CROSSREF_WORKS_URL, parse_crossref_item
+    from src.discovery.models import normalize_title
+    headers = dict(rate_limiter.provider_headers("crossref"))
+
+    def do_request():
+        resp = _requests.get(
+            CROSSREF_WORKS_URL,
+            params={"query.bibliographic": title, "rows": limit},
+            timeout=20,
+            headers=headers,
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        items = (data.get("message") or {}).get("items") or [] if isinstance(data, dict) else []
+        cands = [parse_crossref_item(item, query=title) for item in items]
+        return cands, resp.status_code, dict(resp.headers)
+
+    cands = _rl_request_with_retry("crossref", do_request, rate_limiter=rate_limiter)
+    if not cands:
+        return []
+    # Score candidates (mirrors resolve_crossref_by_title)
+    title_norm = normalize_title(title)
+    scored: list[tuple[float, PaperCandidate]] = []
+    for candidate in cands:
+        score = SequenceMatcher(None, title_norm, normalize_title(candidate.title)).ratio()
+        if year and candidate.year:
+            score += 0.15 if abs(candidate.year - year) <= 1 else -0.1
+        candidate.confidence = min(1.0, max(0.0, score))
+        scored.append((score, candidate))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [candidate for _, candidate in scored]
+
+
+def _rl_openalex_search(title: str, *, limit=25, rate_limiter):
+    """Rate-limited OpenAlex search. Returns list[PaperCandidate]."""
+    import requests as _requests
+    from src.discovery.search_openalex import OPENALEX_WORKS_URL, parse_openalex_work
+    headers = dict(rate_limiter.provider_headers("openalex"))
+    mailto = rate_limiter.provider_mailto("openalex")
+    params: dict = {"search": title, "per-page": limit}
+    if mailto:
+        params["mailto"] = mailto
+
+    def do_request():
+        resp = _requests.get(OPENALEX_WORKS_URL, params=params, headers=headers, timeout=20)
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        works = data.get("results", []) if isinstance(data, dict) else []
+        cands = [parse_openalex_work(work, query=title) for work in works]
+        return cands, resp.status_code, dict(resp.headers)
+
+    cands = _rl_request_with_retry("openalex", do_request, rate_limiter=rate_limiter)
+    return cands or []
 
 
 # ── Orchestrator ───────────────────────────────────────────────────────
@@ -893,13 +1129,54 @@ def resolve_metadata_candidates(
     min_confidence: float = MANUAL_REVIEW_THRESHOLD,
     all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
+    paper_raw_dir: str | Path | None = None,
+    prefer_markdown: bool = False,
+    rate_limiter=None,
 ) -> ResolveReport:
-    """Resolve metadata candidates for a paper_raw folder. Does NOT write files."""
+    """Resolve metadata candidates for a paper_raw folder. Does NOT write files.
+
+    ``prefer_markdown`` (the ``--prefer-markdown`` / post-conversion signal)
+    is mirrored onto the returned report as ``post_conversion`` so callers and
+    reports can tell this was a post-conversion re-resolution pass.
+
+    ``rate_limiter`` (optional ``ProviderRateLimiter``) enables conservative
+    spacing + 429/403/timeout backoff for network calls. When None, network
+    calls use the original swallowing functions (backward-compat for tests).
+    """
+    report = _resolve_metadata_candidates_impl(
+        folder,
+        allow_network=allow_network,
+        max_candidates=max_candidates,
+        min_confidence=min_confidence,
+        all_catalog_path=all_catalog_path,
+        papers_dir=papers_dir,
+        paper_raw_dir=paper_raw_dir,
+        prefer_markdown=prefer_markdown,
+        rate_limiter=rate_limiter,
+    )
+    report.post_conversion = prefer_markdown
+    return report
+
+
+def _resolve_metadata_candidates_impl(
+    folder: str | Path,
+    *,
+    allow_network: bool = True,
+    max_candidates: int = 5,
+    min_confidence: float = MANUAL_REVIEW_THRESHOLD,
+    all_catalog_path: str | Path = ALL_CATALOG_PATH,
+    papers_dir: str | Path = PAPERS_DIR,
+    paper_raw_dir: str | Path | None = None,
+    prefer_markdown: bool = False,
+    rate_limiter=None,
+) -> ResolveReport:
     folder = Path(folder)
     source_id = folder.name
     meta_path = folder / f"{source_id}.metadata.json"
     pdf_path = folder / f"{source_id}.pdf"
     md_path = folder / f"{source_id}.md"
+    paper_raw_root = Path(paper_raw_dir) if paper_raw_dir is not None else folder.parent
+    papers_root = Path(papers_dir)
 
     if not meta_path.exists():
         raise FileNotFoundError(f"metadata file missing: {meta_path}")
@@ -923,12 +1200,16 @@ def resolve_metadata_candidates(
         title_source,
         author_source,
         markdown_front_matter_lines,
-    ) = _local_evidence(metadata, md_path if md_path.exists() else None, pdf_path if pdf_path.exists() else None)
+    ) = _local_evidence(metadata, md_path if md_path.exists() else None, pdf_path if pdf_path.exists() else None, prefer_markdown=prefer_markdown)
     local_title_evidence_missing = not bool(local_title)
     local_doi_candidates = [existing_doi] if existing_doi else list(md_header_dois)
 
-    formal_doi_set = formal_dois(all_catalog_path, papers_dir)
-    formal_sha_set = formal_pdf_shas(all_catalog_path, papers_dir)
+    duplicate_pdf_reasons = _duplicate_pdf_reasons(
+        pdf_path,
+        paper_raw_dir=paper_raw_root,
+        papers_dir=papers_root,
+        skip_paper_number=source_id,
+    )
 
     candidates: list[ResolvedCandidate] = []
     warnings: list[str] = []
@@ -943,11 +1224,44 @@ def resolve_metadata_candidates(
         cid += 1
         return f"cand_{cid:03d}"
 
+    def _enrich(doi: str) -> EnrichmentResult:
+        """Enrich from DOI, using rate-limited path when rate_limiter is provided."""
+        if rate_limiter is None:
+            return enrich_from_doi(doi, query_crossref=True)
+        message = _rl_crossref_doi_message(doi, rate_limiter=rate_limiter)
+        if message is None:
+            return EnrichmentResult(doi=doi, warnings=["crossref unresolved"])
+        norm = mes.normalize_crossref_metadata(message)
+        return EnrichmentResult(
+            doi=norm["doi"], title=norm["title"], year=norm["year"],
+            authors=norm["authors"], first_author=norm["first_author"],
+            venue=norm["venue"], publisher=norm["publisher"],
+            volume=norm["volume"], number=norm["number"], issue=norm["issue"],
+            pages=norm["pages"], article_number=norm["article_number"],
+            url=norm["url"], issn=norm["issn"], published=norm["published"],
+            source="crossref", confidence=0.95, raw=message, warnings=[],
+        )
+
+    def _title_search_crossref(title: str, year, limit: int) -> list[PaperCandidate]:
+        if rate_limiter is None:
+            return resolve_crossref_by_title(title, year=year, limit=limit)
+        return _rl_crossref_title_search(title, year=year, limit=limit, rate_limiter=rate_limiter)
+
+    def _title_search_openalex(title: str, limit: int) -> list[PaperCandidate]:
+        if rate_limiter is None:
+            return search_openalex(title, limit=limit)
+        return _rl_openalex_search(title, limit=limit, rate_limiter=rate_limiter)
+
+    def _crossref_doi_resolvable(doi: str) -> bool:
+        if rate_limiter is None:
+            return get_crossref_work_by_doi(doi) is not None
+        return _rl_crossref_doi_message(doi, rate_limiter=rate_limiter) is not None
+
     # ── Branch 1: existing metadata DOI ──
     if existing_doi:
         doi_source = "metadata"
         try:
-            result = enrich_from_doi(existing_doi, query_crossref=True)
+            result = _enrich(existing_doi)
         except Exception as exc:
             result = EnrichmentResult(doi=existing_doi, warnings=[f"enrichment error: {exc}"])
         result_doi = normalize_doi(getattr(result, "doi", ""))
@@ -1025,7 +1339,7 @@ def resolve_metadata_candidates(
             doi = distinct_dois[0]
             doi_source = next(src for d, src in found_dois if d == doi)
             try:
-                result = enrich_from_doi(doi, query_crossref=True)
+                result = _enrich(doi)
             except Exception as exc:
                 result = EnrichmentResult(doi=doi, warnings=[f"enrichment error: {exc}"])
             if not normalize_doi(getattr(result, "doi", "")):
@@ -1052,19 +1366,14 @@ def resolve_metadata_candidates(
                 doi_source = "network_title"
                 net_cands: list[PaperCandidate] = []
                 try:
-                    net_cands.extend(resolve_crossref_by_title(local_title, year=local_year, limit=max_candidates))
+                    net_cands.extend(_title_search_crossref(local_title, local_year, max_candidates))
                 except Exception as exc:
                     warnings.append(f"crossref title search failed: {exc}")
                 if len(net_cands) < max_candidates:
                     try:
-                        net_cands.extend(search_openalex(local_title, limit=max_candidates))
+                        net_cands.extend(_title_search_openalex(local_title, max_candidates))
                     except Exception as exc:
                         warnings.append(f"openalex search failed: {exc}")
-                if len(net_cands) < max_candidates:
-                    try:
-                        net_cands.extend(search_semantic_scholar(local_title, limit=max_candidates))
-                    except Exception as exc:
-                        warnings.append(f"semantic scholar search failed: {exc}")
                 # keep only DOI-bearing, dedupe by doi
                 seen_dois: set[str] = set()
                 for cand in net_cands:
@@ -1074,7 +1383,7 @@ def resolve_metadata_candidates(
                     seen_dois.add(nd)
                     resolvable = False
                     try:
-                        resolvable = get_crossref_work_by_doi(nd) is not None
+                        resolvable = _crossref_doi_resolvable(nd)
                     except Exception:
                         resolvable = False
                     rc = _candidate_from_paper(
@@ -1092,8 +1401,9 @@ def resolve_metadata_candidates(
         candidates,
         local_title=local_title, local_year=local_year,
         local_first_author_family=local_first_author_family,
-        existing_doi=existing_doi, formal_doi_set=formal_doi_set,
-        pdf_sha256=pdf_sha256, formal_sha_set=formal_sha_set,
+        existing_doi=existing_doi,
+        paper_raw_dir=paper_raw_root, papers_dir=papers_root, source_id=source_id,
+        duplicate_pdf_reasons=duplicate_pdf_reasons,
         min_confidence=min_confidence,
     )
 
@@ -1158,6 +1468,7 @@ def apply_resolution(
     candidate_id: str | None = None,
     all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
+    paper_raw_dir: str | Path | None = None,
 ) -> dict:
     """Apply a resolved candidate to metadata.json. Returns a result dict.
 
@@ -1170,6 +1481,8 @@ def apply_resolution(
     source_id = folder.name
     meta_path = folder / f"{source_id}.metadata.json"
     metadata = _read_json(meta_path, {})
+    paper_raw_root = Path(paper_raw_dir) if paper_raw_dir is not None else folder.parent
+    papers_root = Path(papers_dir)
 
     # choose candidate
     chosen: ResolvedCandidate | None = None
@@ -1186,32 +1499,41 @@ def apply_resolution(
                 chosen = c
                 break
     if chosen is None or not chosen.doi:
+        candidate_warnings = list(dict.fromkeys(
+            reason
+            for candidate in report.candidates
+            for reason in candidate.gate_reasons
+        ))
         _write_import_status(folder, STATUS_MANUAL_REVIEW, "no DOI-bearing candidate to apply")
         return {"applied": False, "status": "no_candidate", "paper_number": source_id, "paper_raw_id": source_id,
-                "chosen_candidate_id": candidate_id or report.best_candidate_id, "warnings": ["no DOI-bearing candidate"]}
+                "chosen_candidate_id": candidate_id or report.best_candidate_id,
+                "warnings": candidate_warnings or ["no DOI-bearing candidate"]}
 
-    formal_doi_set = formal_dois(all_catalog_path, papers_dir)
-    formal_sha_set = formal_pdf_shas(all_catalog_path, papers_dir)
     existing_doi = metadata_doi(metadata)
 
     # ── Full validation gate (applies to BOTH auto and manual-confirm) ──
     fail_reasons: list[str] = []
     if "/" not in chosen.doi:
         fail_reasons.append("doi malformed")
-    if normalize_doi(chosen.doi) in formal_doi_set:
-        fail_reasons.append(f"duplicate formal DOI: {chosen.doi}")
-    if report.pdf_sha256 and report.pdf_sha256 in formal_sha_set:
-        fail_reasons.append("duplicate_pdf_sha256")
+    fail_reasons.extend(_duplicate_candidate_reasons(
+        chosen.doi,
+        paper_raw_dir=paper_raw_root,
+        papers_dir=papers_root,
+        skip_paper_number=source_id,
+    ))
+    fail_reasons.extend(_duplicate_pdf_reasons(
+        folder / f"{source_id}.pdf",
+        paper_raw_dir=paper_raw_root,
+        papers_dir=papers_root,
+        skip_paper_number=source_id,
+    ))
     if existing_doi and normalize_doi(existing_doi) != normalize_doi(chosen.doi):
         fail_reasons.append(f"doi conflict: existing {existing_doi} vs candidate {chosen.doi}")
 
     # merge first (fills only empties) so we can check completeness on merged data
     merged, merge_warnings = merge_missing_metadata(metadata, chosen.patch)
-    if not _has_required_metadata_fields(merged):
-        fail_reasons.append("candidate lacks bibliographic identity (doi/title/year/authors)")
-    if not _has_venue(merged):
-        fail_reasons.append("candidate lacks venue")
-
+    gate_ready, gate_reasons = bibliographic_identity_gate(merged, fail_reasons)
+    fail_reasons = [] if gate_ready else gate_reasons
     can_auto = chosen.decision == "auto_matched"
     if fail_reasons or (not can_auto and not manual_confirm):
         status = STATUS_MANUAL_REVIEW if chosen.doi else STATUS_RESOLVE_FAILED
@@ -1230,7 +1552,6 @@ def apply_resolution(
         "confidence": float(chosen.score),
         "matched_at": _now_iso(),
         "warnings": merge_warnings,
-        "candidates": [chosen.candidate_id],
     }
     schema_errors = validate_metadata_schema(merged)
     if schema_errors:
@@ -1238,6 +1559,17 @@ def apply_resolution(
         return {"applied": False, "status": "schema_error", "paper_number": source_id, "paper_raw_id": source_id,
                 "chosen_candidate_id": chosen.candidate_id, "warnings": schema_errors}
 
+    source = merged.get("source") if isinstance(merged.get("source"), dict) else {}
+    provider = str(source.get("provider") or chosen.source or "metadata_resolution")
+    # raw_record_path must always point at a metadata source record, never at
+    # fetch_result.json. Use source_records/metadata_source.<provider>.json.
+    from src.services.source_records import ensure_raw_record_path_is_metadata_source
+    raw_record_path = ensure_raw_record_path_is_metadata_source(
+        source.get("raw_record_path") or "", provider,
+    )
+    source["raw_record_path"] = raw_record_path
+    merged["source"] = source
+    write_metadata_source_record(folder, provider, chosen.to_dict())
     atomic_write_json(meta_path, merged, indent=2)
     _write_import_status(folder, STATUS_MATCHED, f"metadata_match.status={new_status} via candidate {chosen.candidate_id}")
 
@@ -1263,7 +1595,9 @@ def _compact_patch(value: Any) -> Any:
     if isinstance(value, dict):
         out = {}
         for key, child in value.items():
-            if key in {"metadata_match", "bibtex", "pdf"}:
+            if key in {"metadata_match", "bibtex", "pdf", "content", "notes", "abstract", "keywords"}:
+                continue
+            if key in {"short_zh", "translated_zh", "raw_record"}:
                 continue
             compacted = _compact_patch(child)
             if compacted not in ("", None, [], {}):
@@ -1293,10 +1627,7 @@ def write_metadata_patch_json(folder: Path, report: ResolveReport) -> Path | Non
         "publication",
         "identifiers",
         "links",
-        "abstract",
-        "keywords",
         "source",
-        "notes",
     }
     patch = {
         key: value
