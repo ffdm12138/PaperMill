@@ -53,10 +53,13 @@ def test_stage_raw_pdfs_default_apply_copies_and_keeps_raw_with_warning(tmp_path
     assert staged_pdf.exists()
     assert _sha(staged_pdf) == original_sha
     manifest = json.loads((paper_raw / "0000000000000001" / "stage_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["operation"] == "copy"
-    assert manifest["original_path"] == str(pdf)
-    assert manifest["original_sha256"] == original_sha
-    assert manifest["staged_sha256"] == original_sha
+    assert manifest["workflow_path"] == "manual_pdf"
+    assert manifest["source_type"] == "manual_pdf"
+    assert manifest["pdf_source"]["kind"] == "local_raw_queue"
+    assert manifest["pdf_source"]["operation"] == "copy"
+    assert manifest["pdf_source"]["original_path"] == str(pdf)
+    assert manifest["pdf_source"]["original_sha256"] == original_sha
+    assert manifest["staged_pdf"]["sha256"] == original_sha
     report_data = json.loads(report.read_text(encoding="utf-8"))
     item = report_data[0]
     assert item["operation"] == "copy"
@@ -90,9 +93,10 @@ def test_stage_raw_pdfs_explicit_move_removes_raw(tmp_path, monkeypatch):
     assert rc == 0
     assert not pdf.exists()
     manifest = json.loads((paper_raw / "0000000000000001" / "stage_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["operation"] == "move"
-    assert manifest["original_sha256"] == original_sha
-    assert manifest["staged_sha256"] == original_sha
+    assert manifest["workflow_path"] == "manual_pdf"
+    assert manifest["pdf_source"]["operation"] == "move"
+    assert manifest["pdf_source"]["original_sha256"] == original_sha
+    assert manifest["staged_pdf"]["sha256"] == original_sha
     report_data = json.loads(report.read_text(encoding="utf-8"))
     item = report_data[0]
     assert item["operation"] == "move"

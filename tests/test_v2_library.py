@@ -84,8 +84,11 @@ def test_paper_raw_allocator_reserves_monotonic_paper_numbers(tmp_path):
     asset_manifest = read_asset_manifest(paper_raw / "0000000000000001", prefix="0000000000000001")
     assert asset_manifest["files"]["pdf"]["sha256"]
     manifest = json.loads((paper_raw / "0000000000000001" / "stage_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["original_path"] == str(pdf)
-    assert manifest["original_sha256"] == manifest["staged_sha256"]
+    assert manifest["workflow_path"] == "manual_pdf"
+    assert manifest["pdf_source"]["original_path"] == str(pdf)
+    assert manifest["pdf_source"]["original_sha256"] == manifest["staged_pdf"]["sha256"]
+    # source_records/metadata_source.manual.json must exist for the manual path
+    assert (paper_raw / "0000000000000001" / "source_records" / "metadata_source.manual.json").exists()
 
 
 def test_v2_commit_assigns_number_and_builds_all_catalog(tmp_path):

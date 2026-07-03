@@ -1,32 +1,372 @@
-"""Fetch a PDF for existing paper_raw metadata and attach it as <paper_number>.pdf."""
+"""Fetch PDFs for existing paper_raw metadata and attach as <paper_number>.pdf."""
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
-from config.settings import PAPER_RAW_DIR
+from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
-from src.fetch.fetch_pipeline import fetch_pdf
+import src.fetch.fetch_pipeline as fetch_pipeline
+from src.services.ingest_duplicate_guard import DuplicateIngestError
 from src.services.ingest_ids import validate_paper_raw_id
+from src.services.ingest_state import write_import_status
 from src.services.metadata_quality import is_valid_normalized_doi
+from src.services.source_records import (
+    ensure_raw_record_path_is_metadata_source,
+    fetch_result_rel_path,
+    write_fetch_result,
+)
+from src.services.stage_manifest import (
+    doi_fetch_pdf_source,
+    read_stage_manifest,
+    update_stage_manifest,
+)
 from src.services.v2_library import PaperRawAllocator
 from src.utils.atomic_io import atomic_write_json
+
+
+BLOCKED_FETCH_STATUSES = {
+    "ready_for_commit",
+    "catalog_ready",
+    "committed",
+    "imported",
+    "quarantined_duplicate",
+    "possible_duplicate",
+}
+
+
+@dataclass
+class FetchCandidateStatus:
+    paper_number: str
+    folder: Path
+    status: str
+    reason: str = ""
+    has_metadata: bool = False
+    has_pdf: bool = False
+    doi: str = ""
+    import_status: str = ""
+    metadata: dict[str, Any] | None = None
+
+    @property
+    def eligible(self) -> bool:
+        return self.status == "planned"
+
+    def to_item(self) -> dict[str, Any]:
+        return {
+            "paper_number": self.paper_number,
+            "paper_raw_id": self.paper_number,
+            "status": self.status,
+            "reason": self.reason,
+            "has_metadata": self.has_metadata,
+            "has_pdf": self.has_pdf,
+            "doi": self.doi,
+            "import_status": self.import_status,
+        }
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _paper_numbers(root: Path, all_sources: bool, one: str | None) -> list[str]:
     if one:
         return [validate_paper_raw_id(one)]
     if all_sources:
+        if not root.exists():
+            return []
         return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 16)
     raise ValueError("--paper-number or --all is required")
+
+
+def classify_pdf_fetch_candidate(
+    folder: Path,
+    paper_number: str,
+    *,
+    force_refetch: bool = False,
+) -> FetchCandidateStatus:
+    paper_number = validate_paper_raw_id(paper_number)
+    meta_path = folder / f"{paper_number}.metadata.json"
+    pdf_path = folder / f"{paper_number}.pdf"
+    status_data = _read_json(folder / ".import_status.json")
+    import_status = str(status_data.get("status") or "")
+
+    item = FetchCandidateStatus(
+        paper_number=paper_number,
+        folder=folder,
+        status="planned",
+        has_metadata=meta_path.exists(),
+        has_pdf=pdf_path.exists(),
+        import_status=import_status,
+    )
+    if not folder.is_dir():
+        item.status = "skipped"
+        item.reason = "paper_raw folder missing"
+        return item
+    if "quarantine" in {part.lower() for part in folder.parts}:
+        item.status = "skipped"
+        item.reason = "workspace is under quarantine"
+        return item
+    if not (folder.name.isdigit() and len(folder.name) == 16):
+        item.status = "skipped"
+        item.reason = "not a 16-digit paper_raw workspace"
+        return item
+    if not meta_path.exists():
+        item.status = "skipped"
+        item.reason = "metadata file missing"
+        return item
+    metadata = _read_json(meta_path)
+    item.metadata = metadata
+    doi = normalize_doi(((metadata.get("identifiers") or {}).get("doi") or "").strip())
+    item.doi = doi
+    if not doi:
+        item.status = "skipped"
+        item.reason = "missing DOI in metadata"
+        return item
+    if not is_valid_normalized_doi(doi):
+        item.status = "skipped"
+        item.reason = "invalid DOI in metadata"
+        return item
+    if item.has_pdf and not force_refetch:
+        item.status = "skipped"
+        item.reason = "PDF already exists"
+        return item
+    if import_status in BLOCKED_FETCH_STATUSES:
+        item.status = "skipped"
+        item.reason = f"blocked import status: {import_status}"
+        return item
+    return item
+
+
+def _parse_header(value: str, *, ua_warn_only: bool = True) -> tuple[str, str]:
+    if ":" not in value:
+        raise ValueError(f"invalid --header value (expected 'Key: Value'): {value}")
+    key, header_value = value.split(":", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError("header key must not be empty")
+    if key.lower() == "user-agent":
+        if ua_warn_only:
+            # HeaderBasedDoiResolver pins the User-Agent; a user often copies one
+            # from browser DevTools. Ignore it with a warning instead of erroring.
+            logger.warning(
+                "User-Agent is ignored: header_based resolver uses a fixed User-Agent. "
+                "Use --strict-headers to override."
+            )
+            return "", ""
+        raise ValueError("User-Agent is fixed in header_based resolver and cannot be overridden")
+    return key, header_value.strip()
+
+
+def _load_headers(headers_json: Path | None, cli_headers: list[str], *, ua_warn_only: bool = True) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if headers_json:
+        data = json.loads(headers_json.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("headers"), dict):
+            data = data["headers"]
+        if not isinstance(data, dict):
+            raise ValueError("--headers-json must contain a JSON object")
+        for key, value in data.items():
+            if str(key).lower() == "user-agent":
+                if ua_warn_only:
+                    logger.warning("User-Agent is ignored: header_based resolver uses a fixed User-Agent.")
+                    continue
+                raise ValueError("User-Agent is fixed in header_based resolver and cannot be overridden")
+            headers[str(key)] = str(value)
+    for value in cli_headers:
+        key, header_value = _parse_header(value, ua_warn_only=ua_warn_only)
+        if key:
+            headers[key] = header_value
+    return headers
+
+
+def _header_keys(headers: dict[str, str], *, include_user_agent: bool) -> list[str]:
+    keys = sorted(headers.keys())
+    if include_user_agent and "User-Agent" not in keys:
+        keys = ["User-Agent", *keys]
+    return keys
+
+
+def _build_policy(args: argparse.Namespace, headers: dict[str, str]) -> AccessPolicy:
+    if args.resolver == "header-based":
+        if not (args.base_url or args.url_template):
+            raise ValueError("--resolver header-based requires --base-url or --url-template")
+        return AccessPolicy(
+            mode=AccessMode.CUSTOM,
+            allow_custom_resolvers=True,
+            allow_publisher_tdm=False,
+            custom_resolvers=["header_based"],
+            timeout_seconds=args.timeout,
+            extra={
+                "resolver_names": ["header_based"],
+                "base_url": args.base_url or "",
+                "url_template": args.url_template or "",
+                "headers": headers,
+                "timeout_seconds": args.timeout,
+                "allow_unsafe_sources": args.allow_unsafe_sources,
+            },
+        )
+    if args.resolver == "oa":
+        return AccessPolicy(mode=AccessMode.OA_ONLY, timeout_seconds=args.timeout)
+    return AccessPolicy(mode=AccessMode(args.access_mode), timeout_seconds=args.timeout)
+
+
+def _sanitized_fetch_record(result, attached: dict[str, Any], header_keys: list[str]) -> dict[str, Any]:
+    return {
+        "resolver": result.resolver,
+        "resolver_chain": list(result.resolver_chain or []),
+        "access_mode": result.access_mode,
+        "fetched_at": result.fetched_at or result.downloaded_at,
+        "pdf_url": result.pdf_url,
+        "landing_url": result.landing_url,
+        "is_direct_pdf": result.is_direct_pdf,
+        "fixed_user_agent": result.resolver == "header_based",
+        "header_keys": header_keys if result.resolver == "header_based" else [],
+        "headers_masked": result.resolver == "header_based",
+        "pdf_md5": attached.get("pdf_md5", ""),
+        "pdf_sha256": attached.get("pdf_sha256", ""),
+    }
+
+
+def _fetch_one(
+    candidate: FetchCandidateStatus,
+    *,
+    policy: AccessPolicy,
+    allocator: PaperRawAllocator,
+    force_refetch: bool,
+    header_keys: list[str],
+) -> dict[str, Any]:
+    start = time.monotonic()
+    item = candidate.to_item()
+    folder = candidate.folder
+    meta_path = folder / f"{candidate.paper_number}.metadata.json"
+    metadata = dict(candidate.metadata or {})
+    metadata.setdefault("identifiers", {})["doi"] = candidate.doi
+    title = ((metadata.get("title") or {}).get("original") or "").strip()
+    year = metadata.get("year")
+    fetch_root = folder / ".fetch"
+    try:
+        result = fetch_pipeline.fetch_pdf(
+            candidate.doi,
+            domain_id="paper_raw",
+            output_root=fetch_root,
+            dry_run=False,
+            access_policy=policy,
+            title=title,
+            year=year if isinstance(year, int) else None,
+            metadata=metadata,
+        )
+        if not result.success or not result.output_path:
+            item.update({"status": "failed", "reason": result.error or "fetch failed"})
+            return item
+        try:
+            attached = allocator.attach_pdf(
+                candidate.paper_number,
+                result.output_path,
+                move=True,
+                replace=force_refetch,
+            )
+        except DuplicateIngestError as exc:
+            item.update({
+                "status": "duplicate",
+                "error": "pdf_duplicate",
+                "reason": "fetched PDF duplicates an existing paper_raw/papers PDF",
+                "duplicate_reasons": exc.result.reasons,
+                "duplicate_refs": [ref.to_dict() for ref in exc.result.refs],
+                "pdf_md5": exc.result.pdf_md5,
+                "pdf_sha256": exc.result.pdf_sha256,
+            })
+            write_import_status(
+                folder,
+                "duplicate",
+                reason=item["reason"],
+                extra={
+                    "duplicate_reasons": item["duplicate_reasons"],
+                    "duplicate_refs": item["duplicate_refs"],
+                    "paper_number": candidate.paper_number,
+                    "paper_raw_id": candidate.paper_number,
+                    "source_type": "network_search",
+                    "source_provider": ((candidate.metadata or {}).get("source") or {}).get("provider", "network_search") if candidate.metadata else "network_search",
+                    "doi": candidate.doi,
+                    "pdf_md5": exc.result.pdf_md5,
+                    "pdf_sha256": exc.result.pdf_sha256,
+                },
+            )
+            return item
+
+        metadata = _read_json(meta_path)
+        links = metadata.setdefault("links", {})
+        if result.pdf_url:
+            links["pdf_url"] = result.pdf_url
+        if result.landing_url:
+            links["landing_url"] = result.landing_url
+        fetch_record = _sanitized_fetch_record(result, attached, header_keys)
+        # fetch_result.json is a SEPARATE file from metadata source records.
+        # Never write the fetch result to metadata.source.raw_record_path.
+        write_fetch_result(folder, fetch_record)
+        source = metadata.setdefault("source", {})
+        provider = str(source.get("provider") or metadata.get("source_type") or "network_search")
+        # raw_record_path must always point at a metadata source record, never
+        # at fetch_result.json.
+        source["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
+            source.get("raw_record_path") or "", provider,
+        )
+        atomic_write_json(meta_path, metadata, indent=2)
+        # Enrich the stage_manifest pdf_source with fetch-specific details.
+        existing_manifest = read_stage_manifest(folder)
+        pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
+        if pdf_source is None:
+            pdf_source = doi_fetch_pdf_source(operation="attach")
+        pdf_source.update(doi_fetch_pdf_source(
+            operation="replace" if force_refetch else "attach",
+            fetch_record_path=fetch_result_rel_path(),
+            resolver=result.resolver,
+            pdf_url=result.pdf_url or "",
+            doi=candidate.doi,
+        ))
+        update_stage_manifest(folder, updates={"pdf_source": pdf_source})
+        item.update({
+            **attached,
+            "status": "attached",
+            "reason": "",
+            "resolver": result.resolver,
+            "pdf_path": attached.get("pdf", ""),
+            "pdf_md5": attached.get("pdf_md5", ""),
+            "pdf_sha256": attached.get("pdf_sha256", ""),
+        })
+        return item
+    except Exception as exc:
+        item.update({"status": "failed", "reason": str(exc)})
+        return item
+    finally:
+        item["duration_seconds"] = round(time.monotonic() - start, 3)
+        shutil.rmtree(fetch_root, ignore_errors=True)
+
+
+def _summary(items: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "scanned": len(items),
+        "eligible": sum(1 for item in items if item["status"] in {"planned", "attached", "failed", "duplicate"}),
+        "planned": sum(1 for item in items if item["status"] == "planned"),
+        "attached": sum(1 for item in items if item["status"] == "attached"),
+        "skipped": sum(1 for item in items if item["status"] == "skipped"),
+        "failed": sum(1 for item in items if item["status"] == "failed"),
+        "duplicate": sum(1 for item in items if item["status"] == "duplicate"),
+    }
 
 
 def main() -> int:
@@ -34,89 +374,101 @@ def main() -> int:
     parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
+    parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
     parser.add_argument("--access-mode", choices=[m.value for m in AccessMode], default=AccessMode.OA_ONLY.value)
+    parser.add_argument("--resolver", choices=["auto", "oa", "header-based"], default="auto")
+    parser.add_argument(
+        "--only-missing-pdf",
+        action="store_true",
+        help="Affected only when --force-refetch is absent (the default): a workspace that "
+             "already has <paper_number>.pdf is skipped. Provided for SOP readability; this "
+             "behavior is already the default -- use --force-refetch to re-fetch existing PDFs.",
+    )
+    parser.add_argument("--base-url", default="")
+    parser.add_argument("--url-template", default="")
+    parser.add_argument("--header", action="append", default=[])
+    parser.add_argument("--headers-json", type=Path, default=None)
+    parser.add_argument(
+        "--strict-headers",
+        action="store_true",
+        help="Fail if User-Agent is supplied via --header/--headers-json. By default a "
+             "supplied User-Agent is ignored with a warning because the header_based resolver "
+             "pins a fixed User-Agent; Cookie/Authorization remain accepted and masked.",
+    )
+    parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--max-workers", type=int, default=2)
+    parser.add_argument("--allow-unsafe-sources", action="store_true")
+    parser.add_argument("--force-refetch", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args()
 
+    try:
+        headers = _load_headers(args.headers_json, args.header, ua_warn_only=not args.strict_headers)
+        policy = _build_policy(args, headers)
+        paper_numbers = _paper_numbers(args.paper_raw_dir, args.all, args.paper_number)
+    except Exception as exc:
+        parser.error(str(exc))
+
     write = args.apply and not args.dry_run
-    policy = AccessPolicy(mode=AccessMode(args.access_mode))
-    allocator = PaperRawAllocator(args.paper_raw_dir)
-    report = []
+    header_keys = _header_keys(headers, include_user_agent=args.resolver == "header-based")
+    candidates = [
+        classify_pdf_fetch_candidate(
+            args.paper_raw_dir / paper_number,
+            paper_number,
+            force_refetch=args.force_refetch,
+        )
+        for paper_number in paper_numbers
+    ]
+    items = [candidate.to_item() for candidate in candidates]
 
-    for source_id in _paper_numbers(args.paper_raw_dir, args.all, args.paper_number):
-        folder = args.paper_raw_dir / source_id
-        meta_path = folder / f"{source_id}.metadata.json"
-        item = {"paper_number": source_id, "paper_raw_id": source_id, "status": "planned"}
-        if not meta_path.exists():
-            item.update({"status": "failed", "error": "metadata file missing"})
-            report.append(item)
-            continue
-        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-        doi = normalize_doi(((metadata.get("identifiers") or {}).get("doi") or "").strip())
-        title = ((metadata.get("title") or {}).get("original") or "").strip()
-        year = metadata.get("year")
-        if not doi:
-            item.update({"status": "failed", "error": "metadata.identifiers.doi is required for fetch"})
-            if write:
-                atomic_write_json(folder / ".import_status.json", {
-                    "status": "doi_invalid",
-                    "reason": item["error"],
-                    "paper_number": source_id,
-                    "paper_raw_id": source_id,
-                }, indent=2)
-            report.append(item)
-            continue
-        if not is_valid_normalized_doi(doi):
-            item.update({"status": "failed", "error": "metadata.identifiers.doi must be a valid DOI for fetch", "doi": doi})
-            if write:
-                atomic_write_json(folder / ".import_status.json", {
-                    "status": "doi_invalid",
-                    "reason": item["error"],
-                    "paper_number": source_id,
-                    "paper_raw_id": source_id,
-                    "doi": doi,
-                }, indent=2)
-            report.append(item)
-            continue
-        metadata.setdefault("identifiers", {})["doi"] = doi
-        logger.info("{} fetch {} for {}", "FETCH" if write else "DRY-RUN", doi, source_id)
-        if write:
-            fetch_root = folder / ".fetch"
-            try:
-                result = fetch_pdf(
-                    doi,
-                    domain_id="paper_raw",
-                    output_root=fetch_root,
-                    dry_run=False,
-                    access_policy=policy,
-                    title=title,
-                    year=year if isinstance(year, int) else None,
-                    metadata=metadata,
-                )
-                item["fetch_result"] = result.to_dict()
-                if not result.success or not result.output_path:
-                    item.update({"status": "failed", "error": result.error or "fetch failed"})
-                else:
-                    attached = allocator.attach_pdf(source_id, result.output_path, move=True)
-                    item.update(attached)
-                    item["status"] = "fetched"
-                    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-                    metadata.setdefault("links", {})["pdf_url"] = result.pdf_url or metadata.get("links", {}).get("pdf_url", "")
-                    metadata.setdefault("source", {}).setdefault("raw_record", {})["fetch_result"] = result.to_dict()
-                    atomic_write_json(meta_path, metadata, indent=2)
-            except Exception as exc:
-                item.update({"status": "failed", "error": str(exc)})
-            finally:
-                shutil.rmtree(fetch_root, ignore_errors=True)
-        report.append(item)
+    eligible = [candidate for candidate in candidates if candidate.eligible]
+    if write and eligible:
+        allocator = PaperRawAllocator(args.paper_raw_dir, papers_dir=args.papers_dir)
+        completed: dict[str, dict[str, Any]] = {}
+        workers = max(1, int(args.max_workers or 1))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    _fetch_one,
+                    candidate,
+                    policy=policy,
+                    allocator=allocator,
+                    force_refetch=args.force_refetch,
+                    header_keys=header_keys,
+                ): candidate
+                for candidate in eligible
+            }
+            for future in as_completed(futures):
+                candidate = futures[future]
+                completed[candidate.paper_number] = future.result()
+        items = [
+            completed.get(candidate.paper_number, item)
+            for candidate, item in zip(candidates, items)
+        ]
+    elif not write:
+        for item in items:
+            if item["status"] == "planned":
+                logger.info("DRY-RUN fetch {} for {}", item["doi"], item["paper_number"])
 
+    payload = {
+        "applied": write,
+        "paper_raw_dir": str(args.paper_raw_dir),
+        "resolver": "header_based" if args.resolver == "header-based" else args.resolver,
+        "access_mode": policy.mode.value,
+        "summary": _summary(items),
+        "headers": {
+            "keys": header_keys,
+            "masked": bool(header_keys),
+        },
+        "items": items,
+    }
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"applied": write, "items": report}, ensure_ascii=False, indent=2))
-    return 1 if any(i["status"] == "failed" for i in report) else 0
+        atomic_write_json(args.report, payload, indent=2)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 1 if any(item["status"] in {"failed", "duplicate"} for item in items) else 0
 
 
 if __name__ == "__main__":
