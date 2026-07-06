@@ -67,7 +67,7 @@
 - **`data/paper_raw` 是工作区（workspace）**：所有处理（staging、转换、metadata 解析、curation、formalize）都在此完成，文件夹可修改、可重跑、可丢弃。
 - **`data/papers` 是正式库（committed library）**：只接受 `ready_for_commit` 资产，事务性安装，不可半成品，不可原地修改。一切处理在 paper_raw 内完成后再入库。
 - `data/raw`、`data/paper_raw`、`data/papers`、`data/import_work`、`write/jobs` 为运行时 / 真实数据区。
-- snapshot 只含 `.gitkeep` 与 catalog `.template.json` 空模板；`pack_repo.py` 默认 audit profile 会扫描全工作区的轻量文本/结构文件（`.json`/`.md`/`.yaml`/`.toml`/`.csv`/`.bib`/`.tex` 等），
+- git tracked 只应包含 `.gitkeep` 与 catalog `.template.json` 空模板；`pack_repo.py` 默认 audit profile 会额外扫描全工作区的轻量文本/结构文件（`.json`/`.md`/`.yaml`/`.toml`/`.csv`/`.bib`/`.tex` 等），
   包括被 `.gitignore` 忽略的运行时样本（如 `data/papers/`、`data/paper_raw/` 中的 catalog、metadata、markdown、source_records），
   但**不包含 PDF、图片、日志、缓存、二进制文件**。
   **zip 中出现轻量运行时文本文件不代表 git 污染**。
@@ -254,6 +254,9 @@ git ls-files data/papers data/paper_raw data/raw data/import_work  # 应仅 .git
 运行时样本，但仍拒绝 PDF、图片、日志、缓存、密钥、二进制文件等。
 详见 `scripts/pack_repo.py` 中的 `LIGHTWEIGHT_ALLOWED_SUFFIXES`、
 `HEAVY_OR_BINARY_DENIED_SUFFIXES`、`DENIED_NAMES`、`DENIED_PATH_PARTS` 和大小限制。
+`mineru_snapshot.zip` 是 **lightweight audit/handoff snapshot**，不是完整数据备份。
+`data/paper_raw/` 和 `data/papers/` 各最多保留 5 个样例 workspace（按目录名升序确定性选择）。
+真实磁盘数据不受影响。如需完整论文数据，请使用专门的备份/导出流程。
 
 验收命令（默认 mode=audit 自动含 git hygiene + snapshot 验证）：
 

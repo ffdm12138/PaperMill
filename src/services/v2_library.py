@@ -2649,6 +2649,12 @@ class PaperNumberLedger:
         Idempotent: if ``source_folder`` already has a ``*.paper.number`` marker,
         that number is reused. Writes the marker into ``source_folder`` and a
         ledger item with ``state="reserved"`` pointing at the paper_raw folder.
+
+        Uses ``scan_paper_raw_number_floor`` (not just ``max_number + 1``) so
+        that orphan directories and markers contribute to the monotonic floor.
+        This method only holds the ledger lock briefly — callers are
+        responsible for any higher-level locking (e.g. ``paper_raw_write.lock``
+        for full ingest write transactions).
         """
         source_folder = Path(source_folder)
         existing = self.paper_number_from_marker(source_folder)
@@ -2656,7 +2662,9 @@ class PaperNumberLedger:
             return existing
         with FileLock(str(self._lock_path)):
             data = self.load()
-            number = f"{int(data.get('max_number') or '0') + 1:016d}"
+            paper_raw_root = source_folder.parent
+            number_floor = self.scan_paper_raw_number_floor(paper_raw_root, data)
+            number = f"{number_floor + 1:016d}"
             data["max_number"] = number
             data.setdefault("items", {})[number] = {
                 "folder_name": source_folder.name,

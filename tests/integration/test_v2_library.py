@@ -1187,7 +1187,7 @@ def _ledger(tmp_path: Path) -> PaperNumberLedger:
 
 def test_ledger_reserve_writes_marker_and_reserved_state(tmp_path: Path):
     ledger = _ledger(tmp_path)
-    folder = tmp_path / "paper_raw" / "0000000000000001"
+    folder = tmp_path / "paper_raw" / "new_workspace"
     folder.mkdir(parents=True)
 
     number = ledger.reserve_for_paper_raw(folder, planned_paper_id="2024_Wang_鍙俊璁烘枃")
@@ -1199,13 +1199,13 @@ def test_ledger_reserve_writes_marker_and_reserved_state(tmp_path: Path):
     item = data["items"][number]
     assert item["state"] == "reserved"
     assert item["planned_paper_id"] == "2024_Wang_鍙俊璁烘枃"
-    assert item["folder_name"] == "0000000000000001"
+    assert item["folder_name"] == "new_workspace"
     assert ledger.paper_number_from_marker(folder) == number
 
 
 def test_ledger_reserve_is_idempotent(tmp_path: Path):
     ledger = _ledger(tmp_path)
-    folder = tmp_path / "paper_raw" / "0000000000000001"
+    folder = tmp_path / "paper_raw" / "new_workspace"
     folder.mkdir(parents=True)
     first = ledger.reserve_for_paper_raw(folder)
     second = ledger.reserve_for_paper_raw(folder)
@@ -1216,7 +1216,7 @@ def test_ledger_reserve_is_idempotent(tmp_path: Path):
 
 def test_ledger_activate_reserved_flips_state_and_repoints(tmp_path: Path):
     ledger = _ledger(tmp_path)
-    src = tmp_path / "paper_raw" / "0000000000000001"
+    src = tmp_path / "paper_raw" / "new_source"
     src.mkdir(parents=True)
     number = ledger.reserve_for_paper_raw(src, planned_paper_id="2024_Wang_鍙俊璁烘枃")
 
@@ -1250,7 +1250,7 @@ def test_ledger_activate_rejects_marker_only_folder(tmp_path: Path):
 
 def test_ledger_deactivate_to_source_rolls_back(tmp_path: Path):
     ledger = _ledger(tmp_path)
-    src = tmp_path / "paper_raw" / "0000000000000001"
+    src = tmp_path / "paper_raw" / "new_source"
     src.mkdir(parents=True)
     number = ledger.reserve_for_paper_raw(src)
     final = tmp_path / "papers" / "2024_Wang_x"
@@ -1262,7 +1262,7 @@ def test_ledger_deactivate_to_source_rolls_back(tmp_path: Path):
 
     item = ledger.load()["items"][number]
     assert item["state"] == "reserved"
-    assert item["folder_name"] == "0000000000000001"
+    assert item["folder_name"] == "new_source"
     assert item["deactivated_at"]
 
 
@@ -1313,3 +1313,137 @@ def test_ledger_load_backfills_state_for_legacy_entries(tmp_path: Path):
     }
     ledger.save(data)
     assert ledger.load()["items"]["0000000000000001"]["state"] == "active"
+
+
+# -- reserve_for_paper_raw floor invariant tests ---------------------------
+
+
+def test_reserve_for_paper_raw_uses_existing_dir_floor(tmp_path: Path):
+    """reserve_for_paper_raw must scan dirs, not just max_number."""
+    ledger = _ledger(tmp_path)
+    paper_raw_dir = tmp_path / "paper_raw"
+    paper_raw_dir.mkdir(parents=True)
+
+    # Create an orphan 16-digit directory with number 10
+    orphan = paper_raw_dir / "0000000000000010"
+    orphan.mkdir()
+    (orphan / "some_file.md").write_text("orphan", encoding="utf-8")
+
+    # Set max_number to 5 -- if only using max_number, next would be 6
+    data = ledger.empty_data()
+    data["max_number"] = "0000000000000005"
+    ledger.save(data)
+
+    # Create a new workspace folder and reserve
+    folder = paper_raw_dir / "0000000000000001"
+    folder.mkdir(parents=True)
+
+    number = ledger.reserve_for_paper_raw(folder)
+    assert int(number) >= 11, (
+        f"Expected >= 11 (floor from orphan dir 10 + 1), got {number}"
+    )
+    assert int(number) != 6, (
+        f"Must NOT be 6 (max_number 5 + 1 ignoring orphan dir), got {number}"
+    )
+
+
+def test_reserve_for_paper_raw_uses_marker_floor(tmp_path: Path):
+    """reserve_for_paper_raw must scan *.paper.number markers."""
+    ledger = _ledger(tmp_path)
+    paper_raw_dir = tmp_path / "paper_raw"
+    paper_raw_dir.mkdir(parents=True)
+
+    # Ledger max=5
+    data = ledger.empty_data()
+    data["max_number"] = "0000000000000005"
+    ledger.save(data)
+
+    # Create a subdir containing a marker that points to number 12
+    subdir = paper_raw_dir / "0000000000000001"
+    subdir.mkdir(parents=True)
+    marker = subdir / "0000000000000012.paper.number"
+    marker.write_text(json.dumps({
+        "paper_number": "0000000000000012",
+        "state": "reserved",
+    }), encoding="utf-8")
+
+    # Create a different workspace folder and reserve
+    folder = paper_raw_dir / "0000000000000002"
+    folder.mkdir(parents=True)
+
+    number = ledger.reserve_for_paper_raw(folder)
+    assert int(number) >= 13, (
+        f"Expected >= 13 (floor from marker 12 + 1), got {number}"
+    )
+    assert int(number) != 6, (
+        f"Must NOT be 6 (max_number 5 + 1 ignoring marker), got {number}"
+    )
+
+
+def test_reserve_for_paper_raw_preserves_existing_marker_idempotently(tmp_path: Path):
+    """Idempotent reserve still returns the existing number even when floor shifts."""
+    ledger = _ledger(tmp_path)
+    paper_raw_dir = tmp_path / "paper_raw"
+    paper_raw_dir.mkdir(parents=True)
+
+    folder = paper_raw_dir / "my_workspace"
+    folder.mkdir(parents=True)
+    first = ledger.reserve_for_paper_raw(folder)
+    assert first == "0000000000000001"
+
+    # Create an orphan dir with a much higher number
+    orphan = paper_raw_dir / "0000000000000100"
+    orphan.mkdir()
+
+    # Calling reserve again on the same folder must return the original number
+    second = ledger.reserve_for_paper_raw(folder)
+    assert second == first, (
+        f"Idempotent: expected {first}, got {second}. "
+        f"Existing marker must take precedence over floor scan."
+    )
+    data = ledger.load()
+    assert len(data["items"]) == 1
+
+
+def test_reserve_for_paper_raw_never_reuses_empty_orphan(tmp_path: Path):
+    """Empty orphan dir numbers must never be reused."""
+    ledger = _ledger(tmp_path)
+    paper_raw_dir = tmp_path / "paper_raw"
+    paper_raw_dir.mkdir(parents=True)
+
+    # Create empty orphan dir with number 3
+    orphan = paper_raw_dir / "0000000000000003"
+    orphan.mkdir()
+
+    # Ledger max = 1
+    data = ledger.empty_data()
+    data["max_number"] = "0000000000000001"
+    ledger.save(data)
+
+    folder = paper_raw_dir / "0000000000000002"
+    folder.mkdir(parents=True)
+    number = ledger.reserve_for_paper_raw(folder)
+    assert int(number) >= 4, (
+        f"Expected >= 4 (skipping orphan 3), got {number}"
+    )
+    assert int(number) not in (2, 3), (
+        f"Must NOT reuse empty orphan 3 or allocate low number 2, got {number}"
+    )
+
+
+def test_reserve_for_paper_raw_falls_back_when_parent_does_not_exist(tmp_path: Path):
+    """When parent dir doesn't exist, floor scan falls back to ledger fields."""
+    ledger = _ledger(tmp_path)
+
+    data = ledger.empty_data()
+    data["max_number"] = "0000000000000005"
+    ledger.save(data)
+
+    # Parent dir does NOT exist — only target folder created
+    target = tmp_path / "nonexistent_parent" / "target_folder"
+    target.mkdir(parents=True)
+
+    number = ledger.reserve_for_paper_raw(target)
+    assert number == "0000000000000006", (
+        f"Expected 0000000000000006 (fallback to max_number 5 + 1), got {number}"
+    )

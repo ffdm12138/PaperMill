@@ -1,6 +1,6 @@
 """打包 git 跟踪的所有文件 + 轻量文本/结构文件为 audit snapshot zip。
 
-这是 lightweight audit snapshot，不是纯源码 release 包，也不是完整运行时备份。
+这是 lightweight audit/handoff snapshot，不是纯源码 release 包，也不是完整数据备份。
 
 契约：
 - Git 仓库保持 source-only hygiene：真实文献资产、PDF、图片、运行时数据和日志不得被 git tracked。
@@ -10,6 +10,11 @@
   `data/papers`、`data/paper_raw` 等目录中的 catalog、metadata、markdown、source_records。
 - zip **不包含** PDF、图片、日志、缓存、临时文件、数据库、模型权重、密钥和大文件。
 - zip 中出现的轻量运行时样本不代表 git 污染。
+- **Workspace sampling**: `data/paper_raw/` 和 `data/papers/` 各最多保留
+  5 个样例 workspace（按目录名升序确定性选择）。
+  完整数据备份请使用专门的备份/导出流程。
+- **Secret scan**: 仅扫描进入 snapshot zip 的文件，不保证全仓无 secret。
+  完整仓库 secret 扫描请使用独立的 hygiene task。
 
 用法：
     python scripts/pack_repo.py                         # audit profile (默认)
@@ -17,6 +22,7 @@
     python scripts/pack_repo.py --name v2 --profile audit
 """
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -28,6 +34,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 ZIP_NAME_BASE = "mineru_snapshot"
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
+_WORKSPACE_SAMPLE_LIMIT = 5
 
 # ── Packaging profiles ────────────────────────────────────────────
 # audit (default): source code + git-ignored runtime samples
@@ -436,6 +444,116 @@ def _scan_repo_files() -> list[str]:
     return sorted(out)
 
 
+# -- workspace sampling ---------------------------------------------------
+
+
+def _is_papers_workspace(dir_path: Path) -> bool:
+    """A directory is a papers workspace if it contains any core paper asset."""
+    _CORE_GLOBS = ("*.metadata.json", "*.catalog.json", "*.paper.number", "*.pdf", "*.md")
+    return any(list(dir_path.glob(g)) for g in _CORE_GLOBS)
+
+
+def _selected_sample_workspaces(root: Path, limit: int = _WORKSPACE_SAMPLE_LIMIT) -> dict:
+    """Return deterministic sample workspace selections for the snapshot."""
+    result = {"paper_raw_selected": set(), "paper_raw_total": 0,
+              "papers_selected": set(), "papers_total": 0}
+    # paper_raw: only 16-digit subdirs
+    paper_raw_dir = root / "data" / "paper_raw"
+    if paper_raw_dir.exists():
+        raw_dirs = sorted(
+            [d for d in paper_raw_dir.iterdir()
+             if d.is_dir() and _PAPER_NUMBER_RE.match(d.name)],
+            key=lambda d: d.name
+        )
+        result["paper_raw_total"] = len(raw_dirs)
+        result["paper_raw_selected"] = {
+            d.relative_to(root).as_posix() for d in raw_dirs[:limit]
+        }
+    # papers: only subdirs containing core paper assets, skipping non-paper dirs
+    papers_dir = root / "data" / "papers"
+    _PAPERS_SKIP = {"images", "cache", "tmp", "logs", "reports", "__pycache__"}
+    if papers_dir.exists():
+        candidates = [
+            d for d in papers_dir.iterdir()
+            if d.is_dir() and d.name not in _PAPERS_SKIP
+            and not d.name.startswith(".") and _is_papers_workspace(d)
+        ]
+        papers_dirs = sorted(candidates, key=lambda d: d.name)
+        result["papers_total"] = len(papers_dirs)
+        result["papers_selected"] = {
+            d.relative_to(root).as_posix() for d in papers_dirs[:limit]
+        }
+    return result
+
+
+def _resolve_workspace_prefix(rel_path: str) -> str | None:
+    """Return workspace prefix like ``data/paper_raw/0000000000000001`` or None.
+
+    Root-level files (depth < 4) are never considered workspace files.
+    For ``data/paper_raw/``, only paths where the third component is a
+    16-digit number are workspace files.  For ``data/papers/``, paths
+    with at least 4 parts are workspace files.
+    """
+    path = Path(rel_path)
+    if len(path.parts) < 4:
+        return None
+    if path.parts[0] == "data" and path.parts[1] == "paper_raw":
+        if _PAPER_NUMBER_RE.match(path.parts[2]):
+            return f"data/paper_raw/{path.parts[2]}"
+        return None
+    if path.parts[0] == "data" and path.parts[1] == "papers":
+        return f"data/papers/{path.parts[2]}"
+    return None
+
+
+def _should_sample_keep(rel_path: str, sampling: dict) -> bool:
+    """Return True if the file should be included in the snapshot.
+
+    Files outside any workspace always pass.  Files inside a workspace
+    must belong to a selected workspace.
+    """
+    ws = _resolve_workspace_prefix(rel_path)
+    if ws is None:
+        return True
+    if ws.startswith("data/paper_raw/"):
+        return ws in sampling["paper_raw_selected"]
+    if ws.startswith("data/papers/"):
+        return ws in sampling["papers_selected"]
+    return True
+
+
+def _verify_snapshot_sampling(zip_path: Path, sampling: dict) -> list[str]:
+    """Post-pack self-check: verify workspace sampling constraints."""
+    errors: list[str] = []
+    raw_ws: set[str] = set()
+    papers_ws: set[str] = set()
+    has_manifest = False
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for name in zf.namelist():
+            if name == "snapshot_manifest.json":
+                has_manifest = True
+                continue
+            ws = _resolve_workspace_prefix(name)
+            if ws is None:
+                continue
+            if ws.startswith("data/paper_raw/"):
+                raw_ws.add(ws)
+            elif ws.startswith("data/papers/"):
+                papers_ws.add(ws)
+    limit = _WORKSPACE_SAMPLE_LIMIT
+    if len(raw_ws) > limit:
+        errors.append(
+            f"snapshot contains {len(raw_ws)} paper_raw workspaces (limit: {limit})"
+        )
+    if len(papers_ws) > limit:
+        errors.append(
+            f"snapshot contains {len(papers_ws)} papers workspaces (limit: {limit})"
+        )
+    if not has_manifest:
+        errors.append("snapshot_manifest.json missing from zip")
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build audit snapshot ZIP (source + optional runtime samples)",
@@ -467,6 +585,21 @@ def main():
     if not files:
         print("[ERROR] No tracked files, aborting")
         sys.exit(1)
+
+    # Apply workspace sampling (always active; keeps snapshot lightweight)
+    sampling = _selected_sample_workspaces(PROJECT_ROOT, limit=_WORKSPACE_SAMPLE_LIMIT)
+    before = len(files)
+    files = [f for f in files if _should_sample_keep(f, sampling)]
+    dropped = before - len(files)
+    if dropped:
+        print(f"  [INFO] data/paper_raw sampled: {len(sampling['paper_raw_selected'])} of {sampling['paper_raw_total']} workspaces")
+        print(f"  [INFO] data/papers sampled: {len(sampling['papers_selected'])} of {sampling['papers_total']} workspaces")
+        print(f"         {dropped} file(s) from non-sampled workspaces excluded")
+
+    # Secret scan on filtered list (only files entering the zip).
+    # This scan is scoped to the snapshot — it does not guarantee the
+    # full repository is secret-free.  Non-sampled workspaces are not
+    # in the zip and are intentionally not scanned here.
     secret_findings = scan_files_for_secrets(files)
     if secret_findings:
         print("[ERROR] Secret-like literal(s) found; refusing to pack")
@@ -508,12 +641,59 @@ def main():
                 print(f"  [WARN] total zip size exceeds {ZIP_MAX_BYTES / 1024 / 1024:.0f} MB limit, stopping")
                 break
 
+        # Write snapshot manifest as last entry in the same session.
+        # Sanitize workspace paths: surrogates or other encoding-unsafe
+        # names (possible when a zip is decompressed cross-platform and
+        # re-packed) must not crash the manifest write.
+        def _manifest_safe_paths(paths: set[str]) -> tuple[list[str], int]:
+            safe: list[str] = []
+            skipped = 0
+            for p in sorted(paths):
+                if _safe_for_zip(p):
+                    safe.append(p)
+                else:
+                    skipped += 1
+            return safe, skipped
+
+        raw_included, raw_unsafe = _manifest_safe_paths(sampling["paper_raw_selected"])
+        papers_included, papers_unsafe = _manifest_safe_paths(sampling["papers_selected"])
+        manifest = {
+            "snapshot_type": "lightweight",
+            "paper_raw_sample_limit": _WORKSPACE_SAMPLE_LIMIT,
+            "paper_raw_total_detected": sampling["paper_raw_total"],
+            "paper_raw_included": raw_included,
+            "papers_sample_limit": _WORKSPACE_SAMPLE_LIMIT,
+            "papers_total_detected": sampling["papers_total"],
+            "papers_included": papers_included,
+            "sampling_note": (
+                "Only sampled data/paper_raw and data/papers workspaces are "
+                "included.  Source data and git working tree are unchanged."
+            ),
+        }
+        unsafe_total = raw_unsafe + papers_unsafe
+        if unsafe_total:
+            manifest["skipped_unsafe_manifest_paths"] = unsafe_total
+        zf.writestr("snapshot_manifest.json",
+                    json.dumps(manifest, indent=2, ensure_ascii=False))
+        count += 1  # manifest counts toward total
+
+    # Post-pack self-check
+    check_errors = _verify_snapshot_sampling(zip_path, sampling)
+    if check_errors:
+        print("[ERROR] Snapshot self-check failed:")
+        for e in check_errors:
+            print(f"  {e}")
+        sys.exit(1)
+
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"[OK] Packed: {zip_name} ({count} files, {size_mb:.1f} MB)")
     if skipped:
         print(f"     {skipped} file(s) skipped")
     if oversized:
         print(f"     {len(oversized)} oversized file(s) not included")
+    if dropped:
+        print(f"[INFO] data/paper_raw sampled: {len(sampling['paper_raw_selected'])} of {sampling['paper_raw_total']} workspaces")
+        print(f"[INFO] data/papers sampled: {len(sampling['papers_selected'])} of {sampling['papers_total']} workspaces")
     print(f"     {zip_path}")
 
 

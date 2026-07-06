@@ -185,6 +185,9 @@ def test_normal_tests_do_not_handwrite_ready_for_commit_artifacts():
         "tests/contract/test_catalog_repository_state.py",
         # This file itself contains the tokens/write_ops as scan literals.
         "tests/hygiene/test_no_legacy_mainflow_refs.py",
+        # pack_repo workspace sampling tests create *.paper.number markers as
+        # test fixtures for sampling rules — these are not formalize artifacts.
+        "tests/unit/test_pack_repo_rules.py",
     }
     tokens = ("ready_for_commit", ".paper.number", "formalization.json")
     write_ops = (".write_text(", "atomic_write_json(", "_write_json(")
