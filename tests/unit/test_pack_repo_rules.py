@@ -233,6 +233,18 @@ def test_new_constants_exist():
     assert ".git" in pr.DENIED_PATH_PARTS
 
 
+def test_pack_repo_secret_scan_catches_generic_bearer_token():
+    token = "Bearer " + "A" * 32
+    findings = pr.scan_text_for_secrets(f"Authorization: {token}", "sample.txt")
+    assert findings
+    assert findings[0]["rule"] in {"authorization_bearer_literal", "bearer_literal"}
+
+
+def test_pack_repo_secret_scan_allows_bare_env_var_names():
+    text = "OPENALEX_EMAIL OPENALEX_API_KEY SEMANTIC_SCHOLAR_API_KEY"
+    assert pr.scan_text_for_secrets(text, "docs/example.md") == []
+
+
 # ── Source/template/gitkeep paths to keep (all profiles) ──────────────
 
 @pytest.mark.parametrize("path", [

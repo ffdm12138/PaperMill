@@ -89,6 +89,10 @@ _FORMAL_TRANSIENT_GLOBS = (
 READ_DECISION_PENDING = "pending"
 READ_DECISION_FINAL_VALUES = {"must_read", "maybe_read", "skip"}
 READ_DECISION_ALLOWED_VALUES = {"", READ_DECISION_PENDING, *READ_DECISION_FINAL_VALUES}
+LEDGER_ALLOCATING = "allocating"
+LEDGER_RESERVED = "reserved"
+LEDGER_METADATA_STAGED = "metadata_staged"
+LEDGER_ABANDONED = "abandoned"
 
 
 def now_iso() -> str:
@@ -1392,13 +1396,18 @@ class PaperRawAllocator:
 
     @property
     def _lock_path(self) -> Path:
-        return self.paper_raw_dir / ".allocate.lock"
+        return self.paper_raw_dir / ".paper_raw_write.lock"
 
     def allocate_id(self) -> str:
         raise RuntimeError("legacy short-id allocation is legacy only; use allocate_workspace()")
 
     def allocate_workspace(self, *, planned_paper_id: str = "") -> dict:
         """Reserve a 16-digit paper_number and create its paper_raw workspace."""
+        self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(self._lock_path)):
+            return self._allocate_workspace_unlocked(planned_paper_id=planned_paper_id)
+
+    def _allocate_workspace_unlocked(self, *, planned_paper_id: str = "") -> dict:
         number, folder = self.ledger.reserve_next_for_paper_raw_workspace(
             self.paper_raw_dir,
             planned_paper_id=planned_paper_id,
@@ -1408,6 +1417,27 @@ class PaperRawAllocator:
             "paper_raw_id": number,
             "folder": str(folder),
         }
+
+    def _workspace_has_core_assets(self, folder: Path, paper_number: str) -> bool:
+        if not folder.exists():
+            return False
+        patterns = (
+            f"{paper_number}.metadata.json",
+            f"{paper_number}.pdf",
+            "stage_manifest.json",
+            f"{paper_number}.asset_manifest.json",
+            "*.paper.number",
+        )
+        return any(any(folder.glob(pattern)) for pattern in patterns)
+
+    def _mark_allocation_failure(self, paper_number: str, folder: Path, exc: Exception) -> None:
+        if self._workspace_has_core_assets(folder, paper_number):
+            self._mark_stage_failed(paper_number, folder, exc)
+            return
+        try:
+            self.ledger.mark_abandoned(paper_number, str(exc), folder=folder)
+        except Exception:
+            pass
 
     def _mark_stage_failed(self, paper_number: str, folder: Path, exc: Exception) -> None:
         try:
@@ -1436,89 +1466,88 @@ class PaperRawAllocator:
         source_pdf = Path(source_pdf)
         if not source_pdf.exists():
             raise FileNotFoundError(f"PDF not found: {source_pdf}")
-        dup = check_pdf_duplicate(source_pdf, paper_raw_dir=self.paper_raw_dir, papers_dir=self.papers_dir)
-        if dup.blocking:
-            raise DuplicateIngestError(dup)
-        original_hashes = compute_file_hashes(source_pdf)
-        original_sha = original_hashes["sha256"]
-        original_md5 = original_hashes["md5"]
-        original_size = original_hashes["file_size"]
-        workspace = self.allocate_workspace()
-        source_id = workspace["paper_number"]
-        folder = Path(workspace["folder"])
-        try:
-            dest_pdf = folder / f"{source_id}.pdf"
-            if move:
-                shutil.move(str(source_pdf), dest_pdf)
-            else:
-                shutil.copy2(source_pdf, dest_pdf)
-            data = metadata or empty_metadata(source_id, source_type=source_type)
-            data["paper_number"] = source_id
-            data["paper_raw_id"] = source_id
-            data["schema_version"] = METADATA_SCHEMA_VERSION
-            data["source_type"] = source_type
-            source_obj = data.setdefault("source", {})
-            source_obj["kind"] = source_type
-            # For manual_pdf, the metadata source provider is always "manual"
-            # (never "manual_pdf") and raw_record_path is forced to the
-            # canonical sidecar — never preserve a caller-supplied stale path.
-            if source_type == "manual_pdf":
-                source_obj["provider"] = "manual"
-                source_obj["raw_record_path"] = metadata_source_rel_path("manual")
-            else:
-                if not source_obj.get("provider"):
-                    source_obj["provider"] = source_type
-                source_obj["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
-                    source_obj.get("raw_record_path") or "",
-                    source_obj.get("provider") or source_type,
-                )
-            staged_hashes = compute_file_hashes(dest_pdf)
-            operation = "move" if move else "copy"
-            atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
-            # source_records/metadata_source.manual.json — bibliographic source record.
-            write_metadata_source_record(folder, "manual", manual_metadata_source_record(
-                original_filename=source_pdf.name,
-                original_path=str(source_pdf),
-                note="metadata unresolved at staging time",
-            ))
-            write_asset_manifest(folder, prefix=source_id, paper_number=source_id, stage="paper_raw")
-            write_stage_manifest(
-                folder,
-                paper_number=source_id,
-                paper_raw_id=source_id,
-                workflow_path="manual_pdf",
-                source_type=source_type,
-                pdf_source=manual_pdf_source(
-                    operation=operation,
-                    original_path=str(source_pdf),
+        self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(self._lock_path)):
+            dup = check_pdf_duplicate(source_pdf, paper_raw_dir=self.paper_raw_dir, papers_dir=self.papers_dir)
+            if dup.blocking:
+                raise DuplicateIngestError(dup)
+            original_hashes = compute_file_hashes(source_pdf)
+            workspace = self._allocate_workspace_unlocked()
+            source_id = workspace["paper_number"]
+            folder = Path(workspace["folder"])
+            try:
+                dest_pdf = folder / f"{source_id}.pdf"
+                if move:
+                    shutil.move(str(source_pdf), dest_pdf)
+                else:
+                    shutil.copy2(source_pdf, dest_pdf)
+                data = metadata or empty_metadata(source_id, source_type=source_type)
+                data["paper_number"] = source_id
+                data["paper_raw_id"] = source_id
+                data["schema_version"] = METADATA_SCHEMA_VERSION
+                data["source_type"] = source_type
+                source_obj = data.setdefault("source", {})
+                source_obj["kind"] = source_type
+                if source_type == "manual_pdf":
+                    source_obj["provider"] = "manual"
+                    source_obj["raw_record_path"] = metadata_source_rel_path("manual")
+                else:
+                    if not source_obj.get("provider"):
+                        source_obj["provider"] = source_type
+                    source_obj["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
+                        source_obj.get("raw_record_path") or "",
+                        source_obj.get("provider") or source_type,
+                    )
+                schema_errors = validate_metadata_schema(data)
+                if schema_errors:
+                    raise ValueError("invalid metadata: " + "; ".join(schema_errors))
+                staged_hashes = compute_file_hashes(dest_pdf)
+                operation = "move" if move else "copy"
+                atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
+                write_metadata_source_record(folder, "manual", manual_metadata_source_record(
                     original_filename=source_pdf.name,
-                    original_hashes=original_hashes,
-                ),
-                staged_pdf={
-                    "path": normalize_repo_path(dest_pdf),
-                    "md5": staged_hashes["md5"],
-                    "sha256": staged_hashes["sha256"],
-                    "file_size": staged_hashes["file_size"],
-                },
-            )
-            _write_import_status(
-                folder,
-                "ready_for_convert",
-                reason="PDF staged into paper_raw workspace",
-                extra={
-                    "paper_number": source_id,
-                    "paper_raw_id": source_id,
-                    "source_type": source_type,
-                    "source_provider": "manual_pdf",
-                    "doi": "",
-                    "pdf_md5": staged_hashes["md5"],
-                    "pdf_sha256": staged_hashes["sha256"],
-                },
-            )
-            return {**workspace, "pdf": str(dest_pdf)}
-        except Exception as exc:
-            self._mark_stage_failed(source_id, folder, exc)
-            raise
+                    original_path=str(source_pdf),
+                    note="metadata unresolved at staging time",
+                ))
+                write_asset_manifest(folder, prefix=source_id, paper_number=source_id, stage="paper_raw")
+                write_stage_manifest(
+                    folder,
+                    paper_number=source_id,
+                    paper_raw_id=source_id,
+                    workflow_path="manual_pdf",
+                    source_type=source_type,
+                    pdf_source=manual_pdf_source(
+                        operation=operation,
+                        original_path=str(source_pdf),
+                        original_filename=source_pdf.name,
+                        original_hashes=original_hashes,
+                    ),
+                    staged_pdf={
+                        "path": normalize_repo_path(dest_pdf),
+                        "md5": staged_hashes["md5"],
+                        "sha256": staged_hashes["sha256"],
+                        "file_size": staged_hashes["file_size"],
+                    },
+                )
+                _write_import_status(
+                    folder,
+                    "ready_for_convert",
+                    reason="PDF staged into paper_raw workspace",
+                    extra={
+                        "paper_number": source_id,
+                        "paper_raw_id": source_id,
+                        "source_type": source_type,
+                        "source_provider": "manual_pdf",
+                        "doi": "",
+                        "pdf_md5": staged_hashes["md5"],
+                        "pdf_sha256": staged_hashes["sha256"],
+                    },
+                )
+                self.ledger.mark_metadata_staged(source_id, folder)
+                return {**workspace, "pdf": str(dest_pdf)}
+            except Exception as exc:
+                self._mark_allocation_failure(source_id, folder, exc)
+                raise
 
     def allocate_metadata(
         self,
@@ -1527,80 +1556,75 @@ class PaperRawAllocator:
         source_type: str = "network_search",
         raw_record: dict | None = None,
     ) -> dict:
-        if metadata:
-            schema_errors = validate_metadata_schema(metadata)
-            if schema_errors:
-                raise ValueError("invalid metadata: " + "; ".join(schema_errors))
-            dup = check_metadata_duplicate(metadata, paper_raw_dir=self.paper_raw_dir, papers_dir=self.papers_dir)
-            if dup.blocking:
-                raise DuplicateIngestError(dup)
-        workspace = self.allocate_workspace()
-        source_id = workspace["paper_number"]
-        folder = Path(workspace["folder"])
-        try:
-            data = metadata or empty_metadata(source_id, source_type=source_type)
-            data["paper_number"] = source_id
-            data["paper_raw_id"] = source_id
-            data["schema_version"] = METADATA_SCHEMA_VERSION
-            data["source_type"] = source_type
-            schema_errors = validate_metadata_schema(data)
-            if schema_errors:
-                raise ValueError("invalid metadata: " + "; ".join(schema_errors))
-            source = data.get("source") if isinstance(data.get("source"), dict) else {}
-            provider = str(source.get("provider") or source_type)
-            # raw_record_path must always point at a metadata source record, never
-            # at fetch_result.json. Use source_records/metadata_source.<provider>.json.
-            source["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
-                source.get("raw_record_path") or "", provider,
-            )
-            data["source"] = source
-            if raw_record is not None:
-                write_metadata_source_record(folder, provider, raw_record)
-            atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
-            match_status = str(((data.get("metadata_match") or {}).get("status")) or "")
-            doi = metadata_doi(data)
-            match_warnings = list(((data.get("metadata_match") or {}).get("warnings") or []))
-            status = "metadata_matched" if match_status in {"matched", "manual_confirmed"} else "staged_metadata"
-            if source_type == "network_search" and match_status == "unmatched" and match_warnings:
-                status = METADATA_MANUAL_REVIEW_REQUIRED
-            reason = (
-                "network search metadata staged into paper_raw workspace"
-                if status == "metadata_matched"
-                else "network search metadata requires manual review"
-                if status == METADATA_MANUAL_REVIEW_REQUIRED
-                else "metadata staged into paper_raw workspace"
-            )
-            # Initialize a stage_manifest with workflow_path=network_metadata and
-            # null pdf_source/staged_pdf. The fetch_pdf step fills those in after
-            # the PDF is downloaded and attached.
-            write_stage_manifest(
-                folder,
-                paper_number=source_id,
-                paper_raw_id=source_id,
-                workflow_path="network_metadata",
-                source_type=source_type,
-                pdf_source=None,
-                staged_pdf=None,
-            )
-            _write_import_status(
-                folder,
-                status,
-                reason=reason,
-                warnings=match_warnings,
-                extra={
-                    "paper_number": source_id,
-                    "paper_raw_id": source_id,
-                    "source_type": source_type,
-                    "source_provider": provider,
-                    "doi": doi,
-                    "pdf_md5": "",
-                    "pdf_sha256": "",
-                },
-            )
-            return workspace
-        except Exception as exc:
-            self._mark_stage_failed(source_id, folder, exc)
-            raise
+        self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(self._lock_path)):
+            if metadata:
+                dup = check_metadata_duplicate(metadata, paper_raw_dir=self.paper_raw_dir, papers_dir=self.papers_dir)
+                if dup.blocking:
+                    raise DuplicateIngestError(dup)
+            workspace = self._allocate_workspace_unlocked()
+            source_id = workspace["paper_number"]
+            folder = Path(workspace["folder"])
+            try:
+                data = metadata or empty_metadata(source_id, source_type=source_type)
+                data["paper_number"] = source_id
+                data["paper_raw_id"] = source_id
+                data["schema_version"] = METADATA_SCHEMA_VERSION
+                data["source_type"] = source_type
+                schema_errors = validate_metadata_schema(data)
+                if schema_errors:
+                    raise ValueError("invalid metadata: " + "; ".join(schema_errors))
+                source = data.get("source") if isinstance(data.get("source"), dict) else {}
+                provider = str(source.get("provider") or source_type)
+                source["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
+                    source.get("raw_record_path") or "", provider,
+                )
+                data["source"] = source
+                if raw_record is not None:
+                    write_metadata_source_record(folder, provider, raw_record)
+                atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
+                match_status = str(((data.get("metadata_match") or {}).get("status")) or "")
+                doi = metadata_doi(data)
+                match_warnings = list(((data.get("metadata_match") or {}).get("warnings") or []))
+                status = "metadata_matched" if match_status in {"matched", "manual_confirmed"} else "staged_metadata"
+                if source_type == "network_search" and match_status == "unmatched" and match_warnings:
+                    status = METADATA_MANUAL_REVIEW_REQUIRED
+                reason = (
+                    "network search metadata staged into paper_raw workspace"
+                    if status == "metadata_matched"
+                    else "network search metadata requires manual review"
+                    if status == METADATA_MANUAL_REVIEW_REQUIRED
+                    else "metadata staged into paper_raw workspace"
+                )
+                write_stage_manifest(
+                    folder,
+                    paper_number=source_id,
+                    paper_raw_id=source_id,
+                    workflow_path="network_metadata",
+                    source_type=source_type,
+                    pdf_source=None,
+                    staged_pdf=None,
+                )
+                _write_import_status(
+                    folder,
+                    status,
+                    reason=reason,
+                    warnings=match_warnings,
+                    extra={
+                        "paper_number": source_id,
+                        "paper_raw_id": source_id,
+                        "source_type": source_type,
+                        "source_provider": provider,
+                        "doi": doi,
+                        "pdf_md5": "",
+                        "pdf_sha256": "",
+                    },
+                )
+                self.ledger.mark_metadata_staged(source_id, folder)
+                return workspace
+            except Exception as exc:
+                self._mark_allocation_failure(source_id, folder, exc)
+                raise
 
     def attach_pdf(self, source_id: str, source_pdf: str | Path, *, move: bool = False, replace: bool = False) -> dict:
         paper_number = validate_paper_raw_id(source_id)
@@ -1608,122 +1632,116 @@ class PaperRawAllocator:
         if not folder.is_dir():
             raise FileNotFoundError(f"paper_raw folder not found: {folder}")
         source_pdf = Path(source_pdf)
-        dest_pdf = folder / f"{paper_number}.pdf"
-        dup = check_pdf_duplicate(
-            source_pdf,
-            paper_raw_dir=self.paper_raw_dir,
-            papers_dir=self.papers_dir,
-            skip_paper_number=paper_number,
-        )
-        if dup.blocking:
-            raise DuplicateIngestError(dup)
-        backup_pdf = dest_pdf.with_suffix(dest_pdf.suffix + ".replace.tmp")
-        if dest_pdf.exists():
-            if not replace:
-                source_hashes = compute_file_hashes(source_pdf)
-                existing_hashes = compute_file_hashes(dest_pdf)
-                if (
-                    source_hashes["md5"] == existing_hashes["md5"]
-                    and source_hashes["sha256"] == existing_hashes["sha256"]
-                    and source_hashes["file_size"] == existing_hashes["file_size"]
-                ):
-                    return {
-                        "success": True,
-                        "skipped": True,
-                        "status": "skipped_existing_pdf",
-                        "paper_number": paper_number,
-                        "paper_raw_id": paper_number,
-                        "pdf": str(dest_pdf),
-                        "pdf_md5": existing_hashes["md5"],
-                        "pdf_sha256": existing_hashes["sha256"],
-                        "pdf_file_size": existing_hashes["file_size"],
-                        "reason": "same PDF already attached",
-                    }
-                raise FileExistsError(f"PDF already exists; pass replace=True to overwrite: {dest_pdf}")
-            if backup_pdf.exists():
-                backup_pdf.unlink()
-            dest_pdf.replace(backup_pdf)
-        try:
-            if move:
-                shutil.move(str(source_pdf), dest_pdf)
-            else:
-                shutil.copy2(source_pdf, dest_pdf)
-        except Exception:
-            if backup_pdf.exists() and not dest_pdf.exists():
-                backup_pdf.replace(dest_pdf)
-            raise
-        else:
-            backup_pdf.unlink(missing_ok=True)
-        meta_path = folder / f"{paper_number}.metadata.json"
-        data = _read_json(meta_path, empty_metadata(paper_number))
-        hashes = compute_file_hashes(dest_pdf)
-        data["paper_number"] = paper_number
-        data["paper_raw_id"] = paper_number
-        data["schema_version"] = METADATA_SCHEMA_VERSION
-        # Ensure raw_record_path never points at fetch_result.json (the fetch
-        # result is written separately by the caller). Preserve the existing
-        # metadata source record path when it is valid.
-        source_obj = data.get("source") if isinstance(data.get("source"), dict) else {}
-        if source_obj:
-            provider = str(source_obj.get("provider") or data.get("source_type") or "manual")
-            source_obj["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
-                source_obj.get("raw_record_path") or "", provider,
+        with FileLock(str(self._lock_path)):
+            dest_pdf = folder / f"{paper_number}.pdf"
+            dup = check_pdf_duplicate(
+                source_pdf,
+                paper_raw_dir=self.paper_raw_dir,
+                papers_dir=self.papers_dir,
+                skip_paper_number=paper_number,
             )
-            data["source"] = source_obj
-        atomic_write_json(meta_path, data, indent=2)
-        write_asset_manifest(folder, prefix=paper_number, paper_number=paper_number, stage="paper_raw")
-        existing_manifest = read_stage_manifest(folder)
-        workflow_path = existing_manifest.get("workflow_path") or "network_metadata_pdf_fetch"
-        # If the manifest was initialized as network_metadata (no PDF yet),
-        # upgrade the workflow_path to reflect that the PDF has been fetched.
-        if workflow_path == "network_metadata":
-            workflow_path = "network_metadata_pdf_fetch"
-        source_type = str(existing_manifest.get("source_type") or data.get("source_type") or "network_search")
-        existing_pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
-        if existing_pdf_source is None:
-            # Minimal pdf_source; the caller (fetch_pdf_for_paper_raw) enriches
-            # it with resolver/pdf_url/doi/fetch_record_path.
-            existing_pdf_source = doi_fetch_pdf_source(operation="replace" if replace else "attach")
-        else:
-            existing_pdf_source["operation"] = "replace" if replace else "attach"
-        update_stage_manifest(folder, updates={
-            "schema_version": "1.0",
-            "paper_number": paper_number,
-            "paper_raw_id": paper_number,
-            "workflow_path": workflow_path,
-            "source_type": source_type,
-            "pdf_source": existing_pdf_source,
-            "staged_pdf": {
-                "path": normalize_repo_path(dest_pdf),
-                "md5": hashes["md5"],
-                "sha256": hashes["sha256"],
-                "file_size": hashes["file_size"],
-            },
-            "last_pdf_operation": "replace" if replace else "attach",
-            "pdf_attached_at": now_iso(),
-        })
-        _write_import_status(
-            folder,
-            "ready_for_convert",
-            reason="PDF attached into paper_raw workspace",
-            extra={
+            if dup.blocking:
+                raise DuplicateIngestError(dup)
+            backup_pdf = dest_pdf.with_suffix(dest_pdf.suffix + ".replace.tmp")
+            if dest_pdf.exists():
+                if not replace:
+                    source_hashes = compute_file_hashes(source_pdf)
+                    existing_hashes = compute_file_hashes(dest_pdf)
+                    if (
+                        source_hashes["md5"] == existing_hashes["md5"]
+                        and source_hashes["sha256"] == existing_hashes["sha256"]
+                        and source_hashes["file_size"] == existing_hashes["file_size"]
+                    ):
+                        return {
+                            "success": True,
+                            "skipped": True,
+                            "status": "skipped_existing_pdf",
+                            "paper_number": paper_number,
+                            "paper_raw_id": paper_number,
+                            "pdf": str(dest_pdf),
+                            "pdf_md5": existing_hashes["md5"],
+                            "pdf_sha256": existing_hashes["sha256"],
+                            "pdf_file_size": existing_hashes["file_size"],
+                            "reason": "same PDF already attached",
+                        }
+                    raise FileExistsError(f"PDF already exists; pass replace=True to overwrite: {dest_pdf}")
+                if backup_pdf.exists():
+                    backup_pdf.unlink()
+                dest_pdf.replace(backup_pdf)
+            try:
+                if move:
+                    shutil.move(str(source_pdf), dest_pdf)
+                else:
+                    shutil.copy2(source_pdf, dest_pdf)
+            except Exception:
+                if backup_pdf.exists() and not dest_pdf.exists():
+                    backup_pdf.replace(dest_pdf)
+                raise
+            else:
+                backup_pdf.unlink(missing_ok=True)
+            meta_path = folder / f"{paper_number}.metadata.json"
+            data = _read_json(meta_path, empty_metadata(paper_number))
+            hashes = compute_file_hashes(dest_pdf)
+            data["paper_number"] = paper_number
+            data["paper_raw_id"] = paper_number
+            data["schema_version"] = METADATA_SCHEMA_VERSION
+            source_obj = data.get("source") if isinstance(data.get("source"), dict) else {}
+            if source_obj:
+                provider = str(source_obj.get("provider") or data.get("source_type") or "manual")
+                source_obj["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
+                    source_obj.get("raw_record_path") or "", provider,
+                )
+                data["source"] = source_obj
+            atomic_write_json(meta_path, data, indent=2)
+            write_asset_manifest(folder, prefix=paper_number, paper_number=paper_number, stage="paper_raw")
+            existing_manifest = read_stage_manifest(folder)
+            workflow_path = existing_manifest.get("workflow_path") or "network_metadata_pdf_fetch"
+            if workflow_path == "network_metadata":
+                workflow_path = "network_metadata_pdf_fetch"
+            source_type = str(existing_manifest.get("source_type") or data.get("source_type") or "network_search")
+            existing_pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
+            if existing_pdf_source is None:
+                existing_pdf_source = doi_fetch_pdf_source(operation="replace" if replace else "attach")
+            else:
+                existing_pdf_source["operation"] = "replace" if replace else "attach"
+            update_stage_manifest(folder, updates={
+                "schema_version": "1.0",
                 "paper_number": paper_number,
                 "paper_raw_id": paper_number,
+                "workflow_path": workflow_path,
                 "source_type": source_type,
-                "source_provider": (source_obj or {}).get("provider") or source_type,
-                "doi": metadata_doi(data),
+                "pdf_source": existing_pdf_source,
+                "staged_pdf": {
+                    "path": normalize_repo_path(dest_pdf),
+                    "md5": hashes["md5"],
+                    "sha256": hashes["sha256"],
+                    "file_size": hashes["file_size"],
+                },
+                "last_pdf_operation": "replace" if replace else "attach",
+                "pdf_attached_at": now_iso(),
+            })
+            _write_import_status(
+                folder,
+                "ready_for_convert",
+                reason="PDF attached into paper_raw workspace",
+                extra={
+                    "paper_number": paper_number,
+                    "paper_raw_id": paper_number,
+                    "source_type": source_type,
+                    "source_provider": (source_obj or {}).get("provider") or source_type,
+                    "doi": metadata_doi(data),
+                    "pdf_md5": hashes["md5"],
+                    "pdf_sha256": hashes["sha256"],
+                },
+            )
+            return {
+                "paper_number": paper_number,
+                "paper_raw_id": paper_number,
+                "pdf": str(dest_pdf),
                 "pdf_md5": hashes["md5"],
                 "pdf_sha256": hashes["sha256"],
-            },
-        )
-        return {
-            "paper_number": paper_number,
-            "paper_raw_id": paper_number,
-            "pdf": str(dest_pdf),
-            "pdf_md5": hashes["md5"],
-            "pdf_sha256": hashes["sha256"],
-            "pdf_file_size": hashes["file_size"],
-        }
+                "pdf_file_size": hashes["file_size"],
+            }
 
 
 class PaperRawConverter:
@@ -2457,33 +2475,165 @@ class PaperNumberLedger:
             self._save_unlocked(new_data)
             return new_data
 
+    @staticmethod
+    def scan_paper_raw_number_floor(paper_raw_dir: str | Path, ledger_data: dict) -> int:
+        """Return the monotonic floor for the next paper_raw allocation."""
+        paper_raw_dir = Path(paper_raw_dir)
+        numbers: list[int] = []
+
+        def add(value: Any) -> None:
+            text = str(value or "").strip()
+            if _PAPER_NUMBER_RE.match(text):
+                numbers.append(int(text))
+
+        add((ledger_data or {}).get("max_number"))
+        items = (ledger_data or {}).get("items") or {}
+        if isinstance(items, dict):
+            for key in items:
+                add(key)
+        if paper_raw_dir.exists():
+            for folder in paper_raw_dir.iterdir():
+                if folder.is_dir():
+                    add(folder.name)
+            for marker in paper_raw_dir.glob("**/*.paper.number"):
+                parsed = PaperNumberLedger.parse_marker_number(marker)
+                if parsed:
+                    add(parsed)
+        return max(numbers, default=0)
+
+    @staticmethod
+    def classify_paper_raw_workspace(folder: str | Path, expected_number: str = "") -> dict[str, Any]:
+        folder = Path(folder)
+        expected_number = str(expected_number or "").strip()
+        exists = folder.exists() and folder.is_dir()
+        markers = sorted(folder.glob("*.paper.number")) if exists else []
+        marker_number = PaperNumberLedger.parse_marker_number(markers[0]) if markers else ""
+        marker_number = marker_number or ""
+        number = expected_number or marker_number or (folder.name if _PAPER_NUMBER_RE.match(folder.name) else "")
+        metadata_path = folder / f"{number}.metadata.json" if number else None
+        has_metadata = bool(metadata_path and metadata_path.exists()) or (exists and any(folder.glob("*.metadata.json")))
+        has_marker = bool(markers)
+        has_stage_manifest = exists and (folder / "stage_manifest.json").exists()
+        has_pdf = exists and any(folder.glob("*.pdf"))
+        has_md = exists and any(folder.glob("*.md"))
+        has_conversion = exists and any(folder.glob("*.conversion.json"))
+        has_catalog = exists and any(folder.glob("*.catalog.json"))
+        has_asset_manifest = exists and any(folder.glob("*.asset_manifest.json"))
+        children = list(folder.iterdir()) if exists else []
+        if exists and not children:
+            classification = "empty_orphan_dir"
+        elif has_metadata and has_marker and has_stage_manifest and not has_pdf and not has_md:
+            classification = "metadata_only_workspace"
+        elif has_marker and not has_metadata:
+            classification = "marker_only_reserved"
+        elif has_pdf:
+            classification = "pdf_workspace"
+        elif has_md or has_conversion:
+            classification = "converted_workspace"
+        elif has_metadata:
+            classification = "metadata_workspace"
+        elif exists:
+            classification = "unknown_nonempty"
+        else:
+            classification = "missing_folder_for_ledger_item"
+        return {
+            "folder": str(folder),
+            "folder_name": folder.name,
+            "paper_number": number,
+            "marker_number": marker_number,
+            "classification": classification,
+            "has_marker": has_marker,
+            "has_metadata": has_metadata,
+            "has_stage_manifest": has_stage_manifest,
+            "has_pdf": has_pdf,
+            "has_markdown": has_md,
+            "has_catalog": has_catalog,
+            "has_asset_manifest": has_asset_manifest,
+            "child_count": len(children),
+        }
+
+    def _recover_allocating_items_unlocked(self, data: dict, paper_raw_dir: Path) -> None:
+        items = data.setdefault("items", {})
+        for number, item in list(items.items()):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("state") or "") != LEDGER_ALLOCATING:
+                continue
+            stored = str(item.get("folder_path") or "")
+            folder = resolve_stored_path(stored) if stored else paper_raw_dir / number
+            info = self.classify_paper_raw_workspace(folder, number)
+            created_at = item.get("created_at") or now_iso()
+            base = {
+                "folder_name": folder.name,
+                "folder_path": normalize_repo_path(folder),
+                "planned_paper_id": item.get("planned_paper_id") or "",
+                "created_at": created_at,
+                "recovered_at": now_iso(),
+                "recovery_classification": info["classification"],
+            }
+            if info["classification"] in {"missing_folder_for_ledger_item", "empty_orphan_dir"}:
+                items[number] = {
+                    **base,
+                    "state": LEDGER_ABANDONED,
+                    "abandoned_at": now_iso(),
+                    "abandoned_reason": f"recovered {info['classification']}",
+                }
+            elif info["classification"] == "marker_only_reserved":
+                items[number] = {**base, "state": LEDGER_RESERVED}
+            elif info.get("has_metadata"):
+                items[number] = {**base, "state": LEDGER_METADATA_STAGED}
+
     def reserve_next_for_paper_raw_workspace(
         self,
         paper_raw_dir: str | Path,
         *,
         planned_paper_id: str = "",
     ) -> tuple[str, Path]:
-        """Reserve the next paper_number and create ``paper_raw/<number>``."""
+        """Reserve the next paper_number and create ``paper_raw/<number>``.
+
+        This method is ledger-first and monotonic-first. The caller should hold
+        ``paper_raw/.paper_raw_write.lock`` for complete ingest write
+        transactions; this method holds the ledger lock only for short ledger
+        updates and never while copying large files.
+        """
         paper_raw_dir = Path(paper_raw_dir)
         paper_raw_dir.mkdir(parents=True, exist_ok=True)
         with FileLock(str(self._lock_path)):
             data = self.load()
-            number = f"{int(data.get('max_number') or '0') + 1:016d}"
+            self._recover_allocating_items_unlocked(data, paper_raw_dir)
+            number = f"{self.scan_paper_raw_number_floor(paper_raw_dir, data) + 1:016d}"
             folder = safe_child(paper_raw_dir, number)
-            if folder.exists():
-                raise FileExistsError(f"paper_raw workspace already exists: {folder}")
-            folder.mkdir(parents=False, exist_ok=False)
             data["max_number"] = number
             data.setdefault("items", {})[number] = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
                 "planned_paper_id": planned_paper_id,
-                "state": "reserved",
+                "state": LEDGER_ALLOCATING,
                 "created_at": now_iso(),
             }
             self._save_unlocked(data)
-            self.write_marker(folder, number, state="reserved", planned_paper_id=planned_paper_id)
-            return number, folder
+
+        try:
+            folder.mkdir(parents=False, exist_ok=False)
+            self.write_marker(folder, number, state=LEDGER_RESERVED, planned_paper_id=planned_paper_id)
+        except Exception as exc:
+            self.mark_abandoned(number, str(exc), folder=folder)
+            raise
+
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            items = data.setdefault("items", {})
+            existing = items.get(number) or {}
+            items[number] = {
+                "folder_name": folder.name,
+                "folder_path": normalize_repo_path(folder),
+                "planned_paper_id": planned_paper_id or existing.get("planned_paper_id") or "",
+                "state": LEDGER_RESERVED,
+                "created_at": existing.get("created_at") or now_iso(),
+                "reserved_at": now_iso(),
+            }
+            self._save_unlocked(data)
+        return number, folder
 
     def peek_next_numbers(self, count: int) -> list[str]:
         """Return the next ``count`` paper_numbers without mutating the ledger."""
@@ -2667,8 +2817,8 @@ class PaperNumberLedger:
             data = self.load()
             items = data.setdefault("items", {})
             existing = items.get(number) or {}
-            state = existing.get("state") or "reserved"
-            if state not in {"reserved", STAGE_FAILED}:
+            state = existing.get("state") or LEDGER_RESERVED
+            if state not in {LEDGER_ALLOCATING, LEDGER_RESERVED, LEDGER_METADATA_STAGED, STAGE_FAILED}:
                 raise ValueError(f"cannot mark stage_failed for number {number} in state {state}")
             items[number] = {
                 "folder_name": folder.name,
@@ -2680,12 +2830,85 @@ class PaperNumberLedger:
                 "errors": list(errors or []),
             }
             self._save_unlocked(data)
-            self.write_marker(
-                folder,
-                number,
-                state=STAGE_FAILED,
-                planned_paper_id=existing.get("planned_paper_id") or "",
-            )
+            if folder.exists():
+                self.write_marker(
+                    folder,
+                    number,
+                    state=STAGE_FAILED,
+                    planned_paper_id=existing.get("planned_paper_id") or "",
+                )
+            return number
+
+    def mark_abandoned(
+        self,
+        number: str,
+        reason: str,
+        *,
+        folder: str | Path | None = None,
+    ) -> str:
+        """Mark an interrupted allocation as abandoned without recycling it."""
+        if not _PAPER_NUMBER_RE.match(str(number or "")):
+            raise ValueError(f"invalid paper_number: {number}")
+        folder_path = Path(folder) if folder is not None else Path("")
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            items = data.setdefault("items", {})
+            existing = items.get(number) or {}
+            state = existing.get("state") or LEDGER_ALLOCATING
+            if state not in {LEDGER_ALLOCATING, LEDGER_RESERVED, LEDGER_ABANDONED, STAGE_FAILED}:
+                raise ValueError(f"cannot mark abandoned for number {number} in state {state}")
+            stored_path = str(existing.get("folder_path") or "")
+            target_folder = folder_path if str(folder_path) else (resolve_stored_path(stored_path) if stored_path else Path(""))
+            items[number] = {
+                "folder_name": target_folder.name if str(target_folder) else existing.get("folder_name") or number,
+                "folder_path": normalize_repo_path(target_folder) if str(target_folder) else existing.get("folder_path") or "",
+                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "state": LEDGER_ABANDONED,
+                "created_at": existing.get("created_at") or now_iso(),
+                "abandoned_at": now_iso(),
+                "abandoned_reason": reason,
+            }
+            self._save_unlocked(data)
+            if str(target_folder) and target_folder.exists() and any(target_folder.iterdir()):
+                try:
+                    self.write_marker(
+                        target_folder,
+                        number,
+                        state=LEDGER_ABANDONED,
+                        planned_paper_id=existing.get("planned_paper_id") or "",
+                    )
+                except Exception:
+                    pass
+            return number
+
+    def mark_metadata_staged(self, number: str, folder: str | Path) -> str:
+        """Mark a reserved paper_raw workspace after metadata/stage files exist."""
+        if not _PAPER_NUMBER_RE.match(str(number or "")):
+            raise ValueError(f"invalid paper_number: {number}")
+        folder = Path(folder)
+        with FileLock(str(self._lock_path)):
+            data = self.load()
+            items = data.setdefault("items", {})
+            existing = items.get(number) or {}
+            state = existing.get("state") or LEDGER_RESERVED
+            if state not in {LEDGER_ALLOCATING, LEDGER_RESERVED, LEDGER_METADATA_STAGED}:
+                raise ValueError(f"cannot mark metadata_staged for number {number} in state {state}")
+            items[number] = {
+                "folder_name": folder.name,
+                "folder_path": normalize_repo_path(folder),
+                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "state": LEDGER_METADATA_STAGED,
+                "created_at": existing.get("created_at") or now_iso(),
+                "metadata_staged_at": now_iso(),
+            }
+            self._save_unlocked(data)
+            if folder.exists():
+                self.write_marker(
+                    folder,
+                    number,
+                    state=LEDGER_METADATA_STAGED,
+                    planned_paper_id=existing.get("planned_paper_id") or "",
+                )
             return number
 
     def activate_reserved(

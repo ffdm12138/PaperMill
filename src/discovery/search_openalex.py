@@ -70,6 +70,11 @@ def parse_openalex_work(work: dict, query: str = "", domain_id: str | None = Non
 
 def search_openalex(query: str, domain_id: str | None = None, limit: int = 25) -> list[PaperCandidate]:
     try:
+        logger.debug(
+            "OpenAlex email configured: {}; OpenAlex api key configured: {}",
+            "yes" if os.environ.get("OPENALEX_EMAIL", "").strip() else "no",
+            "yes" if os.environ.get("OPENALEX_API_KEY", "").strip() else "no",
+        )
         response = requests.get(
             OPENALEX_WORKS_URL,
             params=_params(query, limit),
@@ -86,4 +91,3 @@ def search_openalex(query: str, domain_id: str | None = None, limit: int = 25) -
         parse_openalex_work(work, query=query, domain_id=domain_id)
         for work in data.get("results", [])
     ]
-

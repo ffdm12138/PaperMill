@@ -37,6 +37,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Allocate paper_raw workspaces (without this, dry-run only).")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=None)
+    parser.add_argument("--hide-existing", action="store_true",
+                        help="Hide candidates whose DOI already exists in paper_raw or papers from discovery JSONL.")
     args = parser.parse_args()
 
     batch = discover_papers(
@@ -45,6 +47,9 @@ def main() -> int:
         limit_per_query=args.limit_per_query,
         max_candidates=args.max_candidates,
         output_dir=args.output_dir,
+        paper_raw_dir=args.paper_raw_dir,
+        papers_dir=args.papers_dir,
+        hide_existing=args.hide_existing,
     )
     print(f"[OK] candidates: {len(batch.candidates)}")
     for candidate in batch.candidates[:10]:

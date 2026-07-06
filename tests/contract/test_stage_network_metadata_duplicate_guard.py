@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from src.services.v2_library import empty_metadata
+from src.services.network_metadata_staging import stage_network_metadata_records
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -27,6 +28,15 @@ def _formal_doi(root: Path, doi: str) -> None:
     meta = empty_metadata("2024_wang_existing")
     meta["identifiers"]["doi"] = doi
     (folder / "2024_wang_existing.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def _paper_raw_doi(root: Path, number: str, doi: str) -> None:
+    folder = root / number
+    folder.mkdir(parents=True)
+    meta = empty_metadata(number, source_type="network_search")
+    meta["identifiers"]["doi"] = doi
+    meta["metadata_match"]["status"] = "matched"
+    (folder / f"{number}.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
 
 
 def test_network_metadata_duplicate_formal_doi_does_not_allocate(tmp_path, monkeypatch):
@@ -112,3 +122,42 @@ def test_network_metadata_batch_duplicate_doi(tmp_path, monkeypatch):
     assert items[0]["status"] == "staged"
     assert items[1]["status"] == "duplicate"
     assert "batch_doi_duplicate" in items[1]["duplicate_reasons"]
+
+
+def test_stage_network_metadata_rejects_existing_paper_raw_doi(tmp_path):
+    paper_raw = tmp_path / "paper_raw"
+    _paper_raw_doi(paper_raw, "0000000000000001", "10.1000/existing")
+
+    report = stage_network_metadata_records(
+        [{"title": "Dup", "year": 2024, "doi": "10.1000/existing"}],
+        paper_raw_dir=paper_raw,
+        papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "catalog" / "ledger.json",
+        apply=True,
+    )
+
+    assert report["items"][0]["status"] == "duplicate"
+    assert not (paper_raw / "0000000000000002").exists()
+    assert not (tmp_path / "catalog" / "ledger.json").exists()
+
+
+def test_apply_mode_never_outputs_stale_planned_number(tmp_path, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("peek_next_numbers must not run in apply mode")
+
+    monkeypatch.setattr("src.services.network_metadata_staging.PaperNumberLedger.peek_next_numbers", boom)
+
+    report = stage_network_metadata_records(
+        [{"title": "Unique", "year": 2024, "doi": "10.1000/unique"}],
+        paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "catalog" / "ledger.json",
+        apply=True,
+    )
+
+    item = report["items"][0]
+    assert item["status"] == "staged"
+    assert item["paper_number"] == "0000000000000001"
+    assert "planned_paper_number" not in item
+    assert "dry_run_planned_paper_number" not in item
+    assert item["actual_allocated"] is True

@@ -26,6 +26,12 @@ def main() -> int:
     parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--strict", action="store_true", help="return non-zero if any mismatch is found")
+    parser.add_argument("--detect-orphans", action="store_true",
+                        help="classify empty orphan, marker-only, and metadata-only paper_raw workspaces")
+    parser.add_argument("--fix-empty-orphans", action="store_true",
+                        help="delete only strictly empty orphan directories (requires --apply)")
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--reason", default="")
     parser.add_argument("--expect-count", type=int, default=None,
                         help="additionally require exactly N active workspaces numbered 1..N with ledger max=N")
     args = parser.parse_args()
@@ -35,9 +41,18 @@ def main() -> int:
         papers_dir=args.papers_dir,
         ledger_path=args.ledger_path,
     )
-    report = service.audit(strict=args.strict, expect_count=args.expect_count)
+    if args.fix_empty_orphans:
+        report = service.fix_empty_orphans(apply=args.apply, reason=args.reason)
+    else:
+        report = service.audit(
+            strict=args.strict,
+            expect_count=args.expect_count,
+            detect_orphans=args.detect_orphans,
+        )
     _write_report(args.report, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.fix_empty_orphans and report.get("errors"):
+        return 1
     return 1 if args.strict and not report.get("ok") else 0
 
 

@@ -143,6 +143,55 @@ DENIED_PATH_PARTS = {
 SINGLE_FILE_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
 ZIP_MAX_BYTES = 600 * 1024 * 1024           # 600 MB
 
+SECRET_PLACEHOLDERS = {
+    "your@email.com",
+    "your_key_if_needed",
+    "test@example.com",
+    "test-openalex-key",
+}
+
+SECRET_PATTERNS = [
+    ("openalex_email_assignment", re.compile(r"OPENALEX_EMAIL\s*=\s*[\"']([^\"']+@[^\"']+)[\"']", re.IGNORECASE)),
+    ("openalex_api_key_assignment", re.compile(r"OPENALEX_API_KEY\s*=\s*[\"']([A-Za-z0-9_\-]{10,})[\"']", re.IGNORECASE)),
+    ("semantic_scholar_api_key_assignment", re.compile(r"SEMANTIC_SCHOLAR_API_KEY\s*=\s*[\"']([A-Za-z0-9_\-]{10,})[\"']", re.IGNORECASE)),
+    ("authorization_bearer_literal", re.compile(r"Authorization\s*:\s*Bearer\s+([A-Za-z0-9._\-]{16,})", re.IGNORECASE)),
+    ("bearer_literal", re.compile(r"Bearer\s+([A-Za-z0-9._\-]{24,})", re.IGNORECASE)),
+    ("x_api_key_literal", re.compile(r"x-api-key\s*[:=]\s*[\"']?([A-Za-z0-9._\-]{16,})[\"']?", re.IGNORECASE)),
+    ("generic_api_key_assignment", re.compile(r"\bapi_key\s*=\s*[\"']([A-Za-z0-9._\-]{16,})[\"']", re.IGNORECASE)),
+]
+
+
+def scan_text_for_secrets(text: str, rel_path: str = "") -> list[dict[str, str]]:
+    """Return literal secret findings while allowing bare env-var names."""
+    findings: list[dict[str, str]] = []
+    for name, pattern in SECRET_PATTERNS:
+        for match in pattern.finditer(text):
+            value = match.group(1) if match.groups() else match.group(0)
+            if value in SECRET_PLACEHOLDERS or value.startswith("your_"):
+                continue
+            findings.append({
+                "rule": name,
+                "path": rel_path,
+                "match": match.group(0)[:120],
+            })
+    return findings
+
+
+def scan_files_for_secrets(files: list[str]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for rel in files:
+        path = PROJECT_ROOT / rel
+        if not _lightweight_suffix_match(rel, path):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        findings.extend(scan_text_for_secrets(text, rel))
+    return findings
+
 
 def _lightweight_suffix_match(rel: str, path: Path) -> bool:
     """True if rel/path has a lightweight allow-listed suffix.
@@ -417,6 +466,14 @@ def main():
     files = git_tracked_files(profile=PACK_PROFILE)
     if not files:
         print("[ERROR] No tracked files, aborting")
+        sys.exit(1)
+    secret_findings = scan_files_for_secrets(files)
+    if secret_findings:
+        print("[ERROR] Secret-like literal(s) found; refusing to pack")
+        for finding in secret_findings[:20]:
+            print(f"  {finding['path']}: {finding['rule']}: {finding['match']}")
+        if len(secret_findings) > 20:
+            print(f"  ... {len(secret_findings) - 20} more")
         sys.exit(1)
 
     count = 0

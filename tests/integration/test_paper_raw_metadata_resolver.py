@@ -524,7 +524,7 @@ def test_duplicate_formal_doi_blocks(tmp_path, monkeypatch):
     assert report.decision != "auto_matched"
     res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
-    assert any("duplicate formal DOI" in w for w in res["warnings"])
+    assert any("duplicate_formal_doi" in w for w in res["warnings"])
     # manual-confirm still blocked
     res2 = mr.apply_resolution(folder, report, manual_confirm=True,
                                all_catalog_path=cat, papers_dir=tmp_path / "papers")
@@ -545,11 +545,11 @@ def test_duplicate_paper_raw_doi_blocks_manual_confirm(tmp_path, monkeypatch):
     report = mr.resolve_metadata_candidates(folder, allow_network=False,
                                            all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert report.decision != "auto_matched"
-    assert any("duplicate paper_raw DOI" in r for r in report.candidates[0].gate_reasons)
+    assert any("duplicate_paper_raw_doi" in r for r in report.candidates[0].gate_reasons)
     res = mr.apply_resolution(folder, report, manual_confirm=True,
                               all_catalog_path=cat, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
-    assert any("duplicate paper_raw DOI" in w for w in res["warnings"])
+    assert any("duplicate_paper_raw_doi" in w for w in res["warnings"])
 
 
 # 鈹€鈹€ 10b. duplicate PDF sha256 blocks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

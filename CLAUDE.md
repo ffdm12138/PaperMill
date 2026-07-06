@@ -17,7 +17,7 @@
 ## 1. 项目状态
 
 - ingest v2.3 strict-only current incremental state（不打新 tag）：新 ingest 的 `data/paper_raw/<id>/` 使用 16 位 `paper_number`，staging 第一步即 reserve 编号并写 `<paper_number>.paper.number` marker；正常 CLI 只接受 `--paper-number` / `--paper-numbers`，旧 6 位编号仅限 `scripts/legacy/` migration。
-- `paper_number` 正常分配必须由 `PaperNumberLedger` 统一负责，单调递增、不回收空洞；任何脚本不得通过扫描目录最大值自行分配。特殊清零/压缩重编号只允许使用 admin-only `scripts/audit_paper_number_ledger.py` 与 `scripts/reset_paper_number_ledger.py`，且必须在 `data/papers/` 无正式目录时执行。
+- `paper_number` 正常分配必须由 `PaperNumberLedger` 统一负责，单调递增、不回收空洞；任何脚本不得通过扫描目录最大值自行分配。allocator 采用 monotonic ledger-first：分配前取 ledger max、ledger items、现有 16 位 `paper_raw` 目录和所有 `.paper.number` marker 的最大值再 +1；empty orphan / marker-only / metadata-only 编号都不得复用。所有 `paper_raw` 写事务统一使用 `data/paper_raw/.paper_raw_write.lock`，锁顺序只能是 `paper_raw_write.lock -> paper_number_ledger.lock -> workspace/file writes`，ledger lock 只短暂用于 ledger 读写，不能在复制 PDF 或批量写 workspace 文件时长期持有。特殊清零/压缩重编号只允许使用 admin-only `scripts/audit_paper_number_ledger.py` 与 `scripts/reset_paper_number_ledger.py`，且必须在 `data/papers/` 无正式目录时执行。
 - ingest v2.2 frozen，tag `ingest-v2.2`（v2.1 已被状态机重构取代：curate 不再改名/不再 commit，新增 `formalize_paper_raw.py` 在 paper_raw 内完成正式化，`commit` 退化为事务性安装）。
 - writing v0.1 frozen，tag `writing-v0.1`。
 - catalog schema 为 v3.1（content-only，含 `library_locator` / `content_identity.content_title_zh` / `writing_value` / `quality_control`）；metadata schema 为 v2.0（`paper_number` / `paper_raw_id`，不生成 `source_id`）；不修改 writer v0.1 行为。
@@ -168,6 +168,11 @@ before PDF title fallback。
 → `formalize_paper_raw.py` → `commit_paper_raw_to_papers.py`（网络 metadata 已有合法 DOI，无需 resolve 步骤）。
 Network search metadata staged from OpenAlex/CrossRef with a valid DOI must write
 `metadata_match.status = "matched"` and `.import_status.json status = "metadata_matched"`.
+OpenAlex/CrossRef discovery 只是候选来源；`scripts/discover_papers.py --hide-existing`
+只隐藏 discovery JSONL 中已存在 DOI 的候选，summary 仍记录统计，底层
+`stage_network_metadata_to_paper_raw.py` / `PaperRawAllocator` duplicate gate 必须继续硬拦。
+OpenAlex 凭据只能来自环境变量 `OPENALEX_EMAIL` / `OPENALEX_API_KEY`，源码、文档、
+日志和 snapshot 中不得出现真实 key/email；文档示例只能使用 placeholder。
 metadata-only paper_raw PDF fetch 只补齐已有 16 位 `data/paper_raw/<paper_number>/` 工作区：
 DOI 只来自 `<paper_number>.metadata.json`，不读 `doi.csv`、不接受额外 DOI list、不分配新
 paper_number；成功 PDF 必须经 duplicate guard / `PaperRawAllocator.attach_pdf()` 落为
@@ -278,7 +283,9 @@ ingest duplicate guard 是前置硬门禁，不是后置清理：
 
 - 手动 PDF staging 前必须检查待导入 PDF 是否与 `data/paper_raw` 或 `data/papers` 中已有 PDF 内容重复（sha256 + md5）；命中时不得创建新 `paper_raw`、不得占用 ledger、`--move` 下不得移动源 PDF。
 - 网络 metadata staging 前必须检查 DOI 是否已存在于 `data/paper_raw` 或 `data/papers`；同一 input batch 内重复 DOI 也必须阻断，除非显式 `--skip-duplicates` 跳过重复项。
-- metadata resolver 的候选 DOI 必须同时检查 paper_raw 队列和 formal papers；manual confirm 不得绕过 DOI/PDF 内容重复硬门禁。
+- metadata resolver 的候选 DOI 必须同时检查 paper_raw 队列和 formal papers；manual confirm / `--force` 不得绕过 DOI/PDF 内容重复硬门禁。已 citation-ready（matched/manual_confirmed + DOI）的 metadata 默认完全 no-op：不联网、不重写 metadata、不写 candidates/patch/report/import_status；只有显式 `--force` 才重新解析。
 - fetch/attach PDF 前必须检查 PDF 内容重复；命中时不得覆盖当前 paper_raw PDF，不得把重复 PDF hash 写入 metadata。
 - `preflight_paper_raw_import.py`、formalize/commit readiness 和 `audit_ingest_duplicates.py --strict` 是最后防线，不是第一道防线。
+- `*.metadata.candidates.json` / `*.metadata.patch.json` / resolver report 都是 sidecar 诊断文件，不是正式 metadata；DuplicateIndex 只读正式 `*.metadata.json` 与 PDF hash，不得把 sidecar DOI 当成硬重复来源。
 - ingest duplicate guard 必须覆盖**所有** paper_raw 工作区，不仅是 16 位编号目录。`data/paper_raw/` 下存在两类工作区：(1) 严格 16 位 `paper_number` staging 工作区（如 `0000000000000206/`），(2) 历史 / untitled / formalized 工作区（如 `1979_sykest_untitled/`，内部带 `.paper.number` marker 与 `metadata.paper_number`）。`build_ingest_duplicate_index()` 通过 `is_paper_raw_workspace()`（依据是否存在 metadata/import_status/stage_manifest/paper.number/pdf/md 等资产）识别工作区，绝不把“不是 16 位编号目录”当成“不是 paper_raw 工作区”。`scripts/audit_paper_raw_duplicate_workspaces.py` 负责审计并清理（移入 `quarantine/duplicate_workspaces/`，不删除、不回收 paper_number、不降 `max_number`）。
+- `scripts/audit_paper_number_ledger.py --detect-orphans` 可区分正常 `metadata_only_workspace` 与异常 `empty_orphan_dir`；只有显式 `--fix-empty-orphans --apply --reason ...` 才能清理严格空目录，metadata-only workspace 绝不能清理。

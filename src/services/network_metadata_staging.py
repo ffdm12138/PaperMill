@@ -75,7 +75,12 @@ def _record_confidence(record: dict[str, Any], provider: str) -> float:
     return 0.80
 
 
-def _metadata_from_record(source_id: str, record: dict[str, Any]) -> dict:
+def _metadata_from_record(record: dict[str, Any] | str, paper_number: str | dict[str, Any] | None = None) -> dict:
+    if isinstance(record, str) and isinstance(paper_number, dict):
+        record, paper_number = paper_number, record
+    if not isinstance(record, dict):
+        raise TypeError("record must be a dict")
+    source_id = str(paper_number or "0000000000000000")
     base = empty_metadata(source_id, source_type="network_search")
     patch = empty_metadata(source_id, source_type="network_search")
     provider = _record_provider(record)
@@ -141,7 +146,7 @@ def _metadata_from_record(source_id: str, record: dict[str, Any]) -> dict:
         "warnings": reasons,
     }
     errors = validate_metadata_schema(merged)
-    if errors:
+    if paper_number and errors:
         raise ValueError("invalid network metadata: " + "; ".join(errors))
     return merged
 
@@ -182,7 +187,7 @@ def stage_network_metadata_records(
         }
     """
     write = apply and not dry_run
-    ids = PaperNumberLedger(ledger_path).peek_next_numbers(len(records))
+    ids = PaperNumberLedger(ledger_path).peek_next_numbers(len(records)) if dry_run or not apply else []
     planned_index = 0
     allocator = PaperRawAllocator(paper_raw_dir, ledger_path=ledger_path, papers_dir=papers_dir)
     report: list[dict] = []
@@ -234,12 +239,14 @@ def stage_network_metadata_records(
             report.append(item)
             continue
         seen_batch_dois[doi] = len(report)
-        planned_id = ids[planned_index]
-        planned_index += 1
-        item["planned_paper_number"] = planned_id
-        item["planned_paper_raw_id"] = planned_id
+        planned_id = ""
+        if not write:
+            planned_id = ids[planned_index]
+            planned_index += 1
+            item["dry_run_planned_paper_number"] = planned_id
+            item["dry_run_planned_paper_raw_id"] = planned_id
         record = {**record, "doi": doi}
-        metadata = _metadata_from_record(planned_id, record)
+        metadata = _metadata_from_record(record, paper_number=planned_id or None)
         if write:
             try:
                 result = allocator.allocate_metadata(
@@ -248,6 +255,7 @@ def stage_network_metadata_records(
                     raw_record=_source_record_payload(metadata, record),
                 )
                 item.update(result)
+                item["actual_allocated"] = True
                 item["status"] = "staged"
                 match = metadata.get("metadata_match") if isinstance(metadata.get("metadata_match"), dict) else {}
                 if match.get("status") != "matched":
@@ -262,15 +270,23 @@ def stage_network_metadata_records(
                     "doi": exc.result.doi or doi,
                 })
             except Exception as exc:
-                item.update({"status": "failed", "error": str(exc)})
+                error_type = "allocator_collision" if isinstance(exc, FileExistsError) else (
+                    "metadata_validation_failed" if isinstance(exc, ValueError) else "allocation_transaction_failed"
+                )
+                item.update({"status": "failed", "error": str(exc), "error_type": error_type, "retryable": error_type != "metadata_validation_failed"})
                 logger.error("network metadata stage failed: {}", exc)
-        logger.info("{} metadata -> paper_raw/{}", "STAGE" if write else "DRY-RUN", planned_id)
+        destination = item.get("paper_number") or planned_id
+        logger.info("{} metadata -> paper_raw/{}", "STAGE" if write else "DRY-RUN", destination)
         report.append(item)
 
     failed = sum(1 for i in report if i.get("status") == "failed")
     duplicate = sum(1 for i in report if i.get("status") == "duplicate")
     staged = sum(1 for i in report if i.get("status") == "staged")
     planned = sum(1 for i in report if i.get("status") == "planned")
+    failed_allocator = sum(1 for i in report if i.get("error_type") in {"allocator_collision", "allocation_transaction_failed"})
+    failed_validation = sum(1 for i in report if i.get("error_type") == "metadata_validation_failed")
+    failed_io = sum(1 for i in report if i.get("error_type") == "metadata_write_failed")
+    failed_provider = sum(1 for i in report if i.get("error_type") == "provider_error")
     exit_code = 0
     if failed:
         exit_code = 1
@@ -285,5 +301,9 @@ def stage_network_metadata_records(
         "duplicate": duplicate,
         "staged": staged,
         "planned": planned,
+        "failed_allocator": failed_allocator,
+        "failed_validation": failed_validation,
+        "failed_io": failed_io,
+        "failed_provider": failed_provider,
         "exit_code": exit_code,
     }

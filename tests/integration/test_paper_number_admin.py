@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from src.services.paper_number_admin import PaperNumberAdminService
 from src.services.v2_library import PaperNumberLedger, PaperRawAllocator, empty_catalog
+from src.services.network_metadata_staging import stage_network_metadata_records
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -298,3 +300,209 @@ def test_apply_strict_audit_passes_and_next_staging_uses_n_plus_one(tmp_path: Pa
     allocator = PaperRawAllocator(tmp_path / "paper_raw", ledger_path=_ledger_path(tmp_path), papers_dir=tmp_path / "papers")
     next_ws = allocator.allocate_workspace()
     assert next_ws["paper_number"] == "0000000000000002"
+
+
+def test_allocator_recovers_from_mkdir_before_ledger_orphan(tmp_path: Path):
+    raw = tmp_path / "paper_raw"
+    orphan = raw / "0000000000001143"
+    orphan.mkdir(parents=True)
+    _write_json(_ledger_path(tmp_path), {
+        "schema_version": "1.0",
+        "max_number": "0000000000001142",
+        "items": {},
+    })
+
+    allocator = PaperRawAllocator(raw, ledger_path=_ledger_path(tmp_path), papers_dir=tmp_path / "papers")
+    ws = allocator.allocate_workspace()
+
+    assert ws["paper_number"] == "0000000000001144"
+    ledger = json.loads(_ledger_path(tmp_path).read_text(encoding="utf-8"))
+    assert ledger["max_number"] == "0000000000001144"
+    audit = _service(tmp_path).audit(detect_orphans=True)
+    assert any(item["folder"].endswith("0000000000001143") for item in audit["empty_orphan_dirs"])
+
+
+def test_mark_abandoned_accepts_allocating_state(tmp_path: Path):
+    raw = tmp_path / "paper_raw"
+    raw.mkdir(parents=True)
+    number = "0000000000001143"
+    _write_json(_ledger_path(tmp_path), {
+        "schema_version": "1.0",
+        "max_number": number,
+        "items": {
+            number: {
+                "folder_name": number,
+                "folder_path": str(raw / number),
+                "planned_paper_id": "",
+                "state": "allocating",
+                "created_at": "2026-07-07T00:00:00",
+            }
+        },
+    })
+
+    PaperNumberLedger(_ledger_path(tmp_path)).mark_abandoned(number, "test recovery", folder=raw / number)
+
+    ledger = json.loads(_ledger_path(tmp_path).read_text(encoding="utf-8"))
+    assert ledger["items"][number]["state"] == "abandoned"
+    assert ledger["max_number"] == number
+
+
+def test_recover_allocating_missing_folder_to_abandoned(tmp_path: Path):
+    raw = tmp_path / "paper_raw"
+    raw.mkdir(parents=True)
+    stale = "0000000000001143"
+    _write_json(_ledger_path(tmp_path), {
+        "schema_version": "1.0",
+        "max_number": stale,
+        "items": {
+            stale: {
+                "folder_name": stale,
+                "folder_path": str(raw / stale),
+                "planned_paper_id": "",
+                "state": "allocating",
+                "created_at": "2026-07-07T00:00:00",
+            }
+        },
+    })
+
+    allocator = PaperRawAllocator(raw, ledger_path=_ledger_path(tmp_path), papers_dir=tmp_path / "papers")
+    ws = allocator.allocate_workspace()
+
+    assert ws["paper_number"] == "0000000000001144"
+    ledger = json.loads(_ledger_path(tmp_path).read_text(encoding="utf-8"))
+    assert ledger["items"][stale]["state"] == "abandoned"
+    assert ledger["items"]["0000000000001144"]["state"] == "reserved"
+
+
+def test_allocator_skips_marker_only_reserved_workspace(tmp_path: Path):
+    raw = tmp_path / "paper_raw"
+    number = "0000000000001143"
+    folder = raw / number
+    folder.mkdir(parents=True)
+    _write_json(folder / f"{number}.paper.number", {
+        "paper_number": number,
+        "folder_name": number,
+        "state": "reserved",
+    })
+    _write_json(_ledger_path(tmp_path), {
+        "schema_version": "1.0",
+        "max_number": "0000000000001142",
+        "items": {},
+    })
+
+    ws = PaperRawAllocator(raw, ledger_path=_ledger_path(tmp_path), papers_dir=tmp_path / "papers").allocate_workspace()
+
+    assert ws["paper_number"] == "0000000000001144"
+    audit = _service(tmp_path).audit(detect_orphans=True)
+    assert any(item["classification"] == "marker_only_reserved" for item in audit["marker_only_reserved"])
+
+
+def test_allocator_preserves_metadata_only_workspace_during_reconcile(tmp_path: Path):
+    number = "0000000000000143"
+    folder = tmp_path / "paper_raw" / number
+    folder.mkdir(parents=True)
+    _write_json(folder / f"{number}.paper.number", {
+        "paper_number": number,
+        "folder_name": number,
+        "state": "reserved",
+    })
+    _write_json(folder / f"{number}.metadata.json", {
+        "schema_version": "2.0",
+        "paper_number": number,
+        "paper_raw_id": number,
+        "source_type": "network_search",
+        "title": {"original": "Metadata only", "subtitle": ""},
+        "authors": [{"full_name": "", "family": "", "given": "", "orcid": "", "affiliation": ""}],
+        "first_author": {"family": "", "display": ""},
+        "year": None,
+        "date": {"published": "", "online": "", "accessed": ""},
+        "container": {"journal": "", "booktitle": "", "conference": "", "series": "", "publisher": "", "institution": "", "school": ""},
+        "publication": {"volume": "", "number": "", "issue": "", "pages": "", "article_number": "", "edition": ""},
+        "identifiers": {"doi": "10.1000/metaonly", "arxiv_id": "", "isbn": "", "issn": "", "pmid": "", "pmcid": "", "openalex_id": "", "crossref_id": ""},
+        "links": {"url": "", "pdf_url": "", "publisher_url": "", "repository_url": ""},
+        "language": "en",
+        "source": {"kind": "network_search", "provider": "crossref", "query": "", "retrieved_at": "", "raw_record_path": ""},
+        "metadata_match": {"status": "matched", "source": "crossref", "confidence": 1.0, "matched_at": "", "warnings": []},
+    })
+    _write_json(folder / "stage_manifest.json", {
+        "schema_version": "1.0",
+        "paper_number": number,
+        "paper_raw_id": number,
+        "workflow_path": "network_metadata",
+    })
+    _write_json(_ledger_path(tmp_path), {
+        "schema_version": "1.0",
+        "max_number": "0000000000000001",
+        "items": {},
+    })
+
+    ws = PaperRawAllocator(tmp_path / "paper_raw", ledger_path=_ledger_path(tmp_path), papers_dir=tmp_path / "papers").allocate_workspace()
+
+    assert ws["paper_number"] == "0000000000000144"
+    assert folder.exists()
+    audit = _service(tmp_path).audit(detect_orphans=True)
+    assert any(item["folder"].endswith(number) for item in audit["metadata_only_workspaces"])
+
+
+def test_import_status_and_ledger_state_are_not_confused(tmp_path: Path):
+    raw = tmp_path / "paper_raw"
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF import status")
+
+    result = PaperRawAllocator(raw, ledger_path=_ledger_path(tmp_path), papers_dir=tmp_path / "papers").allocate_from_pdf(source)
+
+    status = json.loads((Path(result["folder"]) / ".import_status.json").read_text(encoding="utf-8"))
+    ledger = json.loads(_ledger_path(tmp_path).read_text(encoding="utf-8"))
+    assert status["status"] == "ready_for_convert"
+    assert ledger["items"][result["paper_number"]]["state"] == "metadata_staged"
+
+
+def test_allocate_from_pdf_uses_same_stage_lock_and_no_recycle(tmp_path: Path):
+    raw = tmp_path / "paper_raw"
+    (raw / "0000000000000001").mkdir(parents=True)
+    _write_json(_ledger_path(tmp_path), {
+        "schema_version": "1.0",
+        "max_number": "0000000000000000",
+        "items": {},
+    })
+    source = tmp_path / "incoming.pdf"
+    source.write_bytes(b"%PDF no recycle")
+
+    result = PaperRawAllocator(raw, ledger_path=_ledger_path(tmp_path), papers_dir=tmp_path / "papers").allocate_from_pdf(source)
+
+    assert result["paper_number"] == "0000000000000002"
+    assert not (raw / ".allocate.lock").exists()
+    ledger = json.loads(_ledger_path(tmp_path).read_text(encoding="utf-8"))
+    assert ledger["max_number"] == "0000000000000002"
+    assert ledger["items"]["0000000000000002"]["state"] == "metadata_staged"
+
+
+def test_parallel_stage_network_metadata_records_allocates_unique_numbers(tmp_path: Path):
+    paper_raw = tmp_path / "paper_raw"
+    papers = tmp_path / "papers"
+    ledger = _ledger_path(tmp_path)
+
+    def records(offset: int) -> list[dict]:
+        return [
+            {"title": f"Paper {offset + i}", "year": 2024, "doi": f"10.1000/{offset + i}", "source": {"provider": "crossref"}}
+            for i in range(30)
+        ]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reports = list(pool.map(
+            lambda rs: stage_network_metadata_records(
+                rs,
+                paper_raw_dir=paper_raw,
+                papers_dir=papers,
+                ledger_path=ledger,
+                apply=True,
+            ),
+            [records(0), records(100)],
+        ))
+
+    staged_items = [item for report in reports for item in report["items"] if item["status"] == "staged"]
+    numbers = [item["paper_number"] for item in staged_items]
+    assert len(staged_items) == 60
+    assert len(numbers) == len(set(numbers))
+    assert all((paper_raw / number / f"{number}.metadata.json").exists() for number in numbers)
+    assert all(report["failed_allocator"] == 0 for report in reports)

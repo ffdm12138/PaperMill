@@ -233,3 +233,18 @@ def test_empty_numbered_folder_not_indexed(tmp_path):
     all_refs += [r for group in index.pdf_md5_to_refs.values() for r in group]
     all_refs += [r for group in index.doi_to_refs.values() for r in group]
     assert not all_refs, "empty folder should not be indexed"
+
+
+def test_candidate_sidecar_doi_not_indexed_for_duplicate_guard(tmp_path):
+    paper_raw = tmp_path / "paper_raw"
+    folder = paper_raw / PN1
+    folder.mkdir(parents=True)
+    _write_metadata(folder, PN1, doi="")
+    (folder / f"{PN1}.metadata.candidates.json").write_text(json.dumps({
+        "candidates": [{"doi": "10.1000/sidecar"}],
+    }), encoding="utf-8")
+
+    result = check_doi_duplicate("10.1000/sidecar", paper_raw_dir=paper_raw, papers_dir=tmp_path / "papers")
+
+    assert result.blocking is False
+    assert result.refs == []

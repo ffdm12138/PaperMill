@@ -28,10 +28,13 @@ paper_numbers, never lowers `max_number`).
 
 Normal ingest paper numbers are allocated only by `PaperNumberLedger`; they are
 monotonic and never recycled. Do not write scripts that scan folder names and
-take `max(existing)+1`. The only supported maintenance entrypoints are:
+take `max(existing)+1`. Allocation is ledger-first and serialized with
+`data/paper_raw/.paper_raw_write.lock`; existing 16-digit directories and
+`.paper.number` markers are part of the monotonic floor, so empty orphan and
+metadata-only numbers are not reused. The only supported maintenance entrypoints are:
 
 ```bash
-python scripts/audit_paper_number_ledger.py --strict --report reports/paper_number_audit.json
+python scripts/audit_paper_number_ledger.py --strict --detect-orphans --report reports/paper_number_audit.json
 python scripts/reset_paper_number_ledger.py --compact-paper-raw --sort year --dry-run --report reports/paper_number_compact_dryrun.json
 ```
 
@@ -41,6 +44,9 @@ formal paper directories, default to dry-run, and require
 `--i-understand-this-rewrites-paper-numbers --reason ...` for `--apply`.
 Quarantined workspaces are excluded, and `.paper.number` marker parsing must
 strip the full `.paper.number` suffix, never `Path.stem`.
+`audit_paper_number_ledger.py --fix-empty-orphans --apply --reason ...` may
+delete only strictly empty orphan directories; metadata-only workspaces are
+normal and must not be deleted.
 
 ## Project status and documentation map
 

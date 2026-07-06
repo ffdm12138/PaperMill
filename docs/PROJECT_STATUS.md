@@ -9,6 +9,7 @@
 ### ingest v2.3 current incremental state
 
 - 新 ingest 的 `data/paper_raw/<id>/` 统一使用 16 位 `paper_number`。PDF-first 与 metadata-first staging 第一步 reserve 编号、创建 `paper_raw/<paper_number>/`、写 ledger reserved item 与 `<paper_number>.paper.number` marker。
+- Allocator is monotonic ledger-first: writes `allocating` before folder creation, computes the next number from ledger + existing 16-digit dirs + markers, never reuses orphan numbers, and serializes all `paper_raw` writes with `.paper_raw_write.lock` while holding the ledger lock only for short ledger updates.
 - `--paper-number` / `--paper-numbers` 是正常 CLI 唯一 paper_raw selector；旧 source-id selector 已退出正常流程，6 位目录只允许 `scripts/legacy/` migration 工具处理。
 - 本轮不打新 tag；`ingest-v2.2` 仍是上一冻结 tag。以下 schema 与规则来自 v2.2+v2.3 现行状态（在 current incremental state 而非 frozen section 下）：
 - catalog schema 为 v3.1（content-only，含 `library_locator` / `content_identity.content_title_zh` / `writing_value` / `quality_control`）；metadata schema 为 v2.0，使用 `paper_number` / `paper_raw_id`，不再生成 `source_id`，也不再承载中文标题 / 摘要 / 关键词 / notes。all.catalog schema 为 v3.1；paper_index schema 为 v2.0。
@@ -20,6 +21,7 @@
 - 普通 ingest/commit 测试夹具从 16 位 `paper_number` 开始，happy path 不手写 `.formalization.json` 或 `ready_for_commit`；marker 必须由 allocator/staging/ledger helper 写入。
 - `Catalog.load()` 缺少 all.catalog 时构建 tolerant read-only snapshot，不写 ledger、marker、per-paper catalog、all.catalog 或 paper_index。
 - ingest duplicate guard 已前移到 stage / metadata resolve / fetch / attach 入口：PDF 内容重复用 sha256 + md5 阻断，DOI 重复同时检查 `data/paper_raw` 和 `data/papers`。命中重复不得创建新 workspace、不得占用 ledger、不得移动源 PDF 或覆盖 attach 目标。preflight / formalize / commit readiness / `audit_ingest_duplicates.py --strict` 保留为最后防线。
+- Discovery candidates from OpenAlex/CrossRef may annotate existing DOI refs and `--hide-existing` may hide them from JSONL, but staging/resolver duplicate gates remain authoritative. Sidecar candidates/patch/report files are never DuplicateIndex sources, and citation-ready metadata is no-op unless `--force`.
 - 2026-07-02 修复：`build_ingest_duplicate_index()` 原只索引 16 位编号目录，导致历史/untitled/已 formalized 工作区（如 `1979_sykest_untitled/`）的 PDF 不参与去重，同名 PDF 被 stage 成新 16 位工作区，已产生约 38 个重复工作区。现改为经 `is_paper_raw_workspace()` 按 assets 识别工作区，`resolve_paper_raw_identity()` 解析 marker paper_number，覆盖两类工作区。新增 `scripts/audit_paper_raw_duplicate_workspaces.py` 审计并 `--apply-cleanup` 移入 `quarantine/duplicate_workspaces/`（不删除、不回收编号）。
 - 2026-07-06 `pack_repo.py` 重构为 lightweight text/structure snapshot：移除 `AUDIT_RUNTIME_ALLOWED_SUFFIXES`（旧版允许 PDF/图片），新增 `HEAVY_OR_BINARY_DENIED_SUFFIXES`（拒绝 PDF/图片/二进制），`LIGHTWEIGHT_ALLOWED_SUFFIXES` 只含轻量文本/结构文件格式。额外工作区扫描从仅 paper data dirs 改为全工作区 rglob 并用 `require_lightweight=True` 过滤。`verify_snapshot()` 改为全局规则（不再区分 runtime data 区域 vs 源码区）。
 

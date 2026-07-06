@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from filelock import FileLock
 
 from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
@@ -622,9 +623,9 @@ def _duplicate_candidate_reasons(
     )
     for ref in dup.refs:
         if ref.scope == "papers":
-            reasons.append(f"duplicate formal DOI: {doi}")
+            reasons.append(f"duplicate_formal_doi: {doi} ({ref.paper_number or ref.paper_id})")
         else:
-            reasons.append(f"duplicate paper_raw DOI: {doi} ({ref.paper_number})")
+            reasons.append(f"duplicate_paper_raw_doi: {doi} ({ref.paper_number})")
     return list(dict.fromkeys(reasons))
 
 
@@ -1483,6 +1484,30 @@ def _has_venue(metadata: dict) -> bool:
 
 
 def apply_resolution(
+    folder: str | Path,
+    report: ResolveReport,
+    *,
+    manual_confirm: bool = False,
+    candidate_id: str | None = None,
+    all_catalog_path: str | Path = ALL_CATALOG_PATH,
+    papers_dir: str | Path = PAPERS_DIR,
+    paper_raw_dir: str | Path | None = None,
+) -> dict:
+    folder_path = Path(folder)
+    paper_raw_root = Path(paper_raw_dir) if paper_raw_dir is not None else folder_path.parent
+    with FileLock(str(paper_raw_root / ".paper_raw_write.lock")):
+        return _apply_resolution_unlocked(
+            folder_path,
+            report,
+            manual_confirm=manual_confirm,
+            candidate_id=candidate_id,
+            all_catalog_path=all_catalog_path,
+            papers_dir=papers_dir,
+            paper_raw_dir=paper_raw_root,
+        )
+
+
+def _apply_resolution_unlocked(
     folder: str | Path,
     report: ResolveReport,
     *,

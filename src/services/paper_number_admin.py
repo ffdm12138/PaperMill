@@ -363,7 +363,48 @@ class PaperNumberAdminService:
                 invalid.append(info)
         return valid, invalid
 
-    def audit(self, *, strict: bool = False, expect_count: int | None = None) -> dict[str, Any]:
+    def _orphan_classification_report(self, ledger_data: dict) -> dict[str, Any]:
+        classifications: list[dict[str, Any]] = []
+        if self.paper_raw_dir.exists():
+            for folder in sorted(p for p in self.paper_raw_dir.iterdir() if p.is_dir()):
+                if folder.name == "quarantine" or folder.name.startswith("."):
+                    continue
+                if PAPER_NUMBER_RE.match(folder.name) or is_paper_raw_workspace(folder):
+                    classifications.append(PaperNumberLedger.classify_paper_raw_workspace(folder, folder.name))
+        items = ledger_data.get("items") or {}
+        ledger_allocating_missing_folder: list[dict[str, Any]] = []
+        ledger_items_missing_folder: list[dict[str, Any]] = []
+        for number, item in sorted(items.items()):
+            stored = str((item or {}).get("folder_path") or "")
+            folder = resolve_stored_path(stored) if stored else self.paper_raw_dir / number
+            if folder.exists():
+                continue
+            entry = {
+                "paper_number": number,
+                "state": str((item or {}).get("state") or ""),
+                "folder_path": stored,
+                "classification": "missing_folder_for_ledger_item",
+            }
+            ledger_items_missing_folder.append(entry)
+            if entry["state"] == "allocating":
+                ledger_allocating_missing_folder.append(entry)
+        return {
+            "workspace_classifications": classifications,
+            "empty_orphan_dirs": [c for c in classifications if c["classification"] == "empty_orphan_dir"],
+            "marker_only_reserved": [c for c in classifications if c["classification"] == "marker_only_reserved"],
+            "metadata_only_workspaces": [c for c in classifications if c["classification"] == "metadata_only_workspace"],
+            "unknown_nonempty": [c for c in classifications if c["classification"] == "unknown_nonempty"],
+            "ledger_allocating_missing_folder": ledger_allocating_missing_folder,
+            "ledger_items_missing_folder": ledger_items_missing_folder,
+        }
+
+    def audit(
+        self,
+        *,
+        strict: bool = False,
+        expect_count: int | None = None,
+        detect_orphans: bool = False,
+    ) -> dict[str, Any]:
         ledger_data = self.ledger.load()
         valid, invalid = self._collect_raw()
         paper_numbers: dict[str, list[str]] = {}
@@ -468,6 +509,15 @@ class PaperNumberAdminService:
             if active_state_count:
                 expect_count_mismatches.append(f"ledger has {active_state_count} active-state item(s); expected all reserved")
 
+        orphan_report = self._orphan_classification_report(ledger_data) if detect_orphans else {}
+        orphan_blocking = bool(
+            detect_orphans and (
+                orphan_report.get("empty_orphan_dirs")
+                or orphan_report.get("marker_only_reserved")
+                or orphan_report.get("ledger_allocating_missing_folder")
+                or orphan_report.get("ledger_items_missing_folder")
+            )
+        )
         blocking = bool(
             invalid
             or duplicated
@@ -481,6 +531,7 @@ class PaperNumberAdminService:
             or active_with_empty_papers
             or paper_pollution
             or expect_count_mismatches
+            or orphan_blocking
         )
         report = {
             "strict": strict,
@@ -516,6 +567,40 @@ class PaperNumberAdminService:
             "stale_16_digit_refs": stale_refs,
             "paper_number_pollution": paper_pollution,
         }
+        if detect_orphans:
+            report.update(orphan_report)
+        return report
+
+    def fix_empty_orphans(self, *, apply: bool = False, reason: str = "") -> dict[str, Any]:
+        tx_dir = self._new_transaction_dir()
+        ledger_before = self.ledger.load()
+        audit_report = self.audit(strict=False, detect_orphans=True)
+        targets = [Path(item["folder"]) for item in audit_report.get("empty_orphan_dirs") or []]
+        mapping = {"old_to_new": {}, "items": []}
+        self._write_transaction_common(tx_dir, audit_report, mapping, ledger_before)
+        report: dict[str, Any] = {
+            "applied": False,
+            "transaction_dir": str(tx_dir),
+            "operation": "fix_empty_orphans",
+            "reason": reason,
+            "targets": [str(path) for path in targets],
+            "errors": [],
+        }
+        if apply and not reason:
+            report["errors"].append("--reason is required with --apply")
+        if apply and not report["errors"]:
+            with FileLock(str(self.paper_raw_dir / ".paper_raw_write.lock")):
+                for target in targets:
+                    if not target.exists() or not target.is_dir():
+                        continue
+                    if any(target.iterdir()):
+                        report["errors"].append(f"not empty, refused: {target}")
+                        continue
+                    target.rmdir()
+                if not report["errors"]:
+                    report["applied"] = True
+                    report["post_audit"] = self.audit(strict=False, detect_orphans=True)
+        _write_json(tx_dir / "renumber_report.json", report)
         return report
 
     def _write_transaction_common(self, tx_dir: Path, audit_report: dict, mapping: dict, ledger_before: dict) -> None:

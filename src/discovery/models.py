@@ -41,6 +41,8 @@ class PaperCandidate:
     query: str = ""
     domain_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    existing_duplicate_refs: list[dict[str, Any]] = field(default_factory=list)
+    duplicate_indexed: bool = False
 
     def __post_init__(self) -> None:
         self.doi = normalize_doi(self.doi)
@@ -92,4 +94,3 @@ class CandidateBatch:
                 for item in data.get("candidates", [])
             ],
         )
-

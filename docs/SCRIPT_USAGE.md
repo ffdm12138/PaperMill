@@ -59,7 +59,7 @@
 |------|------|------|----------|----------|
 | `audit_ingest_duplicates.py` | audit | 审计重复 PDF/DOI | 否 | `--strict` |
 | `audit_metadata_quality.py` | audit | 审计 metadata 质量 | 否 | 直接运行 |
-| `audit_paper_number_ledger.py` | admin-only | 审计编号账本 | 是（可能清零） | 仅 admin，正常不运行 |
+| `audit_paper_number_ledger.py` | admin-only | 审计编号账本、检测 empty orphan / metadata-only workspace；`--fix-empty-orphans --apply --reason ...` 仅清理严格空目录 | 是（仅显式 fix/reset/compact） | 默认只审计；正常不清理 |
 | `audit_paper_raw_duplicate_workspaces.py` | audit | 审计并清理重复 paper_raw 工作区 | 是（移入 quarantine） | `--apply-cleanup` |
 | `audit_raw_vs_paper_raw.py` | audit | 审计 raw vs paper_raw 一致性 | 否 | 直接运行 |
 | `preflight_paper_raw_import.py` | audit | 入库前预检 | 否 | 直接运行 |

@@ -315,6 +315,7 @@ def test_citation_ready_metadata_skipped(tmp_path, monkeypatch):
         "--all-catalog", str(tmp_path / "catalog" / "all.catalog.json"),
         "--papers-dir", str(tmp_path / "papers"),
         "--allow-network",
+        "--write-candidates",
     ]
     saved = sys.argv
     sys.argv = argv
@@ -324,6 +325,10 @@ def test_citation_ready_metadata_skipped(tmp_path, monkeypatch):
         pass
     finally:
         sys.argv = saved
+    assert not (folder / "0000000000000001.metadata.candidates.json").exists()
+    assert not (folder / "0000000000000001.metadata.patch.json").exists()
+    assert not (folder / "0000000000000001.metadata.resolve_report.json").exists()
+    assert not (folder / ".import_status.json").exists()
 
 
 # ── 9. --rate-probe --probe-size processes only N papers ───────────────
