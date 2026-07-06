@@ -7,10 +7,10 @@ the two inputs the skill reads: the metadata JSON and the MinerU Markdown.
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "paper_number": "0000000000000001",
   "paper_raw_id": "0000000000000001",
-  "title": { "original": "A bulk blowing-snow model", "translated_zh": "", "short_zh": "" },
+  "title": { "original": "A bulk blowing-snow model", "subtitle": "" },
   "authors": [ { "full_name": "Stephen J. Déry", "family": "Déry", "given": "Stephen J.", "orcid": "", "affiliation": "" } ],
   "first_author": { "family": "Déry", "display": "Déry" },
   "year": 1999,

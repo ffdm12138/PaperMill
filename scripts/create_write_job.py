@@ -30,7 +30,7 @@ def _catalog_value(item: dict[str, Any], *path: str) -> Any:
 
 def _paper_title(item: dict[str, Any]) -> str:
     return str(
-        _catalog_value(item, "content_identity", "content_title")
+        _catalog_value(item, "content_identity", "content_title_zh")
         or _catalog_value(item, "metadata", "title", "original")
         or item.get("paper_id")
         or ""

@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import PAPER_RAW_DIR
+from config.settings import PAPER_RAW_DIR, PAPERS_DIR
+from src.services.ingest_duplicate_guard import DuplicateIngestError
 from src.services.ingest_ids import validate_paper_raw_id
 from src.services.v2_library import PaperRawAllocator
 
@@ -18,8 +19,10 @@ def main() -> int:
     parser.add_argument("pdf_path", type=Path)
     parser.add_argument("--paper-number", required=True)
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
+    parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
     parser.add_argument("--copy", action="store_true")
     parser.add_argument("--move", action="store_true")
+    parser.add_argument("--replace", action="store_true", help="explicitly replace an existing paper_raw PDF")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -38,11 +41,25 @@ def main() -> int:
         "status": "planned",
     }
     if write:
-        out = PaperRawAllocator(args.paper_raw_dir).attach_pdf(paper_number, args.pdf_path, move=move)
-        result.update(out)
-        result["status"] = "attached"
+        try:
+            out = PaperRawAllocator(args.paper_raw_dir, papers_dir=args.papers_dir).attach_pdf(
+                paper_number, args.pdf_path, move=move, replace=args.replace
+            )
+            result.update(out)
+            result["status"] = "attached"
+        except DuplicateIngestError as exc:
+            result.update({
+                "status": "duplicate",
+                "error": "pdf_duplicate",
+                "duplicate_reasons": exc.result.reasons,
+                "duplicate_refs": [ref.to_dict() for ref in exc.result.refs],
+                "pdf_md5": exc.result.pdf_md5,
+                "pdf_sha256": exc.result.pdf_sha256,
+            })
+        except Exception as exc:
+            result.update({"status": "failed", "error": str(exc)})
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    return 1 if result["status"] in {"duplicate", "failed"} else 0
 
 
 if __name__ == "__main__":

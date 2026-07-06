@@ -200,7 +200,7 @@ def validate_rolled_back_state(
         elif item_state == "reserved" and number not in raw_number_set:
             warnings.append(f"ledger: reserved orphan (no paper_raw folder): {number}")
 
-    errors.extend(_check_empty_index(all_catalog_path, schema_version="3.0", label="all.catalog"))
+    errors.extend(_check_empty_index(all_catalog_path, schema_version="3.1", label="all.catalog"))
     errors.extend(_check_empty_index(all_catalog_path.parent / "paper_index.json", schema_version="2.0", label="paper_index"))
 
     for root in (papers_dir, paper_raw_dir):

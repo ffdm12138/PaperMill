@@ -9,6 +9,7 @@ import requests
 from loguru import logger
 
 from src.fetch.models import FetchResult
+from src.fetch.proxy import get_fetch_proxies
 from src.fetch.resolvers.base import PdfResolver, ResolveContext
 
 
@@ -28,6 +29,7 @@ class BiorxivResolver(PdfResolver):
                 f"https://api.biorxiv.org/details/doi/{doi}",
                 timeout=20,
                 headers={"User-Agent": "Mozilla/5.0"},
+                proxies=get_fetch_proxies(),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -66,6 +68,7 @@ class PmcOaResolver(PdfResolver):
                 params={"id": f"doi:{doi}"},
                 timeout=20,
                 headers={"User-Agent": "Mozilla/5.0"},
+                proxies=get_fetch_proxies(),
             )
             resp.raise_for_status()
             # 从 XML 中提取 PDF 链接

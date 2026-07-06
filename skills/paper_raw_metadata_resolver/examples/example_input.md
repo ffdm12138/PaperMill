@@ -12,7 +12,7 @@ find a DOI and bibliographic candidates.
   "paper_number": "0000000000000001",
   "paper_raw_id": "0000000000000001",
   "source_type": "manual_pdf",
-  "title": { "original": "", "translated_zh": "", "short_zh": "" },
+  "title": { "original": "", "subtitle": "" },
   "authors": [{ "full_name": "", "family": "", "given": "", "orcid": "", "affiliation": "" }],
   "year": null,
   "container": { "journal": "" },

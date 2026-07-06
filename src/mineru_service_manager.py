@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -17,11 +19,44 @@ from config.settings import CUDA_PATH_DEFAULT, DATA_DIR, PROJECT_ROOT
 from src.mineru_runtime import build_mineru_env, runtime_config_from_env
 
 
+def find_mineru_api_exe() -> str:
+    """Robustly resolve the mineru-api executable.
+
+    ``start_mineru_services.py`` is often launched directly with the conda env's
+    ``python.exe`` (e.g. ``C:\\Users\\Admin\\.conda\\envs\\mineru\\python.exe``),
+    which does NOT put the env's ``Scripts/`` directory on PATH. A bare
+    ``"mineru-api"`` then fails with ``FileNotFoundError``. This helper mirrors
+    ``src.converter._find_mineru_exe`` for the ``mineru`` CLI.
+
+    Resolution order:
+    1. ``shutil.which("mineru-api")``
+    2. ``shutil.which("mineru-api.exe")``
+    3. ``Path(sys.executable).parent / "Scripts" / "mineru-api.exe"``
+    4. ``Path(sys.executable).parent / "mineru-api.exe"``
+    5. fallback ``"mineru-api"`` (let subprocess resolve via PATH)
+    """
+    for name in ("mineru-api", "mineru-api.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    py_dir = Path(sys.executable).parent
+    for cand in (py_dir / "Scripts" / "mineru-api.exe", py_dir / "mineru-api.exe"):
+        if cand.exists():
+            return str(cand)
+    return "mineru-api"
+
+
 LOG_DIR = DATA_DIR / "logs"
 MINERU_API_PID_FILE = LOG_DIR / "mineru_api.pid"
 MINERU_API_LOG_FILE = LOG_DIR / "mineru_api.log"
 WEB_PID_FILE = LOG_DIR / "mineru_web.pid"
 WEB_LOG_FILE = LOG_DIR / "mineru_web.log"
+
+MINERU_READY_NEXT_COMMAND = (
+    "python scripts/check_mineru_processes.py && "
+    "python scripts/smoke_mineru_conversion.py --paper-number <id> --apply && "
+    "python scripts/run_paper_raw_gpu_conversion_then_resolve.py --all --apply"
+)
 
 
 def _api_url_for_port(port: int) -> str:
@@ -72,6 +107,15 @@ def remove_pid_file(pid_file: Path = MINERU_API_PID_FILE) -> bool:
     except Exception:
         return False
     return not pid_file.exists()
+
+
+def _norm_path(value: str | Path | None) -> str:
+    if not value:
+        return ""
+    try:
+        return str(Path(value).resolve()).replace("\\", "/").lower()
+    except Exception:
+        return str(value).replace("\\", "/").lower()
 
 
 def _iter_processes() -> list[dict]:
@@ -135,6 +179,160 @@ def process_cmdline(pid: int) -> str:
     return ""
 
 
+def inspect_mineru_api_process(pid: int) -> dict:
+    """Return best-effort identity for a mineru-api process.
+
+    Windows does not reliably expose another process' environment without
+    elevated tooling, so env is intentionally best-effort. The stable identity
+    fields are pid/exe/cmdline/create_time plus live/mineru-api flags.
+    """
+    identity = {
+        "pid": pid,
+        "live": False,
+        "is_mineru_api": False,
+        "exe": "",
+        "name": "",
+        "cmdline": "",
+        "cwd": "",
+        "create_time": "",
+        "env": {},
+    }
+    if pid <= 0:
+        return identity
+    pid_s = str(pid)
+    for proc in _iter_processes():
+        if str(proc.get("pid")) != pid_s:
+            continue
+        cmdline = str(proc.get("cmdline") or "")
+        identity.update({
+            "live": True,
+            "exe": str(proc.get("exe") or proc.get("executable") or ""),
+            "name": str(proc.get("name") or ""),
+            "cmdline": cmdline,
+            "cwd": str(proc.get("cwd") or ""),
+            "create_time": str(proc.get("create_time") or ""),
+            "is_mineru_api": "mineru-api" in cmdline.lower(),
+        })
+        break
+    return identity
+
+
+def _cmdline_port(cmdline: str) -> int | None:
+    patterns = [
+        r"(?:^|\s)--port(?:=|\s+)(\d+)",
+        r"(?:^|\s)-p(?:=|\s+)(\d+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, cmdline)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def _identity_matches_expected(identity: dict, expected_exe: str) -> bool:
+    cmdline = str(identity.get("cmdline") or "").lower()
+    if "mineru-api" not in cmdline:
+        return False
+    expected = _norm_path(expected_exe)
+    exe = _norm_path(identity.get("exe"))
+    if expected_exe in {"mineru-api", "mineru-api.exe"}:
+        return True
+    if expected and exe and exe == expected:
+        return True
+    if expected and expected in cmdline.replace("\\", "/"):
+        return True
+    return False
+
+
+def classify_mineru_api_service(
+    *,
+    pid_file: Path,
+    api_url: str,
+    expected_exe: str,
+    expected_port: int,
+) -> dict:
+    """Classify whether the current healthy mineru-api is managed by us."""
+    health = health_ok(api_url)
+    pid = read_pid(pid_file)
+    identity = inspect_mineru_api_process(pid) if pid is not None else {}
+    api_port = _host_port(api_url)[1]
+    warnings: list[str] = []
+
+    if not health:
+        verdict = "unhealthy" if port_is_open(*_host_port(api_url)) else "not_running"
+        return {
+            "verdict": verdict,
+            "healthy": False,
+            "pid": pid,
+            "pid_file": str(pid_file),
+            "identity": identity,
+            "expected_exe": expected_exe,
+            "expected_port": expected_port,
+            "api_url": api_url,
+            "warnings": warnings,
+        }
+    if pid is None:
+        return {
+            "verdict": "healthy_but_unmanaged",
+            "healthy": True,
+            "pid": None,
+            "pid_file": str(pid_file),
+            "identity": identity,
+            "expected_exe": expected_exe,
+            "expected_port": expected_port,
+            "api_url": api_url,
+            "warnings": ["healthy API has no pid file"],
+        }
+    if not identity.get("live"):
+        return {
+            "verdict": "healthy_but_stale_pid",
+            "healthy": True,
+            "pid": pid,
+            "pid_file": str(pid_file),
+            "identity": identity,
+            "expected_exe": expected_exe,
+            "expected_port": expected_port,
+            "api_url": api_url,
+            "warnings": [f"pid file points to non-live PID {pid}"],
+        }
+    if not identity.get("is_mineru_api"):
+        return {
+            "verdict": "healthy_but_stale_pid",
+            "healthy": True,
+            "pid": pid,
+            "pid_file": str(pid_file),
+            "identity": identity,
+            "expected_exe": expected_exe,
+            "expected_port": expected_port,
+            "api_url": api_url,
+            "warnings": [f"pid file points to PID {pid}, but it is not mineru-api"],
+        }
+
+    cmd_port = _cmdline_port(str(identity.get("cmdline") or ""))
+    if api_port != expected_port:
+        warnings.append(f"api_url port {api_port} does not match expected port {expected_port}")
+    if cmd_port is not None and cmd_port != expected_port:
+        warnings.append(f"mineru-api command port {cmd_port} does not match expected port {expected_port}")
+    if not _identity_matches_expected(identity, expected_exe):
+        warnings.append("mineru-api executable/cmdline does not match current environment")
+
+    verdict = "managed_ready" if not warnings else "healthy_but_unmanaged"
+    return {
+        "verdict": verdict,
+        "healthy": True,
+        "pid": pid,
+        "pid_file": str(pid_file),
+        "identity": identity,
+        "expected_exe": expected_exe,
+        "expected_port": expected_port,
+        "api_url": api_url,
+        "warnings": warnings,
+    }
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -178,6 +376,16 @@ def _service_env(
     env["MINERU_BACKEND"] = env.get("MINERU_BACKEND") or "hybrid-engine"
     env["MINERU_METHOD"] = env.get("MINERU_METHOD") or "auto"
     env["MINERU_EFFORT"] = env.get("MINERU_EFFORT") or "medium"
+    # The env's Scripts/ directory holds mineru-api.exe (and the mineru CLI).
+    # When this process is launched with a bare env python.exe the Scripts dir
+    # is NOT on PATH, so mineru-api cannot be resolved. Prepend it explicitly.
+    env_scripts = Path(sys.executable).parent / "Scripts"
+    if env_scripts.exists():
+        scripts_dir = str(env_scripts)
+        if scripts_dir not in env.get("PATH", ""):
+            env["PATH"] = scripts_dir + os.pathsep + env.get("PATH", "")
+    # CUDA bin is already prepended by build_mineru_env's _join_cuda_bin; only
+    # add it here if it somehow is not present (cross-platform path style safe).
     cuda_bin = str(Path(cuda_path) / "bin")
     if cuda_bin not in env.get("PATH", ""):
         env["PATH"] = cuda_bin + os.pathsep + env.get("PATH", "")
@@ -194,23 +402,157 @@ def start_services(
     wait: bool = False,
     wait_seconds: float = 60.0,
     web: bool = False,
+    restart_if_stale: bool = False,
 ) -> dict:
     api_url = api_url or _api_url_for_port(port)
     host, api_port = _host_port(api_url)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    if health_ok(api_url):
+    mineru_api_exe = find_mineru_api_exe()
+
+    if api_port != port:
+        return {
+            "ok": False,
+            "action": "failed",
+            "mineru_api_url": api_url,
+            "pid": None,
+            "pid_file": str(MINERU_API_PID_FILE),
+            "log_file": str(MINERU_API_LOG_FILE),
+            "health": "failed",
+            "message": (
+                f"api_url port {api_port} does not match --port {port}; "
+                "refusing to start/probe different mineru-api ports."
+            ),
+        }
+
+    service = classify_mineru_api_service(
+        pid_file=MINERU_API_PID_FILE,
+        api_url=api_url,
+        expected_exe=mineru_api_exe,
+        expected_port=port,
+    )
+    service_verdict_before = service["verdict"]
+    if service["verdict"] == "managed_ready":
         return {
             "ok": True,
             "action": "reused",
             "mineru_api_url": api_url,
-            "pid": read_pid(MINERU_API_PID_FILE),
+            "pid": service.get("pid"),
             "pid_file": str(MINERU_API_PID_FILE),
             "log_file": str(MINERU_API_LOG_FILE),
             "health": "ok",
-            "message": "mineru-api is already healthy; reused existing service.",
-            "next_command": "python scripts/convert_paper_raw_gpu.py --paper-number 0000000000000001 --apply",
+            "port_open": True,
+            "service": service,
+            "service_verdict_before": service_verdict_before,
+            "service_verdict_after": service_verdict_before,
+            "message": (
+                "mineru-api is healthy and managed; reused existing service. "
+                "Do not infer readiness from old mineru_api.log lines. "
+                "Current /health plus managed service identity are authoritative."
+            ),
+            "next_command": MINERU_READY_NEXT_COMMAND,
         }
+    if service.get("healthy"):
+        # healthy_but_stale_pid with non-live pid: delete stale pid file and
+        # reclassify before deciding whether to start or restart.
+        if service["verdict"] == "healthy_but_stale_pid" and not service.get("identity", {}).get("live"):
+            remove_pid_file(MINERU_API_PID_FILE)
+            service = classify_mineru_api_service(
+                pid_file=MINERU_API_PID_FILE,
+                api_url=api_url,
+                expected_exe=mineru_api_exe,
+                expected_port=port,
+            )
+            service_verdict_before = service["verdict"]
+        # Only continue healthy-state handling if the service is still healthy
+        # after any stale pid cleanup. If it became not_running, fall through to
+        # the port_is_open check and start path below.
+        if service.get("healthy"):
+            if service["verdict"] == "managed_ready":
+                return {
+                    "ok": True,
+                    "action": "reused",
+                    "mineru_api_url": api_url,
+                    "pid": service.get("pid"),
+                    "pid_file": str(MINERU_API_PID_FILE),
+                    "log_file": str(MINERU_API_LOG_FILE),
+                    "health": "ok",
+                    "port_open": True,
+                    "service": service,
+                    "service_verdict_before": service_verdict_before,
+                    "service_verdict_after": service["verdict"],
+                    "message": (
+                        "mineru-api is healthy and managed after stale pid cleanup; "
+                        "reused existing service. Do not infer readiness from old "
+                        "mineru_api.log lines. Current /health plus managed service "
+                        "identity are authoritative."
+                    ),
+                    "next_command": MINERU_READY_NEXT_COMMAND,
+                }
+            if restart_if_stale and service.get("identity", {}).get("is_mineru_api"):
+                pid = service.get("pid")
+                stopped = _terminate_pid(int(pid), force=False) if pid is not None else False
+                remove_pid_file(MINERU_API_PID_FILE)
+                if not stopped:
+                    return {
+                        "ok": False,
+                        "action": "failed",
+                        "mineru_api_url": api_url,
+                        "pid": pid,
+                        "pid_file": str(MINERU_API_PID_FILE),
+                        "log_file": str(MINERU_API_LOG_FILE),
+                        "health": "failed",
+                        "port_open": True,
+                        "service": service,
+                        "service_verdict_before": service_verdict_before,
+                        "service_verdict_after": "failed",
+                        "message": (
+                            "existing mineru-api is healthy but stale/unmanaged; "
+                            "failed to stop pid-file-managed process. Run "
+                            "stop_mineru_services.py --all-mineru-api or manually "
+                            "stop the process."
+                        ),
+                    }
+                # fall through to start a fresh managed service
+            elif service["verdict"] == "healthy_but_unmanaged" and not service.get("pid"):
+                # healthy but no safe PID to stop — must not start a second service
+                return {
+                    "ok": False,
+                    "action": "failed",
+                    "mineru_api_url": api_url,
+                    "pid": None,
+                    "pid_file": str(MINERU_API_PID_FILE),
+                    "log_file": str(MINERU_API_LOG_FILE),
+                    "health": "failed",
+                    "port_open": True,
+                    "service": service,
+                    "service_verdict_before": service_verdict_before,
+                    "service_verdict_after": service_verdict_before,
+                    "message": (
+                        "existing healthy mineru-api is unmanaged and has no safe "
+                        "PID to stop; run stop_mineru_services.py --all-mineru-api "
+                        "or manually stop the process."
+                    ),
+                }
+            else:
+                return {
+                    "ok": False,
+                    "action": "failed",
+                    "mineru_api_url": api_url,
+                    "pid": service.get("pid"),
+                    "pid_file": str(MINERU_API_PID_FILE),
+                    "log_file": str(MINERU_API_LOG_FILE),
+                    "health": "failed",
+                    "port_open": True,
+                    "service": service,
+                    "service_verdict_before": service_verdict_before,
+                    "service_verdict_after": service_verdict_before,
+                    "message": (
+                        "existing mineru-api is healthy but unmanaged/stale; "
+                        "restart required. Run stop_mineru_services.py "
+                        "--all-mineru-api or manually stop the process."
+                    ),
+                }
 
     if port_is_open(host, api_port):
         return {
@@ -221,10 +563,18 @@ def start_services(
             "pid_file": str(MINERU_API_PID_FILE),
             "log_file": str(MINERU_API_LOG_FILE),
             "health": "failed",
-            "message": f"port {api_port} is occupied but {api_url}/health is not available; refusing to start another mineru-api.",
+            "port_open": True,
+            "service_verdict_before": service_verdict_before,
+            "service_verdict_after": "failed",
+            "message": (
+                f"port {api_port} is occupied but {api_url}/health is "
+                "unavailable; not starting a second mineru-api. Run "
+                "stop_mineru_services.py --all-mineru-api, stop the occupying "
+                "process, or use another --port."
+            ),
         }
 
-    cmd = ["mineru-api", "--port", str(port)]
+    cmd = [mineru_api_exe, "--port", str(port)]
     if vlm_preload:
         cmd.extend(["--enable-vlm-preload", "true"])
     env = _service_env(
@@ -257,16 +607,64 @@ def start_services(
     if web:
         web_result = start_web_service()
 
+    # With --wait, the caller expects the API to actually be ready: a not_ready
+    # result is a failure. Without --wait, fire-and-forget: not_ready is acceptable.
+    initial_ok = (health == "ok") if wait else (health in {"ok", "not_ready"})
+
+    # After wait reports health ok, reclassify to confirm managed service
+    # identity. health_ok alone is not sufficient; the service must be
+    # managed_ready.
+    service_verdict_after = "unknown"
+    if health == "ok":
+        after_service = classify_mineru_api_service(
+            pid_file=MINERU_API_PID_FILE,
+            api_url=api_url,
+            expected_exe=mineru_api_exe,
+            expected_port=port,
+        )
+        service_verdict_after = after_service["verdict"]
+        if wait and service_verdict_after != "managed_ready":
+            initial_ok = False
+            health = "not_ready"
+
+    if health == "ok":
+        message = (
+            "mineru-api started. Do not infer readiness from old mineru_api.log "
+            "lines. Current /health plus managed service identity are authoritative."
+        )
+    elif wait and service_verdict_after not in ("managed_ready", "unknown"):
+        message = (
+            f"mineru-api health is ok but service identity is not "
+            f"managed_ready: {service_verdict_after}."
+        )
+    elif wait:
+        message = "mineru-api did not become ready before wait timeout."
+    else:
+        message = "mineru-api started but is not ready yet."
+    # The process was launched via Popen, so action reflects launch semantics
+    # (started/restarted) regardless of readiness. ok=False captures failures.
+    if restart_if_stale and service_verdict_before in ("healthy_but_unmanaged", "healthy_but_stale_pid"):
+        action = "restarted"
+    else:
+        action = "started"
     return {
-        "ok": health in {"ok", "not_ready"},
-        "action": "started",
+        "ok": initial_ok,
+        "action": action,
         "mineru_api_url": api_url,
+        "mineru_api_exe": mineru_api_exe,
+        "cmd": cmd,
+        "cuda_visible_devices": cuda_visible_devices,
+        "cuda_path": cuda_path,
+        "mineru_runner": env.get("MINERU_RUNNER"),
         "pid": proc.pid,
         "pid_file": str(MINERU_API_PID_FILE),
         "log_file": str(MINERU_API_LOG_FILE),
         "health": health,
-        "message": "mineru-api started." if health == "ok" else "mineru-api started but is not ready yet.",
-        "next_command": "python scripts/convert_paper_raw_gpu.py --paper-number 0000000000000001 --apply",
+        "port_open": health == "ok",
+        "service_verdict_before": service_verdict_before,
+        "service_verdict_after": service_verdict_after,
+        "message": message,
+        "next_command": MINERU_READY_NEXT_COMMAND,
         "web": web_result,
     }
 

@@ -15,6 +15,8 @@ from src.discovery.models import normalize_doi
 from src.file_fingerprint import compute_file_hashes
 from src.path_utils import normalize_repo_path
 from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.services.asset_manifest import pdf_hashes_from_manifest
+from src.services.stage_manifest import staged_pdf_hashes
 
 
 @dataclass(frozen=True)
@@ -85,18 +87,43 @@ def _metadata_doi(metadata: dict) -> str:
     return normalize_doi((identifiers or {}).get("doi") or "")
 
 
-def _metadata_pdf_hashes(metadata: dict) -> tuple[str, str]:
-    pdf = metadata.get("pdf") if isinstance(metadata.get("pdf"), dict) else {}
-    md5 = str((pdf or {}).get("md5") or "").strip().lower()
-    sha256 = str((pdf or {}).get("sha256") or "").strip().lower()
-    return md5, sha256
-
-
 def _stage_manifest_hashes(folder: Path) -> tuple[str, str]:
     manifest = _read_json(folder / "stage_manifest.json")
-    md5 = str(manifest.get("staged_md5") or manifest.get("original_md5") or "").strip().lower()
-    sha256 = str(manifest.get("staged_sha256") or manifest.get("original_sha256") or "").strip().lower()
+    md5, sha256 = staged_pdf_hashes(manifest)
+    pdf_source = manifest.get("pdf_source") if isinstance(manifest.get("pdf_source"), dict) else {}
+    md5 = str(md5 or pdf_source.get("original_md5") or manifest.get("staged_md5") or manifest.get("original_md5") or "").strip().lower()
+    sha256 = str(
+        sha256
+        or pdf_source.get("original_sha256")
+        or manifest.get("staged_sha256")
+        or manifest.get("original_sha256")
+        or ""
+    ).strip().lower()
     return md5, sha256
+
+
+def _workspace_pdf_hashes(folder: Path, metadata_prefix: str = "") -> tuple[str, str]:
+    prefixes: list[str] = []
+    if metadata_prefix:
+        prefixes.append(metadata_prefix)
+    prefixes.append(folder.name)
+    for marker in sorted(folder.glob("*.metadata.json")):
+        prefixes.append(marker.name.removesuffix(".metadata.json"))
+    for prefix in dict.fromkeys(prefixes):
+        md5, sha256 = pdf_hashes_from_manifest(folder, prefix)
+        if md5 or sha256:
+            return md5, sha256
+    md5, sha256 = _stage_manifest_hashes(folder)
+    if md5 or sha256:
+        return md5, sha256
+    pdf_paths = sorted(folder.glob("*.pdf"))
+    if pdf_paths:
+        try:
+            hashes = compute_file_hashes(pdf_paths[0])
+            return str(hashes["md5"]).lower(), str(hashes["sha256"]).lower()
+        except OSError:
+            return "", ""
+    return "", ""
 
 
 # Names that may appear as top-level children of ``data/paper_raw/`` but are
@@ -263,11 +290,8 @@ def _index_paper_raw_workspace(index: DuplicateIndex, folder: Path, skip_paper_n
                 sha256=str(hashes.get("sha256") or ""),
             ))
     else:
-        md5, sha256 = _metadata_pdf_hashes(metadata)
-        source = "metadata"
-        if not (md5 or sha256):
-            md5, sha256 = _stage_manifest_hashes(folder)
-            source = "stage_manifest"
+        md5, sha256 = _workspace_pdf_hashes(folder, folder.name)
+        source = "asset_manifest_or_stage_manifest"
         if md5 or sha256:
             _add_ref(index, _paper_raw_ref(folder, identity, source=source, md5=md5, sha256=sha256))
 
@@ -325,9 +349,9 @@ def build_ingest_duplicate_index(
                         sha256=str(hashes.get("sha256") or ""),
                     ))
             else:
-                md5, sha256 = _metadata_pdf_hashes(metadata)
+                md5, sha256 = _workspace_pdf_hashes(folder, folder.name)
                 if md5 or sha256:
-                    _add_ref(index, _papers_ref(folder, metadata, source="metadata", md5=md5, sha256=sha256))
+                    _add_ref(index, _papers_ref(folder, metadata, source="asset_manifest_or_stage_manifest", md5=md5, sha256=sha256))
     return index
 
 

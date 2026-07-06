@@ -1,24 +1,17 @@
-﻿# Project Status
+# Project Status
 
 本文档是 MinerU v2 文献资产库的当前状态总览：冻结版本、主流程、边界、待办与禁止事项。
 新 agent 或未来维护者应先读此文件，再进入 `docs/PROJECT_CONTRACT.md` 与
 `docs/DEPENDENCIES_AND_EXTERNAL_TOOLS.md`。
 
-## 1. 当前冻结版本
+## 1. 当前状态与冻结标签
 
 ### ingest v2.3 current incremental state
 
 - 新 ingest 的 `data/paper_raw/<id>/` 统一使用 16 位 `paper_number`。PDF-first 与 metadata-first staging 第一步 reserve 编号、创建 `paper_raw/<paper_number>/`、写 ledger reserved item 与 `<paper_number>.paper.number` marker。
 - `--paper-number` / `--paper-numbers` 是正常 CLI 唯一 paper_raw selector；旧 source-id selector 已退出正常流程，6 位目录只允许 `scripts/legacy/` migration 工具处理。
-- 本轮不打新 tag；`ingest-v2.2` 仍是上一冻结 tag。
-
-### ingest v2.2 frozen
-
-- tag：`ingest-v2.2`（v2.1 已被状态机重构取代）。
-- v2.2 变化：`curate_paper_raw.py` 不再改名/不再分配 paper_number/不再写 `ready_for_commit`，只写 `catalog_ready`；新增 `scripts/formalize_paper_raw.py` 在 `data/paper_raw` 内完成正式化（canonical paper_id 改名 + reserve 16 位 paper_number + 回填 catalog 链接 + `<paper_id>.formalization.json` + `<16位>.paper.number` marker + `ready_for_commit`）；`commit_paper_raw_to_papers.py` 退化为事务性安装（final validate → staging copytree → 自检 → `os.replace` → activate ledger → rebuild all.catalog → postcheck → 删源），后置失败回滚删除 `data/papers/<paper_id>`，不污染正式库。catalog/metadata schema 不变。
-- 验收：`validate_v2_library.py` / `audit_metadata_quality.py` / `doctor_ingest_pipeline.py` /
-  `pytest -q` 全绿。
-- catalog schema 保持 v2.0；新 metadata schema 为 v1.1，使用 `paper_number` / `paper_raw_id`，不再生成 `source_id`。
+- 本轮不打新 tag；`ingest-v2.2` 仍是上一冻结 tag。以下 schema 与规则来自 v2.2+v2.3 现行状态（在 current incremental state 而非 frozen section 下）：
+- catalog schema 为 v3.1（content-only，含 `library_locator` / `content_identity.content_title_zh` / `writing_value` / `quality_control`）；metadata schema 为 v2.0，使用 `paper_number` / `paper_raw_id`，不再生成 `source_id`，也不再承载中文标题 / 摘要 / 关键词 / notes。all.catalog schema 为 v3.1；paper_index schema 为 v2.0。
 - 初始 catalog 生成 / paper_raw curator / 入库前 catalog 生成阶段，`screening.read_decision` 固定为 `"pending"`；`must_read` / `maybe_read` / `skip` 只属于 post-triage / writing-stage catalog 或人工筛选后的精读决策。
 - CLI 路径隔离：`formalize_paper_raw.py` 与 `commit_paper_raw_to_papers.py` 都暴露 `--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`；测试/agent 必须传 tmp `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog`（默认值指向真实账本，被 gitignore，`git status` 看不出）。
 - `ready_for_commit` 阶段 ledger reserved entry 必须 repoint 到 formalized 后的 `<paper_id>` 工作区（不是旧 `0000000000000001`），由 `PaperNumberLedger.repoint_reserved` 在 formalize rename 后完成。
@@ -28,6 +21,14 @@
 - `Catalog.load()` 缺少 all.catalog 时构建 tolerant read-only snapshot，不写 ledger、marker、per-paper catalog、all.catalog 或 paper_index。
 - ingest duplicate guard 已前移到 stage / metadata resolve / fetch / attach 入口：PDF 内容重复用 sha256 + md5 阻断，DOI 重复同时检查 `data/paper_raw` 和 `data/papers`。命中重复不得创建新 workspace、不得占用 ledger、不得移动源 PDF 或覆盖 attach 目标。preflight / formalize / commit readiness / `audit_ingest_duplicates.py --strict` 保留为最后防线。
 - 2026-07-02 修复：`build_ingest_duplicate_index()` 原只索引 16 位编号目录，导致历史/untitled/已 formalized 工作区（如 `1979_sykest_untitled/`）的 PDF 不参与去重，同名 PDF 被 stage 成新 16 位工作区，已产生约 38 个重复工作区。现改为经 `is_paper_raw_workspace()` 按 assets 识别工作区，`resolve_paper_raw_identity()` 解析 marker paper_number，覆盖两类工作区。新增 `scripts/audit_paper_raw_duplicate_workspaces.py` 审计并 `--apply-cleanup` 移入 `quarantine/duplicate_workspaces/`（不删除、不回收编号）。
+- 2026-07-06 `pack_repo.py` 重构为 lightweight text/structure snapshot：移除 `AUDIT_RUNTIME_ALLOWED_SUFFIXES`（旧版允许 PDF/图片），新增 `HEAVY_OR_BINARY_DENIED_SUFFIXES`（拒绝 PDF/图片/二进制），`LIGHTWEIGHT_ALLOWED_SUFFIXES` 只含轻量文本/结构文件格式。额外工作区扫描从仅 paper data dirs 改为全工作区 rglob 并用 `require_lightweight=True` 过滤。`verify_snapshot()` 改为全局规则（不再区分 runtime data 区域 vs 源码区）。
+
+### ingest v2.2 frozen
+
+- tag：`ingest-v2.2`（v2.1 已被状态机重构取代）。
+- v2.2 变化：`curate_paper_raw.py` 不再改名/不再分配 paper_number/不再写 `ready_for_commit`，只写 `catalog_ready`；新增 `scripts/formalize_paper_raw.py` 在 `data/paper_raw` 内完成正式化（canonical paper_id 改名 + 复用/校验 staging 已 reserved 的 16 位 paper_number + 回填 catalog 链接 + `<paper_id>.formalization.json` + `<16位>.paper.number` marker + `ready_for_commit`）；`commit_paper_raw_to_papers.py` 退化为事务性安装（final validate → staging copytree → 自检 → `os.replace` → activate ledger → rebuild all.catalog → postcheck → 删源），后置失败回滚删除 `data/papers/<paper_id>`，不污染正式库。catalog/metadata schema 不变。
+- 验收：`validate_v2_library.py` / `audit_metadata_quality.py` / `doctor_ingest_pipeline.py` /
+  `pytest -q` 全绿。
 
 ### writing v0.1 frozen
 
@@ -46,11 +47,20 @@ network metadata (with DOI)
 -> fetch_pdf_for_paper_raw
 -> MinerU convert（hybrid-engine + medium + auto）
 -> catalog curation（content-only，写 catalog_ready）
--> formalize_paper_raw（改名 + reserve paper_number + ready_for_commit）
+-> formalize_paper_raw（改名 + reuse/repoint reserved paper_number + ready_for_commit）
 -> commit data/papers/<paper_id>/
 -> rebuild data/catalog/all.catalog.json
 -> validate / audit / doctor
 ```
+
+Metadata-only paper_raw PDF fetch is part of this network path and may also be rerun for
+existing 16-digit metadata-only workspaces. It reads DOI only from
+`<paper_number>.metadata.json`, never from `doi.csv`, never allocates a new number, skips
+existing PDFs unless explicitly forced, and attaches through duplicate guard as
+`<paper_number>.pdf`. Default resolver behavior remains OA-only. Header-based fetch is
+explicit, uses a fixed in-code User-Agent, and persists only masked header keys.
+OpenAlex/CrossRef search metadata staged with a valid DOI is treated as matched metadata:
+`metadata_match.status = "matched"` and `.import_status.json status = "metadata_matched"`.
 
 Manual PDF path（先转换，再从转换后的 md 解析 metadata）:
 ```text
@@ -60,7 +70,7 @@ data/raw/*.pdf
 -> MinerU convert（hybrid-engine + medium + auto）
 -> resolve_paper_raw_metadata（读转换后的 md，抽取候选并联网验证/查询）
 -> catalog curation（content-only，写 catalog_ready）
--> formalize_paper_raw（改名 + reserve paper_number + ready_for_commit）
+-> formalize_paper_raw（改名 + reuse/repoint reserved paper_number + ready_for_commit）
 -> commit data/papers/<paper_id>/
 -> rebuild data/catalog/all.catalog.json
 -> validate / audit / doctor
@@ -75,15 +85,20 @@ MinerU conversion requires GPU / MinerU 正式转换必须使用 GPU：formal in
 不需要 GPU；底层 `convert_paper_raw_batch.py` 仅作为兼容/调试入口保留，也会 warning 并执行同样的
 formal GPU 默认。CPU/no-GPU 只允许调试：显式 `MINERU_ALLOW_CPU=true` 或 `MINERU_REQUIRE_GPU=false`。
 批量转换优先使用持久 `mineru-api`：推荐入口是
-`python scripts/start_mineru_services.py --wait`，然后设置 `MINERU_RUNNER=cli_api_proxy` 与
+`python scripts/start_mineru_services.py --wait --restart-if-stale`，然后设置 `MINERU_RUNNER=cli_api_proxy` 与
 `MINERU_API_URL=http://127.0.0.1:8000`。`mineru-api` 必须在它自己的 shell 中以
 `CUDA_VISIBLE_DEVICES=0` 启动；client 侧设置不能改变已运行的 `mineru-api`。
+`/health` 只代表 liveness，不代表 GPU conversion readiness；正式批量转换前必须确认 managed
+service identity、`check_mineru_processes.py` verdict 为 `READY_FOR_CONVERSION`，并运行成功的
+`smoke_mineru_conversion.py` 单篇 smoke report。
+`convert_paper_raw_gpu.py --all --apply` uses `reports/smoke_mineru_conversion.json`
+as the default smoke gate report; `--smoke-report` is an override.
 转换完成后可用 `python scripts/stop_mineru_services.py` 关闭服务。大 PDF MinerU 转换没有
 进程级 timeout；health/preflight/HTTP 与 `MinerULock` 等待 timeout 不是 PDF 固定秒数限制。
 metadata 标题/作者/单位/摘要/关键词/DOI 候选优先来自转换后 Markdown 的物理前 100 行
 front-matter evidence，PDF title extraction 只作 fallback。
-手动 PDF 初始 unmatched，不要用 `--only-preflight-ready` 挡住转换。网络 metadata 已有 DOI，可安全使用
-`--only-preflight-ready`。两条路径 commit 前都要求 `metadata_match.status` 为 `matched` 或
+手动 PDF 初始 unmatched，不要用 `--only-preflight-ready` 挡住转换；该 flag 是 legacy/compatibility
+入口，正常 SOP 使用 `--only-convertible`。两条路径 commit 前都要求 `metadata_match.status` 为 `matched` 或
 `manual_confirmed`、DOI 非空、catalog 合法。
 
 ### 写作主流程
@@ -96,17 +111,37 @@ selected catalog / paper numbers
 -> quality check（check_write_quality_text.py）
 ```
 
+## Ingest layered semantics
+
+Ingest layered semantics (conversion does not require metadata; formalize/commit does):
+
+Conversion layer:
+- PDF conversion to Markdown/images does not require complete metadata.
+- Missing DOI or unmatched metadata must not block MinerU conversion.
+- Conversion output Markdown is a valid metadata-resolution source.
+
+Formal library layer:
+- Formalize/commit requires strict metadata.
+- DOI must be valid; metadata_match.status must be matched or manual_confirmed.
+- BibTeX is generated from metadata, never from catalog.
+
+Summary: convert first is allowed; commit requires metadata.
+
 ## 3. 当前边界
 
 - `metadata` 是书目信息事实源（DOI / 作者 / 年份 / 期刊 / 卷期页）。
-- `catalog`（schema v2.0）是 content-only，不含书目字段。
+- `catalog`（schema v3.1）是 content-only，不含书目字段。
+- `catalog.library_locator.asset_refs.*` and `catalog.provenance.markdown_path` must name actual
+  same-folder assets. 16-digit staging workspaces may use `<paper_number>.md`; formalized
+  paper_raw and `data/papers` must use final `<paper_id>.md`. Repair stale catalogs with
+  `scripts/repair_catalog_asset_refs.py`.
 - catalog 自然语言 value 默认尽量中文；JSON key/schema enum 保持英文，技术名词可中英混写。
   metadata 保持原始/规范书目事实，不因 catalog 中文化而改写。
 - 初始 `paper_raw` catalog 的 `screening.read_decision` 是 `"pending"`；写作阶段或人工筛选后才允许改为 `must_read` / `maybe_read` / `skip`。
 - `write/jobs/` 是运行时，不提交（只跟踪 `.gitkeep`）。
 - `write/jobs/<job_id>/article/` is the only writing article workspace.
 - TeX 不得直接读 `data/papers`、`data/raw` 或 `data/paper_raw`。
-- 真实入库 / 转换 / 写作必须使用 `conda run -n mineru`。
+- 真实入库 / 转换 / 写作必须使用 `conda run -n mineru` 或 `conda activate mineru` 后再运行 Python 脚本。
 - snapshot 不含真实 data 与 `write/jobs` 运行产物。
 
 ## 4. 当前待办
@@ -120,7 +155,7 @@ selected catalog / paper numbers
   - Active writing workspace: `write/jobs/<job_id>/article/<paper_number>/`；BibTeX/cite-key 只从 copied article metadata 生成。
   - Deprecated workspace: the legacy llm work directory is forbidden and must not be used by active writing flows.
 - 第三方解耦（本轮完成）：`src/fetch/proxy.py` 已抽出共享代理逻辑；
-  Sci-Hub 标注为 unsafe optional / 默认 disabled / 不属于 OA_ONLY 主流程。
+  Sci-Hub resolver 已移除（removed），项目不提供 Sci-Hub resolver。
 - 后续可选（planned only）：
   - job-local literature matrix
   - mechanism / table / figure outline
@@ -132,5 +167,4 @@ selected catalog / paper numbers
 - 不内置 LLM client。
 - 不把真实 data / `write/jobs` 运行产物入 snapshot。
 - 不让外部 metadata 直接写正式库（必须经 `paper_raw` + validate/audit）。
-- 不放宽 Sci-Hub 启用条件。
-
+- 不提供 Sci-Hub resolver（已移除）。

@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.services.ingest_ids import validate_paper_raw_id
+from src.services.ingest_state import write_import_status
 from src.services.metadata_resolver import (
     STATUS_CANDIDATE_CONFLICT,
     STATUS_CANDIDATES_FOUND,
@@ -21,9 +22,8 @@ from src.services.metadata_resolver import (
     write_metadata_patch_json,
     write_resolve_report_json,
 )
+from src.services.rate_limit import ProviderRateLimiter, load_config as load_rate_config
 from src.utils.atomic_io import atomic_write_json
-
-
 LEGACY_NOTICE = (
     "match_paper_raw_metadata.py is a legacy compatibility wrapper; "
     "use resolve_paper_raw_metadata.py as the canonical resolver."
@@ -52,14 +52,16 @@ def _status_for_report(report) -> str:
 
 
 def _write_report_status(folder: Path, report) -> None:
-    atomic_write_json(folder / ".import_status.json", {
-        "status": _status_for_report(report),
-        "paper_number": report.source_id,
-        "paper_raw_id": report.source_id,
-        "best_decision": report.decision,
-        "reason": report.reason,
-        "created_at": report.created_at,
-    }, indent=2)
+    write_import_status(
+        folder,
+        _status_for_report(report),
+        reason=report.reason,
+        extra={
+            "paper_number": report.source_id,
+            "paper_raw_id": report.source_id,
+            "best_decision": report.decision,
+        },
+    )
 
 
 def main() -> int:
@@ -80,6 +82,16 @@ def main() -> int:
 
     print(LEGACY_NOTICE, file=sys.stderr)
 
+    # Build a rate limiter for network access.
+    rl = None
+    try:
+        from pathlib import Path as _P
+        cfg_path = _P("config/metadata_rate_limits.json")
+        if cfg_path.exists():
+            rl = ProviderRateLimiter(load_rate_config(cfg_path))
+    except Exception:
+        pass
+
     write = args.apply and not args.dry_run
     items = []
     for source_id in _source_ids(args.paper_raw_dir, args.all, args.paper_number):
@@ -91,6 +103,7 @@ def main() -> int:
                 allow_network=True,
                 all_catalog_path=args.all_catalog,
                 papers_dir=args.papers_dir,
+                rate_limiter=rl,
             )
             item.update({
                 "decision": report.decision,

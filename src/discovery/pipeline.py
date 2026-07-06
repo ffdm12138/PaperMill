@@ -10,9 +10,8 @@ from config.settings import DISCOVERY_DIR
 from src.discovery.models import CandidateBatch, PaperCandidate
 from src.discovery.query_expand import expand_query
 from src.discovery.rank_candidates import dedupe_and_rank_candidates
-from src.discovery.resolve_crossref import resolve_doi_by_title
+from src.discovery.resolve_crossref import resolve_doi_by_title, search_crossref
 from src.discovery.search_openalex import search_openalex
-from src.discovery.search_semantic_scholar import search_semantic_scholar
 
 
 def slugify_query(query: str, max_len: int = 48) -> str:
@@ -61,7 +60,7 @@ def discover_papers(
     candidates: list[PaperCandidate] = []
     for expanded_query in expanded["expanded_queries"]:
         candidates.extend(search_openalex(expanded_query, domain_id=domain_id, limit=limit_per_query))
-        candidates.extend(search_semantic_scholar(expanded_query, domain_id=domain_id, limit=limit_per_query))
+        candidates.extend(search_crossref(expanded_query, domain_id=domain_id, limit=limit_per_query))
 
     _fill_missing_dois(candidates)
     ranked = dedupe_and_rank_candidates(candidates, query=query, max_candidates=max_candidates)
@@ -69,7 +68,7 @@ def discover_papers(
         original_query=query,
         expanded_queries=expanded["expanded_queries"],
         candidates=ranked,
-        sources=["openalex", "semantic_scholar", "crossref"],
+        sources=["openalex", "crossref"],
     )
 
     destination = output_dir or (DISCOVERY_DIR / "doi_candidates")

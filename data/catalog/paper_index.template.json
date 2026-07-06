@@ -1,6 +1,6 @@
 {
-  "schema_version": "1.1",
-  "description": "Local generated path index template. Real paper_index.json is ignored.",
+  "schema_version": "2.0",
+  "description": "Path index only; bibliographic facts stay in metadata.json. Real paper_index.json is ignored.",
   "updated_at": "",
   "papers": []
 }

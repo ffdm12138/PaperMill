@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -58,6 +59,23 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not value:
         return default
     return value in {"1", "true", "yes", "on"}
+
+
+def activate_formal_gpu_env() -> None:
+    """Activate the formal MinerU GPU conversion environment in-process.
+
+    Formal entrypoints must validate smoke/runtime state against the same
+    runner and API URL they will use for conversion.  Keep this helper early in
+    those mains, before ``runtime_config_from_env()`` or smoke validation.
+    """
+    os.environ["MINERU_REQUIRE_GPU"] = "true"
+    os.environ.pop("MINERU_ALLOW_CPU", None)
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    os.environ["MINERU_BACKEND"] = "hybrid-engine"
+    os.environ["MINERU_METHOD"] = "auto"
+    os.environ["MINERU_EFFORT"] = "medium"
+    os.environ["MINERU_RUNNER"] = "cli_api_proxy"
+    os.environ.setdefault("MINERU_API_URL", "http://127.0.0.1:8000")
 
 
 def runtime_config_from_env() -> MinerURuntimeConfig:
@@ -335,6 +353,56 @@ def preflight_mineru_api(api_url: str | None = None, timeout: float = 5.0) -> Mi
     )
 
 
+def snapshot_mineru_api(api_url: str | None = None, timeout: float = 5.0) -> dict:
+    """Fetch a structured mineru-api health snapshot.
+
+    Returns:
+        dict with ``api_available`` plus (when available) ``status``, ``version``,
+        ``queued_tasks``, ``processing_tasks``, ``completed_tasks``,
+        ``failed_tasks``. On any failure returns ``{"api_available": False,
+        "error": ...}``. A healthy API that has only ever failed tasks
+        (``failed_tasks > 0 and completed_tasks == 0``) is surfaced so callers
+        can warn before launching a batch conversion.
+    """
+    config = runtime_config_from_env()
+    url = (api_url or config.api_url).rstrip("/")
+    try:
+        import requests
+
+        response = requests.get(f"{url}/health", timeout=timeout)
+        if response.status_code >= 400:
+            return {"api_available": False, "error": f"HTTP {response.status_code}"}
+        data = response.json() if response.content else {}
+    except Exception as exc:
+        return {"api_available": False, "error": str(exc)}
+    if not isinstance(data, dict):
+        return {"api_available": False, "error": "non-object /health body"}
+    return {
+        "api_available": True,
+        "status": str(data.get("status") or ""),
+        "version": str(data.get("version") or ""),
+        "queued_tasks": int(data.get("queued_tasks") or 0),
+        "processing_tasks": int(data.get("processing_tasks") or 0),
+        "completed_tasks": int(data.get("completed_tasks") or 0),
+        "failed_tasks": int(data.get("failed_tasks") or 0),
+    }
+
+
+def mineru_api_failed_task_warning(snapshot: dict | None) -> str:
+    """Return a warning string when the API is healthy but tasks have only
+    failed (no completions). Empty string otherwise."""
+    if not snapshot or not snapshot.get("api_available"):
+        return ""
+    if snapshot.get("status") and snapshot.get("status") != "healthy":
+        return ""
+    failed = int(snapshot.get("failed_tasks") or 0)
+    completed = int(snapshot.get("completed_tasks") or 0)
+    if failed > 0 and completed == 0:
+        return ("mineru-api is healthy but conversion tasks have failed; "
+                "check per-task error/report before batch conversion.")
+    return ""
+
+
 def list_gpu_processes() -> dict:
     """列出 GPU 上的 compute 进程（pid, process_name, used_memory）。
 
@@ -385,6 +453,83 @@ def describe_runtime(config: MinerURuntimeConfig | None = None) -> dict:
     data = asdict(config)
     data["runner"] = config.runner.value
     return data
+
+
+def verify_gpu_runtime(api_url: str = "http://127.0.0.1:8000") -> dict:
+    """Return a formal MinerU GPU conversion readiness snapshot.
+
+    ``/health`` is only liveness. A ready verdict also requires CUDA/torch and
+    a managed mineru-api identity.
+    """
+    config = runtime_config_from_env()
+    warnings: list[str] = []
+    gpu_health = preflight_gpu()
+    torch_health = preflight_torch_cuda()
+    api_health = snapshot_mineru_api(api_url)
+    gpu_processes = list_gpu_processes()
+    try:
+        from src.mineru_service_manager import (
+            MINERU_API_PID_FILE,
+            classify_mineru_api_service,
+            find_mineru_api_exe,
+        )
+
+        parsed = urllib.parse.urlparse(api_url)
+        expected_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        service = classify_mineru_api_service(
+            pid_file=MINERU_API_PID_FILE,
+            api_url=api_url,
+            expected_exe=find_mineru_api_exe(),
+            expected_port=int(expected_port),
+        )
+    except Exception as exc:
+        service = {
+            "verdict": "healthy_but_unmanaged" if api_health.get("api_available") else "not_running",
+            "warnings": [str(exc)],
+            "identity": {},
+        }
+
+    if gpu_health.ok is False or torch_health.ok is False:
+        verdict = "CUDA_NOT_AVAILABLE"
+    elif not api_health.get("api_available"):
+        verdict = "NO_MINERU_API"
+    elif service.get("verdict") != "managed_ready":
+        verdict = "API_HEALTHY_BUT_UNMANAGED"
+    elif int(api_health.get("failed_tasks") or 0) > 0 and int(api_health.get("completed_tasks") or 0) == 0:
+        verdict = "API_HEALTHY_BUT_FAILED_TASKS"
+    else:
+        verdict = "READY_FOR_CONVERSION"
+
+    api_warning = mineru_api_failed_task_warning(api_health)
+    if api_warning:
+        warnings.append(api_warning)
+    warnings.extend(str(w) for w in service.get("warnings") or [])
+    if not gpu_health.ok:
+        warnings.append(gpu_health.message)
+    if not torch_health.ok:
+        warnings.append(torch_health.message)
+
+    return {
+        "verdict": verdict,
+        "runtime": describe_runtime(config),
+        "nvidia_smi_available": bool(getattr(gpu_health, "nvidia_smi", False)),
+        "gpu_processes": gpu_processes,
+        "torch_cuda_available": bool(torch_health.cuda_available),
+        "torch_cuda_device_count": torch_health.device_count,
+        "torch_cuda": {
+            "ok": torch_health.ok,
+            "message": torch_health.message,
+            "torch_version": torch_health.torch_version,
+            "torch_cuda_version": torch_health.torch_cuda_version,
+            "cuda_available": torch_health.cuda_available,
+            "device_count": torch_health.device_count,
+            "device_name": torch_health.device_name,
+        },
+        "cuda_visible_devices": config.cuda_visible_devices,
+        "mineru_api_health": api_health,
+        "service_identity": service,
+        "warnings": [w for w in warnings if w],
+    }
 
 
 def snapshot_nvidia_smi() -> dict:

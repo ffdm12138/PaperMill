@@ -6,6 +6,7 @@ import requests
 from loguru import logger
 
 from src.fetch.models import FetchResult
+from src.fetch.proxy import get_fetch_proxies
 
 
 S2_PAPER_URL = "https://api.semanticscholar.org/graph/v1/paper"
@@ -24,6 +25,7 @@ def resolve_semantic_scholar_pdf(doi: str) -> FetchResult:
             params={"fields": S2_FIELDS},
             headers=_headers(),
             timeout=20,
+            proxies=get_fetch_proxies(),
         )
         response.raise_for_status()
         data = response.json()

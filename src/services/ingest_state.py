@@ -24,6 +24,7 @@ READY_FOR_CONVERT = "ready_for_convert"
 CONVERTED = "converted"
 STALE_CONVERSION = "stale_conversion"
 PARTIAL_CONVERSION = "partial_conversion"
+STAGE_FAILED = "stage_failed"
 
 # --- metadata resolve (mirror metadata_resolver.STATUS_*) --------------------
 METADATA_CANDIDATES_FOUND = "metadata_candidates_found"
@@ -87,22 +88,37 @@ def write_import_status(
 ) -> dict:
     """Write ``<folder>/.import_status.json`` with the canonical field shape.
 
-    Always includes: status, reason, errors, warnings, created_at. Any keys
-    in ``extra`` (e.g. paper_id, paper_number, source_id, pdf_sha256) are
-    merged in alongside the canonical fields.
+    Always includes: status, reason, errors, warnings, created_at, updated_at.
+    ``created_at`` is preserved from an existing file (so repeated writes during
+    a multi-stage pipeline keep the original timestamp); ``updated_at`` is
+    always refreshed. Any keys in ``extra`` (e.g. paper_id, paper_number,
+    source_id, pdf_sha256) are merged in alongside the canonical fields.
     """
+    import json
+
     folder = Path(folder)
+    path = folder / ".import_status.json"
+    existing: dict = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                existing = data
+        except Exception:
+            existing = {}
+    created_at = existing.get("created_at") or now_iso()
     payload: dict = {
         "status": status,
         "reason": reason,
         "errors": errors or [],
         "warnings": warnings or [],
-        "created_at": now_iso(),
+        "created_at": created_at,
+        "updated_at": now_iso(),
     }
     if extra:
         for key, value in extra.items():
             payload[key] = value
-    atomic_write_json(folder / ".import_status.json", payload, indent=2)
+    atomic_write_json(path, payload, indent=2)
     return payload
 
 

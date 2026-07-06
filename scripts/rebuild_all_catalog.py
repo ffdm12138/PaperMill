@@ -33,9 +33,12 @@ def main() -> int:
         ledger=ledger,
     )
     data = builder.build(write=write)
+    written = write and not builder.last_errors
     for error in builder.last_errors:
         print(f"ERROR: {error}")
-    print(f"papers={len(data.get('papers', []))} written={write}")
+    if write and not written:
+        print("not written: instance has errors")
+    print(f"papers={len(data.get('papers', []))} written={written}")
     return 1 if builder.last_errors else 0
 
 

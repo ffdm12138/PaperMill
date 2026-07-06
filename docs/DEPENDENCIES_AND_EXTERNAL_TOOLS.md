@@ -31,9 +31,12 @@ PDF access resolver 体系，以及明确不引入的依赖。目的是让新 ag
 `data/papers/`。candidate 必须先有合法 DOI，再走 `paper_raw` → match → curation →
 commit 才能进入正式库。
 
-- Crossref（DOI → 书目元数据）
+- Crossref（关键词 DOI / 书目元数据搜索 + DOI → 书目元数据）
 - OpenAlex（书目元数据 / OA 位置）
-- Semantic Scholar（书目元数据 / 引用）
+
+> 网络关键词搜索 metadata 收敛为 **Crossref + OpenAlex** 两个 provider；Semantic Scholar
+> 不再作为关键词 metadata 搜索 provider（仅保留为 DOI→PDF fetch resolver，见第 4 节）。
+
 - Unpaywall（合法 OA PDF URL）
 - arXiv（预印本元数据与 PDF）
 - bioRxiv（预印本元数据与 PDF）
@@ -54,12 +57,29 @@ PDF 获取由 `src/fetch/access_policy.py` + `src/fetch/resolver_registry.py` �
   免费注册的 API token，属于机构 / 授权语义，仅在 `INSTITUTIONAL` 或 `CUSTOM` 下启用。
 - **institutional / browser-assisted / custom resolvers**：`institutional_browser`、
   `browser_assisted`、`local_manual`、`custom`、`ref_downloader`。需要用户操作或机构订阅。
-- **Sci-Hub**：`unsafe optional`，默认 disabled，**不属于 OA_ONLY 主流程**。仅
-  `AccessMode.CUSTOM` 且 `allow_scihub=True` 时才启用。本仓库不放宽该启用条件。
+- **header-based DOI resolver**：`header_based`。不属于 `OA_ONLY` 默认链路。
+  它在两种情况下启用：
+  1. 显式调用 `fetch_pdf_for_paper_raw.py --resolver header-based`；
+  2. `--resolver auto` 时作为最后的 DOI landing fallback（默认 `https://doi.org/{doi}`），
+     无需 `--base-url` 或 `--url-template` 即可运行。
+  User-Agent 固定在 Python 代码中；用户每次运行可传 Cookie/Authorization 等
+  额外 header，但 header 明文不得写入 metadata、report 或日志。
+- **Sci-Hub**：**已移除（removed）**。项目不提供、不注册 Sci-Hub resolver。PDF 获取按
+  「原始链接 → OA → 出版商专用解析器（sciengine_direct 等）→ header_based DOI landing fallback
+  （默认 `https://doi.org/{doi}`）→ 失败报告」
+  优先级执行，不再有任何 unsafe fallback。
+  `allow_scihub` 字段、`fetch_scihub.py` 模块、`SciHubResolver` 类均已删除。
 
 代理配置统一走 `src/fetch/proxy.py::get_fetch_proxies()`，读取 `FETCH_PROXY` 环境变量，
-返回 `requests` 可用的 proxies dict 或 `None`（直连）。合法 TDM / publisher resolver
-不再语义上依赖 Sci-Hub 模块。
+返回 `requests` 可用的 proxies dict 或 `None`（直连）。
+
+metadata-only PDF fetch priority:
+1. original links already present in metadata (`metadata.links.pdf_url` / `url` / `publisher_url` / `repository_url`)
+2. legal OA resolvers (unpaywall, openalex, semantic_scholar, arxiv, publisher_oa, springer_direct)
+3. publisher-specific resolvers, e.g. `sciengine_direct` for `10.1360/` DOIs
+4. preprint / PMC resolvers (biorxiv, pmc_oa)
+5. header_based DOI landing fallback, default `https://doi.org/{doi}`
+4. report failure
 
 ## 5. Explicitly removed / not used
 
@@ -77,13 +97,21 @@ In ingest v2.3, normal `data/paper_raw/<id>/` workspaces use the 16-digit
 `paper_number` reserved by staging. Six-digit `source_id` directories are
 legacy/migration only and must be migrated or repaired before normal conversion/formalize.
 
-以下路径是运行时产物 / 版权语料，**不进入源码快照**（`pack_repo.py` 强制排除）：
+以下路径是运行时产物 / 版权语料，**在 source profile 下不进入源码快照**
+（`python scripts/pack_repo.py --profile source` 强制排除）；但默认 audit profile
+（`python scripts/pack_repo.py`）会额外包含部分运行时样本用于审计调试：
 
 - `data/raw/`、`data/paper_raw/`、`data/papers/`、`data/import_work/`
 - `data/catalog/all.catalog.json`、`data/catalog/paper_index.json`、
   `data/catalog/paper_number_ledger.json`（源码快照只提交对应 `.template.json` 空模板）
 - `write/jobs/`（写作运行时，只跟踪 `.gitkeep`）
-- 任何 PDF / Markdown / images / TeX 编译产物
+- PDF / Markdown / images / TeX 编译产物
+
+> **注意**：audit profile 下的 `mineru_snapshot.zip` 是审计快照，会主动扫描并包含
+> `data/papers/`、`data/paper_raw/` 中的 `.json` / `.md` / `.pdf` / 图片等
+> 被 `.gitignore` 忽略的样本资产，供 ChatGPT/Codex 审计、复现和调试。
+> **zip 中出现 allowlisted runtime sample 不代表 git 污染**。
+> 纯源码分发请使用 `--profile source`。详见 `docs/PROJECT_CONTRACT.md` 与 `AGENTS.md` §7。
 
 数据语义边界：
 
@@ -93,8 +121,9 @@ legacy/migration only and must be migrated or repaired before normal conversion/
 
 ## 7. Environment rule
 
-真实入库 / 转换 / 写作命令必须使用 mineru conda 环境，不要用 PATH 上的
-Windows Store python 别名（会静默退出）：
+真实入库 / 转换 / 写作命令必须使用 mineru conda 环境。
+Git Bash 已配置 `conda init bash`，终端直接 `conda activate mineru` 即可使用。
+以下两种方式均可（推荐 `conda run` 用于脚本/agent 调用）：
 
 ```bash
 conda run -n mineru python scripts/<x>.py
@@ -102,9 +131,12 @@ conda run -n mineru python scripts/<x>.py
 %USERPROFILE%\.conda\envs\mineru\python.exe scripts/<x>.py
 ```
 
+注意：本 agent 的 bash 工具使用非交互 shell，不加载 `.bashrc`，此时需用 `conda run` 或绝对路径。
+
 Windows 下建议先设置编码，避免中文输出乱码：
 
-```bash
+```bat
+:: Windows cmd.exe only
 set PYTHONIOENCODING=utf-8
 ```
 
@@ -119,12 +151,16 @@ CPU/no-GPU 只允许调试：显式设置 `MINERU_ALLOW_CPU=true` 或 `MINERU_RE
 Formal conversion command:
 
 ```bash
+conda run -n mineru python scripts/start_mineru_services.py --wait --restart-if-stale --port 8000
+conda run -n mineru python scripts/check_mineru_processes.py
+conda run -n mineru python scripts/smoke_mineru_conversion.py --paper-number 0000000000000001 --apply --report reports/smoke_mineru_conversion.json
 conda run -n mineru python scripts/convert_paper_raw_gpu.py --all --apply --report reports/convert_paper_raw.json
 ```
 
 Windows cmd:
 
-```bash
+```bat
+:: Windows cmd.exe only
 set MINERU_REQUIRE_GPU=true
 set CUDA_VISIBLE_DEVICES=0
 set MINERU_RUNNER=cli_api_proxy
@@ -153,8 +189,12 @@ export MINERU_API_URL=http://127.0.0.1:8000
 `start_fast_api_mode.bat` 启动，或按本地 MinerU 安装启动 `mineru-api` 后设置以上变量。
 `mineru-api` 必须在它自己的 shell 中以 `CUDA_VISIBLE_DEVICES=0` 启动；只在 client 进程设置
 `CUDA_VISIBLE_DEVICES` 不能改变已经运行的服务。
-`start_fast_api_mode.bat` 是 single-instance helper：已有健康 `mineru-api` 时复用；端口
-8000 被占用但 `/health` 不通时拒绝再启动，避免重复加载模型或 GPU OOM。
+`/health` 只代表 liveness，不代表 GPU conversion readiness。正式批量转换要求 managed service
+identity、`check_mineru_processes.py` verdict 为 `READY_FOR_CONVERSION`，且最近 24 小时内有成功的
+`smoke_mineru_conversion.py` 单篇报告。
+`start_fast_api_mode.bat` 是 single-instance helper：仅复用 managed healthy `mineru-api`；健康但
+unmanaged/stale 时用 `--restart-if-stale` 重启。端口 8000 被占用但 `/health` 不通时拒绝再启动，
+避免重复加载模型或 GPU OOM。
 `MINERU_RUNNER=cli` 只保留给单篇测试/调试；多篇 formal batch 会 hard fail，除非显式传
 `--allow-cold-cli-batch` 做 debug/benchmark。
 
@@ -168,11 +208,27 @@ export MINERU_API_URL=http://127.0.0.1:8000
 `MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true`。
 ### Current MinerU service entry
 
-Use `python scripts/start_mineru_services.py --wait` to start or reuse the
-persistent local `mineru-api`, then run `python scripts/convert_paper_raw_gpu.py
---paper-number 0000000000000001 --apply` or `python scripts/convert_paper_raw_gpu.py --all
---apply`. Stop the service with `python scripts/stop_mineru_services.py`.
+Use `python scripts/start_mineru_services.py --wait --restart-if-stale` to start
+or reuse the persistent local `mineru-api`. Before formal batch conversion, run
+`python scripts/check_mineru_processes.py` and one
+`python scripts/smoke_mineru_conversion.py --paper-number 0000000000000001 --apply`.
+Then run `python scripts/convert_paper_raw_gpu.py --all --apply`. Stop the
+service with `python scripts/stop_mineru_services.py`.
+`smoke_mineru_conversion.py` without `--apply` is readiness-only and cannot
+unlock batch conversion.
 `start_fast_api_mode.bat` is a compatibility wrapper around the Python starter.
+
+如果 conda 不在 PATH，用 env python 绝对路径：
+
+```bash
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\start_mineru_services.py --wait --restart-if-stale
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\check_mineru_processes.py
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\smoke_mineru_conversion.py --paper-number 0000000000000001 --apply --report reports\smoke_mineru_conversion.json
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\convert_paper_raw_gpu.py --all --apply
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\stop_mineru_services.py
+```
+
+start_mineru_services.py must resolve Scripts/mineru-api.exe from the current Python env (find_mineru_api_exe). Do not manually background mineru-api.exe as a long-term SOP.
 
 MinerU PDF conversion has no process-level timeout; large PDFs may run for a long
 time. Health checks, preflight checks, HTTP request timeouts, and `MinerULock`
@@ -181,4 +237,3 @@ wait timeouts remain allowed because they are not PDF conversion timeouts.
 For manual metadata matching, title/author/affiliation/abstract/keyword/DOI
 candidates come from the converted Markdown first 100 lines as front-matter
 evidence before PDF title fallback. DOI gates stay strict.
-

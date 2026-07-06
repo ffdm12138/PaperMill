@@ -1,74 +1,115 @@
 {
-  "schema_version": "2.0",
-  "paper_number": "",
-  "paper_id": "",
-  "paper_number": "0000000000000001",
-  "asset_refs": {
-    "markdown": "data/paper_raw/0000000000000001/0000000000000001.md",
-    "pdf": "data/paper_raw/0000000000000001/0000000000000001.pdf",
-    "images_dir": "data/paper_raw/0000000000000001/images",
-    "figures": []
+  "schema_version": "3.1",
+  "library_locator": {
+    "paper_number": "0000000000000001",
+    "paper_id": "",
+    "paper_dir": "data/paper_raw/0000000000000001",
+    "asset_refs": {
+      "markdown": "0000000000000001.md",
+      "pdf": "0000000000000001.pdf",
+      "metadata": "0000000000000001.metadata.json",
+      "catalog": "0000000000000001.catalog.json",
+      "asset_manifest": "0000000000000001.asset_manifest.json",
+      "images_dir": "images/"
+    }
   },
   "content_identity": {
-    "content_title": "A bulk blowing-snow model",
-    "md_title_candidates": ["A bulk blowing-snow model"],
+    "content_title_zh": "体相吹雪模型",
+    "content_title_original": "A bulk blowing-snow model",
+    "content_title_original_source": "metadata.title",
+    "content_title_original_candidates": [],
     "content_language": "en",
-    "document_type": "theoretical_model"
+    "document_type": "article",
+    "title_quality": {
+      "source": "metadata.title",
+      "confidence": 1.0,
+      "warnings": []
+    }
   },
   "classification": {
     "primary_domain": "blowing_snow_physics",
-    "secondary_domains": ["abl_pbl"],
-    "topic_tags": ["blowing snow", "bulk model", "sublimation"],
-    "methods_tags": ["one-dimensional bulk model", "mass and momentum conservation"],
-    "phenomena_tags": ["sublimation", "mass flux profile"],
-    "material_tags": ["blowing snow particles"],
-    "model_tags": ["bulk blowing-snow model"]
+    "secondary_domains": ["atmospheric_boundary_layer"],
+    "topic_tags": ["blowing_snow", "snow_transport", "sublimation"],
+    "methods_tags": ["bulk_model", "conservation_equations"],
+    "phenomena_tags": ["snow_particle_transport", "sublimation"],
+    "material_tags": ["snow_particles"],
+    "model_tags": ["bulk_blowing_snow_model"],
+    "application_tags": ["boundary_layer_parameterization"]
   },
   "screening": {
-    "read_decision": "must_read",
-    "relevance_score": 5,
+    "read_decision": "pending",
+    "relevance_score": 4,
     "novelty_score": 4,
     "method_quality_score": 4,
-    "reason": "项目核心引用，提供体相吹雪模型方程原型。"
+    "priority_score": 4,
+    "reason": "该文献提供体相吹雪模型的方程框架，可用于吹雪输运和升华参数化综述。",
+    "recommended_next_action": "read"
   },
   "research_card": {
-    "research_problem": "如何用体相（bulk）方法统一描述吹雪的输运、升华与边界层相互作用。",
-    "core_question": "体相方法能否复现吹雪层的质量通量剖面并刻画升华耗损？",
+    "research_problem": "如何用体相方法统一描述吹雪输运、升华与边界层相互作用。",
+    "core_question": "体相模型能否复现吹雪层质量通量剖面并刻画升华损耗。",
     "hypothesis_or_objective": "建立一维体相吹雪模型，统一刻画吹雪输运与升华过程。",
-    "study_object": "吹雪粒子群在边界层中的体相输运与升华。",
-    "method_summary": "一维体相模型，将粒子群视为连续相，建立质量与动量守恒方程并参数化升华。",
-    "data_or_experiment": "理论推导，结合典型边界层条件进行理想化试验。",
-    "main_findings": [
-      "体相方法可复现吹雪层的质量通量剖面。",
-      "升华在低湿度环境下显著消耗吹雪质量。"
-    ],
+    "study_object": "边界层中的吹雪粒子群。",
+    "method_summary": "将吹雪粒子群视为连续相，建立质量和动量守恒方程并参数化升华。",
+    "data_or_experiment": "理论推导与理想化边界层条件试验。",
+    "main_findings": ["体相方法可描述吹雪层质量通量剖面。", "升华会显著影响吹雪质量收支。"],
     "mechanisms": ["bulk mass conservation", "sublimation parameterization"],
-    "limitations": ["理想化一维假设", "缺乏多场观测验证"],
-    "usefulness_for_user": "为体相吹雪参数化与升华计算提供理论基础与方程原型。"
+    "limitations": ["一维理想化假设限制了复杂地形适用性。"],
+    "usefulness_for_user": "可作为吹雪输运参数化和边界层耦合模型的理论背景。"
+  },
+  "writing_value": {
+    "short_summary": "本文建立体相吹雪模型，用连续相守恒方程描述吹雪输运和升华。",
+    "long_summary": "该文献将吹雪粒子群视为连续相，构建质量与动量守恒框架，并讨论升华参数化对吹雪质量收支的影响，可支撑吹雪模型发展脉络和边界层参数化背景。",
+    "possible_use_in_writing": [
+      {"use_case": "model_background", "description_zh": "用于介绍吹雪体相模型的基本方程框架。"},
+      {"use_case": "sublimation_parameterization", "description_zh": "用于讨论升华对吹雪质量收支的影响。"}
+    ],
+    "supports_arguments": ["吹雪输运可通过连续相守恒方程进行参数化。"],
+    "contrasts_with": [],
+    "best_used_in_sections": ["introduction", "methods_background"],
+    "citation_context_zh": "在介绍吹雪体相建模或升华参数化时引用。",
+    "open_questions": ["一维体相假设在复杂地形和非均匀风场中如何扩展。"],
+    "warnings": []
   },
   "evidence_profile": {
-    "key_claims": [
-      "体相模型可复现吹雪层质量通量剖面",
-      "低湿度下升华显著消耗吹雪质量"
-    ],
+    "key_claims": ["体相模型可描述吹雪质量通量剖面。"],
     "important_equations": ["bulk mass conservation", "sublimation parameterization"],
-    "important_figures": ["mass flux profile", "sublimation rate"],
+    "important_figures": ["mass flux profile"],
     "important_tables": [],
     "quoted_terms": ["bulk blowing-snow model", "sublimation parameterization"],
     "page_or_section_evidence": ["model derivation", "sublimation"]
   },
-  "content_notes": {
-    "short_summary": "建立一维体相吹雪模型，刻画吹雪的输运与升华过程。",
-    "long_summary": "Déry and Yau (1999) 提出一维体相吹雪模型，将吹雪粒子群视为连续相，建立质量与动量守恒方程并参数化升华，复现吹雪层质量通量剖面，揭示低湿度下升华显著消耗吹雪质量，为体相吹雪-边界层耦合提供理论框架与方程原型。",
-    "possible_use_in_writing": ["方法章节-模型方程", "引言-吹雪物理背景", "讨论-升华参数化对比"],
-    "open_questions": ["理想化一维假设在多场观测下的适用性"],
-    "warnings": []
+  "figure_inventory": {
+    "extraction_status": "not_scanned",
+    "items": []
+  },
+  "terminology": [
+    {
+      "term_original": "bulk blowing-snow model",
+      "term_zh": "体相吹雪模型",
+      "abbr": "",
+      "note_zh": "将吹雪粒子群视为连续相的输运模型。"
+    }
+  ],
+  "quality_control": {
+    "catalog_completeness": "complete",
+    "missing_fields": [],
+    "warnings": [],
+    "is_test_fixture": false,
+    "fallback_used": false
   },
   "provenance": {
     "generated_from": "mineru_markdown",
-    "markdown_path": "data/paper_raw/0000000000000001/0000000000000001.md",
-    "generated_at": "",
+    "markdown_path": "0000000000000001.md",
+    "metadata_path": "0000000000000001.metadata.json",
+    "asset_manifest_path": "0000000000000001.asset_manifest.json",
+    "generated_at": "2026-07-03T00:00:00",
     "generator": "paper_raw_catalog_curator",
-    "notes": "示例 v2.0 content-only catalog；书目字段（DOI/作者/年份/期刊/BibTeX）不在 catalog，由 metadata.json 承载，经 paper_number/paper_id 关联。"
+    "generator_version": "3.1",
+    "input_markdown_md5": "example",
+    "input_metadata_md5": "example",
+    "generation_mode": "llm_enriched",
+    "llm_model": "",
+    "notes": "示例 v3.1 content-only catalog；书目字段由 metadata.json 承载。"
   }
 }

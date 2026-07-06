@@ -4,7 +4,7 @@
 每个 prompt 返回 chars / estimated_tokens / warning，便于长度控制。
 
 主键是 16 位 paper_number，paper_id 仅作辅助显示。
-all.catalog schema v2.0 是 content-only 内容索引；metadata/BibTeX
+all.catalog schema v3.1 是 content-only 内容索引；metadata/BibTeX
 事实从正式 paper 文件夹的 metadata.json 读取，路径经 paper_index.json 解析。
 """
 from loguru import logger

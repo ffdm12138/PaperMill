@@ -127,8 +127,27 @@ class ProviderRateLimiter:
         self.retry_after_respected = bool(self._global.get("retry_after_respected", True))
         self._state: dict[str, ProviderState] = {}
         self._last_paper_time: float = 0.0
-        self._paper_started: bool = False
+        self._paper_wait_pending: bool = False
         self.stats = RateLimitStats()
+        # Apply MINERU_METADATA_CONTACT_EMAIL environment variable override.
+        self._apply_env_mailto_override()
+
+    # ── Environment variable overrides ──────────────────────────────────
+
+    @staticmethod
+    def _resolve_contact_email() -> str:
+        """Return the contact email from env, or "" if not set."""
+        import os
+        return os.environ.get("MINERU_METADATA_CONTACT_EMAIL", "").strip()
+
+    def _apply_env_mailto_override(self) -> None:
+        """Override all providers' mailto / user_agent from env var."""
+        email = self._resolve_contact_email()
+        if not email:
+            return
+        for pcfg in self._providers.values():
+            pcfg["mailto"] = email
+            pcfg["user_agent"] = f"MinerU/1.0 (mailto:{email})"
 
     # ── Configuration accessors ──────────────────────────────────────────
 
@@ -203,14 +222,21 @@ class ProviderRateLimiter:
 
         After this is called, the first ``wait(provider)`` will also enforce
         the global ``paper_interval_seconds`` since the last paper's first
-        request.
+        request.  Subsequent ``wait()`` calls for the same paper skip the
+        paper-level interval (only provider min interval applies) until the
+        next ``begin_paper()``.
         """
-        self._paper_started = True
+        self._paper_wait_pending = True
 
     def wait(self, provider: str) -> None:
         """Sleep so the provider min interval AND the paper interval are respected.
 
-        Call this BEFORE each request to ``provider``.
+        Call this BEFORE each request to ``provider``. When ``begin_paper()``
+        was called, the first ``wait()`` of that paper also enforces the global
+        ``paper_interval_seconds`` since the PREVIOUS paper's first request
+        (so every paper transition triggers the interval, not just 1→2).
+        After the interval sleep, ``_last_paper_time`` is updated to now so the
+        next paper measures from THIS paper's first request.
         """
         state = self._state_for(provider)
         now = time.monotonic()
@@ -220,21 +246,29 @@ class ProviderRateLimiter:
             need = state.min_interval - elapsed
             if need > 0:
                 self._sleep(need, f"provider_min_interval {state.min_interval:.1f}s", provider)
-        # Global paper interval: enforced once per paper, before the first
-        # request of that paper.
-        if self._paper_started and self._last_paper_time > 0:
+        # Global paper interval: enforced once per paper (before its first
+        # request) when there was a previous paper. Measures from the previous
+        # paper's first request to now.  ``_paper_wait_pending`` is set by
+        # ``begin_paper()`` and cleared after the first ``wait()`` of that
+        # paper so subsequent provider requests in the same paper do not
+        # repeat the paper interval.
+        if self._paper_wait_pending and self._last_paper_time > 0:
             elapsed = time.monotonic() - self._last_paper_time
             need = self.paper_interval - elapsed
             if need > 0:
                 self._sleep(need, f"paper_interval {self.paper_interval:.1f}s", provider)
-        if self._paper_started and self._last_paper_time == 0:
+        # Update _last_paper_time to NOW (after any sleeps) so the NEXT paper's
+        # interval is measured from THIS paper's first request. This must run
+        # for every paper (not just the first) so paper 3 measures from paper 2,
+        # not paper 1.
+        if self._paper_wait_pending:
             self._last_paper_time = time.monotonic()
+            self._paper_wait_pending = False
         # Record request time + jitter
         jitter = self._jitter()
         if jitter > 0:
             self._sleep(jitter, "jitter", provider)
         self._state_for(provider).last_request_at = time.monotonic()
-        self._paper_started = False  # paper interval consumed
         state.request_count += 1
         self.stats.total_requests += 1
         self.stats.requests_by_provider[provider] = self.stats.requests_by_provider.get(provider, 0) + 1

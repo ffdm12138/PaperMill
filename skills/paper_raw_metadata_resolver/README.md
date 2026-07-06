@@ -4,7 +4,7 @@ This skill resolves metadata for a `data/paper_raw/<paper_number>/` folder whose
 metadata is unmatched or incomplete. It is the PDF-after-MinerU bibliographic
 metadata resolver: it reads the **converted MinerU Markdown first**, extracts
 DOI/title/authors/year/venue candidates, **verifies them online** (Crossref /
-OpenAlex / Semantic Scholar / Unpaywall), and **searches online when the Markdown
+OpenAlex / Unpaywall), and **searches online when the Markdown
 lacks enough candidates**. When network lookup is unavailable it fails closed
 (status stays `unmatched`, candidates preserved, manual review requested) — it
 never fabricates matched metadata.

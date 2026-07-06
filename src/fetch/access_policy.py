@@ -23,7 +23,7 @@ class AccessPolicy:
     - INSTITUTIONAL：OA_ONLY + 机构/TDM 通道（需 token 或机构订阅）。
     - BROWSER_ASSISTED：OA_ONLY + 浏览器辅助（需用户操作）。
     - LOCAL_MANUAL：仅本地文件。
-    - CUSTOM：OA_ONLY + 自定义列表，可含 unsafe 通道如 Sci-Hub。
+    - CUSTOM：OA_ONLY + 明确配置的 custom/header-based/local/TDM resolver；不得包含 Sci-Hub。
     """
 
     mode: AccessMode = AccessMode.OA_ONLY
@@ -33,7 +33,6 @@ class AccessPolicy:
     allow_preprints: bool = True
     allow_manual_import: bool = True
     allow_custom_resolvers: bool = False
-    allow_scihub: bool = False  # unsafe optional：仅 CUSTOM 模式下显式启用，不属于 OA_ONLY 主流程
     custom_resolvers: list[str] = field(default_factory=list)
     max_attempts_per_resolver: int = 1
     timeout_seconds: int = 60
@@ -42,6 +41,9 @@ class AccessPolicy:
 
     def enabled_resolver_names(self) -> list[str]:
         """根据 mode 返回该策略下启用的 resolver 名称列表。"""
+        explicit = (self.extra or {}).get("resolver_names")
+        if explicit:
+            return list(explicit)
         if self.mode == AccessMode.OA_ONLY:
             return self._oa_resolvers()
         if self.mode == AccessMode.INSTITUTIONAL:
@@ -56,16 +58,18 @@ class AccessPolicy:
                 base += self._tdm_resolvers()
             if self.allow_custom_resolvers:
                 base += list(self.custom_resolvers)
-            if self.allow_scihub:
-                base += ["scihub"]
             return base
         return []
 
     @staticmethod
     def _oa_resolvers() -> list[str]:
-        """真正开放获取 / 合法公开来源（无需 token、无需付费墙绕过）。"""
-        return ["unpaywall", "openalex", "semantic_scholar", "arxiv",
+        """真正开放获取 / 合法公开来源（无需 token、无需付费墙绕过）。
+
+        ``original_link`` 居首：优先尝试 metadata 中已有的原始链接。
+        """
+        return ["original_link", "unpaywall", "openalex", "semantic_scholar", "arxiv",
                 "publisher_oa", "springer_direct",
+                "sciengine_direct",
                 "biorxiv", "pmc_oa"]
 
     @staticmethod

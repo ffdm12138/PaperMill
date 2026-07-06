@@ -1,13 +1,11 @@
 """Canonical paper_id generation helpers (v2).
 
-v2 中正式 paper_id 只由 metadata 生成（catalog v2.0 不再承载书目字段），
+v2 中正式 paper_id 由 metadata + catalog 生成（catalog v3.1 不再承载书目字段，中文标题在 catalog.content_identity.content_title_zh），
 不依赖 filename fallback，也不存在 sidecar 优先级链：
 
   - 正式入库：``paper_id_from_metadata_catalog(metadata, catalog)``
-    = 年份_第一作者姓氏_metadata.title.short_zh/translated_zh/original
-    （见 src/services/v2_library.py）
-    其中 catalog 参数仅为兼容旧签名保留，不再提供任何书目信息；
-    年份/作者/标题全部取自 metadata。
+    = metadata.year + metadata.first_author.family + catalog.content_identity.content_title_zh
+    （见 src/services/v2_library.py）。
   - metadata 富化阶段可先用本模块的 ``generate_paper_id`` 生成一个
     proposed_paper_id（year + first_author + chinese_title/title_slug），
     仅供预览，最终以 curation 后的正式 paper_id 为准。

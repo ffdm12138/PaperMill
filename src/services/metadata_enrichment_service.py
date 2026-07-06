@@ -430,13 +430,14 @@ def query_crossref_by_doi(doi: str, timeout: int = 15) -> dict | None:
     This function IS the network-callable unit — tests must mock it.
     """
     import requests
+    from src.fetch.proxy import get_fetch_proxies
 
     normalized = normalize_doi(doi)
     if not normalized:
         return None
     url = CROSSREF_API_URL.format(doi=normalized)
     try:
-        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "mineru-literature-manager/1.0"})
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "mineru-literature-manager/1.0"}, proxies=get_fetch_proxies())
         resp.raise_for_status()
         data = resp.json()
         return data.get("message")

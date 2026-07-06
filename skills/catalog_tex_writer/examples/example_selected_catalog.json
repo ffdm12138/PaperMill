@@ -7,7 +7,16 @@
       "paper_number": "0000000000000001",
       "paper_id": "2024_author_example_one",
       "content_identity": {
-        "content_title": "Example paper one"
+        "content_title_zh": "示例论文一",
+        "content_title_original_candidates": ["Example paper one"],
+        "content_language": "en",
+        "document_type": "article"
+      },
+      "naming": {
+        "paper_id_title_zh": "示例论文一",
+        "paper_id_title_source": "content_identity.content_title_zh",
+        "paper_id_title_confidence": 1.0,
+        "paper_id_title_warnings": []
       },
       "classification": {
         "primary_domain": "example_domain",
@@ -15,7 +24,7 @@
       },
       "screening": {
         "relevance_score": 5,
-        "read_decision": "must_read"
+        "read_decision": "pending"
       },
       "research_card": {
         "research_problem": "Example research problem",

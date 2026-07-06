@@ -21,6 +21,7 @@ from config.settings import ALL_CATALOG_PATH, PAPER_NUMBER_LEDGER_PATH, PAPER_RA
 from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.services.asset_manifest import write_asset_manifest
 from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.services.ingest_state import write_import_status
 from src.services.metadata_quality import bibliographic_identity_gate
 from src.services.v2_library import (
     AllCatalogBuilder,
@@ -208,21 +209,28 @@ def _stage_folder(formal: Path, staging: Path, *, paper_id: str, paper_number: s
 
     citation_ready, reasons = bibliographic_identity_gate(metadata)
     status = str(((metadata.get("metadata_match") or {}).get("status")) or "")
-    import_status = {
-        "status": "converted" if citation_ready and status in {"matched", "manual_confirmed"} else "metadata_manual_review_required",
-        "reason": (
-            "rolled back from formal library; converted assets preserved; regenerate catalog before formalize"
-            if citation_ready and status in {"matched", "manual_confirmed"}
-            else "rolled back from formal library but metadata is not citation-ready"
-        ),
-        "paper_number": paper_number,
-        "paper_raw_id": paper_number,
-        "old_paper_id": paper_id,
-        "metadata_match_status": status,
-        "warnings": warnings + ([] if citation_ready else reasons),
-        "rolled_back_at": now_iso(),
-    }
-    atomic_write_json(staging / ".import_status.json", import_status, indent=2)
+    rollback_status = (
+        "converted" if citation_ready and status in {"matched", "manual_confirmed"}
+        else "metadata_manual_review_required"
+    )
+    rollback_reason = (
+        "rolled back from formal library; converted assets preserved; regenerate catalog before formalize"
+        if citation_ready and status in {"matched", "manual_confirmed"}
+        else "rolled back from formal library but metadata is not citation-ready"
+    )
+    write_import_status(
+        staging,
+        rollback_status,
+        reason=rollback_reason,
+        warnings=warnings + ([] if citation_ready else reasons),
+        extra={
+            "paper_number": paper_number,
+            "paper_raw_id": paper_number,
+            "old_paper_id": paper_id,
+            "metadata_match_status": status,
+            "rolled_back_at": now_iso(),
+        },
+    )
     atomic_write_json(staging / f"{paper_number}.paper.number", {
         "paper_number": paper_number,
         "folder_name": paper_number,

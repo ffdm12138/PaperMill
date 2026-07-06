@@ -5,6 +5,7 @@ import requests
 from loguru import logger
 
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.fetch.proxy import get_fetch_proxies
 
 
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
@@ -55,6 +56,7 @@ def search_crossref(query: str, domain_id: str | None = None, limit: int = 5) ->
             CROSSREF_WORKS_URL,
             params={"query.bibliographic": query, "rows": limit},
             timeout=20,
+            proxies=get_fetch_proxies(),
         )
         response.raise_for_status()
         data = response.json()
@@ -105,7 +107,7 @@ def get_crossref_work_by_doi(doi: str) -> dict | None:
     if not doi:
         return None
     try:
-        response = requests.get(f"{CROSSREF_WORKS_URL}/{doi}", timeout=20)
+        response = requests.get(f"{CROSSREF_WORKS_URL}/{doi}", timeout=20, proxies=get_fetch_proxies())
         response.raise_for_status()
         data = response.json()
     except Exception as exc:
@@ -122,6 +124,7 @@ def get_bibtex_by_doi(doi: str) -> str:
         response = requests.get(
             f"{CROSSREF_WORKS_URL}/{doi}/transform/application/x-bibtex",
             timeout=20,
+            proxies=get_fetch_proxies(),
         )
         response.raise_for_status()
         return response.text.strip()

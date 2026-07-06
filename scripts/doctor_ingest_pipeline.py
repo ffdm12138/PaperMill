@@ -18,36 +18,70 @@ from src.utils.atomic_io import atomic_write_json
 
 DEFAULT_REPORT_PATH = PROJECT_ROOT / "reports" / "doctor_ingest_pipeline_report.json"
 INGEST_TESTS = [
-    "tests/test_import_metadata_gates.py",
-    "tests/test_paper_raw_metadata_resolver.py",
-    "tests/test_paper_raw_preflight.py",
-    "tests/test_v2_library.py",
-    "tests/test_catalog_metadata_separation.py",
-    "tests/test_stage_raw_pdfs.py",
+    "tests/contract/test_import_metadata_gates.py",
+    "tests/integration/test_paper_raw_metadata_resolver.py",
+    "tests/contract/test_paper_raw_preflight.py",
+    "tests/integration/test_v2_library.py",
+    "tests/contract/test_catalog_metadata_separation.py",
+    "tests/integration/test_stage_raw_pdfs.py",
 ]
 
 
 def _has_paper_raw_sources(root: Path) -> bool:
     return root.exists() and any(
-        p.is_dir() and p.name.isdigit() and len(p.name) == 6
+        p.is_dir() and p.name.isdigit() and len(p.name) == 16
         for p in root.iterdir()
     )
 
 
-def _run_step(name: str, cmd: list[str], *, cwd: Path) -> dict[str, Any]:
+def _pytest_env() -> dict[str, str]:
+    """Isolated environment for the pytest subprocess.
+
+    Disables entry-point plugin auto-loading so third-party plugins installed
+    in the environment cannot change warning/asyncio/coverage/tracing behavior
+    or cause the pytest process to hang after tests pass. conftest.py files,
+    ``-p`` options, and ``PYTEST_PLUGINS`` are unaffected. Mirrors
+    ``scripts/agent_acceptance.py``.
+    """
     env = os.environ.copy()
+    env.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    return env
+
+
+def _run_step(
+    name: str,
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    run_env = env if env is not None else os.environ.copy()
+    run_env.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            env=run_env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "name": name,
+            "command": cmd,
+            "returncode": 124,
+            "blocking": True,
+            "stdout": (exc.stdout or "") if isinstance(exc.stdout, str) else "",
+            "stderr": (exc.stderr or "") if isinstance(exc.stderr, str) else "",
+            "error": f"timed out after {timeout}s",
+        }
     return {
         "name": name,
         "command": cmd,
@@ -65,6 +99,7 @@ def build_report(*, run_tests: bool, paper_raw_dir: Path, project_root: Path) ->
         ("check_directory_hygiene", [py, "scripts/check_directory_hygiene.py"]),
         ("validate_v2_library", [py, "scripts/validate_v2_library.py"]),
         ("audit_metadata_quality", [py, "scripts/audit_metadata_quality.py"]),
+        ("audit_ingest_duplicates", [py, "scripts/audit_ingest_duplicates.py", "--strict"]),
     ]
     for name, cmd in base_steps:
         steps.append(_run_step(name, cmd, cwd=project_root))
@@ -92,6 +127,8 @@ def build_report(*, run_tests: bool, paper_raw_dir: Path, project_root: Path) ->
             "pytest_ingest_subset",
             [py, "-m", "pytest", "-q", *INGEST_TESTS],
             cwd=project_root,
+            env=_pytest_env(),
+            timeout=300,
         ))
 
     blocking = [step for step in steps if step.get("blocking")]

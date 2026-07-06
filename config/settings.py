@@ -105,6 +105,9 @@ MINERU_FETCH_MAX_BYTES = _env_int("MINERU_FETCH_MAX_BYTES", 200 * 1024 * 1024, m
 MINERU_MAX_WORKERS = _env_int("MINERU_MAX_WORKERS", 1, min_val=1)
 # 成功转换后是否保留 MinerU 临时输出；失败始终保留用于排查
 MINERU_KEEP_TMP = _env_bool("MINERU_KEEP_TMP", False)
+# 本地 MinerU 原始输出缓存/历史，用于同一 PDF 的可验证恢复；不入 git/snapshot。
+MINERU_OUTPUT_CACHE_ENABLED = _env_bool("MINERU_OUTPUT_CACHE_ENABLED", True)
+MINERU_OUTPUT_CACHE_DIR = _env_path("MINERU_OUTPUT_CACHE_DIR", PROJECT_ROOT / "output" / "mineru_cache")
 
 # MinerU 解析配置
 # 产品定位固定为 hybrid-engine，不再把 pipeline / vlm-engine 作为首选项维护。

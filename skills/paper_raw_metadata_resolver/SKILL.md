@@ -32,7 +32,7 @@ patch**，供脚本 (`scripts/resolve_paper_raw_metadata.py --apply`) 在通过�
 - **不得生成** catalog、`paper_number`；**不得 commit**；**不得移动或修改** `data/papers`。
 - **不得编造** DOI、作者、年份、期刊、卷期页、article number。不确定的字段留空。
 - DOI 必须来自：PDF 原文 / MinerU Markdown 原文 / 文件名 / Crossref / OpenAlex /
-  Semantic Scholar / Unpaywall 等可信网络源。**LLM 推测的 DOI 一律视为无效。**
+  Unpaywall 等可信网络源。**LLM 推测的 DOI 一律视为无效。**
 - 从 Markdown 提取 DOI 时，只扫描正文头部区域（参考文献/Bibliography/参考文献 之前）；
   参考文献区的 DOI 不能作为本文 DOI。
 - patch 只能补空字段（最终由 `merge_missing_metadata` 合并，不覆盖非空字段）。
@@ -58,8 +58,8 @@ patch**，供脚本 (`scripts/resolve_paper_raw_metadata.py --apply`) 在通过�
 
 resolver 先读转换后的 Markdown 抽取候选，再按下述规则联网验证/查询：
 
-- **Case A — md 中抽到 DOI**：必须联网验证 DOI（Crossref/OpenAlex/Semantic Scholar/
-  Unpaywall）。核对 title、authors、year、venue。网络结果优先于 md 中可能 OCR 错误的字段。
+- **Case A — md 中抽到 DOI**：必须联网验证 DOI（Crossref/OpenAlex/Unpaywall）。核对
+  title、authors、year、venue。网络结果优先于 md 中可能 OCR 错误的字段。
   若 DOI 查不到或结果明显不匹配，标记 `decision = manual_review`（不能强行 `auto_matched`），
   并记录 evidence/source/confidence/mismatch reason。
 - **Case B — md 中只抽到 title**：必须联网查询 title。核对 title 相似度、作者、年份、venue，
@@ -114,7 +114,7 @@ score = 0.40*title_sim + 0.20*author_sim + 0.15*year_match
 
 - score 只用于候选排序与判断进入 auto/manual 档；**不能单独作为 metadata 事实来源**。
 - 事实只能来自：DOI 权威源、PDF/Markdown 原文、人工确认。
-- 网络 title-search 候选（DOI 仅来自 Crossref/OpenAlex/S2 搜索）**永不 auto_matched**，
+- 网络 title-search 候选（DOI 仅来自 Crossref/OpenAlex 搜索）**永不 auto_matched**，
   最多 `manual_review`，只能由 `--manual-confirm --apply` 变成 `manual_confirmed`。
 
 ## 接入
@@ -125,7 +125,7 @@ score = 0.40*title_sim + 0.20*author_sim + 0.15*year_match
   python scripts/resolve_paper_raw_metadata.py --paper-number <paper_number> --apply              # 高置信自动 matched
   python scripts/resolve_paper_raw_metadata.py --paper-number <paper_number> --apply --manual-confirm --candidate-id cand_002
   ```
-- 脚本会校验：DOI 是否有效/可解析、是否与 formal library DOI/PDF sha 重复、是否冲突、
+- 脚本会校验：DOI 是否有效/可解析、是否与 data/paper_raw 或 data/papers 中的 DOI/PDF md5/sha256 重复、是否冲突、
   metadata 是否完整、是否覆盖非空字段。任一失败则保持 unmatched。
 
 ## Output Checklist

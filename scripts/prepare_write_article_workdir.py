@@ -43,7 +43,7 @@ def _validate_paper_number(paper_number: str) -> str:
 
 
 def _entry_catalog(entry: dict) -> dict:
-    """all.catalog v2 entries are flat content entries."""
+    """all.catalog v3.1 entries are flat content entries."""
     return entry
 
 
@@ -137,8 +137,10 @@ def _compact_selected_entry(entry: dict, source: Path) -> dict:
         "classification": catalog.get("classification") or {},
         "screening": catalog.get("screening") or {},
         "research_card": catalog.get("research_card") or {},
+        "writing_value": catalog.get("writing_value") or {},
         "evidence_profile": catalog.get("evidence_profile") or {},
-        "content_notes": catalog.get("content_notes") or {},
+        "figure_inventory": catalog.get("figure_inventory") or {},
+        "quality_control": catalog.get("quality_control") or {},
     }
 
 

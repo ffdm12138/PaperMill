@@ -53,7 +53,7 @@ def build_compact_catalog_text(
     view only** — it never writes metadata into all.catalog storage.
 
     - ``include_metadata=False`` (default): strict content-only. Only catalog
-      content (content_title, classification, screening, research_card, ...) is
+      content (content_title_zh, classification, screening, research_card, ...) is
       shown. Use this for catalog-planning prompts so the model picks papers by
       content, not by bibliography.
     - ``include_metadata=True``: additionally join bibliographic bits
@@ -70,8 +70,8 @@ def build_compact_catalog_text(
         classification = catalog.get("classification") or {}
         screening = catalog.get("screening") or {}
         card = catalog.get("research_card") or {}
-        notes = catalog.get("content_notes") or {}
-        title = content_identity.get("content_title") or ""
+        writing = catalog.get("writing_value") or {}
+        title = content_identity.get("content_title_zh") or ""
         metadata = library.load_metadata(number) if (include_metadata and library) else None
         meta_bits = []
         if metadata:
@@ -100,12 +100,12 @@ def build_compact_catalog_text(
         domain = " / ".join(domain_bits)
         read_decision = screening.get("read_decision") or ""
         relevance = _fmt_score(screening.get("relevance_score"))
-        priority = _fmt_score(screening.get("reading_priority") or screening.get("method_quality_score"))
-        one_sentence = notes.get("short_summary") or card.get("research_problem") or "(未总结)"
+        priority = _fmt_score(screening.get("priority_score") or screening.get("method_quality_score"))
+        one_sentence = writing.get("short_summary") or card.get("research_problem") or "(未总结)"
         method = card.get("method_summary") or ""
         conclusion = " ".join(card.get("main_findings") or [])[:80]
         usefulness = card.get("usefulness_for_user") or ""
-        best_for = ",".join(notes.get("possible_use_in_writing") or [])
+        best_for = ",".join(writing.get("possible_use_in_writing") or [])
         lines.append(f"- [{priority}] {number} {pid} {title}")
         if meta_bits:
             lines.append(f"  meta: {' | '.join(meta_bits)}")
@@ -146,7 +146,7 @@ class Catalog:
 
     @staticmethod
     def _empty_data() -> dict:
-        return {"schema_version": "2.0", "papers": []}
+        return {"schema_version": "3.1", "papers": []}
 
     def load(self) -> dict:
         # Read-only: if all.catalog is absent, build an in-memory snapshot WITHOUT

@@ -4,6 +4,12 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# ===== Local agent / research tooling state (never commit or pack) =====
+.reasonix/
+# Tombstone files from test migration — must never re-enter repo or snapshot
+*._deleted
+*.py._deleted
+
 # ===== 数据语料（受版权保护，不入库）=====
 # PDF 原文与派生 md/图：体积大且含版权，不推送到远程
 data/raw/**
@@ -27,10 +33,18 @@ data/cleanup_report.json
 data/locks/*.lock
 reports/*.json
 reports/*.err
+reports/*.txt
+reports/*.md
+reports/*.csv
+!reports/.gitkeep
 import/
 # 本地导入工作产物（DOI 批量列表等），不进项目快照
 data/import_work/**
 !data/import_work/.gitkeep
+data/raw_all/**
+!data/raw_all/.gitkeep
+data/discovery/queries/**
+!data/discovery/queries/.gitkeep
 _test_batch/
 !data/raw/.gitkeep
 !data/paper_raw/.gitkeep
@@ -58,9 +72,28 @@ write/*_review*/
 
 # ===== 日志与临时 =====
 *.log
+# Local MinerU raw output cache/history, never commit
 output/
 .DS_Store
 Thumbs.db
+
+# Local backup / repair artifacts
+*.bak
+*.bak.*
+*.backup
+*.backup.*
+*.tmp
+*.temp
+
+# Runtime catalog / ledger artifacts
+data/catalog/paper_number_ledger.json
+data/catalog/paper_number_ledger.json.bak
+data/catalog/paper_number_ledger.bak_*.json
+data/catalog/*.bak
+data/catalog/*.bak.*
+data/catalog/*.backup
+data/catalog/*.backup.*
+data/catalog/*.runtime.json
 
 # ===== 仓库快照 zip（pack_repo.py 生成，不入库）=====
 mineru_snapshot*.zip

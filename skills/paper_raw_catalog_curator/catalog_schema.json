@@ -1,111 +1,64 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "paper_raw catalog v2.0 (content-only)",
-  "description": "catalog v2.0 carries ONLY content understanding (from MinerU Markdown). It must NOT contain bibliographic fields (doi/authors/year/journal/venue/container/publication/bibtex/...). Those live in metadata.json. Linked by paper_number/paper_id. Forbidden keys are checked recursively by src/services/v2_library.py::find_forbidden_catalog_keys().",
+  "title": "paper_raw catalog v3.1 (LLM content index)",
+  "description": "Catalog v3.1 carries only content understanding from MinerU Markdown. Bibliographic facts stay in metadata.json.",
   "type": "object",
   "required": [
     "schema_version",
-    "paper_number",
-    "paper_id",
-    "asset_refs",
+    "library_locator",
     "content_identity",
     "classification",
     "screening",
     "research_card",
+    "writing_value",
     "evidence_profile",
-    "content_notes",
+    "figure_inventory",
+    "terminology",
+    "quality_control",
     "provenance"
   ],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
-    "schema_version": { "type": "string", "const": "2.0" },
-    "paper_number": { "type": "string" },
-    "paper_id": { "type": "string" },
-    "asset_refs": {
+    "schema_version": { "type": "string", "const": "3.1" },
+    "library_locator": {
       "type": "object",
+      "required": ["paper_number", "paper_id", "paper_dir", "asset_refs"],
       "properties": {
-        "markdown": { "type": "string" },
-        "pdf": { "type": "string" },
-        "images_dir": { "type": "string" },
-        "figures": { "type": "array", "items": { "type": "string" } }
+        "paper_number": { "type": "string" },
+        "paper_id": { "type": "string" },
+        "paper_dir": { "type": "string" },
+        "asset_refs": {
+          "type": "object",
+          "required": ["markdown", "pdf", "metadata", "catalog", "asset_manifest", "images_dir"],
+          "properties": {
+            "markdown": { "type": "string" },
+            "pdf": { "type": "string" },
+            "metadata": { "type": "string" },
+            "catalog": { "type": "string" },
+            "asset_manifest": { "type": "string" },
+            "images_dir": { "type": "string" }
+          }
+        }
       }
     },
-    "content_identity": {
-      "type": "object",
-      "properties": {
-        "content_title": { "type": "string", "description": "Title candidate extracted from Markdown body — NOT a canonical citation title." },
-        "md_title_candidates": { "type": "array", "items": { "type": "string" } },
-        "content_language": { "type": "string" },
-        "document_type": { "type": "string" }
-      }
-    },
-    "classification": {
-      "type": "object",
-      "properties": {
-        "primary_domain": { "type": "string" },
-        "secondary_domains": { "type": "array", "items": { "type": "string" } },
-        "topic_tags": { "type": "array", "items": { "type": "string" } },
-        "methods_tags": { "type": "array", "items": { "type": "string" } },
-        "phenomena_tags": { "type": "array", "items": { "type": "string" } },
-        "material_tags": { "type": "array", "items": { "type": "string" } },
-        "model_tags": { "type": "array", "items": { "type": "string" } }
-      }
-    },
-    "screening": {
-      "type": "object",
-      "properties": {
-        "read_decision": { "type": "string", "enum": ["", "must_read", "maybe_read", "skip"] },
-        "relevance_score": { "type": ["number", "null"] },
-        "novelty_score": { "type": ["number", "null"] },
-        "method_quality_score": { "type": ["number", "null"] },
-        "reason": { "type": "string" }
-      }
-    },
-    "research_card": {
-      "type": "object",
-      "properties": {
-        "research_problem": { "type": "string" },
-        "core_question": { "type": "string" },
-        "hypothesis_or_objective": { "type": "string" },
-        "study_object": { "type": "string" },
-        "method_summary": { "type": "string" },
-        "data_or_experiment": { "type": "string" },
-        "main_findings": { "type": "array", "items": { "type": "string" } },
-        "mechanisms": { "type": "array", "items": { "type": "string" } },
-        "limitations": { "type": "array", "items": { "type": "string" } },
-        "usefulness_for_user": { "type": "string" }
-      }
-    },
-    "evidence_profile": {
-      "type": "object",
-      "properties": {
-        "key_claims": { "type": "array", "items": { "type": "string" } },
-        "important_equations": { "type": "array", "items": { "type": "string" } },
-        "important_figures": { "type": "array", "items": { "type": "string" } },
-        "important_tables": { "type": "array", "items": { "type": "string" } },
-        "quoted_terms": { "type": "array", "items": { "type": "string" } },
-        "page_or_section_evidence": { "type": "array", "items": { "type": "string" } }
-      }
-    },
-    "content_notes": {
-      "type": "object",
-      "properties": {
-        "short_summary": { "type": "string" },
-        "long_summary": { "type": "string" },
-        "possible_use_in_writing": { "type": "array", "items": { "type": "string" } },
-        "open_questions": { "type": "array", "items": { "type": "string" } },
-        "warnings": { "type": "array", "items": { "type": "string" } }
-      }
-    },
-    "provenance": {
-      "type": "object",
-      "properties": {
-        "generated_from": { "type": "string" },
-        "markdown_path": { "type": "string" },
-        "generated_at": { "type": "string" },
-        "generator": { "type": "string" },
-        "notes": { "type": "string" }
-      }
-    }
+    "content_identity": { "type": "object" },
+    "classification": { "type": "object" },
+    "screening": { "type": "object" },
+    "research_card": { "type": "object" },
+    "writing_value": { "type": "object" },
+    "evidence_profile": { "type": "object" },
+    "figure_inventory": { "type": "object" },
+    "terminology": { "type": "array" },
+    "quality_control": { "type": "object" },
+    "provenance": { "type": "object" }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["paper_number"] },
+      { "required": ["paper_id"] },
+      { "required": ["asset_refs"] },
+      { "required": ["naming"] },
+      { "required": ["content_notes"] }
+    ]
   }
 }

@@ -20,6 +20,8 @@ def main() -> int:
     parser.add_argument("--no-vlm-preload", action="store_true")
     parser.add_argument("--wait", action="store_true", help="wait for /health to become ready")
     parser.add_argument("--wait-seconds", type=float, default=60.0)
+    parser.add_argument("--restart-if-stale", action="store_true",
+                        help="restart a pid-file-managed mineru-api when /health is healthy but identity is stale")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--web", action="store_true", help="also start python -m src.server")
     args = parser.parse_args()
@@ -32,6 +34,7 @@ def main() -> int:
         vlm_preload=not args.no_vlm_preload,
         wait=args.wait,
         wait_seconds=args.wait_seconds,
+        restart_if_stale=args.restart_if_stale,
         web=args.web,
     )
     if args.json:

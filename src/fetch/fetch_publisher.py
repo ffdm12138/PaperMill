@@ -5,6 +5,7 @@ import requests
 from loguru import logger
 
 from src.fetch.models import FetchResult
+from src.fetch.proxy import get_fetch_proxies
 
 
 CROSSREF_WORK_URL = "https://api.crossref.org/works"
@@ -12,7 +13,7 @@ CROSSREF_WORK_URL = "https://api.crossref.org/works"
 
 def resolve_publisher_pdf(doi: str) -> FetchResult:
     try:
-        response = requests.get(f"{CROSSREF_WORK_URL}/{quote(doi, safe='')}", timeout=20)
+        response = requests.get(f"{CROSSREF_WORK_URL}/{quote(doi, safe='')}", timeout=20, proxies=get_fetch_proxies())
         response.raise_for_status()
         data = response.json()
     except Exception as exc:

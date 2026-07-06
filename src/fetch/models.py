@@ -25,6 +25,10 @@ class FetchResult:
     open_access: bool | None = None
     fetched_at: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    # Rich per-attempt report fields
+    candidate_url: str = ""
+    final_url: str = ""
+    content_type: str = ""
     # PDF 获取架构字段
     access_mode: str = "oa_only"
     resolver: str = ""
@@ -38,6 +42,13 @@ class FetchResult:
     supplementary_urls: list[str] = field(default_factory=list)
     supplementary_paths: list[str] = field(default_factory=list)
     has_supplementary: bool | None = None
+    # 逐 resolver 尝试记录：每个 dict 含 resolver/status/reason/pdf_url/landing_url
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    # Legacy compatibility marker for resolvers that were genuinely not
+    # configured.  Current fetch_pdf_for_paper_raw.py --resolver auto does
+    # NOT use this for header_based because header_based defaults to
+    # https://doi.org/{doi} without any --base-url/--url-template.
+    not_configured_resolvers: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.doi = normalize_doi(self.doi)

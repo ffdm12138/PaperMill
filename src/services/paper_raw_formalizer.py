@@ -3,10 +3,10 @@
 ``PaperRawFormalizationService.formalize`` runs entirely inside
 ``data/paper_raw`` and produces a fully formalized workspace:
 
-  * canonical ``paper_id`` derived from metadata (year + first author + short_zh)
+  * canonical ``paper_id`` derived from metadata year/first author + catalog naming title
   * folder + asset files renamed from ``<paper_number>`` to ``<paper_id>``
   * 16-digit ``paper_number`` reserved in the ledger at staging (``state=reserved``)
-  * ``<paper_id>.catalog.json`` backfilled with paper_id / paper_number / asset_refs
+  * ``<paper_id>.catalog.json`` backfilled with library_locator (paper_id / paper_number / asset_refs)
   * ``<16-digit>.paper.number`` marker
   * ``<paper_id>.formalization.json`` manifest
   * ``.import_status.json status = ready_for_commit``
@@ -37,9 +37,11 @@ from src.services.ingest_state import (
     FORMALIZE_FAILED,
     POSSIBLE_DUPLICATE,
     READY_FOR_COMMIT,
+    read_import_status,
     write_import_status,
 )
 from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.services.source_records import validate_metadata_source_record_exists
 from src.services.v2_library import (
     PaperNumberLedger,
     PaperRawConverter,
@@ -67,15 +69,36 @@ class PaperRawFormalizationService:
 
     # -- helpers ----------------------------------------------------------
 
-    @staticmethod
-    def _quarantine_duplicate(folder: Path, pid: str, errors: list[str]) -> dict:
+    def _quarantine_duplicate(self, folder: Path, pid: str, errors: list[str]) -> dict:
+        number = self.ledger.paper_number_from_marker(folder)
         qdir = folder.parent / "quarantine" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{pid}"
         qdir.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(folder), qdir)
         from src.utils.atomic_io import atomic_write_json
 
+        write_import_status(
+            qdir,
+            "quarantined_duplicate",
+            reason="possible duplicate detected during formalize",
+            errors=errors,
+            extra={
+                "paper_id": pid,
+                "paper_number": number or "",
+                "paper_raw_id": number or "",
+                "quarantined_duplicate_of": "",
+                "duplicate_reasons": errors,
+            },
+        )
+        if number:
+            self.ledger.quarantine_reserved_duplicate(
+                number,
+                qdir,
+                duplicate_of="",
+                duplicate_reasons=errors,
+            )
         atomic_write_json(qdir / "duplicate_report.json", {
             "decision": "possible_duplicate",
+            "paper_number": number or "",
             "reasons": errors,
             "created_at": now_iso(),
         }, indent=2)
@@ -128,6 +151,21 @@ class PaperRawFormalizationService:
                     "conversion_state": state,
                 }
 
+        # 1b. Idempotency guard: already formalized + status=ready_for_commit -> no-op.
+        #     Prevents re-running validation (source records, readiness gate) on a paper
+        #     that is already fully formalized, which would overwrite .import_status.json
+        #     with formalize_failed if any check fails (e.g. a missing source record file).
+        if already_formalized:
+            current_status = read_import_status(folder).get("status")
+            if current_status == READY_FOR_COMMIT:
+                return {
+                    "success": True,
+                    "status": READY_FOR_COMMIT,
+                    "paper_id": folder.name,
+                    "paper_number": str(self.ledger.paper_number_from_marker(folder)),
+                    "paper_raw_id": source_id,
+                }
+
         # 2. Load metadata + catalog.
         metadata_path = folder / f"{source_id}.metadata.json"
         catalog_path = folder / f"{source_id}.catalog.json"
@@ -139,6 +177,19 @@ class PaperRawFormalizationService:
         if catalog_errors:
             write_import_status(folder, FORMALIZE_FAILED, reason="; ".join(catalog_errors), errors=catalog_errors)
             return {"success": False, "status": FORMALIZE_FAILED, "errors": catalog_errors}
+
+        # Verify source.raw_record_path points to a real file.
+        source = metadata.get("source") or {}
+        source_rec_errors = validate_metadata_source_record_exists(
+            folder, source.get("raw_record_path", ""),
+            require_nonempty=True,
+        )
+        if source_rec_errors:
+            write_import_status(folder, FORMALIZE_FAILED,
+                                reason="; ".join(source_rec_errors),
+                                errors=source_rec_errors)
+            return {"success": False, "status": FORMALIZE_FAILED,
+                    "errors": source_rec_errors}
 
         # 3. Readiness gate (metadata matched/DOI/complete, catalog schema,
         #    Chinese content, duplicate DOI/pdf-sha/md-sha/title-year, paper_id derivation).
@@ -222,8 +273,8 @@ class PaperRawFormalizationService:
 
         # 6. Backfill catalog links in paper_raw.
         backfill_formal_catalog_links(target, pid, number)
-        # metadata.pdf.path / content.markdown_sha256 already set by readiness;
-        # write the (possibly DOI-normalized) metadata back.
+        # asset hashes live in <paper_id>.asset_manifest.json; write the
+        # possibly DOI-normalized citation metadata back.
         from src.utils.atomic_io import atomic_write_json
 
         atomic_write_json(target / f"{pid}.metadata.json", metadata, indent=2)

@@ -18,6 +18,7 @@ class ResolveContext:
     year: int | None = None
     domain_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    source_record: dict[str, Any] = field(default_factory=dict)
     access_policy: Any = None
 
 

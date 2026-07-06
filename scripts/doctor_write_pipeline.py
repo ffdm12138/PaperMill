@@ -144,10 +144,12 @@ def doctor_write_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     job = _check_job(args.job_id, write_dir) if args.job_id else None
 
     errors: list[str] = []
+    warnings: list[str] = []
+    runtime_ready = all_catalog.exists()
     if not all_catalog.exists():
-        errors.append(
-            f"missing all.catalog: {all_catalog}。snapshot 默认只带 all.catalog.template.json，"
-            "不含真实 all.catalog；本地运行 `python scripts/rebuild_all_catalog.py --apply` 重建后再检查。"
+        warnings.append(
+            f"{all_catalog} is a runtime index and is not expected in a clean source snapshot. "
+            "Run python scripts/rebuild_all_catalog.py --apply after papers are present."
         )
     if not tracked_jobs["ok"]:
         errors.append("write/jobs has tracked runtime files")
@@ -159,11 +161,15 @@ def doctor_write_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     if args.job_id and job and job["errors"]:
         errors.extend(job["errors"])
 
+    source_valid = not errors
     report = {
         "schema_version": "1.0",
         "checked_at": datetime.now().isoformat(timespec="seconds"),
-        "valid": not errors,
+        "valid": source_valid,
+        "source_valid": source_valid,
+        "runtime_ready": runtime_ready,
         "errors": errors,
+        "warnings": warnings,
         "environment": {
             "all_catalog": {
                 "path": normalize_repo_path(all_catalog) if all_catalog.exists() else str(all_catalog),
@@ -179,7 +185,12 @@ def doctor_write_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _print_human(report: dict[str, Any]) -> None:
-    print(f"valid={str(report['valid']).lower()} errors={len(report['errors'])}")
+    print(
+        f"valid={str(report['valid']).lower()} "
+        f"source_valid={str(report.get('source_valid', report['valid'])).lower()} "
+        f"runtime_ready={str(report.get('runtime_ready', False)).lower()} "
+        f"errors={len(report['errors'])} warnings={len(report.get('warnings') or [])}"
+    )
     env = report["environment"]
     print(f"all_catalog_exists={env['all_catalog']['exists']}")
     print(f"write_jobs_tracking_ok={env['write_jobs_tracking']['ok']}")
@@ -190,6 +201,8 @@ def _print_human(report: dict[str, Any]) -> None:
         print(f"article={job['article_exists']} tex={job['tex_exists']} reports={job['reports_exists']}")
     for error in report["errors"]:
         print(f"ERROR: {error}")
+    for warning in report.get("warnings") or []:
+        print(f"WARNING: {warning}")
 
 
 def build_parser() -> argparse.ArgumentParser:

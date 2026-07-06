@@ -74,7 +74,7 @@ def match_catalog(
         candidates.append({
             "paper_number": item.get("paper_number"),
             "paper_id": item.get("paper_id"),
-            "title": content_identity.get("content_title") or "",
+            "title": content_identity.get("content_title_zh") or "",
             "catalog_priority": screening.get("reading_priority") or screening.get("method_quality_score"),
             "candidate_reason": "",
             "expected_use": "",

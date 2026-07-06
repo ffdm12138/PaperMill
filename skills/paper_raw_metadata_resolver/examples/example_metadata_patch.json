@@ -2,8 +2,7 @@
   "warnings": [],
   "title": {
     "original": "Simulation of wind-induced snow transport and sublimation in alpine terrain using a fully coupled snowpack/atmosphere model",
-    "translated_zh": "",
-    "short_zh": ""
+    "subtitle": ""
   },
   "authors": [
     { "full_name": "Vionnet, V.", "family": "Vionnet", "given": "V.", "orcid": "", "affiliation": "" },
@@ -16,14 +15,11 @@
   "publication": { "volume": "8", "number": "", "issue": "", "pages": "395-414", "article_number": "", "edition": "" },
   "identifiers": { "doi": "10.5194/tc-8-395-2014" },
   "links": { "url": "https://doi.org/10.5194/tc-8-395-2014" },
-  "abstract": "",
-  "keywords": [],
   "source": {
     "kind": "metadata_resolution",
     "provider": "crossref",
     "query": "",
     "retrieved_at": "2026-06-29T00:00:00",
-    "raw_record": {}
-  },
-  "notes": "candidate cand_001; doi from markdown header; merged via merge_missing_metadata (fills only empty fields)"
+    "raw_record_path": "data/paper_raw/<paper_number>/<paper_number>.metadata.raw_record.json"
+  }
 }

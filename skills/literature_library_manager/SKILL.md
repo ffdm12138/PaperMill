@@ -4,13 +4,16 @@ Use this skill for pure v2 `paper_raw` literature library work.
 
 Formal import commands（manual PDF path — convert first, then resolve metadata from converted md）:
 
-```bash
+```bat
+:: Windows cmd.exe only (Git Bash: use export VAR=value instead)
 set MINERU_REQUIRE_GPU=true
 set CUDA_VISIBLE_DEVICES=0
 set MINERU_RUNNER=cli_api_proxy
 set MINERU_API_URL=http://127.0.0.1:8000
-python scripts/start_mineru_services.py --wait
+python scripts/start_mineru_services.py --wait --restart-if-stale
 python scripts/stage_raw_pdfs_to_paper_raw.py --move --apply
+python scripts/check_mineru_processes.py
+python scripts/smoke_mineru_conversion.py --paper-number 0000000000000001 --apply --report reports/smoke_mineru_conversion.json
 python scripts/convert_paper_raw_gpu.py --all --apply --report reports/convert_paper_raw.json
 python scripts/resolve_paper_raw_metadata.py --all-unmatched --apply --allow-network
 python scripts/curate_paper_raw.py --all-ready --dry-run
@@ -22,11 +25,60 @@ python scripts/validate_v2_library.py
 python scripts/stop_mineru_services.py
 ```
 
+Formal rollback/reingest SOP（only when explicitly rebuilding the formal library）:
+
+```bash
+conda run -n mineru python scripts/rollback_formal_papers_to_paper_raw.py --all --dry-run --report reports/rollback_dryrun.json
+# Review report.summary.blocking_errors == 0 and failed == 0 before apply.
+conda run -n mineru python scripts/rollback_formal_papers_to_paper_raw.py --all --apply --report reports/rollback_apply.json
+conda run -n mineru python scripts/validate_rolled_back_paper_raw.py
+conda run -n mineru python scripts/curate_paper_raw.py --all-matched --dry-run
+# After paper_raw_catalog_curator writes <paper_number>.catalog.json:
+conda run -n mineru python scripts/curate_paper_raw.py --all-ready --apply
+conda run -n mineru python scripts/formalize_paper_raw.py --all-ready --apply --report reports/formalize_after_rollback.json
+conda run -n mineru python scripts/commit_paper_raw_to_papers.py --all-ready --apply
+conda run -n mineru python scripts/validate_v2_library.py
+conda run -n mineru python scripts/pack_repo.py
+```
+
+`rollback_formal_papers_to_paper_raw.py --keep-catalog` is debug-only; the formal SOP deletes old catalogs and regenerates content-only catalog files.
+
+## Launching MinerU services
+
+Recommended (conda on PATH):
+
+```bash
+conda run -n mineru python scripts/start_mineru_services.py --wait --restart-if-stale
+conda run -n mineru python scripts/check_mineru_processes.py
+conda run -n mineru python scripts/smoke_mineru_conversion.py --paper-number 0000000000000001 --apply --report reports/smoke_mineru_conversion.json
+conda run -n mineru python scripts/convert_paper_raw_gpu.py --all --apply --report reports/convert_paper_raw.json
+conda run -n mineru python scripts/stop_mineru_services.py
+```
+
+如果 conda 不在 PATH，用 env python 绝对路径：
+
+```bash
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\start_mineru_services.py --wait --restart-if-stale
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\check_mineru_processes.py
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\smoke_mineru_conversion.py --paper-number 0000000000000001 --apply --report reports\smoke_mineru_conversion.json
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\convert_paper_raw_gpu.py --all --apply --report reports/convert_paper_raw.json
+C:\Users\Admin\.conda\envs\mineru\python.exe scripts\stop_mineru_services.py
+```
+
+start_mineru_services.py must resolve Scripts/mineru-api.exe from the current Python env (find_mineru_api_exe). Do not manually background mineru-api.exe as a long-term SOP.
+
 Network metadata path（metadata 已带 DOI，先行）: stage_network_metadata_to_paper_raw.py
 → fetch_pdf_for_paper_raw.py → convert → curate → formalize → commit → rebuild → validate.
+Metadata-only PDF fetch only fills existing 16-digit `paper_raw` workspaces:
+DOI comes from `<paper_number>.metadata.json`, not `doi.csv`; fetch does not
+allocate paper_numbers; successful PDFs attach through duplicate guard as
+`<paper_number>.pdf`. Default fetch is OA-only. Header-based fetch is explicit,
+uses a fixed in-code User-Agent, and never persists header values.
 手动 PDF 路径 metadata resolver 依赖转换后的 md，必须在 MinerU 转换之后运行（先转换，再解析）。
-v2.2 状态机：`curate_paper_raw.py` 只校验并写 `catalog_ready`（不改名、不分配 paper_number）；
-`formalize_paper_raw.py` 是 commit 前必经步骤（改名 + reserve 16 位 paper_number + `ready_for_commit`）；
+v2.3 状态机：staging 阶段 reserve 16 位 paper_number；`curate_paper_raw.py` 只校验并写 `catalog_ready`（不改名、不分配 paper_number）；
+初始 catalog 生成阶段 `screening.read_decision` 必须固定为 `"pending"`，不得写成 `must_read` /
+`maybe_read` / `skip`；这些值只用于 post-triage / writing-stage catalog 或人工筛选；
+`formalize_paper_raw.py` 是 commit 前必经步骤（改名 + 复用/校验并 repoint reserved paper_number + `ready_for_commit`）；
 `commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。
 `formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离
 （`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传 tmp
@@ -35,6 +87,22 @@ v2.2 状态机：`curate_paper_raw.py` 只校验并写 `catalog_ready`（不改�
 缺 manifest 的已转换资产必须先生成当前 manifest 或重新转换。普通 ingest 测试夹具从 16 位 `paper_number`
 开始，保留编号使用 reserved-specific 语义，不走 legacy `repoint()`。`Catalog.load()` fallback
 是 tolerant read-only snapshot，不写 ledger/marker/catalog 索引。
+
+## Ingest layered semantics
+
+Ingest layered semantics (conversion does not require metadata; formalize/commit does):
+
+Conversion layer:
+- PDF conversion to Markdown/images does not require complete metadata.
+- Missing DOI or unmatched metadata must not block MinerU conversion.
+- Conversion output Markdown is a valid metadata-resolution source.
+
+Formal library layer:
+- Formalize/commit requires strict metadata.
+- DOI must be valid; metadata_match.status must be matched or manual_confirmed.
+- BibTeX is generated from metadata, never from catalog.
+
+Summary: convert first is allowed; commit requires metadata.
 
 Writing workspace creation:
 
@@ -53,12 +121,17 @@ Manual PDF staging SOP:
   `CUDA_VISIBLE_DEVICES=0`, and checks `torch.cuda.is_available()`. The lower-level
   `convert_paper_raw_batch.py` is compatibility/debug plumbing.
 - Batch conversion should use persistent `mineru-api` via `MINERU_RUNNER=cli_api_proxy` and
-  `MINERU_API_URL=http://127.0.0.1:8000`. Start/reuse mineru-api with
-  `python scripts/start_mineru_services.py --wait`, then stop with
+  `MINERU_API_URL=http://127.0.0.1:8000`. `/health` is liveness only, not GPU conversion readiness.
+  Start/reuse managed mineru-api with `python scripts/start_mineru_services.py --wait --restart-if-stale`,
+  verify `check_mineru_processes.py` verdict is `READY_FOR_CONVERSION`, run one
+  `smoke_mineru_conversion.py` report, then run formal `--all --apply`. Stop with
   `python scripts/stop_mineru_services.py`. Start mineru-api with
   `CUDA_VISIBLE_DEVICES=0` in its own shell; setting it only in the client cannot
   change an already-running service.
-- `start_fast_api_mode.bat` is a compatibility wrapper around the Python starter.
+  The formal wrapper reads `reports/smoke_mineru_conversion.json` by default; pass
+  `--smoke-report <path>` only when overriding that path.
+- `start_fast_api_mode.bat` is a compatibility wrapper around the Python starter and uses
+  `--restart-if-stale`.
 - Large PDF MinerU conversion has no process-level timeout. Health/preflight/HTTP
   and lock wait timeouts are separate checks.
 - Metadata title/author/affiliation/abstract/keyword/DOI candidates come from
@@ -80,6 +153,11 @@ Facts:
 - `write/jobs/<job_id>/article/<paper_number>/` is the writing article workspace.
 - `metadata.json` is the bibliographic source of truth for BibTeX.
 - `catalog.json` and `all.catalog.json` are content-only.
+- Network OpenAlex/CrossRef metadata with a valid DOI is staged as
+  `metadata_match.status = "matched"` / `.import_status.json status = "metadata_matched"`.
+- Formalize rewrites catalog asset refs and `provenance.markdown_path` to final
+  `<paper_id>` filenames. Use `scripts/repair_catalog_asset_refs.py --dry-run` before
+  applying repairs to existing stale catalogs.
 - catalog natural-language values default to Chinese; JSON keys/schema enums stay English, and technical terms may remain English or mixed Chinese-English.
+- Initial generated catalog uses `screening.read_decision = "pending"`; final read decisions are post-triage / writing-stage annotations.
 - metadata remains original/canonical bibliographic facts and is not rewritten for catalog Chinese localization.
-

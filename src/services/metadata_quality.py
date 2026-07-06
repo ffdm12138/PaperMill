@@ -38,12 +38,49 @@ def _has_named_author(metadata: dict) -> bool:
     return False
 
 
+def _has_first_author_family(metadata: dict) -> bool:
+    first = metadata.get("first_author") or {}
+    return _text(first.get("family")) != ""
+
+
 def _has_year(metadata: dict) -> bool:
     try:
         int(metadata.get("year"))
     except (TypeError, ValueError):
         return False
     return True
+
+
+def bibliographic_identity_gate(
+    metadata: dict,
+    blocking_reasons: list[str] | None = None,
+) -> tuple[bool, list[str]]:
+    """Return whether metadata is complete enough to be marked matched."""
+    from src.services.v2_library import validate_metadata_schema
+
+    reasons: list[str] = []
+    doi = normalized_metadata_doi(metadata)
+    if not doi:
+        reasons.append("missing doi")
+    elif not is_valid_normalized_doi(doi):
+        reasons.append("invalid doi")
+    if not _text((metadata.get("title") or {}).get("original")):
+        reasons.append("missing title.original")
+    if not _has_year(metadata):
+        reasons.append("missing year")
+    if not _has_named_author(metadata):
+        reasons.append("missing authors")
+    if not _has_first_author_family(metadata):
+        reasons.append("missing first_author.family")
+    if not _has_venue(metadata):
+        reasons.append("missing container journal/conference/booktitle")
+    for error in validate_metadata_schema(metadata):
+        reasons.append(f"schema invalid: {error}")
+    for reason in blocking_reasons or []:
+        if _text(reason):
+            reasons.append(str(reason))
+    reasons = list(dict.fromkeys(reasons))
+    return not reasons, reasons
 
 
 def _has_venue(metadata: dict) -> bool:
@@ -92,14 +129,10 @@ def metadata_quality_warnings(metadata: dict) -> list[str]:
         warnings.append("missing publication.pages or publication.article_number")
     if not _text(container.get("publisher")):
         warnings.append("missing container.publisher")
-    if not _text(metadata.get("abstract")):
-        warnings.append("missing abstract")
-    if not metadata.get("keywords"):
-        warnings.append("missing keywords")
     if not _text(links.get("url")):
         warnings.append("missing links.url")
-    if not source.get("raw_record"):
-        warnings.append("missing source.raw_record")
+    if not _text(source.get("raw_record_path")):
+        warnings.append("missing source.raw_record_path")
     return warnings
 
 

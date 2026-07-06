@@ -20,7 +20,7 @@
         "year 2014 matches local 2014",
         "first author surname 'vionnet' matches",
         "venue nonempty: The Cryosphere",
-        "not a formal-library DOI duplicate"
+        "not a data/paper_raw or data/papers DOI/PDF duplicate"
       ],
       "warnings": []
     },

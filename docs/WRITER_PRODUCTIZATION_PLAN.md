@@ -20,6 +20,9 @@ items remain planned only.
 - `catalog-first selection`: uses local `data/catalog/all.catalog.json` as a
   content-only screening index. Job preparation can select by `paper_number` or
   catalog filters.
+- Initial generated catalog entries use `screening.read_decision = "pending"`.
+  `must_read` / `maybe_read` / `skip` filters are for post-triage /
+  writing-stage catalog annotations, not paper_raw catalog generation.
 - `article copy workspace`: copies formal paper assets into
   `write/jobs/<job_id>/article/<paper_number>/`; writing reads from this
   job-local copy, not directly from formal paper storage.
@@ -83,6 +86,8 @@ catalog-first preparation flow.
 - Accept either `--paper-numbers ...` or catalog filters such as
   `--primary-domain`, `--topic`, `--read-decision`, `--min-relevance-score`,
   and `--limit`.
+  `--read-decision` is meaningful only after post-triage / writing-stage or
+  human screening has annotated values beyond the initial `pending`.
 - Run the existing prepare step and create the ignored job workspace.
 - Generate a job-local README and selected-paper summary that explains the next
   commands.

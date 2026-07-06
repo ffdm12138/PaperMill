@@ -19,6 +19,18 @@ from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.v2_library import PaperCurationService
 
 
+def _metadata_match_ready(folder: Path, name: str) -> bool:
+    path = folder / f"{name}.metadata.json"
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    status = str(((data.get("metadata_match") or {}).get("status")) or "")
+    return status in {"matched", "manual_confirmed"}
+
+
 def _write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -31,7 +43,7 @@ def _candidates(root: Path, args) -> list[Path]:
         return [args.paper_dir]
     if args.paper_number:
         return [root / validate_paper_raw_id(args.paper_number)]
-    if args.all_ready:
+    if args.all_ready or args.all_matched:
         out = []
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name
@@ -43,6 +55,8 @@ def _candidates(root: Path, args) -> list[Path]:
             has_images = (folder / "images").is_dir()
             if not (has_meta and has_md and has_images):
                 continue
+            if args.all_matched and not _metadata_match_ready(folder, name):
+                continue
             # --all-ready --apply only processes folders that already have a
             # curated catalog output (the LLM/skill has run). dry-run still
             # generates prompts for every ready folder.
@@ -51,7 +65,7 @@ def _candidates(root: Path, args) -> list[Path]:
                     continue
             out.append(folder)
         return out
-    raise ValueError("--paper-dir, --paper-number, or --all-ready is required")
+    raise ValueError("--paper-dir, --paper-number, --all-ready, or --all-matched is required")
 
 
 def main() -> int:
@@ -59,6 +73,7 @@ def main() -> int:
     parser.add_argument("--paper-dir", type=Path, default=None)
     parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all-ready", action="store_true")
+    parser.add_argument("--all-matched", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--metadata", type=Path, default=None, help="curated metadata JSON for single target")
     parser.add_argument("--catalog", type=Path, default=None, help="curated catalog JSON for single target")

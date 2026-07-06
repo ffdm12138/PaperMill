@@ -14,7 +14,7 @@ from src.mineru_runtime import (
     MinerURunner, build_mineru_env, preflight_gpu, preflight_mineru_api,
     preflight_torch_cuda, runtime_config_from_env, snapshot_nvidia_smi,
 )
-from src.mineru_lock import MinerULock, read_mineru_lock_status
+from src.mineru_lock import MinerULock, read_mineru_lock_status, update_mineru_lock_stage
 
 
 def _find_mineru_exe() -> str:
@@ -50,7 +50,9 @@ class MinerUConverter:
     """MinerU 3.4 文档转换器"""
 
     def __init__(self, proxy: str = None, timeout: int | None = None,
-                 log_dir: str | Path | None = None):
+                 log_dir: str | Path | None = None,
+                 lock_timeout: int | None = None,
+                 lock_stuck_warn_seconds: int | None = None):
         """
         Args:
             proxy: 代理地址，如 "http://127.0.0.1:7890"，None则不走代理
@@ -68,6 +70,8 @@ class MinerUConverter:
             self._log_dir = None
         else:
             self._log_dir = Path(log_dir)
+        self._lock_timeout = lock_timeout
+        self._lock_stuck_warn_seconds = lock_stuck_warn_seconds
 
     def _get_env(self) -> dict:
         """构建环境变量"""
@@ -344,10 +348,23 @@ class MinerUConverter:
             cmd.extend(["--effort", effort])
 
         # ── 全局 MinerU 锁：防止多个 mineru 进程同时占 GPU ──
-        mineru_lock = MinerULock()
-        lock_acquired = mineru_lock.acquire()  # 使用 MINERU_LOCK_TIMEOUT 默认值
+        mineru_lock = MinerULock(
+            timeout=self._lock_timeout,
+            stuck_warn_seconds=self._lock_stuck_warn_seconds,
+            context={
+                "paper_number": pid,
+                "paper_raw_id": pid,
+                "runner": effective_runner,
+                "api_url": api_url or "",
+                "backend": backend,
+                "method": method,
+                "effort": effort,
+                "stage": "submit",
+            },
+        )
+        lock_acquired = mineru_lock.acquire()
         if not lock_acquired:
-            lock_status = read_mineru_lock_status()
+            lock_status = read_mineru_lock_status(stuck_warn_seconds=self._lock_stuck_warn_seconds)
             return _fail_with_log(
                 f"MinerU lock busy: held by PID {lock_status.get('owner_pid', '?')} "
                 f"(age={lock_status.get('age_seconds', '?')}s). "
@@ -359,6 +376,7 @@ class MinerUConverter:
 
         try:
             try:
+                update_mineru_lock_stage("run")
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -368,6 +386,7 @@ class MinerUConverter:
                     env=self._get_env(),
                 )
 
+                update_mineru_lock_stage("write")
                 gpu_after = snapshot_nvidia_smi()
                 elapsed = time.time() - t0
 
@@ -429,6 +448,7 @@ class MinerUConverter:
                     effort=effort, lang=lang, runner=effective_runner,
                 )
 
+                update_mineru_lock_stage("done")
                 elapsed_sec = round(time.time() - t0, 2)
                 return {
                     "success": True,

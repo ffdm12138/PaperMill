@@ -15,15 +15,16 @@ from src.file_fingerprint import compute_file_hashes
 from src.naming import safe_child
 from src.services.ingest_duplicate_guard import check_doi_duplicate, check_pdf_duplicate
 from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
+from src.services.ingest_state import write_import_status
 from src.services.metadata_quality import is_valid_normalized_doi
+from src.services.source_records import validate_metadata_source_record_exists
 from src.services.v2_library import (
+    FORMALIZE_METADATA_LAYERED_HINT,
     metadata_is_matched,
     now_iso,
     validate_metadata_schema,
 )
 from src.utils.atomic_io import atomic_write_json
-
-
 _BLOCKING_STATUSES = {
     "metadata_missing",
     "metadata_invalid",
@@ -104,6 +105,11 @@ def preflight_one(
         if schema_errors:
             errors.append("metadata_invalid")
             details.extend(schema_errors)
+        # Check that source.raw_record_path points to an existing file
+        raw_rp = (metadata.get("source") or {}).get("raw_record_path", "")
+        for src_err in validate_metadata_source_record_exists(folder, raw_rp):
+            errors.append("source_record_missing")
+            details.append(src_err)
         doi = normalize_doi(((metadata.get("identifiers") or {}).get("doi") or ""))
         if not doi or not is_valid_normalized_doi(doi):
             errors.append("doi_invalid")
@@ -150,6 +156,12 @@ def preflight_one(
                 details.append(f"PDF duplicate in {ref.scope}/{ref.paper_number or ref.paper_id}")
 
     errors = sorted(set(errors), key=errors.index)
+    # Layered-semantics hint: conversion is allowed without metadata, but
+    # formalize/commit is not. Surface this once on metadata-gate failures so
+    # operators do not misread "doi_invalid / metadata_unmatched" as a
+    # conversion blocker.
+    if "doi_invalid" in errors or "metadata_unmatched" in errors:
+        details.append(FORMALIZE_METADATA_LAYERED_HINT)
     markdown_path = folder / f"{source_id}.md"
     images_dir = folder / "images"
     has_markdown = markdown_path.exists() and markdown_path.stat().st_size > 0
@@ -173,7 +185,22 @@ def preflight_one(
         "details": details,
         "created_at": now_iso(),
     }
-    atomic_write_json(folder / ".import_status.json", item, indent=2)
+    write_import_status(
+        folder,
+        status,
+        errors=errors,
+        extra={
+            "paper_number": source_id,
+            "paper_raw_id": source_id,
+            "blocking": status in _BLOCKING_STATUSES,
+            "doi": doi,
+            "pdf_md5": pdf_md5,
+            "pdf_sha256": pdf_sha,
+            "has_markdown": has_markdown,
+            "has_images_dir": has_images_dir,
+            "details": details,
+        },
+    )
     return item
 
 

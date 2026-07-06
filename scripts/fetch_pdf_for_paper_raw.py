@@ -26,6 +26,7 @@ from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.source_records import (
     ensure_raw_record_path_is_metadata_source,
     fetch_result_rel_path,
+    resolve_metadata_source_record_path,
     write_fetch_result,
 )
 from src.services.stage_manifest import (
@@ -203,8 +204,8 @@ def _header_keys(headers: dict[str, str], *, include_user_agent: bool) -> list[s
 
 def _build_policy(args: argparse.Namespace, headers: dict[str, str]) -> AccessPolicy:
     if args.resolver == "header-based":
-        if not (args.base_url or args.url_template):
-            raise ValueError("--resolver header-based requires --base-url or --url-template")
+        # header_based now defaults to https://doi.org/{doi} when no
+        # --base-url/--url-template is given.  Both are optional overrides.
         return AccessPolicy(
             mode=AccessMode.CUSTOM,
             allow_custom_resolvers=True,
@@ -217,18 +218,60 @@ def _build_policy(args: argparse.Namespace, headers: dict[str, str]) -> AccessPo
                 "url_template": args.url_template or "",
                 "headers": headers,
                 "timeout_seconds": args.timeout,
-                "allow_unsafe_sources": args.allow_unsafe_sources,
             },
         )
     if args.resolver == "oa":
+        # original_link + OA resolvers only; no header_based fallback.
         return AccessPolicy(mode=AccessMode.OA_ONLY, timeout_seconds=args.timeout)
-    return AccessPolicy(mode=AccessMode(args.access_mode), timeout_seconds=args.timeout)
+    # --resolver auto: original_link + OA + publisher + header_based fallback (always).
+    # header_based now defaults to https://doi.org/{doi} when no --base-url
+    # or --url-template is given, so it is always a viable DOI fallback.
+    resolver_names = [
+        "original_link",
+        "unpaywall", "openalex", "semantic_scholar", "arxiv",
+        "publisher_oa", "springer_direct",
+        "sciengine_direct",
+        "biorxiv", "pmc_oa",
+        "header_based",
+    ]
+    if args.base_url or args.url_template:
+        return AccessPolicy(
+            mode=AccessMode.CUSTOM,
+            allow_custom_resolvers=True,
+            allow_publisher_tdm=False,
+            custom_resolvers=["header_based"],
+            timeout_seconds=args.timeout,
+            extra={
+                "resolver_names": list(resolver_names),
+                "base_url": args.base_url or "",
+                "url_template": args.url_template or "",
+                "headers": headers,
+                "timeout_seconds": args.timeout,
+            },
+        )
+    # auto without header config: still include header_based as
+    # DOI landing fallback (resolves from https://doi.org/{doi}).
+    return AccessPolicy(
+        mode=AccessMode.CUSTOM,
+        allow_custom_resolvers=True,
+        allow_publisher_tdm=False,
+        custom_resolvers=["header_based"],
+        timeout_seconds=args.timeout,
+        extra={
+            "resolver_names": list(resolver_names),
+            "base_url": "",
+            "url_template": "",
+            "headers": headers,
+            "timeout_seconds": args.timeout,
+        },
+    )
 
 
 def _sanitized_fetch_record(result, attached: dict[str, Any], header_keys: list[str]) -> dict[str, Any]:
     return {
         "resolver": result.resolver,
         "resolver_chain": list(result.resolver_chain or []),
+        "attempts": list(result.attempts or []),
         "access_mode": result.access_mode,
         "fetched_at": result.fetched_at or result.downloaded_at,
         "pdf_url": result.pdf_url,
@@ -259,6 +302,31 @@ def _fetch_one(
     title = ((metadata.get("title") or {}).get("original") or "").strip()
     year = metadata.get("year")
     fetch_root = folder / ".fetch"
+    # Load source record from source.raw_record_path (if present) via the
+    # path-safe resolver — never persisted back to metadata.
+    source_record: dict[str, Any] = {}
+    source_record_status = "missing"
+    source_record_error = ""
+    raw_record_path = (metadata.get("source") or {}).get("raw_record_path", "").strip()
+    if raw_record_path:
+        sr_path, err = resolve_metadata_source_record_path(
+            folder, raw_record_path,
+        )
+        if err:
+            source_record_status = "invalid"
+            source_record_error = err
+        elif sr_path and sr_path.is_file():
+            try:
+                source_record = json.loads(sr_path.read_text(encoding="utf-8"))
+                source_record_status = "loaded"
+            except Exception as exc:
+                source_record_status = "read_failed"
+                source_record_error = str(exc)
+        else:
+            source_record_status = "missing"
+            source_record_error = "source record file not found"
+    item["source_record_status"] = source_record_status
+    item["source_record_error"] = source_record_error
     try:
         result = fetch_pipeline.fetch_pdf(
             candidate.doi,
@@ -269,9 +337,17 @@ def _fetch_one(
             title=title,
             year=year if isinstance(year, int) else None,
             metadata=metadata,
+            source_record=source_record,
         )
         if not result.success or not result.output_path:
-            item.update({"status": "failed", "reason": result.error or "fetch failed"})
+            item.update({
+                "status": "failed",
+                "reason": result.error or "fetch failed",
+                "resolver_chain": list(result.resolver_chain or []),
+                "attempts": list(result.attempts or []),
+                "not_configured_resolvers": list(result.not_configured_resolvers or []),
+                "final_reason": result.error or "fetch failed",
+            })
             return item
         try:
             attached = allocator.attach_pdf(
@@ -375,8 +451,15 @@ def main() -> int:
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
-    parser.add_argument("--access-mode", choices=[m.value for m in AccessMode], default=AccessMode.OA_ONLY.value)
-    parser.add_argument("--resolver", choices=["auto", "oa", "header-based"], default="auto")
+    parser.add_argument(
+        "--resolver",
+        choices=["auto", "oa", "header-based"],
+        default="auto",
+        help="auto: original_link → OA → publisher-specific → header_based "
+             "(always included; defaults to doi.org without --base-url); "
+             "oa: original_link + OA resolvers only; "
+             "header-based: explicit header-based resolver only.",
+    )
     parser.add_argument(
         "--only-missing-pdf",
         action="store_true",
@@ -397,7 +480,6 @@ def main() -> int:
     )
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--max-workers", type=int, default=2)
-    parser.add_argument("--allow-unsafe-sources", action="store_true")
     parser.add_argument("--force-refetch", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

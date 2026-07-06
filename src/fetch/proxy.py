@@ -1,12 +1,12 @@
 """共享的 fetch 代理配置解析。
 
-把原本散落在 ``fetch_scihub.py`` / ``tdm_resolvers.py`` 里的代理构造逻辑集中到一处，
-让合法的 TDM / publisher resolver 不必再语义上依赖 Sci-Hub 模块。
+把原本散落在各 resolver 里的代理构造逻辑集中到一处，
+让合法的 TDM / publisher resolver 不必各自重复代理解析。
 
 语义：
 - 读取项目已有的代理环境变量/配置 ``config.settings.FETCH_PROXY``；
 - 返回 ``requests`` 可用的 ``proxies`` dict，或 ``None``（直连）；
-- 不依赖 Sci-Hub，也不引入新的第三方依赖。
+- 不引入新的第三方依赖。
 """
 from __future__ import annotations
 

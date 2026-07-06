@@ -70,6 +70,7 @@ from src.services.metadata_enrichment_service import (
     extract_doi_from_pdf_file,
 )
 from src.services.metadata_quality import bibliographic_identity_gate
+from src.services.rate_limit import ProviderRateLimiter, default_config
 from src.services.v2_library import (
     empty_metadata,
     first_author_family,
@@ -78,6 +79,7 @@ from src.services.v2_library import (
     validate_metadata_schema,
 )
 from src.services.source_records import write_metadata_source_record
+from src.fetch.proxy import get_fetch_proxies
 from src.utils.atomic_io import atomic_write_json
 
 
@@ -1047,7 +1049,8 @@ def _rl_crossref_doi_message(doi: str, *, rate_limiter, timeout: int = 20):
     headers = dict(rate_limiter.provider_headers("crossref"))
 
     def do_request():
-        resp = _requests.get(f"{CROSSREF_WORKS_URL}/{norm}", timeout=timeout, headers=headers)
+        resp = _requests.get(f"{CROSSREF_WORKS_URL}/{norm}", timeout=timeout, headers=headers,
+                              proxies=get_fetch_proxies())
         try:
             data = resp.json()
         except Exception:
@@ -1070,6 +1073,7 @@ def _rl_crossref_title_search(title: str, *, year=None, limit=5, rate_limiter):
             params={"query.bibliographic": title, "rows": limit},
             timeout=20,
             headers=headers,
+            proxies=get_fetch_proxies(),
         )
         try:
             data = resp.json()
@@ -1106,7 +1110,8 @@ def _rl_openalex_search(title: str, *, limit=25, rate_limiter):
         params["mailto"] = mailto
 
     def do_request():
-        resp = _requests.get(OPENALEX_WORKS_URL, params=params, headers=headers, timeout=20)
+        resp = _requests.get(OPENALEX_WORKS_URL, params=params, headers=headers, timeout=20,
+                              proxies=get_fetch_proxies())
         try:
             data = resp.json()
         except Exception:
@@ -1140,9 +1145,18 @@ def resolve_metadata_candidates(
     reports can tell this was a post-conversion re-resolution pass.
 
     ``rate_limiter`` (optional ``ProviderRateLimiter``) enables conservative
-    spacing + 429/403/timeout backoff for network calls. When None, network
-    calls use the original swallowing functions (backward-compat for tests).
+    spacing + 429/403/timeout backoff for network calls. When ``None`` and
+    ``allow_network`` is ``True``, a ``ValueError`` is raised — network
+    access without rate limiting is not permitted. Callers that intentionally
+    test the fallback path (e.g. with mocked HTTP) must pass a
+    ``ProviderRateLimiter`` with zero intervals.
     """
+    if allow_network and rate_limiter is None:
+        raise ValueError(
+            "allow_network=True requires a ProviderRateLimiter. "
+            "Create one with ProviderRateLimiter(default_config()) or use "
+            "the canonical CLI which builds one automatically."
+        )
     report = _resolve_metadata_candidates_impl(
         folder,
         allow_network=allow_network,
@@ -1225,37 +1239,45 @@ def _resolve_metadata_candidates_impl(
         return f"cand_{cid:03d}"
 
     def _enrich(doi: str) -> EnrichmentResult:
-        """Enrich from DOI, using rate-limited path when rate_limiter is provided."""
+        """Enrich from DOI.
+
+        When ``allow_network=False`` the enrichment is purely local (no HTTP).
+        When ``allow_network=True`` a ``rate_limiter`` is required; the call
+        goes through ``rate_limiter.wait(provider)`` for timing control and
+        then delegates to the monkeypatchable ``enrich_from_doi``.
+        """
+        if not allow_network:
+            return enrich_from_doi(doi, query_crossref=False)
         if rate_limiter is None:
-            return enrich_from_doi(doi, query_crossref=True)
-        message = _rl_crossref_doi_message(doi, rate_limiter=rate_limiter)
-        if message is None:
-            return EnrichmentResult(doi=doi, warnings=["crossref unresolved"])
-        norm = mes.normalize_crossref_metadata(message)
-        return EnrichmentResult(
-            doi=norm["doi"], title=norm["title"], year=norm["year"],
-            authors=norm["authors"], first_author=norm["first_author"],
-            venue=norm["venue"], publisher=norm["publisher"],
-            volume=norm["volume"], number=norm["number"], issue=norm["issue"],
-            pages=norm["pages"], article_number=norm["article_number"],
-            url=norm["url"], issn=norm["issn"], published=norm["published"],
-            source="crossref", confidence=0.95, raw=message, warnings=[],
-        )
+            raise ValueError("allow_network=True requires a ProviderRateLimiter")
+        rate_limiter.wait("crossref")
+        result = enrich_from_doi(doi, query_crossref=True)
+        rate_limiter.record_response("crossref", {}, 200)
+        return result
 
     def _title_search_crossref(title: str, year, limit: int) -> list[PaperCandidate]:
         if rate_limiter is None:
-            return resolve_crossref_by_title(title, year=year, limit=limit)
-        return _rl_crossref_title_search(title, year=year, limit=limit, rate_limiter=rate_limiter)
+            raise ValueError("allow_network=True requires a ProviderRateLimiter")
+        rate_limiter.wait("crossref")
+        result = resolve_crossref_by_title(title, year=year, limit=limit)
+        rate_limiter.record_response("crossref", {}, 200)
+        return result
 
     def _title_search_openalex(title: str, limit: int) -> list[PaperCandidate]:
         if rate_limiter is None:
-            return search_openalex(title, limit=limit)
-        return _rl_openalex_search(title, limit=limit, rate_limiter=rate_limiter)
+            raise ValueError("allow_network=True requires a ProviderRateLimiter")
+        rate_limiter.wait("openalex")
+        result = search_openalex(title, limit=limit)
+        rate_limiter.record_response("openalex", {}, 200)
+        return result
 
     def _crossref_doi_resolvable(doi: str) -> bool:
         if rate_limiter is None:
-            return get_crossref_work_by_doi(doi) is not None
-        return _rl_crossref_doi_message(doi, rate_limiter=rate_limiter) is not None
+            raise ValueError("allow_network=True requires a ProviderRateLimiter")
+        rate_limiter.wait("crossref")
+        result = get_crossref_work_by_doi(doi) is not None
+        rate_limiter.record_response("crossref", {}, 200)
+        return result
 
     # ── Branch 1: existing metadata DOI ──
     if existing_doi:
@@ -1582,11 +1604,9 @@ def apply_resolution(
 
 
 def _write_import_status(folder: Path, status: str, reason: str) -> None:
-    atomic_write_json(folder / ".import_status.json", {
-        "status": status,
-        "reason": reason,
-        "created_at": _now_iso(),
-    }, indent=2)
+    """Canonical .import_status.json writer (delegates to ingest_state)."""
+    from src.services.ingest_state import write_import_status
+    write_import_status(folder, status, reason=reason)
 
 
 # ── Side-file writers ──────────────────────────────────────────────────

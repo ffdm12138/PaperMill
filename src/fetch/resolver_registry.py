@@ -8,11 +8,13 @@
 from src.fetch.access_policy import AccessPolicy
 from src.fetch.resolvers.browser_resolvers import BrowserAssistedResolver
 from src.fetch.resolvers.custom_resolvers import ExternalCommandResolver
+from src.fetch.resolvers.header_based_resolver import HeaderBasedDoiResolver
 from src.fetch.resolvers.institutional_resolvers import (
     InstitutionalBrowserResolver,
     PublisherTDMResolver,
 )
 from src.fetch.resolvers.local_resolvers import LocalManualResolver
+from src.fetch.resolvers.original_link_resolver import OriginalLinkResolver
 from src.fetch.resolvers.oa_resolvers import (
     ArxivResolver,
     OpenAlexResolver,
@@ -22,6 +24,7 @@ from src.fetch.resolvers.oa_resolvers import (
 )
 from src.fetch.resolvers.preprint_resolvers import BiorxivResolver, PmcOaResolver
 from src.fetch.resolvers.ref_downloader_bridge import RefDownloaderResolver
+from src.fetch.resolvers.sciengine_resolver import SciEngineResolver
 from src.fetch.resolvers.tdm_resolvers import (
     ElsevierTdmResolver,
     SpringerDirectResolver,
@@ -30,24 +33,11 @@ from src.fetch.resolvers.tdm_resolvers import (
 from src.fetch.resolvers.base import PdfResolver
 
 
-class SciHubResolver(PdfResolver):
-    """Sci-Hub resolver —— unsafe optional / 默认 disabled / 不属于 OA_ONLY 主流程。
-
-    仅当 ``AccessMode.CUSTOM`` 且 ``allow_scihub=True`` 时才被启用；
-    ``OA_ONLY`` 默认链路绝不包含 Sci-Hub。详见 ``access_policy.py``
-    与 ``docs/DEPENDENCIES_AND_EXTERNAL_TOOLS.md``。
-    """
-    name = "scihub"
-    access_modes = ("custom",)
-
-    def resolve(self, ctx):
-        from src.fetch.fetch_scihub import resolve_scihub
-        return resolve_scihub(ctx.doi)
-
-
 # ── 注册表 ────────────────────────────────────────
 
 RESOLVER_REGISTRY: dict[str, type[PdfResolver]] = {
+    # Original metadata links (highest priority)
+    "original_link": OriginalLinkResolver,
     # OA
     "unpaywall": UnpaywallResolver,
     "openalex": OpenAlexResolver,
@@ -55,6 +45,8 @@ RESOLVER_REGISTRY: dict[str, type[PdfResolver]] = {
     "arxiv": ArxivResolver,
     "publisher_oa": PublisherOAResolver,
     "springer_direct": SpringerDirectResolver,
+    # Publisher-specific
+    "sciengine_direct": SciEngineResolver,
     # Preprint / PMC
     "biorxiv": BiorxivResolver,
     "pmc_oa": PmcOaResolver,
@@ -68,9 +60,8 @@ RESOLVER_REGISTRY: dict[str, type[PdfResolver]] = {
     "browser_assisted": BrowserAssistedResolver,
     # Local
     "local_manual": LocalManualResolver,
-    # Unsafe / non-OA
-    "scihub": SciHubResolver,
     "custom": ExternalCommandResolver,
+    "header_based": HeaderBasedDoiResolver,
     # Bridge
     "ref_downloader": RefDownloaderResolver,
 }
@@ -85,6 +76,14 @@ def build_resolvers(policy: AccessPolicy) -> list:
             if cls is ExternalCommandResolver:
                 argv = (policy.extra or {}).get("custom_command_argv") or []
                 resolvers.append(cls(command_argv=argv))
+            elif cls is HeaderBasedDoiResolver:
+                extra = policy.extra or {}
+                resolvers.append(cls(
+                    base_url=extra.get("base_url", ""),
+                    url_template=extra.get("url_template", ""),
+                    headers=extra.get("headers", {}),
+                    timeout=int(extra.get("timeout_seconds") or policy.timeout_seconds),
+                ))
             else:
                 resolvers.append(cls())
     return resolvers

@@ -26,8 +26,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [1/2] Start or reuse mineru-api...
-python scripts\start_mineru_services.py --wait --port 8000 --api-url http://127.0.0.1:8000 --cuda-visible-devices 0 --cuda-path "%CUDA_PATH%"
+echo [1/2] Start or restart stale mineru-api...
+python scripts\start_mineru_services.py --wait --restart-if-stale --port 8000 --api-url http://127.0.0.1:8000 --cuda-visible-devices 0 --cuda-path "%CUDA_PATH%"
 if %errorlevel% neq 0 (
     echo [!] mineru-api startup failed. Check data\logs\mineru_api.log.
     pause

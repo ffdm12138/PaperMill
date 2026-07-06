@@ -5,6 +5,7 @@ import requests
 from loguru import logger
 
 from src.discovery.models import PaperCandidate, normalize_doi
+from src.fetch.proxy import get_fetch_proxies
 
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -74,6 +75,7 @@ def search_openalex(query: str, domain_id: str | None = None, limit: int = 25) -
             params=_params(query, limit),
             headers=_headers(),
             timeout=20,
+            proxies=get_fetch_proxies(),
         )
         response.raise_for_status()
         data = response.json()

@@ -13,6 +13,7 @@ from loguru import logger
 from config.settings import ELSEVIER_API_KEY, WILEY_TDM_TOKEN
 from src.fetch.models import FetchResult
 from src.fetch.proxy import get_fetch_proxies
+from src.fetch.resolvers.url_safety import is_unsafe_url, limit_content
 
 from .base import PdfResolver, ResolveContext
 
@@ -45,32 +46,43 @@ class WileyTdmResolver(PdfResolver):
         try:
             resp = requests.get(
                 url, proxies=proxies, timeout=30,
-                headers=headers, allow_redirects=True,
+                headers=headers, allow_redirects=True, stream=True,
             )
             if resp.status_code == 200 and "application/pdf" in resp.headers.get("Content-Type", ""):
-                logger.info(f"[tdm] Wiley OK: {doi} ({len(resp.content)//1024}KB)")
+                # redirect 后必须检查最终 URL
+                if is_unsafe_url(resp.url or url):
+                    return FetchResult(doi=doi, error=f"unsafe final URL blocked: {resp.url or url}")
+                content = limit_content(resp)
+                logger.info(f"[tdm] Wiley OK: {doi} ({len(content)//1024}KB)")
                 return FetchResult(
                     doi=doi, success=True,
                     pdf_url="",   # 已在 raw 中，不触发二次下载
                     output_path="",
-                    raw={"content": resp.content, "status_code": resp.status_code},
+                    raw={"content": content, "status_code": resp.status_code},
                     access_status="open_access",
                 )
             elif resp.status_code == 302:
                 # 重定向到 PDF，手动 follow
                 pdf_url = resp.headers.get("Location", "")
                 if pdf_url:
+                    # 302 Location 本身必须是 safe host
+                    if is_unsafe_url(pdf_url):
+                        return FetchResult(doi=doi, error=f"unsafe redirect Location blocked: {pdf_url}")
                     r2 = requests.get(
                         pdf_url, proxies=proxies, timeout=30,
-                        headers={"User-Agent": USER_AGENT},
+                        headers={"User-Agent": USER_AGENT}, stream=True,
                     )
                     if r2.status_code == 200 and "application/pdf" in r2.headers.get("Content-Type", ""):
-                        logger.info(f"[tdm] Wiley redirect OK: {doi} ({len(r2.content)//1024}KB)")
+                        # r2 redirect 后也必须检查最终 URL
+                        if is_unsafe_url(r2.url or pdf_url):
+                            return FetchResult(doi=doi, error=f"unsafe final URL blocked: {r2.url or pdf_url}")
+                        content = limit_content(r2)
+                        logger.info(f"[tdm] Wiley redirect OK: {doi} ({len(content)//1024}KB)")
                         return FetchResult(
                             doi=doi, success=True,
                             pdf_url="",   # 已在 raw 中
                             output_path="",
-                            raw={"content": r2.content, "status_code": r2.status_code},
+                            raw={"content": content, "status_code": r2.status_code},
                             access_status="open_access",
                         )
                 return FetchResult(doi=doi, error=f"Wiley redirect but no PDF: HTTP {resp.status_code}")
@@ -101,15 +113,19 @@ class SpringerDirectResolver(PdfResolver):
         try:
             resp = requests.get(
                 url, proxies=proxies, timeout=30,
-                headers=headers, allow_redirects=True,
+                headers=headers, allow_redirects=True, stream=True,
             )
             if resp.status_code == 200 and "application/pdf" in resp.headers.get("Content-Type", ""):
-                logger.info(f"[tdm] Springer OK: {doi} ({len(resp.content)//1024}KB)")
+                # redirect 后必须检查最终 URL
+                if is_unsafe_url(resp.url or url):
+                    return FetchResult(doi=doi, error=f"unsafe final URL blocked: {resp.url or url}")
+                content = limit_content(resp)
+                logger.info(f"[tdm] Springer OK: {doi} ({len(content)//1024}KB)")
                 return FetchResult(
                     doi=doi, success=True,
                     pdf_url="",   # 已在 raw 中
                     output_path="",
-                    raw={"content": resp.content, "status_code": resp.status_code},
+                    raw={"content": content, "status_code": resp.status_code},
                     access_status="open_access",
                 )
             return FetchResult(doi=doi, error=f"Springer direct failed: HTTP {resp.status_code}")
@@ -146,15 +162,19 @@ class ElsevierTdmResolver(PdfResolver):
         try:
             resp = requests.get(
                 url, proxies=proxies, timeout=30,
-                headers=headers, allow_redirects=True,
+                headers=headers, allow_redirects=True, stream=True,
             )
             if resp.status_code == 200 and "application/pdf" in resp.headers.get("Content-Type", ""):
-                logger.info(f"[tdm] Elsevier OK: {doi} ({len(resp.content)//1024}KB)")
+                # redirect 后必须检查最终 URL
+                if is_unsafe_url(resp.url or url):
+                    return FetchResult(doi=doi, error=f"unsafe final URL blocked: {resp.url or url}")
+                content = limit_content(resp)
+                logger.info(f"[tdm] Elsevier OK: {doi} ({len(content)//1024}KB)")
                 return FetchResult(
                     doi=doi, success=True,
                     pdf_url=resp.url,
                     output_path="",
-                    raw={"content": resp.content, "status_code": resp.status_code},
+                    raw={"content": content, "status_code": resp.status_code},
                     access_status="open_access",
                 )
             return FetchResult(doi=doi, error=f"Elsevier TDM failed: HTTP {resp.status_code}")

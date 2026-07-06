@@ -1,9 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "paper_raw metadata patch (resolver)",
-  "description": "Patch produced by the paper_raw_metadata_resolver skill. It is merged into the existing metadata via src/services/v2_library.py::merge_missing_metadata(), which fills ONLY empty fields and preserves trusted non-empty fields. Conflicts are recorded as warnings, never overwritten. DOI must come from the PDF/Markdown/filename or an authoritative network source — never fabricated.",
+  "description": "Patch produced by the paper_raw_metadata_resolver skill. It is merged into the existing metadata via src/services/v2_library.py::merge_missing_metadata(), which fills ONLY empty fields and preserves trusted non-empty fields. Conflicts are recorded as warnings, never overwritten. DOI must come from the PDF/Markdown/filename or an authoritative network source — never fabricated. STRICT: additionalProperties is false. Legacy fields are FORBIDDEN here: title.short_zh, title.translated_zh, abstract, keywords, notes, bibtex, citation_key, source.raw_record (use source.raw_record_path only), content_title, md_title_candidates. Chinese titles belong in catalog (content_identity.content_title_zh), never in metadata.",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "warnings": {
       "type": "array",
@@ -12,16 +12,17 @@
     },
     "title": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "original": { "type": "string" },
-        "translated_zh": { "type": "string" },
-        "short_zh": { "type": "string" }
+        "subtitle": { "type": "string" }
       }
     },
     "authors": {
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "full_name": { "type": "string" },
           "family": { "type": "string" },
@@ -33,6 +34,7 @@
     },
     "first_author": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "family": { "type": "string" },
         "display": { "type": "string" }
@@ -41,6 +43,7 @@
     "year": { "type": ["integer", "string", "null"] },
     "container": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "journal": { "type": "string" },
         "booktitle": { "type": "string" },
@@ -53,6 +56,7 @@
     },
     "publication": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "volume": { "type": "string" },
         "number": { "type": "string" },
@@ -64,34 +68,33 @@
     },
     "identifiers": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "doi": { "type": "string" },
         "issn": { "type": "string" },
         "openalex_id": { "type": "string" },
-        "semantic_scholar_id": { "type": "string" },
         "crossref_id": { "type": "string" }
       }
     },
     "links": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "url": { "type": "string" },
         "publisher_url": { "type": "string" },
         "repository_url": { "type": "string" }
       }
     },
-    "abstract": { "type": "string" },
-    "keywords": { "type": "array", "items": { "type": "string" } },
     "source": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "kind": { "type": "string" },
         "provider": { "type": "string" },
         "query": { "type": "string" },
         "retrieved_at": { "type": "string" },
-        "raw_record": { "type": "object" }
+        "raw_record_path": { "type": "string" }
       }
-    },
-    "notes": { "type": "string" }
+    }
   }
 }

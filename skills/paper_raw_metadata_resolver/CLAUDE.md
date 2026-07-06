@@ -24,7 +24,7 @@ affiliation/abstract/keyword/DOI candidates before PDF title fallback.
 - PDF 文件名 / OCR 文本片段 / 既有 candidates 只是辅助 hint，不能作为唯一 metadata 来源。
 - 只在 `data/paper_raw/<paper_number>/` 内工作；不得读 `data/papers`/catalog/`write/`。
 - 不得编造 DOI/作者/年份/期刊/卷期页；LLM 推测的 DOI 无效。
-- 联网验证：md 抽到 DOI 必须联网核对（Crossref/OpenAlex/Semantic Scholar/Unpaywall），
+- 联网验证：md 抽到 DOI 必须联网核对（Crossref/OpenAlex/Unpaywall），
   网络结果优先于 md 中 OCR 错误字段；md 抽不到足够线索则联网查询。
 - 联网不可用时 fail-closed：保持 `metadata_match.status = unmatched`，保留已抽取候选，
   请求人工复核，绝不伪造 matched metadata。

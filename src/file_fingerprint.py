@@ -16,11 +16,33 @@ def compute_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
+def compute_md5(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Compute a file md5 in chunks for compatibility duplicate reports."""
+    h = hashlib.md5()
+    with Path(path).open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def compute_file_hashes(path: Path) -> dict:
+    p = Path(path)
+    return {
+        "md5": compute_md5(p),
+        "sha256": compute_sha256(p),
+        "file_size": p.stat().st_size,
+    }
+
+
 def file_meta(path: Path) -> dict:
     """采集文件元信息：sha256/size/mtime"""
     p = Path(path)
     st = p.stat()
     return {
+        "md5": compute_md5(p),
         "sha256": compute_sha256(p),
         "file_size": st.st_size,
         "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),

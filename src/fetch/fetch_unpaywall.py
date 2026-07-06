@@ -6,6 +6,7 @@ import requests
 from loguru import logger
 
 from src.fetch.models import FetchResult
+from src.fetch.proxy import get_fetch_proxies
 
 
 UNPAYWALL_URL = "https://api.unpaywall.org/v2"
@@ -30,7 +31,7 @@ def resolve_unpaywall(doi: str) -> FetchResult:
     email = os.environ.get("UNPAYWALL_EMAIL", "").strip()
     params = {"email": email or "anonymous@example.com"}
     try:
-        response = requests.get(f"{UNPAYWALL_URL}/{quote(doi, safe='')}", params=params, timeout=20)
+        response = requests.get(f"{UNPAYWALL_URL}/{quote(doi, safe='')}", params=params, timeout=20, proxies=get_fetch_proxies())
         response.raise_for_status()
         data = response.json()
     except Exception as exc:
@@ -47,10 +48,12 @@ def resolve_unpaywall(doi: str) -> FetchResult:
             meta = dict(data)
             if is_landing_fallback:
                 meta["maybe_landing_page"] = True
+            candidate_url = f"{UNPAYWALL_URL}/{quote(doi, safe='')}"
             return FetchResult(
                 doi=doi,
                 success=True,
                 source="unpaywall",
+                candidate_url=candidate_url,
                 pdf_url=pdf_url,
                 oa_status=data.get("oa_status") or "oa",
                 license=location.get("license") or data.get("license") or "",

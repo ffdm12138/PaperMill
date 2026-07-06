@@ -111,3 +111,95 @@ def ensure_raw_record_path_is_metadata_source(
     if raw_record_path and not is_fetch_result_path(raw_record_path):
         return raw_record_path
     return metadata_source_rel_path(provider)
+
+
+def resolve_metadata_source_record_path(
+    folder: Path,
+    raw_record_path: str,
+) -> tuple[Path | None, str]:
+    """Validate and resolve a ``source.raw_record_path`` relative to *folder*.
+
+    Returns ``(resolved_path, error)``.  On success *error* is empty and
+    *resolved_path* is the absolute resolved path.  On failure *resolved_path*
+    is ``None`` and *error* describes the violation.
+
+    Validation rules:
+    1. *raw_record_path* must not be empty.
+    2. *raw_record_path* must not be an absolute path.
+    3. *raw_record_path* must not escape *folder* via ``..``.
+    4. Must reside under ``source_records/``.
+    5. Filename must match ``metadata_source.*.json``.
+    6. Must NOT be ``source_records/fetch_result.json``.
+    """
+    if not raw_record_path or not raw_record_path.strip():
+        return None, "raw_record_path is empty"
+    raw_record_path = raw_record_path.strip()
+
+    raw = Path(raw_record_path)
+    if raw.is_absolute():
+        return None, f"raw_record_path must not be absolute: {raw_record_path}"
+
+    # Resolve to catch path traversal
+    try:
+        resolved = (Path(folder) / raw).resolve()
+        folder_resolved = Path(folder).resolve()
+        resolved.relative_to(folder_resolved)
+    except ValueError:
+        return None, f"raw_record_path escapes folder: {raw_record_path}"
+
+    # Must be under source_records/
+    try:
+        rel = resolved.relative_to(folder_resolved)
+        parts = rel.parts
+    except ValueError:
+        return None, f"raw_record_path must be under source_records/: {raw_record_path}"
+
+    if len(parts) < 2 or parts[0] != SOURCE_RECORDS_DIR:
+        return None, f"raw_record_path must be under source_records/: {raw_record_path}"
+
+    filename = parts[-1]
+
+    # Reject fetch_result.json
+    if filename == FETCH_RESULT_FILENAME:
+        return None, f"raw_record_path must not point at {FETCH_RESULT_FILENAME}"
+
+    # Must match metadata_source.*.json
+    if not (filename.startswith(f"{METADATA_SOURCE_PREFIX}.") and filename.endswith(".json")):
+        return None, (
+            f"raw_record_path filename must match {METADATA_SOURCE_PREFIX}.*.json: "
+            f"{filename}"
+        )
+
+    return resolved, ""
+
+
+def validate_metadata_source_record_exists(
+    folder: Path,
+    raw_record_path: str,
+    *,
+    require_nonempty: bool = False,
+) -> list[str]:
+    """Validate that *raw_record_path* in *folder* points to an existing file.
+
+    Returns a list of error strings (empty = valid).  Rules:
+    - If *require_nonempty* is True, an empty path is an error.
+    - Path must be valid (delegates to ``resolve_metadata_source_record_path``).
+    - The resolved file must exist.
+    """
+    if not raw_record_path or not raw_record_path.strip():
+        if require_nonempty:
+            return ["source.raw_record_path is required"]
+        return []  # empty is not an error in non-strict mode
+
+    errors: list[str] = []
+    resolved, err = resolve_metadata_source_record_path(folder, raw_record_path)
+    if err:
+        errors.append(f"source.raw_record_path invalid: {err}")
+        return errors
+
+    if not resolved.exists():
+        errors.append(
+            f"source.raw_record_path points to file that does not exist: "
+            f"{raw_record_path}"
+        )
+    return errors

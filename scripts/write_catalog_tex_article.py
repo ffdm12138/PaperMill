@@ -87,11 +87,10 @@ def _metadata_doi(entry: dict) -> str:
 def _paper_label(entry: dict) -> str:
     catalog = entry.get("catalog") or {}
     metadata = entry.get("metadata") or {}
-    # title/author/year come from METADATA (catalog v2.0 has no display fields)
+    # citation title comes from metadata; catalog title is content-only fallback.
     title = (
-        (metadata.get("title") or {}).get("translated_zh")
-        or (metadata.get("title") or {}).get("original")
-        or (catalog.get("content_identity") or {}).get("content_title")
+        (metadata.get("title") or {}).get("original")
+        or (catalog.get("content_identity") or {}).get("content_title_zh")
         or entry.get("paper_id")
     )
     authors = metadata.get("authors") or []

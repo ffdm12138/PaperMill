@@ -15,5 +15,7 @@ affiliation/abstract/keyword/DOI candidates for search or review must prefer the
 converted Markdown first 100 lines as front-matter evidence before any PDF title
 fallback, and DOI requirements are unchanged. Large MinerU
 PDF conversion has no process-level timeout; service startup/shutdown should use
-`python scripts/start_mineru_services.py --wait` and
-`python scripts/stop_mineru_services.py`.
+`python scripts/start_mineru_services.py --wait --restart-if-stale` and
+`python scripts/stop_mineru_services.py`. `/health` is liveness only; formal
+batch conversion also requires managed service identity, `READY_FOR_CONVERSION`,
+and a recent successful single-paper smoke report.

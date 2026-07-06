@@ -29,6 +29,7 @@ from loguru import logger
 
 from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.services.ingest_ids import validate_paper_raw_id
+from src.services.ingest_state import write_import_status
 from src.services.metadata_resolver import (
     apply_resolution,
     resolve_metadata_candidates,
@@ -121,10 +122,12 @@ def _parse_provider_min_interval(value: str) -> tuple[str, float]:
 def _build_rate_limiter(args) -> ProviderRateLimiter | None:
     """Build a ProviderRateLimiter from config + CLI overrides.
 
-    The limiter activates when --allow-network is set OR when any rate-limiting
-    override (--paper-interval-seconds / --provider-min-interval) is given, since
-    DOI enrichment always queries Crossref even without --allow-network.
-    Returns None when no rate limiting is requested.
+    Returns a limiter only when ``--allow-network`` is set (network resolution
+    enabled) or when rate overrides (``--paper-interval-seconds`` /
+    ``--provider-min-interval``) are explicitly given.  When neither is set
+    (default or ``--no-network``) no limiter is needed because the resolver
+    will not make any HTTP requests — ``allow_network=False`` is strictly
+    zero-HTTP semantics.
     """
     has_override = (
         args.paper_interval_seconds is not None
@@ -194,6 +197,14 @@ def main() -> int:
     apply_changes = args.apply and not args.dry_run and not args.rate_probe
 
     rate_limiter = _build_rate_limiter(args)
+
+    if allow_network and rate_limiter is not None:
+        email = rate_limiter._resolve_contact_email()
+        if not email:
+            logger.warning(
+                "MINERU_METADATA_CONTACT_EMAIL not set; metadata API providers (Crossref, OpenAlex) may "
+                "throttle or block unidentified requests. Set this env var to your email for best behavior."
+            )
 
     try:
         source_ids = _source_ids(args.paper_raw_dir, args.all_unmatched, args.all, args.paper_number)
@@ -268,14 +279,16 @@ def main() -> int:
                 # write import_status marker (report-only tier)
                 if not apply_changes:
                     status = _import_status_for_report(report)
-                    atomic_write_json(folder / ".import_status.json", {
-                        "status": status,
-                        "paper_number": source_id,
-                        "paper_raw_id": source_id,
-                        "best_decision": report.decision,
-                        "reason": report.reason,
-                        "created_at": report.created_at,
-                    }, indent=2)
+                    write_import_status(
+                        folder,
+                        status,
+                        reason=report.reason,
+                        extra={
+                            "paper_number": source_id,
+                            "paper_raw_id": source_id,
+                            "best_decision": report.decision,
+                        },
+                    )
 
             if apply_changes:
                 applied = apply_resolution(

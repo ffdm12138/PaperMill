@@ -1,4 +1,4 @@
-"""Small Gradio reader for the pure v2 library."""
+"""Small Gradio reader for the MinerU paper library."""
 from __future__ import annotations
 
 import sys
@@ -22,13 +22,11 @@ prompt_builder = PromptBuilder(catalog=catalog, library=library)
 def list_papers():
     papers = catalog.list_papers()
     if not papers:
-        return "文献库为空。请先运行 v2 paper_raw CLI 完成入库。"
+        return "文献库为空。请先通过 paper_raw CLI 完成入库。"
     lines = ["| # | paper_number | paper_id | title |", "|---|---|---|---|"]
     for i, item in enumerate(papers, 1):
-        # all.catalog v2 是 content-only：标题取 content_identity.content_title；
-        # 不假设 catalog 条目含 metadata 字段。正式书目标题需另行从 metadata 读取。
         content_identity = item.get("content_identity") or {}
-        title = content_identity.get("content_title") or ""
+        title = content_identity.get("content_title_zh") or ""
         lines.append(f"| {i} | `{item.get('paper_number','')}` | `{item.get('paper_id','')}` | {title} |")
     return "\n".join(lines)
 
@@ -71,10 +69,9 @@ def gen_fulltext_prompt(question, paper_ids_text):
 
 def get_status():
     return f"""## 系统状态
-
 | 项目 | 状态 |
 |---|---|
-| 模式 | pure_v2_paper_raw |
+| 模式 | current_metadata_catalog |
 | 文献数量 | {len(catalog.list_papers())} |
 | MinerU 后端 | {MINERU_BACKEND} |
 | Effort | {MINERU_EFFORT} |
@@ -83,8 +80,8 @@ def get_status():
 
 THEME = gr.themes.Soft(primary_hue="indigo", neutral_hue="slate")
 
-with gr.Blocks(theme=THEME, title="MinerU v2 文献资产库") as app:
-    gr.Markdown("# MinerU v2 文献资产库\n正式入库只通过 paper_raw CLI 完成；本界面只读取正式资产并生成 prompt。")
+with gr.Blocks(title="MinerU 文献资产库") as app:
+    gr.Markdown("# MinerU 文献资产库\n正式入库只通过 paper_raw CLI 完成；本界面只读正式资产并生成 prompt。")
     with gr.Tabs():
         with gr.TabItem("文献库"):
             refresh_btn = gr.Button("刷新")
@@ -105,7 +102,7 @@ with gr.Blocks(theme=THEME, title="MinerU v2 文献资产库") as app:
             plan_out = gr.Textbox(label="Prompt", lines=16)
             plan_btn.click(gen_plan_prompt, inputs=[plan_q], outputs=[plan_out])
             full_q = gr.Textbox(label="研究问题")
-            full_ids = gr.Textbox(label="paper_id 列表（逗号分隔）")
+            full_ids = gr.Textbox(label="paper_id 列表，逗号分隔")
             full_btn = gr.Button("生成全文写作 prompt")
             full_out = gr.Textbox(label="Prompt", lines=16)
             full_btn.click(gen_fulltext_prompt, inputs=[full_q, full_ids], outputs=[full_out])
@@ -116,4 +113,4 @@ with gr.Blocks(theme=THEME, title="MinerU v2 文献资产库") as app:
 
 
 if __name__ == "__main__":
-    app.launch(server_name="127.0.0.1", server_port=7860, share=False, show_error=True)
+    app.launch(server_name="127.0.0.1", server_port=7860, share=False, show_error=True, theme=THEME)
