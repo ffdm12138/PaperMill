@@ -38,7 +38,7 @@ def _ctx() -> ResolveContext:
 
 # ── Direct PDF ─────────────────────────────────────────────────────────
 
-def test_direct_pdf_uses_fixed_user_agent(monkeypatch):
+def test_direct_pdf_uses_fixed_user_agent(monkeypatch, install_pdf_transport_get):
     seen = {}
 
     def fake_get(url, **kwargs):
@@ -47,8 +47,7 @@ def test_direct_pdf_uses_fixed_user_agent(monkeypatch):
         return FakeResponse(url=url, content=b"%PDF direct",
                             content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver(
         url_template="https://example.test/fetch?doi={doi}",
         headers={"Cookie": "secret"},
@@ -66,7 +65,7 @@ def test_direct_pdf_uses_fixed_user_agent(monkeypatch):
 
 # ── Landing page → PDF link ────────────────────────────────────────────
 
-def test_html_landing_page_pdf_link_is_downloaded(monkeypatch):
+def test_html_landing_page_pdf_link_is_downloaded(monkeypatch, install_pdf_transport_get):
     calls = []
 
     def fake_get(url, **kwargs):
@@ -80,10 +79,7 @@ def test_html_landing_page_pdf_link_is_downloaded(monkeypatch):
         return FakeResponse(url=url, content=b"%PDF linked",
                             content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fake_get)
-    monkeypatch.setattr("src.fetch.resolvers.landing_page.requests.get",
-                        fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver(base_url="https://example.test/doi/")
 
     result = resolver.resolve(_ctx())
@@ -95,12 +91,11 @@ def test_html_landing_page_pdf_link_is_downloaded(monkeypatch):
 
 # ── Non-PDF rejection ──────────────────────────────────────────────────
 
-def test_rejects_non_pdf_response(monkeypatch):
+def test_rejects_non_pdf_response(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
         return FakeResponse(url=url, content=b"not pdf", content_type="text/plain")
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver(base_url="https://example.test/doi/")
 
     result = resolver.resolve(_ctx())
@@ -111,12 +106,11 @@ def test_rejects_non_pdf_response(monkeypatch):
 
 # ── Unsafe host blocked before network ─────────────────────────────────
 
-def test_blocks_unsafe_host_without_network(monkeypatch):
+def test_blocks_unsafe_host_without_network(monkeypatch, install_pdf_transport_get):
     def fail_get(*args, **kwargs):
         raise AssertionError("unsafe host must be blocked before network")
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fail_get)
+    install_pdf_transport_get(fail_get)
     resolver = HeaderBasedDoiResolver(base_url="https://sci-hub.se/")
 
     result = resolver.resolve(_ctx())
@@ -127,13 +121,12 @@ def test_blocks_unsafe_host_without_network(monkeypatch):
 
 # ── Invalid PDF magic ──────────────────────────────────────────────────
 
-def test_invalid_pdf_magic_rejected(monkeypatch):
+def test_invalid_pdf_magic_rejected(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
         return FakeResponse(url=url, content=b"not a pdf",
                             content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver(base_url="https://example.test/doi/")
 
     result = resolver.resolve(_ctx())
@@ -144,7 +137,7 @@ def test_invalid_pdf_magic_rejected(monkeypatch):
 
 # ── Redirect to unsafe host blocked ────────────────────────────────────
 
-def test_redirect_to_unsafe_host_blocked(monkeypatch):
+def test_redirect_to_unsafe_host_blocked(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
         return FakeResponse(
             url="https://libgen.is/final.pdf",
@@ -152,8 +145,7 @@ def test_redirect_to_unsafe_host_blocked(monkeypatch):
             content_type="application/pdf",
         )
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver(base_url="https://example.test/doi/")
 
     result = resolver.resolve(_ctx())
@@ -164,7 +156,7 @@ def test_redirect_to_unsafe_host_blocked(monkeypatch):
 
 # ── Defaults to doi.org ────────────────────────────────────────────────
 
-def test_defaults_to_doi_org_without_base_or_template(monkeypatch):
+def test_defaults_to_doi_org_without_base_or_template(monkeypatch, install_pdf_transport_get):
     seen_url = {}
 
     def fake_get(url, **kwargs):
@@ -172,8 +164,7 @@ def test_defaults_to_doi_org_without_base_or_template(monkeypatch):
         return FakeResponse(url=url, content=b"%PDF default",
                             content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver()
 
     result = resolver.resolve(_ctx())
@@ -189,15 +180,14 @@ def test_defaults_to_doi_org_without_base_or_template(monkeypatch):
     ("https://e.test/fetch?doi={doi_query}",
      "https://e.test/fetch?doi=10.1000%2Ftest"),
 ])
-def test_url_template_doi_placeholders(monkeypatch, template, expected_url):
+def test_url_template_doi_placeholders(monkeypatch, install_pdf_transport_get, template, expected_url):
     seen_url = {}
 
     def fake_get(url, **kwargs):
         seen_url["url"] = url
         return FakeResponse(url=url, content=b"%PDF", content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.header_based_resolver.requests.get",
-                        fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver(url_template=template)
 
     result = resolver.resolve(_ctx())

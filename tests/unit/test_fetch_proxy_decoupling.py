@@ -9,11 +9,13 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 TDM_PATH = ROOT / "src" / "fetch" / "resolvers" / "tdm_resolvers.py"
 
 
-def test_tdm_resolvers_use_shared_proxy():
+def test_tdm_resolvers_use_pdf_transport_not_metadata_proxy():
     """TDM resolver 必须从共享 proxy 模块获取代理，而非各自重复解析。"""
     src = TDM_PATH.read_text(encoding="utf-8")
-    assert "from src.fetch.proxy import get_fetch_proxies" in src
-    assert "get_fetch_proxies()" in src
+    assert "from src.fetch.pdf_transport import fetch_url_direct_then_proxy" in src
+    assert "fetch_url_direct_then_proxy(" in src
+    assert "from src.fetch.proxy import get_fetch_proxies" not in src
+    assert "get_fetch_proxies()" not in src
     # 不应残留对已删除 Sci-Hub 模块代理函数的直接调用
     assert "_get_proxies()" not in src
 

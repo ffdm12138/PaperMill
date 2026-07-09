@@ -87,6 +87,16 @@ conda run -n mineru python scripts/agent_acceptance.py --full
 `--full` runs full `pytest -q --durations=30` before packing. `--no-pack` is a
 debug-only shortcut; it is not valid final acceptance for ordinary agent work.
 
+For unpacked audit snapshots that do not contain `.git`, use:
+
+```powershell
+conda run -n mineru python scripts/agent_acceptance.py --full --snapshot-mode
+```
+
+`--snapshot-mode` skips git-index hygiene only when `.git` is absent, then still
+runs compile/tests, root hygiene, `pack_repo.py`, and ZIP manifest/content
+verification.
+
 For diagnostic output when a group of tests fails, run:
 
 ```powershell
@@ -147,6 +157,12 @@ These regressions guard the strict formal-library contracts (see
   `test_doctor_pytest_timeout_is_blocking`: doctor pytest step runs with
   `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` + 300s timeout and converts
   `TimeoutExpired` into a blocking result (`returncode=124`).
+- `test_runner_timeout_kills_descendant` / `test_pid_state_*`: acceptance runner
+  kills the full process tree on timeout (POSIX `killpg` / Windows `taskkill /T /F`),
+  cleanup runs in `finally` (not just `except TimeoutExpired`) so `BaseException`
+  (SIGTERM/KeyboardInterrupt) also triggers cleanup. `_pid_state()` distinguishes
+  zombie (`Z` state in `/proc/<pid>/stat`) from alive — `PermissionError` means
+  alive, not dead.
 
 ## Updating Tests
 

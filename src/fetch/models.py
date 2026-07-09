@@ -44,6 +44,10 @@ class FetchResult:
     has_supplementary: bool | None = None
     # 逐 resolver 尝试记录：每个 dict 含 resolver/status/reason/pdf_url/landing_url
     attempts: list[dict[str, Any]] = field(default_factory=list)
+    # Sanitized HTTP transport records. Internal TransportAttempt objects are
+    # serialized before they enter FetchResult; resolvers must not persist
+    # headers, cookies, proxy URLs, or credentials here.
+    transport_attempts: list[dict[str, Any]] = field(default_factory=list)
     # Legacy compatibility marker for resolvers that were genuinely not
     # configured.  Current fetch_pdf_for_paper_raw.py --resolver auto does
     # NOT use this for header_based because header_based defaults to

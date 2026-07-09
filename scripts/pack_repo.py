@@ -22,6 +22,7 @@
     python scripts/pack_repo.py --name v2 --profile audit
 """
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -158,36 +159,81 @@ SECRET_PLACEHOLDERS = {
     "test-openalex-key",
 }
 
-SECRET_PATTERNS = [
-    ("openalex_email_assignment", re.compile(r"OPENALEX_EMAIL\s*=\s*[\"']([^\"']+@[^\"']+)[\"']", re.IGNORECASE)),
-    ("openalex_api_key_assignment", re.compile(r"OPENALEX_API_KEY\s*=\s*[\"']([A-Za-z0-9_\-]{10,})[\"']", re.IGNORECASE)),
+
+@dataclass(frozen=True)
+class SecretFinding:
+    """A single secret-like literal found during snapshot scanning.
+
+    Only metadata about the finding is stored — the matched value is never
+    kept in this object, logged, or printed.
+    """
+    rule: str
+    path: str
+    line: int
+
+
+SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "openalex_email_assignment",
+        re.compile(
+            r"^[ \t]*(?:export[ \t]+|\$env:)?"
+            r"OPENALEX_EMAIL[ \t]*=[ \t]*"
+            r"[\"']?([^\"'\s#]+@[^\"'\s#]+)[\"']?",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    (
+        "openalex_api_key_assignment",
+        re.compile(
+            r"^[ \t]*(?:export[ \t]+|\$env:)?"
+            r"OPENALEX_API_KEY[ \t]*=[ \t]*"
+            r"[\"']?([A-Za-z0-9._\-]{10,})[\"']?",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
     ("semantic_scholar_api_key_assignment", re.compile(r"SEMANTIC_SCHOLAR_API_KEY\s*=\s*[\"']([A-Za-z0-9_\-]{10,})[\"']", re.IGNORECASE)),
     ("authorization_bearer_literal", re.compile(r"Authorization\s*:\s*Bearer\s+([A-Za-z0-9._\-]{16,})", re.IGNORECASE)),
     ("bearer_literal", re.compile(r"Bearer\s+([A-Za-z0-9._\-]{24,})", re.IGNORECASE)),
     ("x_api_key_literal", re.compile(r"x-api-key\s*[:=]\s*[\"']?([A-Za-z0-9._\-]{16,})[\"']?", re.IGNORECASE)),
+    ("wiley_tdm_token_literal", re.compile(r"Wiley-TDM-Client-Token\s*[:=]\s*[\"']?([A-Za-z0-9._\-]{12,})[\"']?", re.IGNORECASE)),
+    ("elsevier_api_key_literal", re.compile(r"X-ELS-APIKey\s*[:=]\s*[\"']?([A-Za-z0-9._\-]{12,})[\"']?", re.IGNORECASE)),
     ("generic_api_key_assignment", re.compile(r"\bapi_key\s*=\s*[\"']([A-Za-z0-9._\-]{16,})[\"']", re.IGNORECASE)),
 ]
 
 
-def scan_text_for_secrets(text: str, rel_path: str = "") -> list[dict[str, str]]:
-    """Return literal secret findings while allowing bare env-var names."""
-    findings: list[dict[str, str]] = []
+def scan_text_for_secrets(text: str, rel_path: str = "") -> list[SecretFinding]:
+    """Return literal secret findings while allowing bare env-var names.
+
+    The matched value is never stored in the finding — only the rule name,
+    file path, and 1-indexed line number are returned.
+    """
+    findings: list[SecretFinding] = []
     for name, pattern in SECRET_PATTERNS:
         for match in pattern.finditer(text):
             value = match.group(1) if match.groups() else match.group(0)
             if value in SECRET_PLACEHOLDERS or value.startswith("your_"):
                 continue
-            findings.append({
-                "rule": name,
-                "path": rel_path,
-                "match": match.group(0)[:120],
-            })
+            line = text[:match.start()].count("\n") + 1
+            findings.append(SecretFinding(
+                rule=name,
+                path=rel_path,
+                line=line,
+            ))
     return findings
 
 
-def scan_files_for_secrets(files: list[str]) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
+def scan_files_for_secrets(files: list[str]) -> list[SecretFinding]:
+    """Scan files for hardcoded credential-like patterns.
+
+    Test files (``tests/``) are excluded — they legitimately contain fake
+    credentials for unit-test purposes. The dedicated hygiene test
+    ``test_no_hardcoded_openalex_secrets.py`` separately covers non-test
+    tracked files.
+    """
+    findings: list[SecretFinding] = []
     for rel in files:
+        if rel.startswith("tests/"):
+            continue
         path = PROJECT_ROOT / rel
         if not _lightweight_suffix_match(rel, path):
             continue
@@ -279,6 +325,8 @@ def _should_pack(rel_path: str, *, require_lightweight: bool = False) -> bool:
     _ROOT_SCRATCH = {"=", "keep_rank"}
     if rel in _ROOT_SCRATCH:
         return False
+    if rel == "snapshot_manifest.json":
+        return False
     # 4. Skip local backup / temporary artifacts.
     if _is_local_backup_artifact(path):
         return False
@@ -311,10 +359,15 @@ def _should_pack(rel_path: str, *, require_lightweight: bool = False) -> bool:
         "data/import_work",
         "data/discovery/doi_candidates", "data/discovery/pdf_fetch_logs",
         "data/discovery/fetch_logs", "data/discovery/queries",
+        "data/discovery/reports", "data/discovery/keyword_notebooks",
+        "data/discovery/pending_pages", "data/discovery/locks",
+        "data/discovery/exports", "data/discovery/logs",
     }
+    # Committable example files that live inside otherwise-skipped runtime dirs.
+    _RUNTIME_DIR_KEEPERS = {".gitkeep", "keywords.example.txt"}
     for skip_dir in _DATA_SKIP_DIRS:
         if (rel.startswith(skip_dir + "/") or rel == skip_dir) \
-                and path.name != ".gitkeep":
+                and path.name not in _RUNTIME_DIR_KEEPERS:
             return False
 
     # 11. Skip data/locks/*.lock files.
@@ -527,11 +580,11 @@ def _verify_snapshot_sampling(zip_path: Path, sampling: dict) -> list[str]:
     errors: list[str] = []
     raw_ws: set[str] = set()
     papers_ws: set[str] = set()
-    has_manifest = False
+    manifest_count = 0
     with zipfile.ZipFile(zip_path, "r") as zf:
         for name in zf.namelist():
             if name == "snapshot_manifest.json":
-                has_manifest = True
+                manifest_count += 1
                 continue
             ws = _resolve_workspace_prefix(name)
             if ws is None:
@@ -549,7 +602,9 @@ def _verify_snapshot_sampling(zip_path: Path, sampling: dict) -> list[str]:
         errors.append(
             f"snapshot contains {len(papers_ws)} papers workspaces (limit: {limit})"
         )
-    if not has_manifest:
+    if manifest_count != 1:
+        errors.append(f"snapshot_manifest.json count is {manifest_count}, expected 1")
+    if not manifest_count:
         errors.append("snapshot_manifest.json missing from zip")
     return errors
 
@@ -604,7 +659,7 @@ def main():
     if secret_findings:
         print("[ERROR] Secret-like literal(s) found; refusing to pack")
         for finding in secret_findings[:20]:
-            print(f"  {finding['path']}: {finding['rule']}: {finding['match']}")
+            print(f"  {finding.path}: {finding.rule} (line {finding.line})")
         if len(secret_findings) > 20:
             print(f"  ... {len(secret_findings) - 20} more")
         sys.exit(1)

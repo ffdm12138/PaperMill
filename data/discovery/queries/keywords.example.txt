@@ -1,0 +1,18 @@
+# Example keyword list for scripts/discover_papers_concurrent.py --queries-file
+# One query per line. Blank lines and lines starting with '#' are ignored.
+# Each keyword gets its own progress notebook under
+# data/discovery/keyword_notebooks/ (runtime-only, not committed).
+#
+# Replace these with your real research keywords. Chinese and English
+# keywords are both supported; case and surrounding whitespace are
+# folded for uniqueness but CJK text is preserved.
+
+# 中文关键词
+大气边界层
+风沙动力学
+风雪物理学
+
+# English keywords
+atmospheric boundary layer
+aeolian dynamics
+blowing snow dynamics

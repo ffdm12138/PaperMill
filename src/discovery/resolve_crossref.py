@@ -1,14 +1,49 @@
 """Crossref DOI and BibTeX verification."""
+from __future__ import annotations
+
+from contextlib import nullcontext
+from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import Any, Literal
 
 import requests
 from loguru import logger
 
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.discovery.provider_models import DiscoveryPage, classify_http_error, failed_page
 from src.fetch.proxy import get_fetch_proxies
 
 
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
+CROSSREF_PROVIDER = "crossref"
+
+
+@dataclass(frozen=True)
+class ResolvedDoiMatch:
+    doi: str
+    provider: str
+    confidence: float
+    matched_title: str
+    raw_record: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "doi": normalize_doi(self.doi),
+            "provider": self.provider,
+            "confidence": self.confidence,
+            "matched_title": self.matched_title,
+            "raw_record": self.raw_record,
+        }
+
+
+def _safe_crossref_error(exc: Exception) -> str:
+    """Sanitize a Crossref error for reports (no URL params / keys)."""
+    msg = type(exc).__name__
+    detail = str(exc)
+    # Truncate and strip anything that looks like a URL query string.
+    if "?" in detail:
+        detail = detail.split("?", 1)[0]
+    return f"{msg}: {detail[:200]}" if detail else msg
 
 
 def _year(message: dict) -> int | None:
@@ -101,6 +136,19 @@ def resolve_doi_by_title(title: str, year: int | None = None, domain_id: str | N
     return None
 
 
+def resolve_doi_match_by_title(title: str, year: int | None = None, domain_id: str | None = None) -> ResolvedDoiMatch | None:
+    best = resolve_doi_by_title(title, year=year, domain_id=domain_id)
+    if best is None:
+        return None
+    return ResolvedDoiMatch(
+        doi=best.doi,
+        provider=CROSSREF_PROVIDER,
+        confidence=float(best.confidence or 0.0),
+        matched_title=best.title,
+        raw_record=best.raw if isinstance(best.raw, dict) else {},
+    )
+
+
 def get_crossref_work_by_doi(doi: str) -> dict | None:
     """按 DOI 取 Crossref work 的 message dict，网络错误返回 None。"""
     doi = normalize_doi(doi)
@@ -132,3 +180,119 @@ def get_bibtex_by_doi(doi: str) -> str:
         logger.warning(f"Crossref BibTeX lookup failed for {doi!r}: {exc}")
         return ""
 
+
+# ── Cursor-paginated page (Refresh/Backfill lanes) ──────────────────
+
+
+def search_crossref_page(
+    query: str,
+    *,
+    original_keyword: str,
+    lane: Literal["refresh", "backfill"],
+    page_size: int,
+    cursor: str = "*",
+    sort: str | None = None,
+    order: str | None = None,
+    domain_id: str | None = None,
+    rate_limiter: Any | None = None,
+    limiter_lock: Any | None = None,
+) -> DiscoveryPage:
+    """Fetch one Crossref works page via deep-paging cursor.
+
+    Crossref cursor pagination: first request uses ``cursor="*"`` and
+    the response carries ``message.next-cursor`` for the next page. When
+    the returned item count is below ``page_size`` (or ``next-cursor``
+    is empty) the page is marked ``exhausted=True``.
+
+    On HTTP failure the page has ``status="failed"`` and
+    ``next_cursor=None`` so the backfill cursor is NOT advanced.
+    """
+    params: dict[str, str | int] = {
+        "query.bibliographic": query,
+        "rows": page_size,
+        "cursor": cursor,
+    }
+    if sort:
+        params["sort"] = sort
+    if order:
+        params["order"] = order
+
+    lock_ctx = limiter_lock if limiter_lock is not None else nullcontext()
+    try:
+        if rate_limiter is not None:
+            with lock_ctx:
+                rate_limiter.wait(CROSSREF_PROVIDER)
+        response = requests.get(
+            CROSSREF_WORKS_URL,
+            params=params,
+            timeout=20,
+            proxies=get_fetch_proxies(),
+        )
+        if rate_limiter is not None:
+            with lock_ctx:
+                rate_limiter.record_response(
+                    CROSSREF_PROVIDER,
+                    dict(response.headers),
+                    response.status_code,
+                )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        safe_error = _safe_crossref_error(exc)
+        logger.warning(
+            "Crossref page failed for {!r} (cursor={!r}): {}",
+            query, cursor, safe_error,
+        )
+        _error_type, failure_class, http_status, retry_after = classify_http_error(exc)
+        return failed_page(
+            provider=CROSSREF_PROVIDER,
+            original_keyword=original_keyword,
+            expanded_query=query,
+            lane=lane,
+            request_cursor=cursor,
+            page_size=page_size,
+            error_type=_error_type,
+            safe_error=safe_error,
+            failure_class=failure_class,
+            http_status=http_status,
+            retry_after_seconds=retry_after,
+        )
+
+    message = data.get("message") or {}
+    items = message.get("items") or []
+    next_cursor = message.get("next-cursor")
+    total_results = message.get("total-results")
+    if next_cursor and str(next_cursor) == str(cursor):
+        return failed_page(
+            provider=CROSSREF_PROVIDER,
+            original_keyword=original_keyword,
+            expanded_query=query,
+            lane=lane,
+            request_cursor=cursor,
+            page_size=page_size,
+            error_type="cursor_not_advancing",
+            safe_error="Crossref next-cursor did not advance",
+            failure_class="terminal",
+        )
+    candidates = [
+        parse_crossref_item(item, query=query, domain_id=domain_id)
+        for item in items
+    ]
+    # Crossref signals exhaustion by omitting next-cursor (or returning
+    # an empty page). A short page with a next-cursor is NOT exhaustion —
+    # Crossref can return fewer items than requested mid-stream.
+    exhausted = (not next_cursor) or len(items) == 0
+    return DiscoveryPage(
+        provider=CROSSREF_PROVIDER,
+        original_keyword=original_keyword,
+        expanded_query=query,
+        lane=lane,
+        candidates=candidates,
+        request_cursor=cursor,
+        next_cursor=next_cursor if next_cursor else None,
+        page_size=page_size,
+        returned_count=len(candidates),
+        total_results=total_results,
+        status="success",
+        exhausted=exhausted,
+    )

@@ -14,7 +14,7 @@ from config.settings import MINERU_FETCH_MAX_BYTES
 from src.discovery.models import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 from src.fetch.models import FetchResult
-from src.fetch.proxy import get_fetch_proxies
+from src.fetch.pdf_transport import TRANSPORT_POLICY, fetch_url_direct_then_proxy, sanitize_url_fields
 from src.fetch.resolver_registry import build_resolvers
 from src.fetch.resolvers.base import ResolveContext
 from src.fetch.resolvers.url_safety import is_unsafe_url, validate_pdf_bytes
@@ -24,7 +24,7 @@ _build_resolvers = build_resolvers
 
 def _make_attempt(resolver_name: str, status: str, result, *, reason: str = "") -> dict[str, Any]:
     """Build a rich per-attempt record with stable keys."""
-    return {
+    return sanitize_url_fields({
         "resolver": resolver_name,
         "status": status,
         "candidate_url": getattr(result, "candidate_url", "") or "",
@@ -34,7 +34,7 @@ def _make_attempt(resolver_name: str, status: str, result, *, reason: str = "") 
         "reason": reason or result.error or "",
         "pdf_url": result.pdf_url or "",
         "landing_url": result.landing_url or "",
-    }
+    })
 
 
 def safe_doi_slug(doi: str) -> str:
@@ -100,7 +100,13 @@ def _copy_pdf(src: Path, target: Path) -> tuple[Path, str]:
         tmp.unlink(missing_ok=True)
 
 
-def _download_pdf(url: str, target: Path, *, timeout: int = 60) -> tuple[Path, str]:
+def _download_pdf(
+    url: str,
+    target: Path,
+    *,
+    timeout: int = 60,
+    transport_attempts: list[dict[str, Any]] | None = None,
+) -> tuple[Path, str]:
     # 下载前必须检查 unsafe host（sci-hub/libgen/...），直接拒绝。
     if is_unsafe_url(url):
         raise ValueError(f"unsafe source blocked: {url}")
@@ -109,8 +115,19 @@ def _download_pdf(url: str, target: Path, *, timeout: int = 60) -> tuple[Path, s
     digest = hashlib.sha256()
     total = 0
     try:
-        with requests.get(url, stream=True, timeout=timeout, proxies=get_fetch_proxies()) as response:
-            response.raise_for_status()
+        with fetch_url_direct_then_proxy(
+            url,
+            expected_content="pdf",
+            stream=True,
+            timeout=timeout,
+        ) as transport:
+            if transport_attempts is not None:
+                transport_attempts.extend(transport.safe_attempts)
+            response = transport.response
+            if response is None:
+                raise ValueError(transport.error or "PDF transport failed")
+            if response.status_code >= 400:
+                raise ValueError(f"HTTP {response.status_code}")
             # redirect 后必须检查最终 URL：allow_redirects=True 可能跳到 unsafe host
             final_url = response.url or url
             if is_unsafe_url(final_url):
@@ -189,6 +206,7 @@ def fetch_pdf(
     chain: list[str] = []
     last_error = ""
     attempts: list[dict[str, Any]] = []
+    transport_attempts: list[dict[str, Any]] = []
     # Legacy not_configured_resolvers from policy (generic mechanism).  The
     # current --resolver auto does NOT use this for header_based — it is
     # always in the active chain, defaulting to doi.org.
@@ -200,6 +218,8 @@ def fetch_pdf(
         result.resolver_chain = list(chain)
         result.resolver = resolver.name
         result.access_mode = policy.mode.value
+        if result.transport_attempts:
+            transport_attempts.extend(sanitize_url_fields(result.transport_attempts))
         if not result.success:
             last_error = result.error or last_error
             attempts.append(_make_attempt(resolver.name, "failed", result, reason=result.error or ""))
@@ -207,11 +227,13 @@ def fetch_pdf(
         if result.requires_user_action:
             result.output_path = ""
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="requires_user_action")]
+            result.transport_attempts = sanitize_url_fields(list(transport_attempts))
             result.not_configured_resolvers = list(not_configured)
             return result
         if dry_run:
             result.output_path = ""
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="dry_run")]
+            result.transport_attempts = sanitize_url_fields(list(transport_attempts))
             result.not_configured_resolvers = list(not_configured)
             return result
         try:
@@ -227,7 +249,21 @@ def fetch_pdf(
                     last_error = f"unsafe source blocked: {result.pdf_url}"
                     attempts.append(_make_attempt(resolver.name, "failed", result, reason=last_error))
                     continue
-                pdf_path, sha = _download_pdf(result.pdf_url, target, timeout=policy.timeout_seconds)
+                try:
+                    pdf_path, sha = _download_pdf(
+                        result.pdf_url,
+                        target,
+                        timeout=policy.timeout_seconds,
+                        transport_attempts=transport_attempts,
+                    )
+                except TypeError as exc:
+                    if "transport_attempts" not in str(exc):
+                        raise
+                    pdf_path, sha = _download_pdf(
+                        result.pdf_url,
+                        target,
+                        timeout=policy.timeout_seconds,
+                    )
             elif result.output_path and Path(result.output_path).exists():
                 pdf_path, sha = _copy_pdf(Path(result.output_path), target)
             else:
@@ -237,6 +273,7 @@ def fetch_pdf(
             result.output_path = pdf_path.as_posix()
             result.sha256 = sha
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result)]
+            result.transport_attempts = sanitize_url_fields(list(transport_attempts))
             result.not_configured_resolvers = list(not_configured)
             return result
         except Exception as exc:
@@ -249,6 +286,7 @@ def fetch_pdf(
                 content, landing_error = try_resolve_landing_to_pdf(
                     result.pdf_url,
                     timeout_seconds=policy.timeout_seconds,
+                    transport_attempts=transport_attempts,
                 )
                 if content is not None:
                     try:
@@ -257,6 +295,7 @@ def fetch_pdf(
                         result.sha256 = sha
                         result.is_direct_pdf = False
                         result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="resolved from landing page")]
+                        result.transport_attempts = sanitize_url_fields(list(transport_attempts))
                         result.not_configured_resolvers = list(not_configured)
                         return result
                     except Exception as landing_exc:
@@ -276,5 +315,6 @@ def fetch_pdf(
         resolver_chain=chain,
         access_mode=policy.mode.value,
         attempts=attempts,
+        transport_attempts=sanitize_url_fields(list(transport_attempts)),
         not_configured_resolvers=not_configured,
     )

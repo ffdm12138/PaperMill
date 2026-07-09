@@ -1,12 +1,14 @@
 """OpenAlex DOI lookup for OA PDF locations."""
-import os
-
 import requests
 from loguru import logger
 
 from src.discovery.models import normalize_doi
 from src.fetch.models import FetchResult
 from src.fetch.proxy import get_fetch_proxies
+from src.services.openalex_credentials import (
+    load_openalex_credentials,
+    safe_request_error_summary,
+)
 
 
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -15,20 +17,20 @@ OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 def resolve_openalex_pdf(doi: str) -> FetchResult:
     normalized = normalize_doi(doi)
     params: dict[str, str] = {"filter": f"doi:https://doi.org/{normalized}", "per-page": "1"}
-    email = os.environ.get("OPENALEX_EMAIL", "").strip()
-    if email:
-        params["mailto"] = email
-    headers = {}
-    api_key = os.environ.get("OPENALEX_API_KEY", "").strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers: dict[str, str] = {}
+    credentials = load_openalex_credentials()
+    if credentials.email:
+        params["mailto"] = credentials.email
+    if credentials.api_key:
+        headers["Authorization"] = f"Bearer {credentials.api_key}"
     try:
         response = requests.get(OPENALEX_WORKS_URL, params=params, headers=headers, timeout=20, proxies=get_fetch_proxies())
         response.raise_for_status()
         data = response.json()
     except Exception as exc:
-        logger.warning(f"OpenAlex DOI lookup failed for {doi!r}: {exc}")
-        return FetchResult(doi=doi, source="openalex", error=str(exc))
+        safe_error = safe_request_error_summary(exc)
+        logger.warning("OpenAlex DOI lookup failed for {!r}: {}", doi, safe_error)
+        return FetchResult(doi=doi, source="openalex", error=safe_error)
 
     results = data.get("results") or []
     if not results:

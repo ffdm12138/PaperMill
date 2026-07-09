@@ -21,5 +21,6 @@ filelock>=3.12.0
 
 # 测试
 pytest>=8.0.0
+jsonschema>=4.0.0
 
 # 注：重构后已移除 chromadb / sentence-transformers（不再做向量检索）

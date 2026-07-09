@@ -69,6 +69,22 @@ normal and must not be deleted.
 - [docs/SCRIPT_USAGE.md](docs/SCRIPT_USAGE.md) — 所有 scripts/*.py 的用途、风险分类和推荐命令索引
 - [docs/audits/real_ingest_acceptance.md](docs/audits/real_ingest_acceptance.md) — 脱敏真实入库验收记录
 
+## License And Third-Party Boundary
+
+Original repository code is covered by the repository license. Dependencies,
+external tools, APIs/services, models, PDFs, converted Markdown, extracted
+images, metadata, BibTeX, and writing outputs keep their own licenses and terms.
+Do not describe the entire stack as MIT licensed.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). MinerU is recorded as the
+MinerU Open Source License, based on Apache-2.0 with additional terms.
+PyMuPDF/MuPDF is AGPL-or-commercial. FastAPI is MIT and Gradio is Apache-2.0.
+
+```bash
+conda run -n mineru python scripts/audit_third_party_licenses.py --strict
+conda run -n mineru python scripts/audit_source_provenance.py --strict
+```
+
 ## Quick validation
 
 全部使用 mineru conda 环境（推荐 `conda activate mineru` 或 `conda run -n mineru python ...`）：
@@ -238,6 +254,9 @@ Summary: convert first is allowed; commit requires metadata.
 - 网络/搜索 metadata 必须有合法 DOI 才能进入 `paper_raw`。网络路径 metadata 已带 DOI，先 `fetch_pdf_for_paper_raw.py` 取 PDF，再转换，无需 resolve 步骤。
   OpenAlex/CrossRef search metadata staged with a valid DOI is authoritative for this path:
   it writes `metadata_match.status = "matched"` and `.import_status.json status = "metadata_matched"`.
+- OpenAlex credentials (`OPENALEX_EMAIL`, `OPENALEX_API_KEY`) are env-only, loaded once per request
+  via `src.services.openalex_credentials.load_openalex_credentials()`. Missing → anonymous access.
+  Never read `os.environ` directly in consumers. Never log credential values.
 - `curate_paper_raw.py` 不调用大模型：`--dry-run` 写 curation prompt，`--apply` 应用 content-only catalog；
   metadata 空字段由 `resolve_paper_raw_metadata.py` / enrichment 补齐，不在 curate 阶段处理。详见
   [skills/paper_raw_catalog_curator/](skills/paper_raw_catalog_curator/)。

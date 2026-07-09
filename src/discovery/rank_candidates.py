@@ -60,11 +60,15 @@ def score_candidate(candidate: PaperCandidate, query: str = "") -> float:
     return max(candidate.confidence, min(score, 1.0))
 
 
-def dedupe_and_rank_candidates(
+def merge_and_dedupe_candidates(
     candidates: list[PaperCandidate],
-    query: str = "",
-    max_candidates: int = 50,
 ) -> list[PaperCandidate]:
+    """Merge duplicates by DOI (or title+year) WITHOUT ranking or truncation.
+
+    Use this when the caller needs to filter existing DOIs BEFORE applying
+    ``max_candidates`` (the dual-lane pipeline). ``dedupe_and_rank_candidates``
+    below combines merge + rank + truncate for backward compatibility.
+    """
     merged: dict[tuple[str, str], PaperCandidate] = {}
     for candidate in candidates:
         key = _candidate_key(candidate)
@@ -79,10 +83,29 @@ def dedupe_and_rank_candidates(
             candidate.raw = raw
             candidate.source = ",".join(sources)
             merged[key] = candidate
+    return list(merged.values())
 
-    ranked = []
-    for candidate in merged.values():
+
+def rank_candidates(
+    candidates: list[PaperCandidate],
+    query: str = "",
+) -> list[PaperCandidate]:
+    """Score and sort candidates (no truncation, no dedupe)."""
+    for candidate in candidates:
         candidate.confidence = score_candidate(candidate, query=query)
-        ranked.append(candidate)
-    ranked.sort(key=lambda c: (c.confidence, c.citation_count or 0, c.year or 0), reverse=True)
+    candidates.sort(
+        key=lambda c: (c.confidence, c.citation_count or 0, c.year or 0),
+        reverse=True,
+    )
+    return candidates
+
+
+def dedupe_and_rank_candidates(
+    candidates: list[PaperCandidate],
+    query: str = "",
+    max_candidates: int = 50,
+) -> list[PaperCandidate]:
+    """Merge + rank + truncate (single-shot legacy pipeline)."""
+    merged = merge_and_dedupe_candidates(candidates)
+    ranked = rank_candidates(merged, query=query)
     return ranked[:max_candidates]

@@ -38,6 +38,34 @@ def _install_static(monkeypatch, result: FetchResult):
     )
 
 
+class _TransportCtx:
+    def __init__(self, response=None, *, error: str = "", attempts=None):
+        self.response = response
+        self.error = error
+        self.safe_attempts = list(attempts or [])
+
+    def __enter__(self):
+        if self.response is not None and not hasattr(self.response, "status_code"):
+            self.response.status_code = 200
+        return self
+
+    def __exit__(self, *args):
+        close = getattr(self.response, "close", None)
+        if callable(close):
+            close()
+        return False
+
+
+def _patch_download_transport(monkeypatch, response=None, *, error: str = "", attempts=None, capture=None):
+    def _fake_transport(url, **kwargs):
+        if capture is not None:
+            capture["url"] = url
+            capture["kwargs"] = kwargs
+        return _TransportCtx(response, error=error, attempts=attempts)
+
+    monkeypatch.setattr(fetch_pipeline, "fetch_url_direct_then_proxy", _fake_transport)
+
+
 def test_content_used_when_raw_content_present(monkeypatch, tmp_path):
     download_calls = {"count": 0}
 
@@ -204,6 +232,50 @@ def test_failure_result_has_full_attempts(monkeypatch, tmp_path):
     assert out.attempts[1]["status"] == "failed"
 
 
+def test_transport_attempts_preserved_when_later_resolver_succeeds(monkeypatch, tmp_path):
+    class _FailResolver(PdfResolver):
+        name = "fail_with_transport"
+        access_modes = ("oa_only",)
+
+        def resolve(self, context):
+            return FetchResult(
+                doi=context.doi,
+                source=self.name,
+                resolver=self.name,
+                error="direct failed",
+                transport_attempts=[{"mode": "direct", "request_url": "https://a.test/fail.pdf"}],
+            )
+
+    class _SuccessResolver(PdfResolver):
+        name = "success_with_content"
+        access_modes = ("oa_only",)
+
+        def resolve(self, context):
+            return FetchResult(
+                doi=context.doi,
+                success=True,
+                source=self.name,
+                resolver=self.name,
+                raw={"content": b"%PDF-success"},
+                transport_attempts=[{"mode": "direct", "request_url": "https://b.test/ok.pdf"}],
+            )
+
+    monkeypatch.setattr(
+        fetch_pipeline,
+        "_build_resolvers",
+        lambda policy: [_FailResolver(), _SuccessResolver()],
+    )
+
+    out = fetch_pdf("10.1000/test", output_root=tmp_path)
+
+    assert out.success is True
+    assert [a["resolver"] for a in out.attempts] == ["fail_with_transport", "success_with_content"]
+    assert [a["request_url"] for a in out.transport_attempts] == [
+        "https://a.test/fail.pdf",
+        "https://b.test/ok.pdf",
+    ]
+
+
 def test_not_configured_resolvers_on_failure_when_not_configured(monkeypatch, tmp_path):
     """--resolver auto without header config: header_based is NOT executed, so
     attempts must NOT contain a header_based entry; instead the top-level
@@ -350,12 +422,8 @@ def test_download_pdf_blocks_unsafe_url_directly(monkeypatch, tmp_path):
         fetch_pipeline._download_pdf("https://libgen.is/book.pdf", target)
 
 
-def test_download_pdf_passes_proxies(monkeypatch, tmp_path):
-    """When FETCH_PROXY is set, _download_pdf must pass proxies to requests.get."""
-    import src.fetch.proxy as proxy_mod
-
-    monkeypatch.setattr(proxy_mod, "FETCH_PROXY", "http://127.0.0.1:7890", raising=False)
-
+def test_download_pdf_uses_pdf_transport(monkeypatch, tmp_path):
+    """_download_pdf uses the direct-first PDF transport helper."""
     captured = {}
 
     class _FakeResp:
@@ -374,15 +442,12 @@ def test_download_pdf_passes_proxies(monkeypatch, tmp_path):
         def iter_content(self, chunk_size=65536):
             yield b"%PDF-1.4 fake body"
 
-    def _fake_get(url, *, stream=False, timeout=60, proxies=None, **kw):
-        captured["proxies"] = proxies
-        return _FakeResp()
-
-    monkeypatch.setattr(fetch_pipeline.requests, "get", _fake_get)
+    _patch_download_transport(monkeypatch, _FakeResp(), capture=captured)
 
     target = tmp_path / "out.pdf"
     fetch_pipeline._download_pdf("http://example.test/paper.pdf", target)
-    assert captured["proxies"] == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+    assert captured["kwargs"]["expected_content"] == "pdf"
+    assert captured["kwargs"]["stream"] is True
 
 
 def test_oa_helper_passes_proxies(monkeypatch):
@@ -391,6 +456,13 @@ def test_oa_helper_passes_proxies(monkeypatch):
     import src.fetch.proxy as proxy_mod
 
     monkeypatch.setattr(proxy_mod, "FETCH_PROXY", "http://127.0.0.1:7890", raising=False)
+
+    # Isolate from real system env vars
+    from src.services.openalex_credentials import OpenAlexCredentials
+    monkeypatch.setattr(
+        oa_mod, "load_openalex_credentials",
+        lambda *a, **k: OpenAlexCredentials(email=None, api_key=None),
+    )
 
     captured = {}
 
@@ -480,7 +552,7 @@ def test_download_pdf_blocks_unsafe_final_url_after_redirect(monkeypatch, tmp_pa
         def iter_content(self, chunk_size=65536):
             yield b"%PDF-1.4 should not be written"
 
-    monkeypatch.setattr(fetch_pipeline.requests, "get", lambda *a, **kw: _RedirectedResponse())
+    _patch_download_transport(monkeypatch, _RedirectedResponse())
 
     with pytest.raises(ValueError, match="unsafe final URL blocked"):
         fetch_pipeline._download_pdf("https://example.com/start", target)
@@ -508,7 +580,7 @@ def test_download_pdf_rejects_html_body_with_pdf_content_type(monkeypatch, tmp_p
         def iter_content(self, chunk_size=65536):
             yield b"<html><body>not a pdf</body></html>"
 
-    monkeypatch.setattr(fetch_pipeline.requests, "get", lambda *a, **kw: _HtmlResponse())
+    _patch_download_transport(monkeypatch, _HtmlResponse())
 
     with pytest.raises(ValueError, match="not a valid PDF"):
         fetch_pipeline._download_pdf("https://example.test/paper.pdf", target)
@@ -535,7 +607,7 @@ def test_download_pdf_rejects_non_pdf_body_with_pdf_url_suffix(monkeypatch, tmp_
         def iter_content(self, chunk_size=65536):
             yield b"PK\x03\x04 zip archive not a pdf"
 
-    monkeypatch.setattr(fetch_pipeline.requests, "get", lambda *a, **kw: _FakeResponse())
+    _patch_download_transport(monkeypatch, _FakeResponse())
 
     with pytest.raises(ValueError, match="not a valid PDF"):
         fetch_pipeline._download_pdf("https://example.test/paper.pdf", target)
@@ -563,7 +635,7 @@ def test_download_pdf_writes_valid_pdf_body(monkeypatch, tmp_path):
         def iter_content(self, chunk_size=65536):
             yield body
 
-    monkeypatch.setattr(fetch_pipeline.requests, "get", lambda *a, **kw: _ValidResponse())
+    _patch_download_transport(monkeypatch, _ValidResponse())
 
     path, sha = fetch_pipeline._download_pdf("https://example.test/paper.pdf", target)
     assert path == target
@@ -591,7 +663,7 @@ def test_download_pdf_rejects_empty_response(monkeypatch, tmp_path):
             # no chunks at all
             yield from ()
 
-    monkeypatch.setattr(fetch_pipeline.requests, "get", lambda *a, **kw: _EmptyResponse())
+    _patch_download_transport(monkeypatch, _EmptyResponse())
 
     target = tmp_path / "out.pdf"
     with pytest.raises(ValueError, match="empty PDF response"):
@@ -620,7 +692,7 @@ def test_download_pdf_accepts_split_pdf_magic(monkeypatch, tmp_path):
             yield b"%P"
             yield b"DF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF"
 
-    monkeypatch.setattr(fetch_pipeline.requests, "get", lambda *a, **kw: _SplitResponse())
+    _patch_download_transport(monkeypatch, _SplitResponse())
 
     target = tmp_path / "out.pdf"
     path, sha = fetch_pipeline._download_pdf("https://example.test/paper.pdf", target)
@@ -649,7 +721,7 @@ def test_download_pdf_rejects_split_non_pdf_magic(monkeypatch, tmp_path):
             yield b"<h"
             yield b"tml><body>not pdf</body></html>"
 
-    monkeypatch.setattr(fetch_pipeline.requests, "get", lambda *a, **kw: _SplitNonPdf())
+    _patch_download_transport(monkeypatch, _SplitNonPdf())
 
     target = tmp_path / "out.pdf"
     with pytest.raises(ValueError, match="not a valid PDF"):
@@ -690,3 +762,158 @@ def test_copy_pdf_copies_valid_pdf(monkeypatch, tmp_path):
     assert path == target
     assert target.read_bytes() == body
     assert len(sha) == 64
+
+
+# ── Fetch OpenAlex credential tests ─────────────────────
+
+def test_fetch_openalex_uses_centralized_credentials(monkeypatch):
+    """With credentials set, resolve_openalex_pdf must pass them as params/headers."""
+    import src.fetch.fetch_openalex as oa_mod
+    from src.services.openalex_credentials import OpenAlexCredentials
+
+    monkeypatch.setattr(
+        oa_mod, "load_openalex_credentials",
+        lambda *a, **k: OpenAlexCredentials(email="fetch@test.org", api_key="fetch-test-key-abc"),
+    )
+
+    captured = {}
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": []}
+
+    def _fake_get(url, *, params=None, headers=None, timeout=20, proxies=None, **kw):
+        captured["params"] = params
+        captured["headers"] = headers
+        return _FakeResp()
+
+    monkeypatch.setattr(oa_mod.requests, "get", _fake_get)
+
+    oa_mod.resolve_openalex_pdf("10.1000/test")
+    assert captured["params"].get("mailto") == "fetch@test.org"
+    assert captured["headers"].get("Authorization") == "Bearer fetch-test-key-abc"
+
+
+def test_fetch_openalex_without_credentials_is_anonymous(monkeypatch):
+    """Without credentials, no mailto/Authorization must be sent."""
+    import src.fetch.fetch_openalex as oa_mod
+    from src.services.openalex_credentials import OpenAlexCredentials
+
+    monkeypatch.setattr(
+        oa_mod, "load_openalex_credentials",
+        lambda *a, **k: OpenAlexCredentials(),
+    )
+
+    captured = {}
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": []}
+
+    def _fake_get(url, *, params=None, headers=None, timeout=20, proxies=None, **kw):
+        captured["params"] = params
+        captured["headers"] = headers
+        return _FakeResp()
+
+    monkeypatch.setattr(oa_mod.requests, "get", _fake_get)
+
+    oa_mod.resolve_openalex_pdf("10.1000/test")
+    assert "mailto" not in captured["params"]
+    assert "Authorization" not in captured["headers"]
+
+
+def test_fetch_openalex_loads_credentials_once(monkeypatch):
+    """load_openalex_credentials must be called exactly once per resolve."""
+    import src.fetch.fetch_openalex as oa_mod
+    from src.services.openalex_credentials import OpenAlexCredentials
+
+    call_count = 0
+
+    def counting_loader(*a, **k):
+        nonlocal call_count
+        call_count += 1
+        return OpenAlexCredentials()
+
+    monkeypatch.setattr(oa_mod, "load_openalex_credentials", counting_loader)
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": []}
+
+    monkeypatch.setattr(oa_mod.requests, "get", lambda *a, **kw: _FakeResp())
+
+    oa_mod.resolve_openalex_pdf("10.1000/test")
+    assert call_count == 1, f"Expected 1 call, got {call_count}"
+
+
+def test_fetch_openalex_does_not_persist_credentials(monkeypatch):
+    """FetchResult must not contain credential values in any field."""
+    import src.fetch.fetch_openalex as oa_mod
+    from src.services.openalex_credentials import OpenAlexCredentials
+
+    monkeypatch.setattr(
+        oa_mod, "load_openalex_credentials",
+        lambda *a, **k: OpenAlexCredentials(email="no-leak@test.org", api_key="no-leak-key-abc"),
+    )
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": [{"open_access": {"is_oa": True, "oa_url": "https://example.org/paper.pdf"}}]}
+
+    monkeypatch.setattr(oa_mod.requests, "get", lambda *a, **kw: _FakeResp())
+
+    result = oa_mod.resolve_openalex_pdf("10.1000/test")
+    result_str = str(result)
+    assert "no-leak@test.org" not in result_str
+    assert "no-leak-key-abc" not in result_str
+    assert "no-leak" not in result_str
+
+
+def test_fetch_openalex_error_does_not_leak_credentials(monkeypatch):
+    """Exception messages containing credentials must not leak into log or FetchResult.error."""
+    import src.fetch.fetch_openalex as oa_mod
+    from src.services.openalex_credentials import OpenAlexCredentials
+
+    monkeypatch.setattr(
+        oa_mod, "load_openalex_credentials",
+        lambda *a, **k: OpenAlexCredentials(email="err-leak@test.org", api_key="err-leak-key-99999"),
+    )
+
+    class LeakyException(Exception):
+        def __init__(self):
+            super().__init__(
+                "GET https://api.openalex.org/works?filter=doi:10.1000/test&mailto=err-leak@test.org"
+            )
+
+    monkeypatch.setattr(
+        oa_mod.requests, "get",
+        lambda *a, **kw: (_ for _ in ()).throw(LeakyException()),
+    )
+
+    # Capture logs
+    log_lines = []
+    monkeypatch.setattr(oa_mod.logger, "warning", lambda msg, *args: log_lines.append(msg.format(*args) if args else msg))
+
+    result = oa_mod.resolve_openalex_pdf("10.1000/test")
+
+    # FetchResult.error must not contain credentials
+    assert result.error is not None
+    assert "err-leak@test.org" not in result.error
+    assert "err-leak-key-99999" not in result.error
+
+    # Logs must not contain credentials
+    log_text = "\n".join(log_lines)
+    assert "err-leak@test.org" not in log_text, f"Email leaked into log: {log_text}"
+    assert "err-leak-key-99999" not in log_text, f"API key leaked into log: {log_text}"

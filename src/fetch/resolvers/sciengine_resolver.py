@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-import requests
-
 from src.fetch.models import FetchResult
-from src.fetch.proxy import get_fetch_proxies
+from src.fetch.pdf_transport import fetch_url_direct_then_proxy
 from src.fetch.resolvers.base import PdfResolver, ResolveContext
 from src.fetch.resolvers.url_safety import (
     is_pdf_response,
@@ -72,6 +70,7 @@ class SciEngineResolver(PdfResolver):
         headers = {"User-Agent": FIXED_USER_AGENT}
 
         last_error = ""
+        transport_attempts: list[dict[str, object]] = []
         for template in _SCIENGINE_CANDIDATES:
             candidate_url = template.format(doi_path=doi_path)
 
@@ -80,61 +79,65 @@ class SciEngineResolver(PdfResolver):
                 continue
 
             # Step 1: fetch the landing page
-            try:
-                response = requests.get(
-                    candidate_url,
-                    headers=headers,
-                    timeout=self.timeout,
-                    allow_redirects=True,
-                    proxies=get_fetch_proxies(),
-                    stream=True,
-                )
-                response.raise_for_status()
-            except Exception as exc:
-                last_error = str(exc)
-                continue
-
-            landing_url = response.url or candidate_url
-            sc = response.status_code
-            ct = response.headers.get("content-type", "")
-            if is_unsafe_url(landing_url):
-                last_error = f"unsafe final URL: {landing_url}"
-                continue
-
-            # Step 2: if the response is already a PDF, we're done
-            if is_pdf_response(response):
-                try:
-                    content = limit_content(response)
-                except ValueError as exc:
-                    last_error = str(exc)
-                    continue
-                error = validate_pdf_bytes(content)
-                if error:
-                    last_error = error
-                    continue
-                return self._success(doi, content, landing_url, landing_url, direct=True,
-                                         candidate_url=candidate_url, status_code=sc, content_type=ct)
-
-            # Step 3: HTML — use multi-level landing page resolution
-            # (handles SciCloud fileNotLogin/view → viewer → PDF chain)
-            content, final_pdf_url, error = resolve_landing_page_to_pdf(
-                landing_url,
-                timeout_seconds=self.timeout,
+            with fetch_url_direct_then_proxy(
+                candidate_url,
+                expected_content="html",
                 headers=headers,
-                max_depth=3,
-                include_known_viewers=True,
-            )
-            if content is not None:
-                return self._success(doi, content, final_pdf_url, landing_url, direct=False,
-                                         candidate_url=candidate_url, status_code=sc, content_type=ct)
+                timeout=self.timeout,
+                allow_redirects=True,
+                stream=True,
+            ) as transport:
+                transport_attempts.extend(transport.safe_attempts)
+                response = transport.response
+                if response is None:
+                    last_error = transport.error or "transport failed"
+                    continue
+                if response.status_code >= 400:
+                    last_error = f"HTTP {response.status_code}"
+                    continue
+                landing_url = response.url or candidate_url
+                sc = response.status_code
+                ct = response.headers.get("content-type", "")
+                if is_unsafe_url(landing_url):
+                    last_error = f"unsafe final URL: {landing_url}"
+                    continue
 
-            last_error = error or "landing page did not yield a PDF"
+                if is_pdf_response(response):
+                    try:
+                        content = limit_content(response)
+                    except ValueError as exc:
+                        last_error = str(exc)
+                        continue
+                    error = validate_pdf_bytes(content)
+                    if error:
+                        last_error = error
+                        continue
+                    return self._success(doi, content, landing_url, landing_url, direct=True,
+                                         candidate_url=candidate_url, status_code=sc, content_type=ct,
+                                         transport_attempts=transport_attempts)
+
+                content, final_pdf_url, error = resolve_landing_page_to_pdf(
+                    landing_url,
+                    timeout_seconds=self.timeout,
+                    headers=headers,
+                    max_depth=3,
+                    include_known_viewers=True,
+                    transport_attempts=transport_attempts,
+                )
+                if content is not None:
+                    return self._success(doi, content, final_pdf_url, landing_url, direct=False,
+                                         candidate_url=candidate_url, status_code=sc, content_type=ct,
+                                         transport_attempts=transport_attempts)
+
+                last_error = error or "landing page did not yield a PDF"
+                continue
 
         return FetchResult(
             doi=doi,
             source=self.name,
             resolver=self.name,
             error=last_error or "no PDF found via SciEngine",
+            transport_attempts=list(transport_attempts),
         )
 
     def _success(
@@ -148,6 +151,7 @@ class SciEngineResolver(PdfResolver):
         candidate_url: str = "",
         status_code: int | None = None,
         content_type: str = "",
+        transport_attempts: list[dict[str, object]] | None = None,
     ) -> FetchResult:
         return FetchResult(
             doi=doi,
@@ -164,4 +168,5 @@ class SciEngineResolver(PdfResolver):
             status_code=status_code,
             content_type=content_type,
             raw={"content": content},
+            transport_attempts=list(transport_attempts or []),
         )

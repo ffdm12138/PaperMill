@@ -41,6 +41,7 @@ class PaperCandidate:
     query: str = ""
     domain_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    doi_resolution: dict[str, Any] = field(default_factory=dict)
     existing_duplicate_refs: list[dict[str, Any]] = field(default_factory=list)
     duplicate_indexed: bool = False
 

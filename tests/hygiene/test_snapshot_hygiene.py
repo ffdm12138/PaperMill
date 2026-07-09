@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from scripts.agent_acceptance import verify_git_hygiene, verify_snapshot
+from scripts.agent_acceptance import verify_git_hygiene, verify_root_hygiene, verify_snapshot
 
 
 pytestmark = [pytest.mark.hygiene, pytest.mark.security]
@@ -89,6 +89,19 @@ def test_snapshot_verifier_rejects_tombstone_files(tmp_path):
     errors = verify_snapshot(root_path=tmp_path)
     assert any("tombstone" in error for error in errors), errors
     assert len(errors) == 3, errors
+
+
+def test_root_hygiene_rejects_debug_leftovers(tmp_path):
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "loopback_check3.txt").write_text("debug\n", encoding="utf-8")
+    (tmp_path / "_check_syntax.py").write_text("print('debug')\n", encoding="utf-8")
+    (tmp_path / "trace_run.log").write_text("trace\n", encoding="utf-8")
+
+    errors = verify_root_hygiene(root_path=tmp_path)
+
+    assert any("loopback_check3.txt" in err for err in errors)
+    assert any("_check_syntax.py" in err for err in errors)
+    assert any("trace_run.log" in err for err in errors)
 
 
 # ── verify_snapshot: audit-allowlisted runtime samples ────────────────

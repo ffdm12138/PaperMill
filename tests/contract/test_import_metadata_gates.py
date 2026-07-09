@@ -124,6 +124,111 @@ def test_network_metadata_maps_publication_fields(tmp_path, monkeypatch):
     assert status["source_provider"] == "openalex"
 
 
+def test_crossref_raw_canonicalizes_structured_metadata():
+    metadata = _metadata_from_record("0000000000000001", {
+        "title": "Flat title fallback",
+        "doi": "10.1000/book",
+        "provider": "crossref",
+        "raw": {
+            "DOI": "10.1000/book",
+            "type": "edited-book",
+            "title": ["Raw Book Title"],
+            "author": [{"given": "A. P.", "family": "Van Ulden", "ORCID": "https://orcid.org/0000-0001"}],
+            "publisher": "Oxford University Press",
+            "container-title": ["Book Series"],
+            "volume": "7",
+            "issue": "2",
+            "page": "11-22",
+            "ISSN": ["1234-5678"],
+            "ISBN": ["9780000000000"],
+            "issued": {"date-parts": [[2024, 5, 6]]},
+        },
+    })
+    assert metadata["entry_type"] == "book"
+    assert metadata["title"]["original"] == "Raw Book Title"
+    assert metadata["authors"][0]["family"] == "Van Ulden"
+    assert metadata["first_author"]["family"] == "Van Ulden"
+    assert metadata["container"]["publisher"] == "Oxford University Press"
+    assert metadata["publication"]["volume"] == "7"
+    assert metadata["publication"]["issue"] == "2"
+    assert metadata["publication"]["pages"] == "11-22"
+    assert metadata["identifiers"]["issn"] == "1234-5678"
+    assert metadata["identifiers"]["isbn"] == "9780000000000"
+    assert metadata["metadata_match"]["status"] == "matched"
+
+
+def test_openalex_type_and_affiliation_are_canonicalized():
+    metadata = _metadata_from_record("0000000000000001", {
+        "title": "Fallback",
+        "doi": "10.1000/oa",
+        "provider": "openalex",
+        "raw": {
+            "doi": "https://doi.org/10.1000/oa",
+            "type": "posted-content",
+            "display_name": "OpenAlex Preprint",
+            "publication_year": 2025,
+            "authorships": [{
+                "author": {"display_name": "Alice Smith", "orcid": "https://orcid.org/0000-0002"},
+                "institutions": [{"display_name": "Example University"}],
+            }],
+            "primary_location": {
+                "pdf_url": "https://example.test/paper.pdf",
+                "source": {"display_name": "Preprint Server"},
+            },
+        },
+    })
+    assert metadata["entry_type"] == "preprint"
+    assert metadata["authors"][0]["family"] == "Smith"
+    assert metadata["authors"][0]["affiliation"] == "Example University"
+    assert metadata["links"]["pdf_url"] == "https://example.test/paper.pdf"
+    assert metadata["metadata_match"]["status"] == "matched"
+
+
+def test_canonicalization_merges_resolution_and_candidate_raw_by_field():
+    metadata = _metadata_from_record("0000000000000001", {
+        "title": "Candidate Title",
+        "doi": "10.1000/merge",
+        "provider": "openalex",
+        "raw": {
+            "doi": "https://doi.org/10.1000/merge",
+            "type": "journal-article",
+            "display_name": "Candidate Title",
+            "publication_year": 2024,
+            "authorships": [{
+                "author": {"display_name": "Alice Smith", "orcid": "https://orcid.org/0000-0002"},
+                "institutions": [{"display_name": "Example University"}],
+            }],
+            "primary_location": {
+                "pdf_url": "https://example.test/oa.pdf",
+                "source": {"display_name": "Candidate Journal"},
+            },
+        },
+        "doi_resolution": {
+            "provider": "crossref",
+            "confidence": 0.95,
+            "raw_record": {
+                "DOI": "10.1000/merge",
+                "type": "journal-article",
+                "title": ["Resolved Title"],
+                "author": [{"given": "Alice", "family": "Smith"}],
+                "container-title": ["Resolved Journal"],
+                "publisher": "Resolved Publisher",
+                "volume": "9",
+                "issue": "4",
+                "page": "100-110",
+                "issued": {"date-parts": [[2024]]},
+            },
+        },
+    })
+    assert metadata["title"]["original"] == "Resolved Title"
+    assert metadata["container"]["journal"] == "Resolved Journal"
+    assert metadata["container"]["publisher"] == "Resolved Publisher"
+    assert metadata["publication"]["volume"] == "9"
+    assert metadata["publication"]["pages"] == "100-110"
+    assert metadata["authors"][0]["affiliation"] == "Example University"
+    assert metadata["links"]["pdf_url"] == "https://example.test/oa.pdf"
+
+
 def test_network_metadata_with_doi_but_missing_authors_or_venue_is_not_matched(tmp_path, monkeypatch):
     input_path = tmp_path / "candidates.jsonl"
     input_path.write_text(json.dumps({

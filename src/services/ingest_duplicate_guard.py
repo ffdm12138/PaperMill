@@ -62,6 +62,12 @@ class DuplicateIndex:
     pdf_md5_to_refs: dict[str, list[DuplicateRef]] = field(default_factory=dict)
     pdf_sha256_to_refs: dict[str, list[DuplicateRef]] = field(default_factory=dict)
 
+    def add_doi_ref(self, ref: DuplicateRef) -> None:
+        doi = normalize_doi(ref.doi)
+        if not doi:
+            return
+        self.doi_to_refs.setdefault(doi, []).append(ref)
+
 
 class DuplicateIngestError(RuntimeError):
     def __init__(self, result: DuplicateCheckResult, message: str = "duplicate ingest item blocked"):
@@ -355,6 +361,49 @@ def build_ingest_duplicate_index(
     return index
 
 
+def build_doi_duplicate_index(
+    *,
+    paper_raw_dir: Path = PAPER_RAW_DIR,
+    papers_dir: Path = PAPERS_DIR,
+    skip_paper_number: str | None = None,
+    include_quarantine: bool = False,
+) -> DuplicateIndex:
+    """Build a DOI-only duplicate index without reading or hashing PDFs."""
+    index = DuplicateIndex()
+    paper_raw_dir = Path(paper_raw_dir)
+    papers_dir = Path(papers_dir)
+    skip_paper_number = str(skip_paper_number or "")
+
+    if paper_raw_dir.exists():
+        for folder in sorted(p for p in paper_raw_dir.iterdir() if p.is_dir()):
+            if folder.name == "quarantine":
+                if not include_quarantine:
+                    continue
+                folders = [p for p in folder.iterdir() if p.is_dir() and p.name != "duplicate_workspaces"]
+            else:
+                folders = [folder]
+            for candidate_folder in sorted(folders):
+                if not is_paper_raw_workspace(candidate_folder):
+                    continue
+                identity = resolve_paper_raw_identity(candidate_folder)
+                paper_number, paper_raw_id = identity
+                if skip_paper_number and skip_paper_number in {candidate_folder.name, paper_number, paper_raw_id}:
+                    continue
+                metadata = read_best_metadata_json(candidate_folder)
+                doi = _metadata_doi(metadata)
+                if doi:
+                    index.add_doi_ref(_paper_raw_ref(candidate_folder, identity, source="metadata", doi=doi))
+
+    if papers_dir.exists():
+        for folder in sorted(p for p in papers_dir.iterdir() if p.is_dir()):
+            metadata_paths = sorted(folder.glob("*.metadata.json"))
+            metadata = _read_json(metadata_paths[0]) if metadata_paths else {}
+            doi = _metadata_doi(metadata)
+            if doi:
+                index.add_doi_ref(_papers_ref(folder, metadata, source="metadata", doi=doi))
+    return index
+
+
 def _unique_refs(refs: list[DuplicateRef]) -> list[DuplicateRef]:
     seen: set[tuple[str, str, str, str, str, str, str]] = set()
     out: list[DuplicateRef] = []
@@ -409,15 +458,17 @@ def check_doi_duplicate(
     paper_raw_dir: Path = PAPER_RAW_DIR,
     papers_dir: Path = PAPERS_DIR,
     skip_paper_number: str | None = None,
+    index: DuplicateIndex | None = None,
 ) -> DuplicateCheckResult:
     normalized = normalize_doi(doi or "")
     if not normalized:
         return DuplicateCheckResult(False, False, [], [], doi="")
-    index = build_ingest_duplicate_index(
-        paper_raw_dir=paper_raw_dir,
-        papers_dir=papers_dir,
-        skip_paper_number=skip_paper_number,
-    )
+    if index is None:
+        index = build_doi_duplicate_index(
+            paper_raw_dir=paper_raw_dir,
+            papers_dir=papers_dir,
+            skip_paper_number=skip_paper_number,
+        )
     refs = _unique_refs(index.doi_to_refs.get(normalized, []))
     return DuplicateCheckResult(
         duplicate=bool(refs),

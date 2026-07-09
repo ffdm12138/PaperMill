@@ -1,11 +1,17 @@
 import json
 
+import pytest
+
 import src.discovery.pipeline as pipeline_mod
 from src.discovery import resolve_crossref, search_openalex
 from src.discovery.models import CandidateBatch, PaperCandidate
 from src.discovery.pipeline import discover_papers
 from src.discovery.search_openalex import parse_openalex_work
+from src.services.openalex_credentials import OpenAlexCredentials, safe_request_error_summary
 from src.services.v2_library import empty_metadata
+
+
+pytestmark = pytest.mark.unit
 
 
 def test_candidate_batch_round_trip():
@@ -40,17 +46,116 @@ def test_parse_openalex_work_extracts_oa_pdf():
     assert candidate.open_access is True
 
 
-def test_openalex_uses_env_credentials_without_defaults(monkeypatch):
-    monkeypatch.delenv("OPENALEX_EMAIL", raising=False)
-    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
-    assert "Authorization" not in search_openalex._headers()
-    assert "mailto" not in search_openalex._params("snow", 1)
+# ── OpenAlex credential pure-function tests ───────────────────────
 
-    monkeypatch.setenv("OPENALEX_EMAIL", "test@example.com")
-    monkeypatch.setenv("OPENALEX_API_KEY", "test-openalex-key")
-    assert search_openalex._headers()["Authorization"] == "Bearer test-openalex-key"
-    assert search_openalex._params("snow", 1)["mailto"] == "test@example.com"
+def test_openalex_headers_with_credentials():
+    creds = OpenAlexCredentials(api_key="test-key-12345")
+    h = search_openalex._headers(creds)
+    assert h["Authorization"] == "Bearer test-key-12345"
 
+
+def test_openalex_headers_without_credentials():
+    creds = OpenAlexCredentials()
+    h = search_openalex._headers(creds)
+    assert "Authorization" not in h
+
+
+def test_openalex_params_with_email():
+    creds = OpenAlexCredentials(email="discover@test.org")
+    p = search_openalex._params("snow", 10, creds)
+    assert p["mailto"] == "discover@test.org"
+
+
+def test_openalex_params_without_email():
+    creds = OpenAlexCredentials()
+    p = search_openalex._params("snow", 10, creds)
+    assert "mailto" not in p
+
+
+# ── OpenAlex integration tests ────────────────────────────────────
+
+def test_search_openalex_loads_credentials_once(monkeypatch):
+    """load_openalex_credentials must be called exactly once per search."""
+    call_count = 0
+
+    def counting_loader(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return OpenAlexCredentials()
+
+    monkeypatch.setattr(search_openalex, "load_openalex_credentials", counting_loader)
+    monkeypatch.setattr(
+        search_openalex.requests, "get",
+        lambda *a, **k: type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: {"results": []}})(),
+    )
+
+    result = search_openalex.search_openalex("snow")
+    assert call_count == 1, f"Expected 1 call, got {call_count}"
+    assert result == []
+
+
+def test_search_openalex_requests_passes_credentials(monkeypatch):
+    creds = OpenAlexCredentials(email="req@test.org", api_key="req-test-key")
+    monkeypatch.setattr(
+        search_openalex, "load_openalex_credentials",
+        lambda *a, **k: creds,
+    )
+
+    captured_params = None
+    captured_headers = None
+
+    def capture_get(url, **kwargs):
+        nonlocal captured_params, captured_headers
+        captured_params = kwargs.get("params", {})
+        captured_headers = kwargs.get("headers", {})
+        return type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: {"results": []}})()
+
+    monkeypatch.setattr(search_openalex.requests, "get", capture_get)
+
+    search_openalex.search_openalex("snow")
+    assert captured_params is not None
+    assert captured_params.get("mailto") == "req@test.org"
+    assert captured_headers.get("Authorization") == "Bearer req-test-key"
+
+
+def test_search_openalex_error_does_not_leak_credentials(monkeypatch):
+    """A requests exception containing credentials in its message must not
+    leak them into logs or the return value."""
+    creds = OpenAlexCredentials(email="leak-check@test.org", api_key="leak-check-key-99999")
+
+    class LeakyException(Exception):
+        def __init__(self):
+            super().__init__(
+                "GET https://api.openalex.org/works?mailto=leak-check@test.org "
+                "Authorization: Bearer leak-check-key-99999"
+            )
+
+    monkeypatch.setattr(
+        search_openalex, "load_openalex_credentials",
+        lambda *a, **k: creds,
+    )
+    monkeypatch.setattr(
+        search_openalex.requests, "get",
+        lambda *a, **k: (_ for _ in ()).throw(LeakyException()),
+    )
+
+    # Capture log output
+    log_lines = []
+    monkeypatch.setattr(
+        search_openalex.logger, "warning",
+        lambda msg, *args: log_lines.append(msg.format(*args) if args else msg),
+    )
+
+    result = search_openalex.search_openalex("snow")
+    assert result == []
+
+    # Check no credentials leaked into logs
+    log_text = "\n".join(log_lines)
+    assert "leak-check@test.org" not in log_text, f"Email leaked into log: {log_text}"
+    assert "leak-check-key-99999" not in log_text, f"API key leaked into log: {log_text}"
+
+
+# ── Crossref tests ────────────────────────────────────────────────
 
 def test_parse_crossref_item_extracts_doi_title_year_authors():
     from src.discovery.resolve_crossref import parse_crossref_item

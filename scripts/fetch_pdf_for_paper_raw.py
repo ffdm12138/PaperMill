@@ -19,6 +19,7 @@ from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 import src.fetch.fetch_pipeline as fetch_pipeline
+from src.fetch.pdf_transport import TRANSPORT_POLICY, sanitize_url_fields, sanitize_url_for_persistence
 from src.services.ingest_duplicate_guard import DuplicateIngestError
 from src.services.ingest_ids import validate_paper_raw_id
 from src.services.ingest_state import write_import_status
@@ -267,11 +268,23 @@ def _build_policy(args: argparse.Namespace, headers: dict[str, str]) -> AccessPo
     )
 
 
-def _sanitized_fetch_record(result, attached: dict[str, Any], header_keys: list[str]) -> dict[str, Any]:
-    return {
+def _sanitized_fetch_record(
+    result,
+    attached: dict[str, Any] | None,
+    header_keys: list[str],
+    *,
+    success: bool | None = None,
+    final_reason: str = "",
+) -> dict[str, Any]:
+    attached = dict(attached or {})
+    return sanitize_url_fields({
+        "success": bool(result.success) if success is None else bool(success),
+        "final_reason": final_reason or result.error or "",
         "resolver": result.resolver,
         "resolver_chain": list(result.resolver_chain or []),
         "attempts": list(result.attempts or []),
+        "transport_policy": TRANSPORT_POLICY,
+        "transport_attempts": list(result.transport_attempts or []),
         "access_mode": result.access_mode,
         "fetched_at": result.fetched_at or result.downloaded_at,
         "pdf_url": result.pdf_url,
@@ -282,7 +295,7 @@ def _sanitized_fetch_record(result, attached: dict[str, Any], header_keys: list[
         "headers_masked": result.resolver == "header_based",
         "pdf_md5": attached.get("pdf_md5", ""),
         "pdf_sha256": attached.get("pdf_sha256", ""),
-    }
+    })
 
 
 def _fetch_one(
@@ -295,6 +308,8 @@ def _fetch_one(
 ) -> dict[str, Any]:
     start = time.monotonic()
     item = candidate.to_item()
+    item["transport_policy"] = TRANSPORT_POLICY
+    item["transport_attempts"] = []
     folder = candidate.folder
     meta_path = folder / f"{candidate.paper_number}.metadata.json"
     metadata = dict(candidate.metadata or {})
@@ -344,10 +359,23 @@ def _fetch_one(
                 "status": "failed",
                 "reason": result.error or "fetch failed",
                 "resolver_chain": list(result.resolver_chain or []),
-                "attempts": list(result.attempts or []),
+                "attempts": sanitize_url_fields(list(result.attempts or [])),
+                "transport_policy": TRANSPORT_POLICY,
+                "transport_attempts": sanitize_url_fields(list(result.transport_attempts or [])),
                 "not_configured_resolvers": list(result.not_configured_resolvers or []),
                 "final_reason": result.error or "fetch failed",
             })
+            if result.transport_attempts:
+                write_fetch_result(
+                    folder,
+                    _sanitized_fetch_record(
+                        result,
+                        None,
+                        header_keys,
+                        success=False,
+                        final_reason=result.error or "fetch failed",
+                    ),
+                )
             return item
         try:
             attached = allocator.attach_pdf(
@@ -365,6 +393,8 @@ def _fetch_one(
                 "duplicate_refs": [ref.to_dict() for ref in exc.result.refs],
                 "pdf_md5": exc.result.pdf_md5,
                 "pdf_sha256": exc.result.pdf_sha256,
+                "transport_policy": TRANSPORT_POLICY,
+                "transport_attempts": sanitize_url_fields(list(result.transport_attempts or [])),
             })
             write_import_status(
                 folder,
@@ -382,14 +412,28 @@ def _fetch_one(
                     "pdf_sha256": exc.result.pdf_sha256,
                 },
             )
+            if result.transport_attempts:
+                write_fetch_result(
+                    folder,
+                    _sanitized_fetch_record(
+                        result,
+                        {
+                            "pdf_md5": exc.result.pdf_md5,
+                            "pdf_sha256": exc.result.pdf_sha256,
+                        },
+                        header_keys,
+                        success=False,
+                        final_reason="duplicate PDF",
+                    ),
+                )
             return item
 
         metadata = _read_json(meta_path)
         links = metadata.setdefault("links", {})
         if result.pdf_url:
-            links["pdf_url"] = result.pdf_url
+            links["pdf_url"] = sanitize_url_for_persistence(result.pdf_url)
         if result.landing_url:
-            links["landing_url"] = result.landing_url
+            links["landing_url"] = sanitize_url_for_persistence(result.landing_url)
         fetch_record = _sanitized_fetch_record(result, attached, header_keys)
         # fetch_result.json is a SEPARATE file from metadata source records.
         # Never write the fetch result to metadata.source.raw_record_path.
@@ -411,7 +455,7 @@ def _fetch_one(
             operation="replace" if force_refetch else "attach",
             fetch_record_path=fetch_result_rel_path(),
             resolver=result.resolver,
-            pdf_url=result.pdf_url or "",
+            pdf_url=sanitize_url_for_persistence(result.pdf_url or ""),
             doi=candidate.doi,
         ))
         update_stage_manifest(folder, updates={"pdf_source": pdf_source})
@@ -423,6 +467,8 @@ def _fetch_one(
             "pdf_path": attached.get("pdf", ""),
             "pdf_md5": attached.get("pdf_md5", ""),
             "pdf_sha256": attached.get("pdf_sha256", ""),
+            "transport_policy": TRANSPORT_POLICY,
+            "transport_attempts": sanitize_url_fields(list(result.transport_attempts or [])),
         })
         return item
     except Exception as exc:
@@ -504,6 +550,9 @@ def main() -> int:
         for paper_number in paper_numbers
     ]
     items = [candidate.to_item() for candidate in candidates]
+    for item in items:
+        item.setdefault("transport_policy", TRANSPORT_POLICY)
+        item.setdefault("transport_attempts", [])
 
     eligible = [candidate for candidate in candidates if candidate.eligible]
     if write and eligible:
@@ -544,7 +593,7 @@ def main() -> int:
             "keys": header_keys,
             "masked": bool(header_keys),
         },
-        "items": items,
+        "items": sanitize_url_fields(items),
     }
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

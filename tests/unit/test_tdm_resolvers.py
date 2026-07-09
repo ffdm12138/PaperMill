@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from src.fetch.resolvers.base import ResolveContext
+import src.fetch.resolvers.tdm_resolvers as tdm_mod
 from src.fetch.resolvers.tdm_resolvers import WileyTdmResolver
 
 
@@ -28,8 +29,9 @@ def _ctx() -> ResolveContext:
     return ResolveContext(doi="10.1002/test", access_policy=None)
 
 
-def test_wiley_302_redirect_to_unsafe_location_blocked(monkeypatch):
-    """Wiley 302 whose Location header points at an unsafe host must fail."""
+def test_wiley_302_location_is_terminal_not_manually_followed(monkeypatch, install_pdf_transport_get):
+    """Wiley keeps allow_redirects=True and does not manually follow 302 Location."""
+    monkeypatch.setattr(tdm_mod, "WILEY_TDM_TOKEN", "test-token")
     responses = []
 
     def fake_get(url, **kwargs):
@@ -43,18 +45,19 @@ def test_wiley_302_redirect_to_unsafe_location_blocked(monkeypatch):
         responses.append(url)
         return FakeResponse(url=url, content=b"%PDF fake", content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.tdm_resolvers.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = WileyTdmResolver()
     result = resolver.resolve(_ctx())
 
     assert result.success is False
-    assert "unsafe" in (result.error or "")
-    # the unsafe redirect target must NOT have been fetched
+    assert "HTTP 302" in (result.error or "")
+    # the Location target must NOT have been manually fetched
     assert not responses
 
 
-def test_wiley_200_final_url_unsafe_blocked(monkeypatch):
+def test_wiley_200_final_url_unsafe_blocked(monkeypatch, install_pdf_transport_get):
     """Wiley 200 response whose final URL (after redirect) is unsafe must fail."""
+    monkeypatch.setattr(tdm_mod, "WILEY_TDM_TOKEN", "test-token")
     def fake_get(url, **kwargs):
         return FakeResponse(
             url="https://z-lib.org/final.pdf",
@@ -62,9 +65,22 @@ def test_wiley_200_final_url_unsafe_blocked(monkeypatch):
             content_type="application/pdf",
         )
 
-    monkeypatch.setattr("src.fetch.resolvers.tdm_resolvers.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = WileyTdmResolver()
     result = resolver.resolve(_ctx())
 
     assert result.success is False
     assert "unsafe final URL" in (result.error or "")
+
+
+def test_wiley_missing_token_does_not_call_transport(monkeypatch):
+    monkeypatch.setattr(tdm_mod, "WILEY_TDM_TOKEN", "")
+
+    def fail_transport(*args, **kwargs):
+        raise AssertionError("transport must not be called without WILEY_TDM_TOKEN")
+
+    monkeypatch.setattr(tdm_mod, "fetch_url_direct_then_proxy", fail_transport)
+    result = WileyTdmResolver().resolve(_ctx())
+
+    assert result.success is False
+    assert result.error == "WILEY_TDM_TOKEN not configured; skip"

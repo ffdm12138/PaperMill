@@ -7,10 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import requests
-
 from src.fetch.models import FetchResult
-from src.fetch.proxy import get_fetch_proxies
+from src.fetch.pdf_transport import fetch_url_direct_then_proxy
 from src.fetch.resolvers.base import PdfResolver, ResolveContext
 from src.fetch.resolvers.url_safety import (
     is_pdf_response,
@@ -62,67 +60,79 @@ class HeaderBasedDoiResolver(PdfResolver):
             )
 
         request_headers = self._headers()
-        try:
-            response = requests.get(
-                candidate_url,
-                headers=request_headers,
-                timeout=self.timeout,
-                allow_redirects=True,
-                proxies=get_fetch_proxies(),
-                stream=True,
-            )
-            response.raise_for_status()
+        transport_attempts: list[dict[str, Any]] = []
+        with fetch_url_direct_then_proxy(
+            candidate_url,
+            expected_content="html",
+            headers=request_headers,
+            timeout=self.timeout,
+            allow_redirects=True,
+            stream=True,
+        ) as transport:
+            transport_attempts.extend(transport.safe_attempts)
+            response = transport.response
+            if response is None:
+                return FetchResult(doi=context.doi, source=self.name, resolver=self.name,
+                                   candidate_url=candidate_url,
+                                   error=transport.error or "transport failed",
+                                   transport_attempts=transport_attempts)
             status_code = response.status_code
             content_type = response.headers.get("content-type", "")
-        except Exception as exc:
-            return FetchResult(doi=context.doi, source=self.name, resolver=self.name,
-                               candidate_url=candidate_url, error=str(exc))
-
-        # redirect 后必须检查最终 URL：allow_redirects=True 可能跳到 unsafe host
-        landing_url = response.url or candidate_url
-        if is_unsafe_url(landing_url):
-            return FetchResult(
-                doi=context.doi,
-                source=self.name,
-                resolver=self.name,
-                candidate_url=candidate_url, final_url=landing_url,
-                status_code=status_code, content_type=content_type,
-                error=f"unsafe final URL blocked: {landing_url}",
-            )
-        if is_pdf_response(response):
-            content = limit_content(response)
-            error = validate_pdf_bytes(content)
-            if error:
+            if response.status_code >= 400:
                 return FetchResult(doi=context.doi, source=self.name, resolver=self.name,
-                                   candidate_url=candidate_url, final_url=landing_url,
-                                   status_code=status_code, content_type=content_type, error=error)
-            return self._success(context.doi, content, landing_url, landing_url, direct=True,
-                                 candidate_url=candidate_url, status_code=status_code,
-                                 content_type=content_type)
+                                   candidate_url=candidate_url,
+                                   final_url=response.url or candidate_url,
+                                   status_code=status_code, content_type=content_type,
+                                   error=f"HTTP {response.status_code}",
+                                   transport_attempts=transport_attempts)
 
-        # HTML response — use multi-level landing page resolution to find
-        # the real PDF.  This handles viewer portals (SciCloud etc.) that
-        # don't expose direct .pdf links.
-        content, final_pdf_url, error = resolve_landing_page_to_pdf(
-            landing_url,
-            timeout_seconds=self.timeout,
-            headers=request_headers,
-            max_depth=3,
-            include_known_viewers=True,
-        )
-        if content is None:
-            return FetchResult(
-                doi=context.doi,
-                source=self.name,
-                resolver=self.name,
-                candidate_url=candidate_url, final_url=landing_url,
-                status_code=status_code, content_type=content_type,
-                landing_url=landing_url,
-                error=error or "HTML response did not contain a PDF link",
+            landing_url = response.url or candidate_url
+            if is_unsafe_url(landing_url):
+                return FetchResult(
+                    doi=context.doi,
+                    source=self.name,
+                    resolver=self.name,
+                    candidate_url=candidate_url, final_url=landing_url,
+                    status_code=status_code, content_type=content_type,
+                    error=f"unsafe final URL blocked: {landing_url}",
+                    transport_attempts=transport_attempts,
+                )
+            if is_pdf_response(response):
+                content = limit_content(response)
+                error = validate_pdf_bytes(content)
+                if error:
+                    return FetchResult(doi=context.doi, source=self.name, resolver=self.name,
+                                       candidate_url=candidate_url, final_url=landing_url,
+                                       status_code=status_code, content_type=content_type, error=error,
+                                       transport_attempts=transport_attempts)
+                return self._success(context.doi, content, landing_url, landing_url, direct=True,
+                                     candidate_url=candidate_url, status_code=status_code,
+                                     content_type=content_type,
+                                     transport_attempts=transport_attempts)
+
+            content, final_pdf_url, error = resolve_landing_page_to_pdf(
+                landing_url,
+                timeout_seconds=self.timeout,
+                headers=request_headers,
+                max_depth=3,
+                include_known_viewers=True,
+                transport_attempts=transport_attempts,
             )
-        return self._success(context.doi, content, final_pdf_url, landing_url, direct=False,
-                             candidate_url=candidate_url, status_code=status_code,
-                             content_type=content_type)
+            if content is None:
+                return FetchResult(
+                    doi=context.doi,
+                    source=self.name,
+                    resolver=self.name,
+                    candidate_url=candidate_url, final_url=landing_url,
+                    status_code=status_code, content_type=content_type,
+                    landing_url=landing_url,
+                    error=error or "HTML response did not contain a PDF link",
+                    transport_attempts=transport_attempts,
+                )
+            return self._success(context.doi, content, final_pdf_url, landing_url, direct=False,
+                                 candidate_url=candidate_url, status_code=status_code,
+                                 content_type=content_type,
+                                 transport_attempts=transport_attempts)
 
     def _url_for(self, doi: str) -> str:
         from urllib.parse import quote
@@ -158,6 +168,7 @@ class HeaderBasedDoiResolver(PdfResolver):
         candidate_url: str = "",
         status_code: int | None = None,
         content_type: str = "",
+        transport_attempts: list[dict[str, Any]] | None = None,
     ) -> FetchResult:
         metadata: dict[str, Any] = {
             "fixed_user_agent": True,
@@ -181,4 +192,5 @@ class HeaderBasedDoiResolver(PdfResolver):
             content_type=content_type,
             raw={"content": content, **metadata},
             metadata=metadata,
+            transport_attempts=list(transport_attempts or []),
         )

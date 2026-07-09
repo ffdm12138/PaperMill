@@ -29,11 +29,11 @@ def _ctx(metadata: dict) -> ResolveContext:
 
 # ── 1. metadata.links.pdf_url is a direct PDF → success ──────────────
 
-def test_direct_pdf_url_success(monkeypatch):
+def test_direct_pdf_url_success(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
         return FakeResponse(url=url, content=b"%PDF direct content", content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {"pdf_url": "https://example.test/paper.pdf"}})
 
@@ -47,7 +47,7 @@ def test_direct_pdf_url_success(monkeypatch):
 
 # ── 2. landing page HTML contains PDF link → success ─────────────────
 
-def test_landing_page_pdf_link_success(monkeypatch):
+def test_landing_page_pdf_link_success(monkeypatch, install_pdf_transport_get):
     calls = []
 
     def fake_get(url, **kwargs):
@@ -60,8 +60,7 @@ def test_landing_page_pdf_link_success(monkeypatch):
             content_type="text/html",
         )
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fake_get)
-    monkeypatch.setattr("src.fetch.resolvers.landing_page.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {"url": "https://example.test/landing"}})
 
@@ -74,11 +73,11 @@ def test_landing_page_pdf_link_success(monkeypatch):
 
 # ── 3. content-type is PDF but bytes don't start with %PDF → fail ─────
 
-def test_content_type_pdf_but_invalid_magic_rejected(monkeypatch):
+def test_content_type_pdf_but_invalid_magic_rejected(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
         return FakeResponse(url=url, content=b"not a real pdf", content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {"pdf_url": "https://example.test/fake.pdf"}})
 
@@ -90,11 +89,11 @@ def test_content_type_pdf_but_invalid_magic_rejected(monkeypatch):
 
 # ── 4. unsafe host is blocked, no network request ────────────────────
 
-def test_unsafe_host_blocked_without_network(monkeypatch):
+def test_unsafe_host_blocked_without_network(monkeypatch, install_pdf_transport_get):
     def fail_get(*args, **kwargs):
         raise AssertionError("unsafe host should be blocked before network")
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fail_get)
+    install_pdf_transport_get(fail_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {"pdf_url": "https://sci-hub.se/10.1000/test"}})
 
@@ -106,11 +105,11 @@ def test_unsafe_host_blocked_without_network(monkeypatch):
 
 # ── 5. no original links → fail without exception ────────────────────
 
-def test_no_links_returns_failure(monkeypatch):
+def test_no_links_returns_failure(monkeypatch, install_pdf_transport_get):
     def fail_get(*args, **kwargs):
         raise AssertionError("no network call expected when there are no links")
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fail_get)
+    install_pdf_transport_get(fail_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {}})
 
@@ -122,7 +121,7 @@ def test_no_links_returns_failure(monkeypatch):
 
 # ── 6. unsafe PDF link extracted from landing page is blocked ─────────
 
-def test_unsafe_pdf_link_from_landing_blocked(monkeypatch):
+def test_unsafe_pdf_link_from_landing_blocked(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
         return FakeResponse(
             url="https://example.test/landing",
@@ -130,8 +129,7 @@ def test_unsafe_pdf_link_from_landing_blocked(monkeypatch):
             content_type="text/html",
         )
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fake_get)
-    monkeypatch.setattr("src.fetch.resolvers.landing_page.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {"url": "https://example.test/landing"}})
 
@@ -143,7 +141,7 @@ def test_unsafe_pdf_link_from_landing_blocked(monkeypatch):
 
 # ── 7. direct candidate fails, landing candidate succeeds ─────────────
 
-def test_direct_fails_landing_succeeds(monkeypatch):
+def test_direct_fails_landing_succeeds(monkeypatch, install_pdf_transport_get):
     calls = []
 
     def fake_get(url, **kwargs):
@@ -158,7 +156,7 @@ def test_direct_fails_landing_succeeds(monkeypatch):
             )
         return FakeResponse(url=url, content=b"%PDF real", content_type="application/pdf")
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {"pdf_url": "https://example.test/direct.pdf",
                           "url": "https://example.test/landing"}})
@@ -171,7 +169,7 @@ def test_direct_fails_landing_succeeds(monkeypatch):
 
 # ── 8. safe pdf_url redirects to unsafe host → blocked ───────────────
 
-def test_direct_pdf_redirect_to_unsafe_host_blocked(monkeypatch):
+def test_direct_pdf_redirect_to_unsafe_host_blocked(monkeypatch, install_pdf_transport_get):
     """A safe pdf_url that redirects to an unsafe host (sci-hub) must fail."""
     def fake_get(url, **kwargs):
         # request URL is safe, but the final URL after redirect is unsafe
@@ -181,7 +179,7 @@ def test_direct_pdf_redirect_to_unsafe_host_blocked(monkeypatch):
             content_type="application/pdf",
         )
 
-    monkeypatch.setattr("src.fetch.resolvers.original_link_resolver.requests.get", fake_get)
+    install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
     ctx = _ctx({"links": {"pdf_url": "https://example.test/paper.pdf"}})
 

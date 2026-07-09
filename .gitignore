@@ -24,6 +24,12 @@ data/jobs/upload_staging/**
 data/discovery/doi_candidates/**
 data/discovery/pdf_fetch_logs/**
 data/discovery/fetch_logs/**
+data/discovery/keyword_notebooks/**
+data/discovery/pending_pages/**
+data/discovery/locks/**
+data/discovery/exports/**
+data/discovery/logs/**
+data/discovery/reports/**
 data/catalog/all.catalog.json
 data/catalog/paper_index.json
 data/catalog/paper_number_ledger.json
@@ -45,6 +51,7 @@ data/raw_all/**
 !data/raw_all/.gitkeep
 data/discovery/queries/**
 !data/discovery/queries/.gitkeep
+!data/discovery/queries/keywords.example.txt
 _test_batch/
 !data/raw/.gitkeep
 !data/paper_raw/.gitkeep
@@ -57,6 +64,9 @@ _test_batch/
 !data/discovery/.gitkeep
 !data/discovery/doi_candidates/.gitkeep
 !data/discovery/pdf_fetch_logs/.gitkeep
+!data/discovery/pending_pages/.gitkeep
+!data/discovery/locks/.gitkeep
+!data/discovery/exports/.gitkeep
 !data/catalog/*.template.json
 
 # ===== 写作任务产物（可重新生成，不入库）=====
@@ -98,7 +108,8 @@ data/catalog/*.runtime.json
 # ===== 仓库快照 zip（pack_repo.py 生成，不入库）=====
 mineru_snapshot*.zip
 
-# ===== IDE =====
+# ===== IDE / Tooling =====
 .vscode/
 .idea/
+.workbuddy/
 *.swp

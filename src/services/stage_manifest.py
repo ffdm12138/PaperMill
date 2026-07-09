@@ -99,12 +99,14 @@ def doi_fetch_pdf_source(
     doi: str = "",
 ) -> dict[str, Any]:
     """Build the ``pdf_source`` dict for the DOI-first PDF fetch path."""
+    from src.fetch.pdf_transport import sanitize_url_for_persistence
+
     return {
         "kind": "doi_fetch",
         "operation": operation,
         "fetch_record_path": fetch_record_path,
         "resolver": str(resolver or ""),
-        "pdf_url": str(pdf_url or ""),
+        "pdf_url": sanitize_url_for_persistence(str(pdf_url or "")),
         "doi": str(doi or ""),
     }
 

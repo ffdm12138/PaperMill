@@ -21,9 +21,10 @@ from typing import Any
 from loguru import logger
 
 from src.discovery.models import normalize_doi
-from src.services.ingest_duplicate_guard import DuplicateIngestError, check_doi_duplicate
+from src.services.ingest_duplicate_guard import DuplicateIngestError, DuplicateRef, build_doi_duplicate_index, check_doi_duplicate
 from src.services.ingest_state import METADATA_MANUAL_REVIEW_REQUIRED
 from src.services.metadata_quality import bibliographic_identity_gate, is_valid_normalized_doi
+from src.services.network_metadata_canonical import canonicalize_network_record
 from src.services.v2_library import (
     PaperNumberLedger,
     PaperRawAllocator,
@@ -86,22 +87,27 @@ def _metadata_from_record(record: dict[str, Any] | str, paper_number: str | dict
     provider = _record_provider(record)
     providers = _record_providers(record, provider)
     confidence = _record_confidence(record, provider)
-    title = record.get("title") or record.get("title_original") or record.get("display_name") or ""
-    patch["title"]["original"] = title
-    patch["year"] = record.get("year") or record.get("publication_year")
+    canonical = canonicalize_network_record(record)
+    patch["entry_type"] = canonical.entry_type
+    patch["title"]["original"] = canonical.title
+    patch["year"] = canonical.year
     doi = _record_doi(record)
     patch["identifiers"]["doi"] = doi
     patch["identifiers"]["openalex_id"] = record.get("openalex_id") or record.get("id") or ""
     patch["identifiers"]["crossref_id"] = record.get("crossref_id") or ""
-    patch["links"]["url"] = record.get("url") or record.get("landing_url") or ""
-    patch["links"]["pdf_url"] = record.get("pdf_url") or record.get("url_for_pdf") or ""
-    venue = record.get("venue") or record.get("journal") or record.get("container_title") or ""
-    patch["container"]["journal"] = venue
-    volume = record.get("volume") or ""
-    issue = record.get("issue") or ""
-    number = record.get("number") or issue
-    pages = record.get("page") or record.get("pages") or ""
-    article_number = record.get("article-number") or record.get("article_number") or ""
+    patch["identifiers"]["issn"] = ";".join(canonical.issn)
+    patch["identifiers"]["isbn"] = ";".join(canonical.isbn)
+    patch["links"]["url"] = canonical.url or record.get("landing_url") or ""
+    patch["links"]["pdf_url"] = canonical.pdf_url or record.get("url_for_pdf") or ""
+    patch["container"]["journal"] = canonical.venue
+    patch["container"]["publisher"] = canonical.publisher
+    patch["date"]["published"] = canonical.published
+    patch["date"]["online"] = canonical.online
+    volume = canonical.volume
+    issue = canonical.issue
+    number = canonical.number or issue
+    pages = canonical.pages
+    article_number = canonical.article_number
     if number and not issue:
         issue = number
     if issue and not number:
@@ -111,7 +117,7 @@ def _metadata_from_record(record: dict[str, Any] | str, paper_number: str | dict
     patch["publication"]["issue"] = str(issue) if issue else ""
     patch["publication"]["pages"] = str(pages) if pages else ""
     patch["publication"]["article_number"] = str(article_number) if article_number else ""
-    authors = record.get("authors") or []
+    authors = canonical.authors or record.get("authors") or []
     if authors:
         normalized = []
         for author in authors:
@@ -136,7 +142,9 @@ def _metadata_from_record(record: dict[str, Any] | str, paper_number: str | dict
         "raw_record_path": f"source_records/metadata_source.{provider or 'network_search'}.json",
     })
     merged, _ = merge_missing_metadata(base, patch)
-    ready, reasons = bibliographic_identity_gate(merged)
+    merged["entry_type"] = canonical.entry_type
+    blocking = [warning for warning in canonical.warnings if "unknown provider type" in warning]
+    ready, reasons = bibliographic_identity_gate(merged, blocking)
     status = "matched" if ready else "unmatched"
     merged["metadata_match"] = {
         "status": status,
@@ -175,6 +183,7 @@ def stage_network_metadata_records(
     apply: bool = False,
     dry_run: bool = False,
     skip_duplicates: bool = False,
+    reuse_paper_number: str | None = None,
 ) -> dict:
     """Stage a list of already-parsed discovery records into paper_raw workspaces.
 
@@ -185,6 +194,12 @@ def stage_network_metadata_records(
             "failed": int, "duplicate": int, "staged": int, "planned": int,
             "exit_code": int,
         }
+
+    ``reuse_paper_number`` is the crash-recovery hook: when set, the FIRST record
+    completes staging into the EXISTING workspace previously reserved for the
+    same candidate (discovery-context match). No new paper number is allocated,
+    and the pre-staging duplicate guard skips the reused workspace because
+    ownership was already established by reconciliation.
     """
     write = apply and not dry_run
     ids = PaperNumberLedger(ledger_path).peek_next_numbers(len(records)) if dry_run or not apply else []
@@ -192,52 +207,68 @@ def stage_network_metadata_records(
     allocator = PaperRawAllocator(paper_raw_dir, ledger_path=ledger_path, papers_dir=papers_dir)
     report: list[dict] = []
     seen_batch_dois: dict[str, int] = {}
+    reuse_number = str(reuse_paper_number or "").strip()
+    doi_index = build_doi_duplicate_index(
+        paper_raw_dir=paper_raw_dir,
+        papers_dir=papers_dir,
+        skip_paper_number=reuse_number or None,
+    )
 
     for record in records:
+        discovery_context = record.get("discovery_context") if isinstance(record.get("discovery_context"), dict) else {}
         item: dict[str, Any] = {
             "status": "planned",
             "title": record.get("title", ""),
+            "candidate_id": discovery_context.get("candidate_id") or record.get("candidate_id") or "",
         }
         doi = _record_doi(record)
         if not doi:
-            item.update({"status": "failed", "error": DOI_REQUIRED_ERROR})
+            item.update({"status": "failed_terminal", "error": DOI_REQUIRED_ERROR, "safe_error": DOI_REQUIRED_ERROR})
             logger.error("network metadata stage rejected: {}", DOI_REQUIRED_ERROR)
             report.append(item)
             continue
         if not is_valid_normalized_doi(doi):
-            item.update({"status": "failed", "error": DOI_INVALID_ERROR, "doi": doi})
+            item.update({"status": "failed_terminal", "error": DOI_INVALID_ERROR, "safe_error": DOI_INVALID_ERROR, "doi": doi})
             logger.error("network metadata stage rejected: invalid DOI {}", doi)
             report.append(item)
             continue
+        item["doi"] = doi
+        # Reuse path: reconciliation already proved this candidate owns the
+        # reused workspace, so the batch/existing duplicate guard would only
+        # re-discover that same workspace. Skip it; allocate_metadata still
+        # guards against the DOI appearing in any OTHER workspace.
+        is_reuse_record = bool(reuse_number) and len(report) == 0
         duplicate_reasons: list[str] = []
         duplicate_refs: list[dict] = []
-        if doi in seen_batch_dois:
-            duplicate_reasons.extend(["batch_doi_duplicate", "doi_duplicate"])
-            duplicate_refs.append({
-                "scope": "batch",
-                "paper_number": "",
-                "paper_id": "",
-                "folder": f"input[{seen_batch_dois[doi]}]",
-                "source": "input_record",
-                "doi": doi,
-                "pdf_md5": "",
-                "pdf_sha256": "",
-            })
-        dup = check_doi_duplicate(doi, paper_raw_dir=paper_raw_dir, papers_dir=papers_dir)
-        duplicate_reasons.extend(dup.reasons)
-        duplicate_refs.extend(ref.to_dict() for ref in dup.refs)
-        duplicate_reasons = list(dict.fromkeys(duplicate_reasons))
-        if duplicate_reasons:
-            item.update({
-                "status": "duplicate",
-                "error": "doi_duplicate",
-                "doi": doi,
-                "duplicate_reasons": duplicate_reasons,
-                "duplicate_refs": duplicate_refs,
-            })
-            logger.warning("network metadata duplicate DOI {}: {}", doi, ", ".join(duplicate_reasons))
-            report.append(item)
-            continue
+        if not is_reuse_record:
+            if doi in seen_batch_dois:
+                duplicate_reasons.extend(["batch_doi_duplicate", "doi_duplicate"])
+                duplicate_refs.append({
+                    "scope": "batch",
+                    "paper_number": "",
+                    "paper_id": "",
+                    "folder": f"input[{seen_batch_dois[doi]}]",
+                    "source": "input_record",
+                    "doi": doi,
+                    "pdf_md5": "",
+                    "pdf_sha256": "",
+                })
+            dup = check_doi_duplicate(doi, paper_raw_dir=paper_raw_dir, papers_dir=papers_dir, index=doi_index)
+            duplicate_reasons.extend(dup.reasons)
+            duplicate_refs.extend(ref.to_dict() for ref in dup.refs)
+            duplicate_reasons = list(dict.fromkeys(duplicate_reasons))
+            if duplicate_reasons:
+                item.update({
+                    "status": "duplicate",
+                    "error": "doi_duplicate",
+                    "safe_error": "doi_duplicate",
+                    "doi": doi,
+                    "duplicate_reasons": duplicate_reasons,
+                    "duplicate_refs": duplicate_refs,
+                })
+                logger.warning("network metadata duplicate DOI {}: {}", doi, ", ".join(duplicate_reasons))
+                report.append(item)
+                continue
         seen_batch_dois[doi] = len(report)
         planned_id = ""
         if not write:
@@ -246,17 +277,34 @@ def stage_network_metadata_records(
             item["dry_run_planned_paper_number"] = planned_id
             item["dry_run_planned_paper_raw_id"] = planned_id
         record = {**record, "doi": doi}
-        metadata = _metadata_from_record(record, paper_number=planned_id or None)
+        metadata = _metadata_from_record(record, paper_number=planned_id or reuse_number or None)
         if write:
             try:
                 result = allocator.allocate_metadata(
                     metadata,
                     source_type="network_search",
                     raw_record=_source_record_payload(metadata, record),
+                    discovery_receipt_context={
+                        **discovery_context,
+                        "normalized_doi": doi,
+                    } if discovery_context else None,
+                    reuse_paper_number=reuse_number or None,
                 )
                 item.update(result)
                 item["actual_allocated"] = True
                 item["status"] = "staged"
+                item["paper_number"] = result.get("paper_number") or result.get("paper_raw_id") or ""
+                if result.get("receipt_path"):
+                    item["receipt_path"] = result.get("receipt_path")
+                doi_index.add_doi_ref(DuplicateRef(
+                    scope="paper_raw",
+                    paper_number=item["paper_number"],
+                    paper_id="",
+                    folder=str(result.get("folder") or ""),
+                    source="metadata",
+                    doi=doi,
+                ))
+                item["safe_error"] = None
                 match = metadata.get("metadata_match") if isinstance(metadata.get("metadata_match"), dict) else {}
                 if match.get("status") != "matched":
                     item["import_status"] = METADATA_MANUAL_REVIEW_REQUIRED
@@ -265,6 +313,7 @@ def stage_network_metadata_records(
                 item.update({
                     "status": "duplicate",
                     "error": "doi_duplicate",
+                    "safe_error": "doi_duplicate",
                     "duplicate_reasons": exc.result.reasons,
                     "duplicate_refs": [ref.to_dict() for ref in exc.result.refs],
                     "doi": exc.result.doi or doi,
@@ -273,13 +322,23 @@ def stage_network_metadata_records(
                 error_type = "allocator_collision" if isinstance(exc, FileExistsError) else (
                     "metadata_validation_failed" if isinstance(exc, ValueError) else "allocation_transaction_failed"
                 )
-                item.update({"status": "failed", "error": str(exc), "error_type": error_type, "retryable": error_type != "metadata_validation_failed"})
+                status = "failed_terminal" if error_type == "metadata_validation_failed" else "failed_retryable"
+                item.update({
+                    "status": status,
+                    "error": str(exc),
+                    "safe_error": str(exc)[:500],
+                    "error_type": error_type,
+                    "retryable": status == "failed_retryable",
+                })
                 logger.error("network metadata stage failed: {}", exc)
         destination = item.get("paper_number") or planned_id
         logger.info("{} metadata -> paper_raw/{}", "STAGE" if write else "DRY-RUN", destination)
         report.append(item)
 
-    failed = sum(1 for i in report if i.get("status") == "failed")
+    failed = sum(1 for i in report if i.get("status") in {"failed", "failed_retryable", "failed_terminal"})
+    for i in report:
+        if i.get("status") in {"failed_retryable", "failed_terminal"}:
+            i.setdefault("failed_legacy", True)
     duplicate = sum(1 for i in report if i.get("status") == "duplicate")
     staged = sum(1 for i in report if i.get("status") == "staged")
     planned = sum(1 for i in report if i.get("status") == "planned")

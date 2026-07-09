@@ -33,7 +33,7 @@ def _ctx() -> ResolveContext:
 
 # ── Full chain: SciEngine → SciCloud viewer → parse/pdf → %PDF ─────
 
-def test_sciengine_full_chain_success(monkeypatch):
+def test_sciengine_full_chain_success(monkeypatch, install_pdf_transport_get):
     """Mock the full SciEngine → SciCloud fileNotLogin/view → iframe → PDF chain."""
     calls = []
 
@@ -66,12 +66,7 @@ def test_sciengine_full_chain_success(monkeypatch):
             )
         raise AssertionError(f"unexpected URL: {url}")
 
-    monkeypatch.setattr(
-        "src.fetch.resolvers.sciengine_resolver.requests.get", fake_get
-    )
-    monkeypatch.setattr(
-        "src.fetch.resolvers.landing_page.requests.get", fake_get
-    )
+    install_pdf_transport_get(fake_get)
     resolver = SciEngineResolver()
 
     result = resolver.resolve(_ctx())
@@ -82,6 +77,8 @@ def test_sciengine_full_chain_success(monkeypatch):
     assert "parse/pdf/" in result.pdf_url or "test.pdf" in result.pdf_url
     assert result.is_direct_pdf is False
     assert result.raw.get("content", b"").startswith(b"%PDF")
+    assert len(result.transport_attempts) >= 3
+    assert all(a["mode"] == "direct" for a in result.transport_attempts)
 
 
 # ── Only activates for 10.1360/ DOIs ─────────────────────────────────
@@ -99,7 +96,7 @@ def test_sciengine_skips_non_1360_doi():
 
 # ── Non-matching DOI handled cleanly ─────────────────────────────────
 
-def test_sciengine_no_pdf_found(monkeypatch):
+def test_sciengine_no_pdf_found(monkeypatch, install_pdf_transport_get):
     """When SciEngine landing page has no PDF, return clean failure."""
     def fake_get(url, **kwargs):
         return FakeResponse(
@@ -108,12 +105,7 @@ def test_sciengine_no_pdf_found(monkeypatch):
             content_type="text/html",
         )
 
-    monkeypatch.setattr(
-        "src.fetch.resolvers.sciengine_resolver.requests.get", fake_get
-    )
-    monkeypatch.setattr(
-        "src.fetch.resolvers.landing_page.requests.get", fake_get
-    )
+    install_pdf_transport_get(fake_get)
     resolver = SciEngineResolver()
     ctx = ResolveContext(doi="10.1360/NoSuchDOI")
 

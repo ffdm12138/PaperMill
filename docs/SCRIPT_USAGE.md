@@ -18,6 +18,10 @@
 | `pack_repo.py` | active | 打包审计快照（audit snapshot） | 是（写 zip） | `python scripts/pack_repo.py`（默认 audit）或 `--profile source`（纯源码） |
 | `agent_acceptance.py` | active | **agent 统一收尾命令**（fast 默认 / `--full` 全量） | 是（写 zip） | `python scripts/agent_acceptance.py` / `--full` / `--profile source` |
 
+`agent_acceptance.py --snapshot-mode` 仅用于无 `.git` 的解包审计环境：跳过 git index hygiene，
+但仍运行 compile/tests、根目录卫生检查、`pack_repo.py` 与 snapshot ZIP 清单校验。真实 Git 仓库
+默认仍使用 `python scripts/agent_acceptance.py` 或 `--full`。
+
 ## Metadata / PDF fetch（元数据与 PDF 获取）
 
 | 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
@@ -25,6 +29,15 @@
 | `fetch_pdf_for_paper_raw.py` | active | DOI → PDF 获取并 attach | 是（写 PDF） | `--paper-number <id> --resolver auto --apply` |
 | `match_paper_raw_metadata.py` | active | 匹配 paper_raw metadata | 是 | `--apply` |
 | `attach_pdf_to_paper_raw.py` | active | 手动 attach PDF 到 paper_raw | 是 | `--apply` |
+
+## Discovery / Metadata discovery
+
+| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
+|------|------|------|----------|----------|
+| `discover_papers.py` | active | 单关键词 DOI discovery；调用统一 coordinator，page journal-first、Backfill cursor CAS、pending drain budget、durable export / optional paper_raw staging | 否（discovery-only export）；是（`--stage-to-paper-raw --apply`） | `conda run -n mineru python scripts/discover_papers.py "keyword" --mode hybrid --refresh-pages 2 --backfill-pages 5 --page-size 50 --max-candidates 50` |
+| `discover_papers_concurrent.py` | active | 多关键词 discovery coordinator wrapper；不再启动每关键词子进程，`--max-workers` 是全局 lane 并发上限，provider limiter 全局共享 | 否（discovery-only export）；是（`--stage-to-paper-raw --apply`） | `conda run -n mineru python scripts/discover_papers_concurrent.py --query "q1" --query "q2" --max-workers 4 --mode hybrid --stage-to-paper-raw --apply` |
+| `manage_discovery_keywords.py` | active | 关键词小本本只读/管理：`--list` / `--show` / `--enable` / `--disable` / `--reset-backfill "kw"`（清理 terminal/retry 状态 + 重置 cursor）；除 `--list` 外要求 notebook 已存在 | 否（只读/重置 cursor，不动 paper_raw） | `conda run -n mineru python scripts/manage_discovery_keywords.py --list` |
+| `migrate_discovery_notebooks_v2.py` | repair | 将旧 schema v1 keyword notebook 归档并迁移到 v2，Backfill cursor 重置为 `"*"` 安全重扫 | 是（仅 discovery notebook runtime） | `conda run -n mineru python scripts/migrate_discovery_notebooks_v2.py --apply` |
 
 ## MinerU conversion（MinerU 转换）
 
@@ -58,6 +71,8 @@
 | 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
 |------|------|------|----------|----------|
 | `audit_ingest_duplicates.py` | audit | 审计重复 PDF/DOI | 否 | `--strict` |
+| `audit_third_party_licenses.py` | audit | Read-only direct dependency license comparison | No | `--strict` |
+| `audit_source_provenance.py` | audit | Read-only scan for copied/adapted source, repo URLs, copyright headers, SPDX markers, and external integrations | No | `--strict` |
 | `audit_metadata_quality.py` | audit | 审计 metadata 质量 | 否 | 直接运行 |
 | `audit_paper_number_ledger.py` | admin-only | 审计编号账本、检测 empty orphan / metadata-only workspace；`--fix-empty-orphans --apply --reason ...` 仅清理严格空目录 | 是（仅显式 fix/reset/compact） | 默认只审计；正常不清理 |
 | `audit_paper_raw_duplicate_workspaces.py` | audit | 审计并清理重复 paper_raw 工作区 | 是（移入 quarantine） | `--apply-cleanup` |

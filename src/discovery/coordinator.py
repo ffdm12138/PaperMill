@@ -1,0 +1,667 @@
+"""In-process DOI discovery coordinator.
+
+This is the single active engine used by both single-keyword and multi-keyword
+CLI entrypoints. It coordinates journal-first provider paging, pending drains,
+global lane concurrency, provider limiters, and report aggregation.
+"""
+from __future__ import annotations
+
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Literal
+
+from config.settings import (
+    DISCOVERY_DIR,
+    DISCOVERY_EXPORTS_DIR,
+    DISCOVERY_KEYWORD_NOTEBOOK_DIR,
+    DISCOVERY_LOCKS_DIR,
+    DISCOVERY_PENDING_PAGES_DIR,
+    PAPER_NUMBER_LEDGER_PATH,
+    PAPER_RAW_DIR,
+    PAPERS_DIR,
+)
+from src.discovery.backfill_transaction import (
+    BackfillTransactionResult,
+    StateLockTimeout,
+    run_backfill_page_transaction,
+)
+from src.discovery.keyword_notebook import (
+    INITIAL_CURSOR,
+    PROVIDERS,
+    KeywordNotebookStore,
+    LegacyNotebookError,
+    composite_backfill_signature,
+    expansion_key,
+    keyword_id as make_keyword_id,
+)
+from src.discovery.models import CandidateBatch, PaperCandidate
+from src.discovery.page_journal import (
+    PageJournalStore,
+    refresh_page_id,
+    request_signature,
+)
+from src.discovery.pending_queue import DrainReport, drain_pending_candidates
+from src.discovery.provider_models import failed_page
+from src.discovery.query_expand import expand_query
+from src.discovery.resolve_crossref import search_crossref_page
+from src.discovery.search_openalex import search_openalex_page
+from src.services.rate_limit import ProviderRateLimiter, default_config
+
+
+DiscoveryMode = Literal["refresh", "backfill", "hybrid"]
+
+
+@dataclass
+class PageBudget:
+    limit: int | None = None
+    used: int = 0
+    exhausted: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def try_acquire(self) -> bool:
+        with self._lock:
+            if self.limit is not None and self.used >= self.limit:
+                self.exhausted = True
+                return False
+            self.used += 1
+            return True
+
+
+@dataclass
+class DiscoveryOptions:
+    mode: DiscoveryMode = "hybrid"
+    refresh_pages: int = 2
+    backfill_pages: int = 5
+    page_size: int = 50
+    domain_id: str | None = None
+    max_candidates: int = 50
+    stage_to_paper_raw: bool = False
+    apply: bool = False
+    skip_duplicates: bool = False
+    hide_existing: bool = False
+    until_exhausted: bool = False
+    max_pages_total: int | None = None
+    doi_resolution_budget: int = 10
+    max_pending_candidates: int = 1000
+    resume_pending_candidates: int = 700
+    openalex_refresh_sort: str | None = None
+    openalex_backfill_sort: str | None = None
+    crossref_refresh_sort: str | None = None
+    crossref_backfill_sort: str | None = None
+    notebook_dir: Path = DISCOVERY_KEYWORD_NOTEBOOK_DIR
+    pending_pages_dir: Path = DISCOVERY_PENDING_PAGES_DIR
+    locks_dir: Path = DISCOVERY_LOCKS_DIR
+    exports_dir: Path = DISCOVERY_EXPORTS_DIR
+    output_dir: Path = DISCOVERY_DIR / "doi_candidates"
+    paper_raw_dir: Path = PAPER_RAW_DIR
+    papers_dir: Path = PAPERS_DIR
+    ledger_path: Path = PAPER_NUMBER_LEDGER_PATH
+
+
+@dataclass
+class LaneReport:
+    status: str = "skipped"
+    pages_requested: int = 0
+    pages_recovered: int = 0
+    pages_persisted: int = 0
+    pages_committed: int = 0
+    journals_recovered: int = 0
+    items_returned: int = 0
+    provider_failures: int = 0
+    states_exhausted: int = 0
+    cursor_conflicts: int = 0
+    stop_reason: str | None = None
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "pages_requested": self.pages_requested,
+            "pages_recovered": self.pages_recovered,
+            "pages_persisted": self.pages_persisted,
+            "pages_committed": self.pages_committed,
+            "journals_recovered": self.journals_recovered,
+            "items_returned": self.items_returned,
+            "provider_failures": self.provider_failures,
+            "states_exhausted": self.states_exhausted,
+            "cursor_conflicts": self.cursor_conflicts,
+            "stop_reason": self.stop_reason,
+            "errors": list(self.errors),
+        }
+
+
+@dataclass
+class KeywordDiscoveryReport:
+    keyword: str
+    keyword_id: str
+    status: str
+    refresh: LaneReport
+    backfill: LaneReport
+    pending: DrainReport
+    final_pending: DrainReport
+    candidates: dict[str, int]
+    budget: dict[str, Any]
+    mode: str
+    backpressure: bool = False
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "3.0",
+            "keyword": self.keyword,
+            "keyword_id": self.keyword_id,
+            "status": self.status,
+            "mode": self.mode,
+            "refresh": self.refresh.to_dict(),
+            "backfill": self.backfill.to_dict(),
+            "pending": self.pending.to_dict(),
+            "final_pending": self.final_pending.to_dict(),
+            "candidates": dict(self.candidates),
+            "budget": dict(self.budget),
+            "backpressure": self.backpressure,
+            "errors": list(self.errors),
+        }
+
+
+@dataclass
+class BatchDiscoveryReport:
+    status: str
+    keywords: list[KeywordDiscoveryReport]
+    aggregate: dict[str, Any]
+    exit_code: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "3.0",
+            "status": self.status,
+            "exit_code": self.exit_code,
+            "keywords": [kw.to_dict() for kw in self.keywords],
+            "aggregate": self.aggregate,
+        }
+
+
+def _provider_sort(provider: str, lane: str, options: DiscoveryOptions) -> str | None:
+    if provider == "openalex":
+        return options.openalex_refresh_sort if lane == "refresh" else options.openalex_backfill_sort
+    return options.crossref_refresh_sort if lane == "refresh" else options.crossref_backfill_sort
+
+
+def _default_fetch_page(
+    provider: str,
+    query: str,
+    *,
+    original_keyword: str,
+    lane: str,
+    page_size: int,
+    cursor: str,
+    sort: str | None = None,
+    domain_id: str | None = None,
+    rate_limiter: Any | None = None,
+    limiter_lock: threading.Lock | None = None,
+) -> Any:
+    if provider == "openalex":
+        return search_openalex_page(
+            query,
+            original_keyword=original_keyword,
+            lane=lane,
+            page_size=page_size,
+            cursor=cursor,
+            sort=sort,
+            domain_id=domain_id,
+            rate_limiter=rate_limiter,
+            limiter_lock=limiter_lock,
+        )
+    if provider == "crossref":
+        return search_crossref_page(
+            query,
+            original_keyword=original_keyword,
+            lane=lane,
+            page_size=page_size,
+            cursor=cursor,
+            sort=sort,
+            domain_id=domain_id,
+            rate_limiter=rate_limiter,
+            limiter_lock=limiter_lock,
+        )
+    raise ValueError(f"unknown provider: {provider}")
+
+
+def _status_from_failures(ran: bool, failures: int, items: int, skipped_reason: str = "") -> str:
+    if not ran:
+        return skipped_reason or "skipped"
+    if failures == 0:
+        return "success"
+    return "partial_success" if items > 0 else "failed"
+
+
+def _batch_status(keyword_reports: list[KeywordDiscoveryReport]) -> tuple[str, int]:
+    statuses = [r.status for r in keyword_reports]
+    if any(s == "failed" for s in statuses):
+        return "failed", 1
+    if any(s == "partial_success" for s in statuses):
+        return "partial_success", 2
+    return "success", 0
+
+
+def _aggregate(keyword_reports: list[KeywordDiscoveryReport], budget: PageBudget) -> dict[str, Any]:
+    agg = {
+        "keywords": {
+            "total": len(keyword_reports),
+            "success": 0,
+            "partial_success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "exhausted": 0,
+        },
+        "refresh": {
+            "pages_requested": 0,
+            "pages_recovered": 0,
+            "pages_persisted": 0,
+            "items_returned": 0,
+            "provider_failures": 0,
+            "stop_reasons": {},
+        },
+        "backfill": {
+            "pages_requested": 0,
+            "pages_recovered": 0,
+            "pages_persisted": 0,
+            "pages_committed": 0,
+            "journals_recovered": 0,
+            "states_exhausted": 0,
+            "provider_failures": 0,
+        },
+        "pending": {"processed": 0, "remaining": 0, "backpressure": 0},
+        "candidates": {
+            "staged": 0,
+            "emitted": 0,
+            "existing_duplicates": 0,
+            "duplicate_observations": 0,
+            "invalid": 0,
+            "unresolved": 0,
+            "retryable_failures": 0,
+        },
+        "budget": {"page_limit": budget.limit, "pages_used": budget.used, "page_budget_exhausted": budget.exhausted},
+    }
+    for report in keyword_reports:
+        agg["keywords"][report.status] = agg["keywords"].get(report.status, 0) + 1
+        for section_name in ("refresh", "backfill"):
+            section = getattr(report, section_name)
+            for field_name in agg[section_name]:
+                if field_name == "stop_reasons":
+                    continue
+                if hasattr(section, field_name):
+                    agg[section_name][field_name] += int(getattr(section, field_name))
+            if section.stop_reason:
+                reasons = agg[section_name].setdefault("stop_reasons", {})
+                reasons[section.stop_reason] = int(reasons.get(section.stop_reason, 0)) + 1
+        for drain in (report.pending, report.final_pending):
+            agg["pending"]["processed"] += drain.processed
+            agg["candidates"]["staged"] += drain.staged
+            agg["candidates"]["emitted"] += drain.emitted
+            agg["candidates"]["existing_duplicates"] += drain.existing_duplicate
+            agg["candidates"]["duplicate_observations"] += drain.duplicate_observation
+            agg["candidates"]["invalid"] += drain.invalid
+            agg["candidates"]["unresolved"] += drain.unresolved
+            agg["candidates"]["retryable_failures"] += drain.retryable_failures
+        agg["pending"]["remaining"] += report.final_pending.remaining
+        if report.backpressure:
+            agg["pending"]["backpressure"] += 1
+    return agg
+
+
+def run_discovery_batch(
+    keywords: list[str],
+    *,
+    options: DiscoveryOptions | None = None,
+    max_workers: int = 4,
+    fetch_page: Callable[..., Any] | None = None,
+    rate_limiters: dict[str, ProviderRateLimiter] | None = None,
+) -> BatchDiscoveryReport:
+    options = options or DiscoveryOptions()
+    if options.resume_pending_candidates < 0 or options.resume_pending_candidates >= options.max_pending_candidates:
+        raise ValueError("resume_pending_candidates must satisfy 0 <= resume < max_pending_candidates")
+    fetch_page = fetch_page or _default_fetch_page
+    notebook = KeywordNotebookStore(options.notebook_dir)
+    journal = PageJournalStore(options.pending_pages_dir)
+    budget = PageBudget(options.max_pages_total)
+    limiters = rate_limiters or {
+        "openalex": ProviderRateLimiter(default_config()),
+        "crossref": ProviderRateLimiter(default_config()),
+    }
+    limiter_lock = threading.Lock()
+    worker_id = f"worker-{uuid.uuid4().hex[:12]}"
+    keyword_reports: dict[str, KeywordDiscoveryReport] = {}
+
+    def fetch_with_budget(provider: str, query: str, **kwargs: Any) -> Any:
+        if not budget.try_acquire():
+            return failed_page(
+                provider=provider,
+                original_keyword=kwargs.get("original_keyword", ""),
+                expanded_query=query,
+                lane=kwargs.get("lane", "backfill"),
+                request_cursor=kwargs.get("cursor"),
+                page_size=int(kwargs.get("page_size") or options.page_size),
+                error_type="page_budget_exhausted",
+                safe_error="global page budget exhausted",
+            )
+        return fetch_page(
+            provider,
+            query,
+            **kwargs,
+            domain_id=options.domain_id,
+            rate_limiter=limiters.get(provider),
+            limiter_lock=limiter_lock,
+        )
+
+    def run_refresh(keyword: str, nb: dict[str, Any], refresh_run_id: str, backpressure: bool) -> LaneReport:
+        report = LaneReport(status="skipped" if backpressure else "success")
+        if backpressure or options.mode not in {"refresh", "hybrid"}:
+            return report
+        kid = nb["keyword_id"]
+        for ekey, exp in nb.get("expansions", {}).items():
+            if not exp.get("active"):
+                continue
+            query = exp.get("query") or ""
+            for provider in PROVIDERS:
+                sort = _provider_sort(provider, "refresh", options)
+                sig = request_signature(sort=sort, page_size=options.page_size)
+                cursor = INITIAL_CURSOR
+                for seq in range(options.refresh_pages):
+                    page = fetch_with_budget(
+                        provider,
+                        query,
+                        original_keyword=keyword,
+                        lane="refresh",
+                        page_size=options.page_size,
+                        cursor=cursor,
+                        sort=sort,
+                    )
+                    if page.status == "failed":
+                        if page.error_type == "page_budget_exhausted":
+                            report.status = "partial_success" if report.items_returned else "skipped"
+                            return report
+                        report.provider_failures += 1
+                        report.errors.append(page.safe_error or page.error_type or "provider failed")
+                        break
+                    pid = refresh_page_id(
+                        keyword_id=kid,
+                        expansion_id=ekey,
+                        provider=provider,
+                        request_signature_hash=sig["hash"],
+                        refresh_run_id=refresh_run_id,
+                        page_sequence=seq,
+                    )
+                    page_data = journal.make_page(
+                        page_id=pid,
+                        keyword_id=kid,
+                        keyword=keyword,
+                        expansion_id=ekey,
+                        expanded_query=query,
+                        provider=provider,
+                        lane="refresh",
+                        request_signature_value=sig,
+                        request_cursor=cursor,
+                        next_cursor=page.next_cursor,
+                        provider_exhausted=page.exhausted,
+                        candidates=page.candidates,
+                        refresh_run_id=refresh_run_id,
+                        page_sequence=seq,
+                        state="cursor_committed",
+                    )
+                    journal.write_page(page_data)
+                    report.pages_requested += 1
+                    report.pages_persisted += 1
+                    report.items_returned += int(page.returned_count)
+                    if page.exhausted or not page.next_cursor:
+                        break
+                    cursor = page.next_cursor
+        report.status = _status_from_failures(True, report.provider_failures, report.items_returned)
+        return report
+
+    def run_backfill(keyword: str, nb: dict[str, Any], backpressure: bool) -> LaneReport:
+        report = LaneReport(
+            status="skipped" if backpressure else "success",
+            stop_reason="backpressure_active" if backpressure else None,
+        )
+        if backpressure or options.mode not in {"backfill", "hybrid"}:
+            return report
+        kid = nb["keyword_id"]
+        for ekey, exp in nb.get("expansions", {}).items():
+            if not exp.get("active"):
+                continue
+            query = exp.get("query") or ""
+            for provider in PROVIDERS:
+                sort = _provider_sort(provider, "backfill", options)
+                sig = request_signature(sort=sort, page_size=options.page_size)
+                pages_left = options.max_pages_total if options.until_exhausted else options.backfill_pages
+                pages_done = 0
+                while pages_done < pages_left:
+                    try:
+                        result: BackfillTransactionResult = run_backfill_page_transaction(
+                            keyword=keyword,
+                            keyword_id=kid,
+                            expansion_id=ekey,
+                            expanded_query=query,
+                            provider=provider,
+                            notebook_store=notebook,
+                            journal_store=journal,
+                            locks_dir=options.locks_dir,
+                            request_signature=sig,
+                            page_size=options.page_size,
+                            fetch_page=lambda p, q, **kw: fetch_with_budget(p, q, sort=sort, **kw),
+                        )
+                    except StateLockTimeout as exc:
+                        report.provider_failures += 1
+                        report.errors.append(str(exc))
+                        break
+                    # Recovery statistics must reach the report regardless of
+                    # the transaction's final status — a journal recovered this
+                    # run is real work even if the same call then stops/exhausts.
+                    report.pages_recovered += result.pages_recovered
+                    report.journals_recovered += result.journals_recovered
+                    if result.status == "stopped" and result.stop_reason == "page_budget_exhausted":
+                        report.stop_reason = "page_budget_exhausted"
+                        break
+                    if result.status == "exhausted":
+                        report.states_exhausted += 1
+                        report.stop_reason = result.stop_reason or "provider_exhausted"
+                        break
+                    if result.status != "success":
+                        report.provider_failures += 1
+                        report.stop_reason = result.stop_reason
+                        if result.safe_error:
+                            report.errors.append(result.safe_error)
+                        break
+                    report.pages_requested += result.pages_requested
+                    report.pages_persisted += result.pages_persisted
+                    report.pages_committed += result.pages_committed
+                    report.items_returned += result.candidates_returned
+                    pages_done += 1
+                    if result.provider_exhausted:
+                        report.states_exhausted += 1
+                        report.stop_reason = result.stop_reason or "provider_exhausted"
+                        break
+                    if not options.until_exhausted and pages_done >= options.backfill_pages:
+                        break
+        report.status = _status_from_failures(True, report.provider_failures, report.items_returned)
+        return report
+
+    def prepare_keyword(keyword: str) -> tuple[str, dict[str, Any], DrainReport, bool, str]:
+        expanded = expand_query(keyword, domain_id=options.domain_id)
+        backfill_generation_sig = composite_backfill_signature(
+            page_size=options.page_size,
+            openalex_backfill_sort=options.openalex_backfill_sort,
+            crossref_backfill_sort=options.crossref_backfill_sort,
+        )
+        nb = notebook.ensure_keyword(keyword, expanded["expanded_queries"], backfill_generation_sig)
+        if not nb.get("enabled", True):
+            return keyword, nb, DrainReport(), False, "skipped"
+        kid = nb["keyword_id"]
+        initial_drain = drain_pending_candidates(
+            journal=journal,
+            keyword_ids=[kid],
+            candidate_budget=options.max_candidates,
+            stage_to_paper_raw=options.stage_to_paper_raw,
+            apply=options.apply,
+            paper_raw_dir=options.paper_raw_dir,
+            papers_dir=options.papers_dir,
+            ledger_path=options.ledger_path,
+            locks_dir=options.locks_dir,
+            exports_dir=options.exports_dir,
+            worker_id=worker_id,
+            doi_resolution_budget=options.doi_resolution_budget,
+            skip_duplicates=options.skip_duplicates,
+        )
+        pending_after_drain = journal.count_pending_candidates([kid])
+        bp_state = notebook.update_backpressure(
+            keyword,
+            pending_count=pending_after_drain,
+            max_threshold=options.max_pending_candidates,
+            resume_threshold=options.resume_pending_candidates,
+        )
+        backpressure = bool(bp_state.get("active"))
+        if backpressure:
+            initial_drain.backpressure = True
+        return keyword, nb, initial_drain, backpressure, ""
+
+    prepared: list[tuple[str, dict[str, Any], DrainReport, bool, str]] = []
+    for keyword in keywords:
+        try:
+            prepared.append(prepare_keyword(keyword))
+        except LegacyNotebookError as exc:
+            kid = make_keyword_id(keyword)
+            empty = DrainReport()
+            keyword_reports[keyword] = KeywordDiscoveryReport(
+                keyword=keyword,
+                keyword_id=kid,
+                status="failed",
+                refresh=LaneReport(status="failed", errors=[str(exc)]),
+                backfill=LaneReport(status="failed", errors=[str(exc)]),
+                pending=empty,
+                final_pending=empty,
+                candidates={},
+                budget={"page_limit": budget.limit, "pages_used": budget.used},
+                mode=options.mode,
+                errors=[str(exc)],
+            )
+
+    refresh_run_id = uuid.uuid4().hex
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+        for keyword, nb, _initial, backpressure, skipped in prepared:
+            if skipped:
+                continue
+            futures[pool.submit(run_refresh, keyword, nb, refresh_run_id, backpressure)] = (keyword, "refresh")
+            futures[pool.submit(run_backfill, keyword, nb, backpressure)] = (keyword, "backfill")
+        lane_results: dict[tuple[str, str], LaneReport] = {}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                lane_results[key] = future.result()
+            except Exception as exc:
+                lane_results[key] = LaneReport(status="failed", provider_failures=1, errors=[str(exc)])
+
+    for keyword, nb, initial_drain, backpressure, skipped in prepared:
+        kid = nb["keyword_id"]
+        if skipped:
+            final_drain = DrainReport(remaining=journal.count_pending_candidates([kid]))
+            report = KeywordDiscoveryReport(
+                keyword=keyword,
+                keyword_id=kid,
+                status="skipped",
+                refresh=LaneReport(status="skipped"),
+                backfill=LaneReport(status="skipped"),
+                pending=initial_drain,
+                final_pending=final_drain,
+                candidates={},
+                budget={"page_limit": budget.limit, "pages_used": budget.used, "page_budget_exhausted": budget.exhausted},
+                mode=options.mode,
+            )
+            keyword_reports[keyword] = report
+            continue
+        final_drain = drain_pending_candidates(
+            journal=journal,
+            keyword_ids=[kid],
+            candidate_budget=max(0, options.max_candidates - initial_drain.processed),
+            stage_to_paper_raw=options.stage_to_paper_raw,
+            apply=options.apply,
+            paper_raw_dir=options.paper_raw_dir,
+            papers_dir=options.papers_dir,
+            ledger_path=options.ledger_path,
+            locks_dir=options.locks_dir,
+            exports_dir=options.exports_dir,
+            worker_id=worker_id,
+            doi_resolution_budget=options.doi_resolution_budget,
+            skip_duplicates=options.skip_duplicates,
+        )
+        refresh = lane_results.get((keyword, "refresh"), LaneReport(status="skipped"))
+        backfill = lane_results.get((keyword, "backfill"), LaneReport(status="skipped"))
+        errors = list(refresh.errors) + list(backfill.errors) + list(initial_drain.errors) + list(final_drain.errors)
+        statuses = {refresh.status, backfill.status, initial_drain.status, final_drain.status}
+        if "failed" in statuses:
+            made_progress = (
+                refresh.status in {"success", "partial_success"}
+                or backfill.status in {"success", "partial_success"}
+                or initial_drain.processed > 0
+                or final_drain.processed > 0
+            )
+            status = "partial_success" if made_progress else "failed"
+        elif "partial_success" in statuses:
+            status = "partial_success"
+        elif backpressure and not errors:
+            status = "success"
+        else:
+            status = "success"
+        report = KeywordDiscoveryReport(
+            keyword=keyword,
+            keyword_id=kid,
+            status=status,
+            refresh=refresh,
+            backfill=backfill,
+            pending=initial_drain,
+            final_pending=final_drain,
+            candidates={
+                "staged": initial_drain.staged + final_drain.staged,
+                "emitted": initial_drain.emitted + final_drain.emitted,
+                "existing_duplicates": initial_drain.existing_duplicate + final_drain.existing_duplicate,
+                "duplicate_observations": initial_drain.duplicate_observation + final_drain.duplicate_observation,
+                "invalid": initial_drain.invalid + final_drain.invalid,
+                "unresolved": initial_drain.unresolved + final_drain.unresolved,
+                "retryable_failures": initial_drain.retryable_failures + final_drain.retryable_failures,
+            },
+            budget={"page_limit": budget.limit, "pages_used": budget.used, "page_budget_exhausted": budget.exhausted},
+            mode=options.mode,
+            backpressure=backpressure,
+            errors=errors,
+        )
+        notebook.update_pending_counts(
+            keyword,
+            pages=len(journal.list_pages([kid])),
+            candidates=journal.count_pending_candidates([kid]),
+        )
+        keyword_reports[keyword] = report
+
+    ordered = [keyword_reports[k] for k in keywords if k in keyword_reports]
+    status, exit_code = _batch_status(ordered)
+    aggregate = _aggregate(ordered, budget)
+    return BatchDiscoveryReport(status=status, keywords=ordered, aggregate=aggregate, exit_code=exit_code)
+
+
+def batch_to_candidate_batch(report: KeywordDiscoveryReport) -> CandidateBatch:
+    """Compatibility helper returning candidates emitted/staged in journals."""
+    candidates: list[PaperCandidate] = []
+    journal = PageJournalStore(DISCOVERY_PENDING_PAGES_DIR)
+    for ref in journal.list_pages([report.keyword_id]):
+        data = journal.read(ref.path)
+        for item in data.get("candidates", []):
+            if item.get("status") in {"staged", "emitted"} and isinstance(item.get("candidate"), dict):
+                candidates.append(PaperCandidate.from_dict(item["candidate"]))
+    return CandidateBatch(
+        original_query=report.keyword,
+        expanded_queries=[],
+        candidates=candidates,
+        sources=["openalex", "crossref"],
+    )

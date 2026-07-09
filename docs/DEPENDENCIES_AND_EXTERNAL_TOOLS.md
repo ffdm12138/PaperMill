@@ -70,8 +70,10 @@ PDF 获取由 `src/fetch/access_policy.py` + `src/fetch/resolver_registry.py` �
   优先级执行，不再有任何 unsafe fallback。
   `allow_scihub` 字段、`fetch_scihub.py` 模块、`SciHubResolver` 类均已删除。
 
-代理配置统一走 `src/fetch/proxy.py::get_fetch_proxies()`，读取 `FETCH_PROXY` 环境变量，
-返回 `requests` 可用的 proxies dict 或 `None`（直连）。
+Metadata/discovery API 代理配置走 `src/fetch/proxy.py::get_fetch_proxies()`，
+读取 `FETCH_PROXY` 环境变量，返回 `requests` 可用的 proxies dict 或 `None`（直连）。
+PDF/HTML content transport 不使用 `FETCH_PROXY`：它走 `src/fetch/pdf_transport.py`
+direct first，再对可重试直连失败执行一次显式 `MINERU_PDF_PROXY_URL` fallback。
 
 metadata-only PDF fetch priority:
 1. original links already present in metadata (`metadata.links.pdf_url` / `url` / `publisher_url` / `repository_url`)
@@ -79,7 +81,33 @@ metadata-only PDF fetch priority:
 3. publisher-specific resolvers, e.g. `sciengine_direct` for `10.1360/` DOIs
 4. preprint / PMC resolvers (biorxiv, pmc_oa)
 5. header_based DOI landing fallback, default `https://doi.org/{doi}`
-4. report failure
+6. report failure
+
+## Compliance And License Notes
+
+Original repository code is covered by the repository license. Third-party
+dependencies, external tools, APIs/services, models, PDFs, converted Markdown,
+images, metadata, and writing outputs keep their own licenses or terms.
+Do not describe the entire stack as MIT licensed.
+
+Key notices:
+
+- MinerU: MinerU Open Source License, based on Apache-2.0 with additional terms.
+- PyMuPDF/MuPDF: AGPL-or-commercial.
+- FastAPI: MIT.
+- Gradio: Apache-2.0.
+- ref-downloader bridge: external integration with the upstream MIT project.
+
+Read `THIRD_PARTY_NOTICES.md`. Use the read-only audits:
+
+```bash
+conda run -n mineru python scripts/audit_third_party_licenses.py --strict
+conda run -n mineru python scripts/audit_source_provenance.py --strict
+```
+
+PDF content fetches use `src/fetch/pdf_transport.py`: direct first, then one
+explicit `MINERU_PDF_PROXY_URL` fallback only for retryable direct failures.
+Metadata/discovery API requests continue to use `FETCH_PROXY`.
 
 ## 5. Explicitly removed / not used
 
@@ -237,3 +265,32 @@ wait timeouts remain allowed because they are not PDF conversion timeouts.
 For manual metadata matching, title/author/affiliation/abstract/keyword/DOI
 candidates come from the converted Markdown first 100 lines as front-matter
 evidence before PDF title fallback. DOI gates stay strict.
+
+## 9. OpenAlex credentials
+
+OpenAlex API calls use two optional environment variables for polite pool / API key access:
+
+| Variable | Purpose | Required |
+| --- | --- | --- |
+| `OPENALEX_EMAIL` | `mailto=` param for polite pool (rate-limit boost) | No (anonymous fallback) |
+| `OPENALEX_API_KEY` | `Authorization: Bearer` for higher rate limits | No (anonymous fallback) |
+
+**Contract:**
+- Only read from process environment variables. No `.env` file, no config file, no file-based fallback.
+- Load once per request via `src.services.openalex_credentials.load_openalex_credentials()`.
+- Missing or empty variables → anonymous access (not an error).
+- Consumers (`src.discovery.search_openalex`, `src.fetch.fetch_openalex`) import from the centralized module, never read `os.environ` directly.
+- Credential values (email, API key) must never appear in logs, error messages, reports, or snapshot output. Use `safe_summary()` or `safe_request_error_summary()` for diagnostics.
+- The pack_repo secret scanner (`scripts/pack_repo.py`) tracks hardcoded credential assignments (`OPENALEX_EMAIL=…`, `OPENALEX_API_KEY=…`) and blocks pack if found outside `tests/`.
+
+**Usage (environment setup):**
+
+```bash
+# PowerShell
+$env:OPENALEX_EMAIL="your@email.com"
+$env:OPENALEX_API_KEY="your_key_if_needed"
+
+# Git Bash / Linux
+export OPENALEX_EMAIL="your@email.com"
+export OPENALEX_API_KEY="your_key_if_needed"
+```

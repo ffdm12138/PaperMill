@@ -173,6 +173,10 @@ OpenAlex/CrossRef discovery 只是候选来源；`scripts/discover_papers.py --h
 `stage_network_metadata_to_paper_raw.py` / `PaperRawAllocator` duplicate gate 必须继续硬拦。
 OpenAlex 凭据只能来自环境变量 `OPENALEX_EMAIL` / `OPENALEX_API_KEY`，源码、文档、
 日志和 snapshot 中不得出现真实 key/email；文档示例只能使用 placeholder。
+OpenAlex credentials are loaded once per API request via
+`src.services.openalex_credentials.load_openalex_credentials()`; missing
+credentials fall back to anonymous access. Consumers must not read `os.environ`
+directly or import `OPENALEX_EMAIL`/`OPENALEX_API_KEY` as module-level constants.
 metadata-only paper_raw PDF fetch 只补齐已有 16 位 `data/paper_raw/<paper_number>/` 工作区：
 DOI 只来自 `<paper_number>.metadata.json`，不读 `doi.csv`、不接受额外 DOI list、不分配新
 paper_number；成功 PDF 必须经 duplicate guard / `PaperRawAllocator.attach_pdf()` 落为
@@ -292,3 +296,175 @@ ingest duplicate guard 是前置硬门禁，不是后置清理：
 - `*.metadata.candidates.json` / `*.metadata.patch.json` / resolver report 都是 sidecar 诊断文件，不是正式 metadata；DuplicateIndex 只读正式 `*.metadata.json` 与 PDF hash，不得把 sidecar DOI 当成硬重复来源。
 - ingest duplicate guard 必须覆盖**所有** paper_raw 工作区，不仅是 16 位编号目录。`data/paper_raw/` 下存在两类工作区：(1) 严格 16 位 `paper_number` staging 工作区（如 `0000000000000206/`），(2) 历史 / untitled / formalized 工作区（如 `1979_sykest_untitled/`，内部带 `.paper.number` marker 与 `metadata.paper_number`）。`build_ingest_duplicate_index()` 通过 `is_paper_raw_workspace()`（依据是否存在 metadata/import_status/stage_manifest/paper.number/pdf/md 等资产）识别工作区，绝不把“不是 16 位编号目录”当成“不是 paper_raw 工作区”。`scripts/audit_paper_raw_duplicate_workspaces.py` 负责审计并清理（移入 `quarantine/duplicate_workspaces/`，不删除、不回收 paper_number、不降 `max_number`）。
 - `scripts/audit_paper_number_ledger.py --detect-orphans` 可区分正常 `metadata_only_workspace` 与异常 `empty_orphan_dir`；只有显式 `--fix-empty-orphans --apply --reason ...` 才能清理严格空目录，metadata-only workspace 绝不能清理。
+
+## 9. Keyword metadata discovery concurrency rule
+
+When collecting paper metadata from keywords via `scripts/discover_papers.py`, do not
+run only one keyword query unless the user explicitly asks for a single query.
+
+**Default behavior for broad discovery tasks:**
+
+- Split the topic into 3–8 focused keyword queries.
+- Prefer `scripts/discover_papers_concurrent.py` (the in-process coordinator wrapper) when available.
+- Run with `--max-workers 3` or `--max-workers 4` for normal use; this is the global lane concurrency cap.
+- Use smaller batches if API rate limits, network errors, or machine load become a problem.
+- Each concurrent job may use `--stage-to-paper-raw --apply` when the user wants metadata staged.
+
+**Why concurrent execution is safe:**
+
+- Network queries (OpenAlex / CrossRef) are HTTP calls — they share no state.
+- All `paper_raw` writes go through `PaperRawAllocator`, which serializes write transactions
+  via `data/paper_raw/.paper_raw_write.lock` (lock order: `.paper_raw_write.lock` →
+  `paper_number_ledger.lock` → workspace/file writes).
+- Final duplicate guard + `paper_number` allocation + metadata write are inside the same
+  allocator write critical section. The staging loop may perform an early pre-check,
+  but correctness relies on the allocator-side final duplicate guard.
+- `paper_number` allocation is monotonic and never recycles numbers.
+- Apply mode does not use stale `peek_next_numbers()`.
+
+**Never** bypass the allocator by manually creating `data/paper_raw/<number>/` directories.
+**Never** precompute `paper_number` in shell scripts.
+**Never** disable duplicate checks to improve speed.
+
+### Standard concurrent metadata discovery template
+
+Use `scripts/discover_papers_concurrent.py` (preferred) for broad keyword discovery:
+
+```bash
+conda run -n mineru python scripts/discover_papers_concurrent.py \
+  --query "keyword query 1" \
+  --query "keyword query 2" \
+  --query "keyword query 3" \
+  --max-workers 4 \
+  --mode hybrid --refresh-pages 2 --backfill-pages 5 --page-size 50 \
+  --max-candidates 50 \
+  --stage-to-paper-raw --apply
+```
+
+Or use the manual `& wait` background pattern (fallback if the wrapper is not available):
+
+```bash
+# Git Bash (conda)
+mkdir -p data/discovery/logs
+
+conda run -n mineru python scripts/discover_papers.py "keyword query 1" \
+  --stage-to-paper-raw --apply --max-candidates 50 \
+  > data/discovery/logs/discover_kw1.log 2>&1 &
+
+conda run -n mineru python scripts/discover_papers.py "keyword query 2" \
+  --stage-to-paper-raw --apply --max-candidates 50 \
+  > data/discovery/logs/discover_kw2.log 2>&1 &
+
+conda run -n mineru python scripts/discover_papers.py "keyword query 3" \
+  --stage-to-paper-raw --apply --max-candidates 50 \
+  > data/discovery/logs/discover_kw3.log 2>&1 &
+
+wait
+
+# Post-batch audit
+python scripts/audit_paper_number_ledger.py --strict --detect-orphans
+python scripts/audit_ingest_duplicates.py --strict
+```
+
+### Dual-lane keyword notebooks (Refresh + Backfill)
+
+Each original keyword has an independent progress notebook under
+`data/discovery/keyword_notebooks/<safe_slug>__<fingerprint8>.json`
+(runtime-only, never committed or snapshotted). Active discovery uses
+notebook schema v2 plus durable page journals under
+`data/discovery/pending_pages/`.
+
+- **Refresh** always starts from `cursor="*"`, but each run gets a unique
+  `refresh_run_id`, so repeated first-page scans cannot overwrite or suppress
+  changed result sets.
+- **Backfill** resumes from the notebook's trusted cursor. A provider page is
+  atomically written to the page journal first; only then may Backfill commit
+  the next cursor with expected-cursor CAS.
+- `max_candidates` is a pending-queue drain budget only. It must not delete or
+  skip fetched-but-unprocessed candidates.
+- Pending candidates use claim/lease fields and DOI or title-resolution locks.
+  DOI candidates are serialized by normalized DOI; no-DOI candidates use a
+  title/year/first-author resolution lock before switching to the DOI lock.
+- Discovery staging records provenance in a sidecar receipt such as
+  `<paper_number>.discovery_receipt.json`; do not add discovery fields to
+  metadata schema v2.0. The receipt is identity/provenance evidence, NOT a
+  standalone terminal proof — reconciliation must verify metadata, manifest,
+  import_status, and ledger state before marking a candidate staged.
+- Workspace reconciliation distinguishes three lifecycle states: (A) paper_raw
+  staging (metadata + receipt + marker + ledger `metadata_staged`), (B)
+  formalized pending commit (folder renamed to paper_id, ledger `reserved`),
+  (C) committed papers (ledger `active`). Formal workspaces (B/C) must NOT be
+  re-staged by discovery; only paper_raw staging workspaces can reuse a paper
+  number for in-place recovery.
+- Provider errors are classified as `terminal` (400/401/403/404/410/422) or
+  `retryable` (408/425/429/500/502/503/504). Terminal failures do not retry
+  automatically; retryable failures use persistent exponential backoff
+  (`next_retry_at` in the notebook backfill state). 403 with a Retry-After
+  header is treated as retryable (rate-limited).
+- Backfill cursor advances only after a successful page journal write.
+  `cursor_conflicts` counter is persisted to disk before
+  `CursorConflictError` is raised. `--reset-backfill` clears terminal/retry
+  state and resets the cursor.
+- Durable JSON writes use a unified atomic helper: tmp write -> flush ->
+  fsync(tmp file) -> JSON validate -> os.replace -> fsync(parent dir, POSIX
+  only). Windows uses best-effort (no directory fsync).
+- Discovery-only output must use immutable export files plus atomic manifests;
+  never repeatedly append to one shared JSONL file.
+- Runtime notebooks, pending pages, locks, exports, reports, logs, and DOI
+  candidates are excluded from git and snapshot.
+
+`--mode hybrid` (default) schedules Refresh and Backfill lanes through the same
+in-process coordinator used by `discover_papers.py` and
+`discover_papers_concurrent.py`. `--max-workers` is the global lane concurrency
+limit, not a keyword subprocess count. Provider limiters are shared across all
+keywords within the coordinator run.
+
+Important semantics:
+
+- `staged=0` does NOT mean a keyword's history is exhausted. A keyword is
+  only exhausted when every active backfill state has `exhausted=true`.
+  Refresh can always run again to catch newly-published or re-ranked work.
+- Backpressure uses high/low watermarks; at the hard threshold, Backfill and
+  new Refresh network pages pause while recovery and pending drain continue.
+- v1 notebook cursors are unsafe. Active discovery fails closed and requires
+  `scripts/migrate_discovery_notebooks_v2.py`; do not manually delete
+  `pending_pages` to “fix” stuck progress.
+- `scripts/manage_discovery_keywords.py` provides `--list`, `--show`,
+  `--enable`, `--disable`, and `--reset-backfill "keyword"` (scoped to one
+  keyword; never batch-resets all keywords).
+- Do NOT report repeat-run counts as page numbers or search rounds.
+
+### Broad keyword discovery checklist
+
+When the user asks to collect metadata for a broad topic:
+
+1. Generate 3–8 focused keyword queries.
+2. Prefer `scripts/discover_papers_concurrent.py --max-workers 4`.
+3. Use `--stage-to-paper-raw --apply` only when the user wants actual staging.
+4. Do not manually create `paper_raw` directories.
+5. After the batch, run:
+   - `python scripts/audit_paper_number_ledger.py --strict --detect-orphans`
+   - `python scripts/audit_ingest_duplicates.py --strict`
+6. Report: number of queries; staged count; duplicate count; failed count; audit result.
+
+## 10. PDF transport and open-source notices
+
+- PDF/HTML content fetching uses `src/fetch/pdf_transport.py`: direct first,
+  `requests.Session().trust_env = False`, then one terminal explicit
+  `MINERU_PDF_PROXY_URL` fallback only for retryable direct failures.
+- `FETCH_PROXY` remains for metadata/discovery API requests. Do not move
+  Crossref/OpenAlex/Unpaywall metadata queries to PDF transport.
+- Fetch reports may include `transport_policy` and sanitized
+  `transport_attempts`; metadata JSON must not contain transport attempts,
+  proxy URLs, cookies, authorization headers, TDM tokens, or API keys.
+- Original repository code is covered by the repository license. Dependencies,
+  tools, services, models, PDFs, converted Markdown, images, metadata, and
+  writing outputs keep their own licenses or terms. Do not claim the entire
+  stack is MIT licensed.
+- Maintain `THIRD_PARTY_NOTICES.md` when adding dependencies, copied/adapted
+  source, external executables, model/data assets, or service integrations.
+- MinerU must be recorded as MinerU Open Source License based on Apache-2.0
+  with additional terms. PyMuPDF/MuPDF must be recorded as AGPL-or-commercial.
+- Run read-only audits when changing dependencies or provenance-sensitive code:
+  `python scripts/audit_third_party_licenses.py --strict` and
+  `python scripts/audit_source_provenance.py --strict`.

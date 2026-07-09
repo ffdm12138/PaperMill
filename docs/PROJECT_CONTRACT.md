@@ -49,12 +49,13 @@
 - ingest duplicate guard 必须覆盖**所有** paper_raw 工作区，不仅 16 位编号目录。`data/paper_raw/` 下有两类工作区：严格 16 位 `paper_number` staging 工作区，和历史/untitled/formalized 工作区（folder 名非 16 位，但内部带 `*.paper.number` marker 与 `metadata.paper_number`/`paper_raw_id`）。判断 paper_raw 工作区依据 `is_paper_raw_workspace()`（是否存在 `*.metadata.json`/`.import_status.json`/`stage_manifest.json`/`*.paper.number`/`*.pdf`/`*.md` 等资产），不得仅凭目录名是否为 16 位数字。重复工作区由 `scripts/audit_paper_raw_duplicate_workspaces.py` 审计并清理：移入 `data/paper_raw/quarantine/duplicate_workspaces/`，**绝不删除、绝不回收 paper_number、绝不降低 `max_number`**，ledger 对应 entry 置 `state=quarantined_duplicate` 并 repoint `folder_path` 到 quarantine。
 - `paper_number` 为 16 位长期编号，只递增不回收；staging 阶段先写 ledger `allocating`，创建 folder/marker 后转 `reserved`，metadata/PDF stage 完成后可为 `metadata_staged`，`formalize_paper_raw.py` 只复用/校验该 reserved/staged number，并在改名后 repoint ledger folder_path；commit 成功时 activate（state=active），commit 失败回滚为 reserved。
 - 正常 ingest 的 `paper_number` 只能由 `PaperNumberLedger` 分配，采用 monotonic ledger-first：下一号必须基于 ledger max、ledger items、现有 16 位 `paper_raw` 目录和所有 `.paper.number` marker 的最大值 +1；不得回收 empty orphan / marker-only / metadata-only 编号。所有 `paper_raw` 写事务使用 `.paper_raw_write.lock` 串行化，锁顺序只能是 `paper_raw_write.lock -> paper_number_ledger.lock -> workspace/file writes`，ledger lock 只短暂用于 ledger 读写。特殊清零或 `paper_raw` 压缩重编号仅允许 admin-only `scripts/reset_paper_number_ledger.py`，默认 dry-run，`--apply` 必须显式确认并填写 `--reason`，且 `data/papers/` 非空时必须拒绝。
-- `*.metadata.candidates.json` / `*.metadata.patch.json` / resolver report 是 sidecar 诊断文件，不是正式 metadata，不能进入 DuplicateIndex。已 citation-ready 的 metadata 默认 no-op；`--force` 可重新解析但不能绕过 duplicate gate。OpenAlex/CrossRef discovery 的 `--hide-existing` 只影响候选报告显示，不影响 staging 硬拦。OpenAlex credentials 只能来自 `OPENALEX_EMAIL` / `OPENALEX_API_KEY` 环境变量，真实 secret 不得入源码、日志、文档或 snapshot。
+- `*.metadata.candidates.json` / `*.metadata.patch.json` / resolver report 是 sidecar 诊断文件，不是正式 metadata，不能进入 DuplicateIndex。已 citation-ready 的 metadata 默认 no-op；`--force` 可重新解析但不能绕过 duplicate gate。OpenAlex/CrossRef discovery 的 `--hide-existing` 只影响候选报告显示，不影响 staging 硬拦。OpenAlex credentials 只能来自 `OPENALEX_EMAIL` / `OPENALEX_API_KEY` 环境变量，真实 secret 不得入源码、日志、文档或 snapshot。Credentials load once per request via `src.services.openalex_credentials.load_openalex_credentials()`; consumers must not read `os.environ` directly. Missing credentials fall back to anonymous access.
 - `.paper.number` 文件名解析必须裁剪完整 `.paper.number` 后缀，禁止用 `Path.stem`；所有 marker 与 ledger 写入必须原子化，并通过 lock 串行化。
 - 测试不得访问真实网络；网络 provider 必须 mock。
 - 正式入库必须通过 `validate_v2_library.py` 与 `audit_metadata_quality.py` 的硬错误检查；未通过的 `paper_raw` 不得入库。
 - `write/jobs/` 是写作运行时，不提交（只跟踪 `.gitkeep`）；TeX 不得直接引用 `data/papers`、`data/raw` 或 `data/paper_raw`，只能读 job-local 复制副本。
 - Sci-Hub resolver 已移除（removed）：项目不提供、不注册 Sci-Hub resolver；PDF 获取按「原始链接 → OA → header_based DOI landing fallback（默认 `https://doi.org/{doi}`，无需额外配置）→ 失败报告」优先级执行，不再有任何 unsafe fallback。
+- PDF/HTML content transport is direct-first via `src/fetch/pdf_transport.py`, then one explicit `MINERU_PDF_PROXY_URL` fallback only for retryable direct failures. Metadata/discovery API requests keep the existing `FETCH_PROXY` behavior. Persist sanitized `transport_attempts` only in fetch reports, never in metadata JSON.
 - metadata-only PDF fetch priority: 1. original links already present in metadata; 2. legal OA resolvers; 3. publisher-specific / preprint / PMC resolvers (sciengine_direct, biorxiv, pmc_oa); 4. header_based DOI landing fallback, default https://doi.org/{doi}; 5. rich failure report.
 - 每次代码改动后必须运行测试并生成 `mineru_snapshot.zip`。
 - 新 ingest 的 `data/paper_raw/<id>/` 必须使用 16 位 `paper_number`；staging 即 reserve ledger 并写 `<paper_number>.paper.number` marker。正常 CLI 只接受 `--paper-number` / `--paper-numbers`；6 位旧编号只允许 `scripts/legacy/` migration 工具处理。
@@ -154,6 +155,31 @@ data/papers/<paper_id>/<paper_id>.pdf
 data/papers/<paper_id>/images/
 data/papers/<paper_id>/<16位编号>.paper.number
 ```
+
+## 关键词 discovery 双通道契约（Refresh + Backfill）
+
+每个关键词有 schema v2 小本本与 durable page journal。Cursor 只表示 provider 页面已经可靠保存，
+不表示候选已经处理完。
+
+- **Refresh** 每次从 `cursor="*"` 扫描固定页数；page_id 包含 `refresh_run_id`，重复首页扫描不会覆盖旧 journal。
+- **Backfill** 从 trusted cursor 继续；provider page 必须先写入 `data/discovery/pending_pages/`，再用 expected-cursor CAS 提交 notebook cursor。
+- Backfill startup must first recover the notebook's `last_committed_page_id`: a fetched page whose cursor was already CAS-committed is marked `cursor_committed` before any new provider request. Already committed/draining/drained pages are idempotent no-ops; missing or contradictory journals are recovery corruption and must fail closed.
+- Backfill notebook generations use an expansion-level composite Backfill signature containing page size and provider Backfill sort/filter identity. Refresh sort never invalidates Backfill cursors; any Backfill sort/filter/page-size change creates a new active expansion generation and preserves the old one inactive.
+- `max_candidates` 只限制 pending queue 本轮 drain 数量，不得丢弃已抓取候选。
+- candidate 处理使用 claim/lease；DOI 处理使用 normalized DOI lock；无 DOI 候选先使用 title/year/first-author resolution lock，补齐 DOI 后再切换 DOI lock。
+- DOI title-resolution results must be persisted back into the page journal, including the resolved DOI and provider raw record evidence, while keeping the original `candidate_id` stable.
+- discovery staging provenance 写入 `<paper_number>.discovery_receipt.json` sidecar，禁止写入 metadata schema v2.0。
+- Discovery receipt 是 identity/provenance 证据，**不是**单独的 terminal proof。Receipt identity match 仅定位 workspace，不能直接标记 candidate 为 staged。Reconciliation 必须验证 metadata 合法、manifest/import_status 存在、ledger 状态终态后才可标记 staged。Reconciliation must match `candidate_id` + `page_id` + `keyword_id` + normalized DOI, not DOI alone.
+- Workspace reconciliation 区分三种生命周期: (A) paper_raw staging (metadata + receipt + marker + ledger `metadata_staged`), (B) formalized pending commit (folder renamed to paper_id, ledger `reserved`, marker 保留真实 paper number), (C) committed papers (ledger `active`, ledger folder_path 指向 formal workspace)。Formal workspace (B/C) 禁止 restage；receipt 缺失但其余证据完整时只允许原子 backfill receipt。
+- Provider 错误分为 `terminal` (400/401/403/404/410/422 — 不会因重试成功) 和 `retryable` (408/425/429/500/502/503/504 — 临时错误)。403 有 Retry-After 证据时视为 retryable (限流)。Terminal failure 不在每轮 Backfill 中重复请求；retryable failure 遵守持久化指数退避 (`next_retry_at`)。
+- Backfill cursor 只在成功 journal 后推进。cursor conflict 计数器在 `CursorConflictError` 抛出前持久化到磁盘。
+- Durable JSON 写入使用统一 atomic helper: tmp write -> flush -> fsync(tmp file) -> JSON 校验 -> os.replace -> fsync(parent dir, POSIX only)。Windows 不支持 directory fsync，使用 best-effort。
+- DOI duplicate checks may use a DOI-only index for performance, but final allocation still performs a durable DOI check inside the global staging lock.
+- discovery-only 输出必须使用 immutable export JSONL + atomic manifest，不得反复 append 到共享 JSONL。
+- `--max-workers` 是单一 in-process coordinator 的全局 lane 上限；OpenAlex/Crossref rate limiter 在所有关键词间共享。
+- `--max-pages-total` 是实际 provider network page request 总预算；恢复已存在 journal 不消耗预算。
+- v1 notebook cursor 不可信；active discovery 必须 fail closed 并要求运行 `scripts/migrate_discovery_notebooks_v2.py`。
+- runtime notebook、pending pages、locks、exports、logs、reports、doi_candidates 不入 git/snapshot。
 
 ## 验收命令
 

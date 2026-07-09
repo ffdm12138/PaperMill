@@ -35,6 +35,11 @@ from config.settings import (
 )
 from src.cleaner import MinerUOutputCleaner
 from src.converter import MinerUConverter
+from src.discovery.discovery_receipt import (
+    DiscoveryReceiptConflictError,
+    build_receipt_payload,
+    write_or_validate_discovery_receipt,
+)
 from src.discovery.models import normalize_doi
 from src.file_fingerprint import compute_file_hashes, compute_sha256
 from src.naming import safe_child, sanitize_paper_id, validate_paper_id
@@ -390,10 +395,27 @@ def _read_json(path: Path, default: dict | None = None) -> dict:
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
+    """Write text atomically with fsync durability.
+
+    tmp write -> flush -> fsync(tmp) -> os.replace -> fsync(parent dir, POSIX).
+    """
+    from src.utils.atomic_io import _fsync_dir
+
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def validate_metadata_schema(data: dict) -> list[str]:
@@ -1426,9 +1448,42 @@ class PaperRawAllocator:
             f"{paper_number}.pdf",
             "stage_manifest.json",
             f"{paper_number}.asset_manifest.json",
+            "source_records/*.json",
             "*.paper.number",
         )
         return any(any(folder.glob(pattern)) for pattern in patterns)
+
+    def _write_discovery_receipt(
+        self,
+        folder: Path,
+        paper_number: str,
+        context: dict[str, Any],
+    ) -> str:
+        """Write/validate a discovery receipt via the shared receipt service.
+
+        Delegates to :mod:`src.discovery.discovery_receipt` so the allocator
+        and the pending-queue drain loop share identical create/idempotent/
+        conflict semantics. Raises :class:`DiscoveryReceiptConflictError` when
+        an existing receipt's identity disagrees; never overwrites.
+        """
+        candidate_id = str(context.get("candidate_id") or "")
+        page_id = str(context.get("page_id") or "")
+        keyword_id = str(context.get("keyword_id") or "")
+        normalized_doi = normalize_doi(context.get("normalized_doi") or context.get("doi") or "")
+        provider = str(context.get("provider") or "").strip().lower()
+        if not candidate_id or not page_id or not normalized_doi:
+            raise ValueError("discovery receipt context requires candidate_id, page_id, and normalized_doi")
+        payload = build_receipt_payload(
+            candidate_id=candidate_id,
+            page_id=page_id,
+            keyword_id=keyword_id,
+            normalized_doi=normalized_doi,
+            paper_number=paper_number,
+            provider=provider,
+        )
+        path = folder / f"{paper_number}.discovery_receipt.json"
+        result = write_or_validate_discovery_receipt(path, payload)
+        return normalize_repo_path(result.path)
 
     def _mark_allocation_failure(self, paper_number: str, folder: Path, exc: Exception) -> None:
         if self._workspace_has_core_assets(folder, paper_number):
@@ -1555,16 +1610,48 @@ class PaperRawAllocator:
         *,
         source_type: str = "network_search",
         raw_record: dict | None = None,
+        discovery_receipt_context: dict[str, Any] | None = None,
+        reuse_paper_number: str | None = None,
     ) -> dict:
+        """Stage a network-metadata record into a paper_raw workspace.
+
+        When ``reuse_paper_number`` is given, no new paper number is allocated:
+        the allocator completes staging into the EXISTING workspace previously
+        reserved for the same candidate (discovery-context match). This is the
+        crash-recovery path — it must never recycle a hole for a different
+        candidate. The duplicate check is scoped to skip the reused workspace.
+        """
         self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
         with FileLock(str(self._lock_path)):
+            reuse_number = str(reuse_paper_number or "").strip()
+            if reuse_number and not _PAPER_NUMBER_RE.match(reuse_number):
+                raise ValueError(f"invalid reuse_paper_number: {reuse_number}")
             if metadata:
-                dup = check_metadata_duplicate(metadata, paper_raw_dir=self.paper_raw_dir, papers_dir=self.papers_dir)
+                dup = check_metadata_duplicate(
+                    metadata,
+                    paper_raw_dir=self.paper_raw_dir,
+                    papers_dir=self.papers_dir,
+                    skip_paper_number=reuse_number or None,
+                )
                 if dup.blocking:
                     raise DuplicateIngestError(dup)
-            workspace = self._allocate_workspace_unlocked()
-            source_id = workspace["paper_number"]
-            folder = Path(workspace["folder"])
+            if reuse_number:
+                folder = safe_child(self.paper_raw_dir, reuse_number)
+                if not folder.is_dir():
+                    raise FileNotFoundError(
+                        f"reuse_paper_number workspace not found: {folder}"
+                    )
+                source_id = reuse_number
+                workspace = {
+                    "paper_number": source_id,
+                    "paper_raw_id": source_id,
+                    "folder": str(folder),
+                    "reused": True,
+                }
+            else:
+                workspace = self._allocate_workspace_unlocked()
+                source_id = workspace["paper_number"]
+                folder = Path(workspace["folder"])
             try:
                 data = metadata or empty_metadata(source_id, source_type=source_type)
                 data["paper_number"] = source_id
@@ -1581,8 +1668,31 @@ class PaperRawAllocator:
                 )
                 data["source"] = source
                 if raw_record is not None:
+                    if discovery_receipt_context:
+                        raw_record = {
+                            **raw_record,
+                            "discovery_context": {
+                                **discovery_receipt_context,
+                                "normalized_doi": normalize_doi(
+                                    discovery_receipt_context.get("normalized_doi")
+                                    or discovery_receipt_context.get("doi")
+                                    or metadata_doi(data)
+                                ),
+                            },
+                        }
                     write_metadata_source_record(folder, provider, raw_record)
                 atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
+                receipt_path = ""
+                if discovery_receipt_context:
+                    receipt_context = {
+                        **discovery_receipt_context,
+                        "normalized_doi": normalize_doi(
+                            discovery_receipt_context.get("normalized_doi")
+                            or discovery_receipt_context.get("doi")
+                            or metadata_doi(data)
+                        ),
+                    }
+                    receipt_path = self._write_discovery_receipt(folder, source_id, receipt_context)
                 match_status = str(((data.get("metadata_match") or {}).get("status")) or "")
                 doi = metadata_doi(data)
                 match_warnings = list(((data.get("metadata_match") or {}).get("warnings") or []))
@@ -1621,6 +1731,8 @@ class PaperRawAllocator:
                     },
                 )
                 self.ledger.mark_metadata_staged(source_id, folder)
+                if receipt_path:
+                    workspace["receipt_path"] = receipt_path
                 return workspace
             except Exception as exc:
                 self._mark_allocation_failure(source_id, folder, exc)
@@ -2439,11 +2551,25 @@ class PaperNumberLedger:
             self._save_unlocked(data)
 
     def _save_unlocked(self, data: dict) -> None:
+        """Write ledger JSON atomically with fsync (caller holds lock)."""
+        from src.utils.atomic_io import _fsync_dir
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        json.loads(tmp.read_text(encoding="utf-8"))
-        os.replace(tmp, self.path)
+        try:
+            with tmp.open("w", encoding="utf-8") as fh:
+                fh.write(json.dumps(data, ensure_ascii=False, indent=2))
+                fh.flush()
+                os.fsync(fh.fileno())
+            json.loads(tmp.read_text(encoding="utf-8"))
+            os.replace(tmp, self.path)
+            _fsync_dir(self.path.parent)
+        except Exception:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
 
     def paper_number_for(self, folder: Path) -> str | None:
         folder_norm = normalize_repo_path(folder)
@@ -2890,7 +3016,15 @@ class PaperNumberLedger:
             return number
 
     def mark_metadata_staged(self, number: str, folder: str | Path) -> str:
-        """Mark a reserved paper_raw workspace after metadata/stage files exist."""
+        """Mark a reserved paper_raw workspace after metadata/stage files exist.
+
+        Accepts the normal forward transitions (``allocating``/``reserved`` →
+        ``metadata_staged``) plus the recovery transitions
+        ``stage_failed``/``abandoned`` → ``metadata_staged``. The recovery
+        transitions are only safe because the caller is completing the SAME
+        in-progress allocation for the SAME candidate (identified by discovery
+        context), never recycling a hole for a different candidate.
+        """
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
         folder = Path(folder)
@@ -2899,7 +3033,14 @@ class PaperNumberLedger:
             items = data.setdefault("items", {})
             existing = items.get(number) or {}
             state = existing.get("state") or LEDGER_RESERVED
-            if state not in {LEDGER_ALLOCATING, LEDGER_RESERVED, LEDGER_METADATA_STAGED}:
+            allowed = {
+                LEDGER_ALLOCATING,
+                LEDGER_RESERVED,
+                LEDGER_METADATA_STAGED,
+                STAGE_FAILED,
+                LEDGER_ABANDONED,
+            }
+            if state not in allowed:
                 raise ValueError(f"cannot mark metadata_staged for number {number} in state {state}")
             items[number] = {
                 "folder_name": folder.name,
@@ -3482,6 +3623,7 @@ class V2PaperCommitService:
         final = safe_child(self.papers_dir, pid)
         final_installed = False
         activated = False
+        success = False
         try:
             shutil.copytree(src, staging)
             stg_output = staging / "output"
@@ -3539,6 +3681,7 @@ class V2PaperCommitService:
             }
             if reference_warnings:
                 result["warnings"] = reference_warnings
+            success = True
             return result
         except Exception as exc:
             # ROLLBACK: remove staging + final, deactivate ledger back to source.
@@ -3568,6 +3711,21 @@ class V2PaperCommitService:
                 "errors": errors,
                 "rollback_errors": rollback_errors,
             }
+        finally:
+            # Cleanup for BaseException paths (KeyboardInterrupt / SIGTERM /
+            # SystemExit) that bypass the except Exception clause above.
+            # The rmtree calls are idempotent (ignore_errors=True), so for
+            # the normal Exception path they are no-ops after the except
+            # block already cleaned up.
+            if not success:
+                shutil.rmtree(staging, ignore_errors=True)
+                if final_installed:
+                    shutil.rmtree(final, ignore_errors=True)
+                if activated:
+                    try:
+                        self.ledger.deactivate_to_source(marker_number, src)
+                    except Exception:
+                        pass  # don't mask the propagating exception
 
     def _postcheck_final(self, final: Path, pid: str, number: str) -> list[str]:
         """Lightweight self-consistency check on the just-installed formal folder."""

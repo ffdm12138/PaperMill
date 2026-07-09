@@ -40,3 +40,24 @@ debug-only and must be explicit via `--allow-cpu` on the lower-level batch entry
 `mineru-api` must be started with `CUDA_VISIBLE_DEVICES=0` in its own shell;
 setting that variable only in a later client process cannot change an already
 running service.
+
+## API Credentials
+
+OpenAlex credentials (`OPENALEX_EMAIL`, `OPENALEX_API_KEY`) are loaded from
+process environment variables only. There is no `.env` file, no config file
+fallback. Missing credentials are transparent — the caller falls back to
+anonymous access instead of raising an error.
+
+Credentials are loaded once per request via the centralized module
+`src.services.openalex_credentials`. Internal helper methods accept
+`OpenAlexCredentials` as a parameter; the credentials object is never stored
+on the module, never serialised, and never persisted into data structures
+returned to callers.
+
+**No credential values must appear in:**
+- log output (use `OpenAlexCredentials.safe_summary()` → `"email=yes api_key=yes"`)
+- error messages (use `safe_request_error_summary(exc)` instead of `str(exc)`)
+- returned `PaperCandidate` or `FetchResult` objects
+- snapshot / archive / report outputs
+- plaintext in source files (the secret scanner in `scripts/pack_repo.py`
+  detects hardcoded assignments and blocks packaging)

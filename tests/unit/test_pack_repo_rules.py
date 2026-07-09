@@ -77,6 +77,7 @@ def _set_profile(profile: str) -> None:
     # root scratch
     "=",
     "keep_rank",
+    "snapshot_manifest.json",
     # gitkeep inside runtime (not a real gitkeep)
     "write/jobs/.gitkeep/not_allowed.txt",
     # local agent/research tooling state
@@ -241,7 +242,7 @@ def test_pack_repo_secret_scan_catches_generic_bearer_token():
     token = "Bearer " + "A" * 32
     findings = pr.scan_text_for_secrets(f"Authorization: {token}", "sample.txt")
     assert findings
-    assert findings[0]["rule"] in {"authorization_bearer_literal", "bearer_literal"}
+    assert findings[0].rule in {"authorization_bearer_literal", "bearer_literal"}
 
 
 def test_pack_repo_secret_scan_allows_bare_env_var_names():
@@ -564,6 +565,21 @@ class TestSnapshotManifest:
         assert len(sampling["papers_selected"]) == 5
         assert sampling["papers_total"] == 6
 
+    def test_snapshot_self_check_rejects_duplicate_manifest(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pr, "PROJECT_ROOT", tmp_path)
+        zip_path = tmp_path / "mineru_snapshot.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("snapshot_manifest.json", "{}")
+            zf.writestr("snapshot_manifest.json", "{}")
+
+        errors = pr._verify_snapshot_sampling(
+            zip_path,
+            {"paper_raw_selected": set(), "paper_raw_total": 0,
+             "papers_selected": set(), "papers_total": 0},
+        )
+
+        assert any("snapshot_manifest.json count is 2" in err for err in errors)
+
 
 class TestSecretScanWithSampling:
     """Secret scan must still work on sampled workspaces."""
@@ -589,7 +605,7 @@ class TestSecretScanWithSampling:
 
         findings = pr.scan_files_for_secrets(sampled)
         assert len(findings) >= 1, f"Must detect secret in sampled workspace, got {findings}"
-        assert any("data/paper_raw/0000000000000000" in f["path"] for f in findings)
+        assert any("data/paper_raw/0000000000000000" in f.path for f in findings)
 
     def test_secret_in_non_sampled_workspace_not_scanned(self, tmp_path, monkeypatch):
         """A secret in a non-sampled workspace is NOT scanned (it won't enter the zip)."""
@@ -659,6 +675,64 @@ class TestSecretScanWithSampling:
         for line in danger_lines:
             findings = pr.scan_text_for_secrets(line, "test_file.py")
             assert len(findings) >= 1, f"Should flag: {line!r}"
+
+    def test_openalex_unified_quoted_assignment_caught(self):
+        """OPENALEX_EMAIL with quoted value must be caught (1 finding)."""
+        findings = pr.scan_text_for_secrets(
+            'OPENALEX_EMAIL = "real@secret.org"\n', "test.py",
+        )
+        assert len(findings) == 1, f"Expected 1 finding, got {len(findings)}: {findings}"
+        assert findings[0].rule == "openalex_email_assignment"
+
+    def test_openalex_unquoted_assignment_caught(self):
+        findings = pr.scan_text_for_secrets(
+            "OPENALEX_API_KEY=real-secret-key-999\n", "test.py",
+        )
+        assert len(findings) == 1, f"Expected 1 finding, got {len(findings)}: {findings}"
+        assert findings[0].rule == "openalex_api_key_assignment"
+
+    def test_openalex_export_assignment_caught(self):
+        findings = pr.scan_text_for_secrets(
+            "export OPENALEX_EMAIL=spill@secret.org\n", "test.sh",
+        )
+        assert len(findings) == 1, f"Expected 1 finding, got {len(findings)}: {findings}"
+
+    def test_openalex_powershell_assignment_caught(self):
+        findings = pr.scan_text_for_secrets(
+            '$env:OPENALEX_API_KEY="ps-secret-key-888"\n', "test.ps1",
+        )
+        assert len(findings) == 1, f"Expected 1 finding, got {len(findings)}: {findings}"
+
+    def test_secret_finding_has_line_number(self):
+        """The SecretFinding must report the correct 1-indexed line number."""
+        text = "safe line\nOPENALEX_EMAIL=x@y.com\nsafe line"
+        findings = pr.scan_text_for_secrets(text, "test.py")
+        assert len(findings) == 1
+        assert findings[0].line == 2
+
+    def test_secret_finding_no_match_value(self):
+        """SecretFinding must NOT contain the matched secret value."""
+        findings = pr.scan_text_for_secrets(
+            'OPENALEX_API_KEY="super-secret-value-123"\n', "test.py",
+        )
+        assert len(findings) == 1
+        f = findings[0]
+        # Dataclass fields — must be these exact types
+        assert isinstance(f.line, int)
+        assert isinstance(f.rule, str)
+        assert isinstance(f.path, str)
+        # No match field
+        assert not hasattr(f, "match")
+        # repr must not contain secret
+        assert "super-secret-value" not in repr(f)
+
+    def test_secret_finding_is_frozen_dataclass(self):
+        """SecretFinding is a frozen dataclass — cannot be mutated."""
+        import dataclasses
+        assert dataclasses.is_dataclass(pr.SecretFinding)
+        assert pr.SecretFinding.__dataclass_fields__["rule"].type is str
+        assert pr.SecretFinding.__dataclass_fields__["path"].type is str
+        assert pr.SecretFinding.__dataclass_fields__["line"].type is int
 
 
 class TestManifestSurrogateRobustness:

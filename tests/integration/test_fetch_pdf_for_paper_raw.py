@@ -111,11 +111,21 @@ def test_apply_attaches_pdf_and_writes_sanitized_provenance(tmp_path, monkeypatc
             doi=doi,
             success=True,
             output_path=str(output),
-            pdf_url="https://example.test/p.pdf",
-            landing_url="https://example.test/landing",
+            pdf_url="https://example.test/p.pdf?X-Amz-Signature=SECRET&ok=1",
+            landing_url="https://example.test/landing?sig=SECRET",
             resolver="header_based",
             resolver_chain=["header_based"],
             access_mode="custom",
+            attempts=[{
+                "resolver": "header_based",
+                "status": "success",
+                "pdf_url": "https://example.test/p.pdf?X-Amz-Signature=SECRET",
+            }],
+            transport_attempts=[{
+                "mode": "direct",
+                "request_url": "https://example.test/p.pdf?X-Amz-Signature=SECRET",
+                "final_url": "https://example.test/p.pdf?sig=SECRET",
+            }],
         )
 
     monkeypatch.setattr("src.fetch.fetch_pipeline.fetch_pdf", fake_fetch)
@@ -136,6 +146,8 @@ def test_apply_attaches_pdf_and_writes_sanitized_provenance(tmp_path, monkeypatc
     # fetch_result.json is a SEPARATE file from the metadata source record.
     # metadata.source.raw_record_path must NOT point at fetch_result.json.
     assert metadata["source"]["raw_record_path"] != "source_records/fetch_result.json"
+    assert metadata["links"]["pdf_url"] == "https://example.test/p.pdf"
+    assert metadata["links"]["landing_url"] == "https://example.test/landing"
     fetch_path = folder / "source_records" / "fetch_result.json"
     assert fetch_path.exists()
     fetch_doc = json.loads(fetch_path.read_text(encoding="utf-8"))
@@ -144,6 +156,8 @@ def test_apply_attaches_pdf_and_writes_sanitized_provenance(tmp_path, monkeypatc
     assert fetch_result["headers_masked"] is True
     assert fetch_result["header_keys"] == ["User-Agent", "Cookie"]
     assert "secret" not in json.dumps(fetch_result)
+    assert "SECRET" not in json.dumps(fetch_result)
+    assert "X-Amz-Signature" not in json.dumps(fetch_result)
     manifest = json.loads((folder / f"{PN}.asset_manifest.json").read_text(encoding="utf-8"))
     assert manifest["files"]["pdf"]["path"] == f"{PN}.pdf"
     # stage_manifest must record the doi_fetch pdf_source pointing at fetch_result.json
@@ -151,6 +165,7 @@ def test_apply_attaches_pdf_and_writes_sanitized_provenance(tmp_path, monkeypatc
     assert stage["workflow_path"] == "network_metadata_pdf_fetch"
     assert stage["pdf_source"]["kind"] == "doi_fetch"
     assert stage["pdf_source"]["fetch_record_path"] == "source_records/fetch_result.json"
+    assert stage["pdf_source"]["pdf_url"] == "https://example.test/p.pdf"
     assert stage["staged_pdf"]["sha256"]
 
 

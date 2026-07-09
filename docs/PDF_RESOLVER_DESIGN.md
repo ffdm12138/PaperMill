@@ -47,13 +47,30 @@ All PDFs written to the final target **must** be non-empty and start with
 | ``_write_bytes_pdf()`` | ``validate_pdf_bytes(content)`` before writing. |
 | ``_copy_pdf()`` | Probe-reads first 5 bytes via ``validate_pdf_bytes``; copies remainder after the check. |
 
-## Proxy
+## PDF Content Transport
 
-All network requests use the shared ``src.fetch.proxy.get_fetch_proxies()``
-helper, which reads the ``FETCH_PROXY`` environment variable and returns a
-``{"http": ..., "https": ...}`` dict (or ``None`` for direct connection).
-This covers fetch resolvers, OA helpers, metadata/discovery lookups, and
-the pipeline downloader.
+PDF and landing-page content requests use `src/fetch/pdf_transport.py`.
+The policy is direct-first with `requests.Session().trust_env = False`, followed
+by one terminal explicit proxy attempt only for retryable direct failures.
+Retryable direct failures are connect/read timeout, connection/DNS/TLS/SSL or
+redirect transport errors, and HTTP 403, 408, 429, or 500-599. HTTP 451, 407,
+401, 404, 410, unsafe URLs, invalid URLs, oversized bodies, and invalid PDF
+content are terminal and do not trigger proxy fallback.
+
+PDF transport configuration is PDF-specific:
+
+- `MINERU_PDF_PROXY_URL` (default `http://127.0.0.1:7890`)
+- `MINERU_PDF_DISABLE_PROXY_FALLBACK`
+- `MINERU_PDF_DIRECT_TIMEOUT`
+- `MINERU_PDF_PROXY_TIMEOUT`
+
+Metadata/discovery API queries keep the existing `FETCH_PROXY` behavior through
+`src.fetch.proxy.get_fetch_proxies()`. Do not move metadata APIs to
+`pdf_transport.py`.
+
+Fetch reports contain `transport_policy: "direct_then_proxy"` and sanitized
+`transport_attempts`. Metadata JSON must not contain transport attempts, proxy
+URLs, headers, cookies, authorization values, or TDM tokens.
 
 ## Rules
 

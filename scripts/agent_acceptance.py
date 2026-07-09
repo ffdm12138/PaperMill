@@ -18,6 +18,7 @@ Exit 0 on success, non-zero on failure.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import signal
 import subprocess
@@ -58,19 +59,83 @@ def step(name: str) -> None:
     print(f"{'='*60}", flush=True)
 
 
+def run_command_with_timeout(
+    command: list[str],
+    *,
+    timeout_seconds: int | None = None,
+    cwd: Path | str = ROOT,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> int:
+    """Run a command with a process-tree-safe timeout.
+
+    This is the single runner used by every step of agent acceptance
+    (compileall, pytest fast/full/full-groups, pack_repo). It starts the child
+    in its own process group/session so a timeout can kill the WHOLE tree —
+    pytest plus any subprocesses spawned by tests (audit scripts, conversion
+    helpers). ``subprocess.run(timeout=...)`` only terminates the direct child,
+    which on Windows leaves orphaned grandchildren holding inherited stdout
+    handles; that can make a step appear to hang even after pytest prints its
+    final result, and the timeout never visibly fires.
+
+    Output is inherited (not piped) so it streams live with no reader thread or
+    pipe buffer to deadlock on. On timeout — or any interrupting exception —
+    the runner kills the full process tree in a ``finally`` block, waits
+    briefly for the handles to release, and returns 124 for timeouts.
+    """
+    print(f"  $ {' '.join(command)}", flush=True)
+    if timeout_seconds is not None:
+        print(f"  timeout: {timeout_seconds}s", flush=True)
+    popen_kwargs: dict = {"cwd": str(cwd), "env": env or os.environ.copy()}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(command, **popen_kwargs)
+    except FileNotFoundError as exc:
+        print(f"\n[FAIL] could not start {command[0]}: {exc}", flush=True)
+        if check:
+            sys.exit(127)
+        return 127
+
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        print(f"\n[TIMEOUT] {command[0]} exceeded {timeout_seconds}s — "
+              f"killing process tree (pid {proc.pid})", flush=True)
+        timed_out = True
+    except BaseException:
+        # KeyboardInterrupt, SystemExit, etc. — must still clean up.
+        timed_out = True
+        raise
+    finally:
+        # Kill the process tree on timeout OR interrupt.  Using ``finally``
+        # ensures cleanup runs even for BaseException (SIGTERM/KeyboardInterrupt)
+        # which would otherwise bypass an ``except TimeoutExpired`` clause.
+        if timed_out or proc.poll() is None:
+            _kill_process_tree(proc)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                print(f"  [WARN] pid {proc.pid} did not exit after kill", flush=True)
+
+    if timed_out:
+        if check:
+            sys.exit(124)
+        return 124
+    rc = proc.returncode
+    if check and rc != 0:
+        print(f"\n[FAIL] {command[0]} exited {rc}", flush=True)
+        sys.exit(rc)
+    return rc
+
+
 def run(cmd: list[str], *, check: bool = True, env: dict[str, str] | None = None,
         timeout: int | None = None) -> int:
-    print(f"  $ {' '.join(cmd)}", flush=True)
-    try:
-        result = subprocess.run(cmd, cwd=str(ROOT), env=env, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        print(f"\n[FAIL] {cmd[0]} timed out after {timeout}s", flush=True)
-        print(f"  cmd: {' '.join(cmd)}", flush=True)
-        sys.exit(124)
-    if check and result.returncode != 0:
-        print(f"\n[FAIL] {cmd[0]} exited {result.returncode}", flush=True)
-        sys.exit(result.returncode)
-    return result.returncode
+    """Backward-compatible wrapper around :func:`run_command_with_timeout`."""
+    return run_command_with_timeout(cmd, timeout_seconds=timeout, env=env, check=check)
 
 
 def verify_git_hygiene(root_path: Path | None = None) -> list[str]:
@@ -96,6 +161,10 @@ def verify_git_hygiene(root_path: Path | None = None) -> list[str]:
         "data/discovery/doi_candidates/",
         "data/discovery/pdf_fetch_logs/",
         "data/discovery/fetch_logs/",
+        "data/discovery/keyword_notebooks/",
+        "data/discovery/pending_pages/",
+        "data/discovery/locks/",
+        "data/discovery/exports/",
         "data/discovery/queries/",
         "write/jobs/",
         "output/",
@@ -114,7 +183,11 @@ def verify_git_hygiene(root_path: Path | None = None) -> list[str]:
         "data/import_work/.gitkeep",
         "data/discovery/doi_candidates/.gitkeep",
         "data/discovery/pdf_fetch_logs/.gitkeep",
+        "data/discovery/pending_pages/.gitkeep",
+        "data/discovery/locks/.gitkeep",
+        "data/discovery/exports/.gitkeep",
         "data/discovery/queries/.gitkeep",
+        "data/discovery/queries/keywords.example.txt",
         "write/jobs/.gitkeep",
         "reports/.gitkeep",
     }
@@ -140,6 +213,35 @@ def verify_git_hygiene(root_path: Path | None = None) -> list[str]:
         return ["git not available, cannot check git hygiene"]
     except Exception as e:
         return [f"git hygiene check failed: {e}"]
+
+
+def verify_root_hygiene(root_path: Path | None = None) -> list[str]:
+    """Reject root-level debug leftovers and unowned helper scripts."""
+    root = root_path or ROOT
+    denied_patterns = (
+        "*.tmp",
+        "*.bak",
+        "*.orig",
+        "*.rej",
+        "loopback_check*.txt",
+        "debug*.txt",
+        "debug*.log",
+        "trace*.log",
+    )
+    allowed_root_tools = {
+        "app.py",
+        "start.bat",
+        "start_fast_api_mode.bat",
+    }
+    bad: list[str] = []
+    for path in sorted(p for p in root.iterdir() if p.is_file()):
+        name = path.name
+        lower = name.lower()
+        if any(fnmatch.fnmatch(lower, pattern) for pattern in denied_patterns):
+            bad.append(f"forbidden root temporary/debug file: {name}")
+        if lower.endswith((".py", ".bat", ".cmd", ".ps1")) and name not in allowed_root_tools:
+            bad.append(f"root tool must be moved under scripts/: {name}")
+    return bad
 
 
 from scripts.pack_repo import (
@@ -211,7 +313,11 @@ def verify_snapshot(root_path: Path | None = None) -> list[str]:
         "data/import_work/.gitkeep",
         "data/discovery/doi_candidates/.gitkeep",
         "data/discovery/pdf_fetch_logs/.gitkeep",
+        "data/discovery/pending_pages/.gitkeep",
+        "data/discovery/locks/.gitkeep",
+        "data/discovery/exports/.gitkeep",
         "data/discovery/queries/.gitkeep",
+        "data/discovery/queries/keywords.example.txt",
         "write/jobs/.gitkeep",
         "reports/.gitkeep",
     }
@@ -226,6 +332,10 @@ def verify_snapshot(root_path: Path | None = None) -> list[str]:
         "data/discovery/doi_candidates/",
         "data/discovery/pdf_fetch_logs/",
         "data/discovery/fetch_logs/",
+        "data/discovery/keyword_notebooks/",
+        "data/discovery/pending_pages/",
+        "data/discovery/locks/",
+        "data/discovery/exports/",
         "data/discovery/queries/",
         "write/jobs/",
         "output/",
@@ -279,6 +389,61 @@ def _chunked(items: list[str], size: int) -> list[list[str]]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
+def _pid_state(pid: int) -> str:
+    """Return the state of a PID: ``"alive"``, ``"zombie"``, or ``"dead"``.
+
+    POSIX: reads ``/proc/<pid>/stat`` — the state field ``"Z"`` means the
+    process has exited but its entry persists until the parent calls
+    ``wait()``.  A zombie is **not** alive (it holds no resources except a
+    PID slot) and must not be treated as a running descendant.
+
+    Windows: uses ``OpenProcess`` + ``GetExitCodeProcess`` with the
+    ``STILL_ACTIVE`` (259) sentinel.  Windows does not have POSIX zombies;
+    an exited process simply fails to open.
+
+    On POSIX without ``/proc`` (e.g. macOS), falls back to ``os.kill(pid, 0)``.
+    ``PermissionError`` means the process exists but is owned by another user
+    — it is **alive**, not dead.
+    """
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid,
+        )
+        if not handle:
+            return "dead"
+        try:
+            exit_code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            return "alive" if exit_code.value == STILL_ACTIVE else "dead"
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        stat_path = Path(f"/proc/{pid}/stat")
+        if stat_path.exists():
+            try:
+                stat = stat_path.read_text()
+                # /proc/<pid>/stat: pid (comm) state ...
+                # state is the first char after the last ')'
+                state = stat.rsplit(")", 1)[1].strip()[0]
+                if state == "Z":
+                    return "zombie"
+                return "alive"
+            except (OSError, IndexError):
+                return "dead"
+        # No /proc (e.g. macOS) — fall back to signal probe.
+        try:
+            os.kill(pid, 0)
+            return "alive"
+        except ProcessLookupError:
+            return "dead"
+        except PermissionError:
+            # Process exists but we can't signal it — still alive.
+            return "alive"
+
+
 def _kill_process_tree(proc: subprocess.Popen) -> None:
     """Kill a process and all its descendants.
 
@@ -316,8 +481,6 @@ def _run_full_groups(*, stop_on_first_failure: bool = False,
     ``group_timeout`` (seconds) kills a group that hangs so the agent gets a
     clear error instead of waiting forever.
     """
-    import subprocess as _sp
-
     layered_dirs = [
         "tests/contract", "tests/hygiene", "tests/unit",
         "tests/integration", "tests/e2e",
@@ -377,49 +540,24 @@ def _run_full_groups(*, stop_on_first_failure: bool = False,
             print(f"  timeout: {group_timeout}s", flush=True)
         print(f"{'─'*60}", flush=True)
 
-        # Run pytest in its own process group/session so a timeout can kill
-        # the whole process tree (pytest + any subprocesses spawned by tests).
-        # subprocess.run(timeout=...) only terminates the direct child; on
-        # Windows that leaves orphaned grandchildren (e.g. audit-script
-        # subprocesses) holding stdout, which makes the gate appear to hang
-        # and the timeout never visibly fires.
-        popen_kwargs: dict = {"cwd": str(ROOT), "env": _pytest_env()}
-        if os.name == "nt":
-            popen_kwargs["creationflags"] = _sp.CREATE_NEW_PROCESS_GROUP
-        else:
-            popen_kwargs["start_new_session"] = True
-
+        # Use the same process-tree-safe runner as fast/full mode so a timeout
+        # kills the whole pytest process tree (pytest + any subprocesses
+        # spawned by tests). check=False so a failing group does not sys.exit
+        # the whole acceptance run; we report and continue to the next group.
         try:
-            proc = _sp.Popen(cmd, **popen_kwargs)
-        except Exception as exc:
-            print(f"\n[FAIL] group {gname}: could not start pytest: {exc}", flush=True)
-            all_ok = False
-            if stop_on_first_failure:
-                return 1
-            continue
-
-        timed_out = False
-        try:
-            # Inherit stdout/stderr (no capture) so pytest output streams live.
-            proc.wait(timeout=group_timeout)
-        except _sp.TimeoutExpired:
-            timed_out = True
-            print(f"\n[TIMEOUT] group {gname} exceeded {group_timeout}s — "
-                  f"killing process tree (pid {proc.pid})", flush=True)
-            _kill_process_tree(proc)
-            try:
-                proc.wait(timeout=15)
-            except _sp.TimeoutExpired:
-                print(f"  [WARN] pid {proc.pid} did not exit after kill", flush=True)
+            rc = run_command_with_timeout(
+                cmd,
+                timeout_seconds=group_timeout,
+                env=_pytest_env(),
+                check=False,
+            )
         except KeyboardInterrupt:
             print(f"\n[FAIL] group {gname} interrupted", flush=True)
-            _kill_process_tree(proc)
             return 1
 
-        if timed_out:
+        if rc == 124:
             print(f"\n[FAIL] group {gname} timed out after {group_timeout}s", flush=True)
             print(f"  cmd: {' '.join(cmd)}", flush=True)
-            print(f"  timeout: {group_timeout}s", flush=True)
             print(f"  reproduce: {' '.join(cmd)}", flush=True)
             all_ok = False
             if stop_on_first_failure:
@@ -427,8 +565,8 @@ def _run_full_groups(*, stop_on_first_failure: bool = False,
                 return 1
             continue
 
-        if proc.returncode != 0:
-            print(f"\n[FAIL] group {gname} exited {proc.returncode}", flush=True)
+        if rc != 0:
+            print(f"\n[FAIL] group {gname} exited {rc}", flush=True)
             print(f"  cmd: {' '.join(cmd)}", flush=True)
             all_ok = False
             if stop_on_first_failure:
@@ -459,6 +597,8 @@ def main() -> int:
     parser.add_argument("--profile", type=str, default="audit", choices=["audit", "source"],
                         help='Packaging profile: "audit" (default) includes git-ignored runtime '
                              'samples; "source" only includes git-tracked source + .gitkeep.')
+    parser.add_argument("--snapshot-mode", action="store_true",
+                        help="Validate an unpacked audit snapshot without requiring .git metadata.")
     args = parser.parse_args()
 
     # 1. Compile check
@@ -485,15 +625,20 @@ def main() -> int:
         print("\n  [OK] tests passed (--no-pack, skipping pack)")
         return 0
 
-    # 3. Git hygiene check
-    step("3/5 git hygiene")
-    bad_hygiene = verify_git_hygiene()
+    # 3. Git/root hygiene check
+    step("3/5 hygiene")
+    bad_hygiene = []
+    if args.snapshot_mode and not (ROOT / ".git").exists():
+        print("  [OK] snapshot mode: .git absent, skipping git index hygiene")
+    else:
+        bad_hygiene.extend(verify_git_hygiene())
+    bad_hygiene.extend(verify_root_hygiene())
     if bad_hygiene:
-        print("\n[FAIL] Git hygiene — runtime assets found in git index:")
+        print("\n[FAIL] Hygiene check failed:")
         for b in bad_hygiene:
             print(f"  - {b}")
         return 1
-    print("  [OK] git hygiene clean")
+    print("  [OK] hygiene clean")
 
     # 4. Pack repo
     step("4/5 pack_repo")
