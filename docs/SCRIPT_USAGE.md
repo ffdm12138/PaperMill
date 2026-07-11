@@ -1,121 +1,114 @@
-# Script Usage Index
+# Script usage and risk index
 
-所有 `scripts/*.py` 的用途、风险分类和推荐命令索引。
+| Script | Role | Mutates state |
+|---|---|---|
+| `stage_raw_pdfs_to_paper_raw.py` | allocate numeric raw workspace and attach local PDF | `--apply` |
+| `stage_network_metadata_to_paper_raw.py` | stage DOI-backed citation Metadata | `--apply` |
+| `fetch_pdf_for_paper_raw.py` | duplicate-guarded PDF attach | `--apply` |
+| `convert_paper_raw_gpu.py` | MinerU conversion; Metadata freeze not required | `--apply` |
+| `resolve_paper_raw_metadata.py` | deterministic Metadata candidate resolution | `--apply` |
+| `freeze_paper_raw_metadata.py` | strict match replay and Metadata freeze | `--apply` |
+| `prepare_paper_raw_catalog_task.py` | write read-only Catalog task envelope | `--apply` |
+| `validate_paper_raw_catalog.py` | validate/freeze complete Catalog v3.2 | `--apply` |
+| `formalize_paper_raw.py` | write numeric installation plan only | `--apply` |
+| `commit_paper_raw_to_papers.py` | recoverable hidden-staging install | `--apply` |
+| `sync_catalog_categories.py` | synchronize DOI-notebook Chinese categories | `--apply` |
+| `plan_catalog_classification.py` | plan missing per-paper LLM decisions | `--apply` |
+| `apply_catalog_classification_result.py` | validate and apply one LLM result | `--apply` |
+| `reconcile_catalog_folders.py` | rebuild folder links from authoritative state | `--apply` |
+| `doctor_catalog_folders.py` | audit writer safety and folder integrity | no |
+| `manage_catalog_categories.py` | list or explicitly retire categories | `--apply` |
+| `rebuild_catalog_folder_system.py` | one-time no-import replacement of retired indexes | `--apply` |
+| `rollback_formal_papers_to_paper_raw.py` | recoverable formal-to-numeric-raw rollback | `--apply` |
+| `revise_frozen_metadata.py` | admin-only raw Metadata revision | dry-run by default |
+| `validate_v2_library.py` | validate formal Catalog v3.2 library/index closure | no |
+| `agent_acceptance.py` | compile, tests, hygiene, pack, ZIP verification | creates snapshot |
+| `pack_repo.py` | runtime-zero source audit snapshot | creates ZIP |
 
-## Normal ingest SOP（正常入库主流程）
-
-| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
-|------|------|------|----------|----------|
-| `stage_raw_pdfs_to_paper_raw.py` | active | 手动 PDF → paper_raw staging | 是（移动 PDF、分配编号） | `--move --apply --report ...` |
-| `stage_network_metadata_to_paper_raw.py` | active | 网络 metadata → paper_raw staging | 是（写 metadata、分配编号） | `--apply` |
-| `convert_paper_raw_gpu.py` | active | GPU MinerU 批量转换 paper_raw | 是（写 md/images） | `--all --apply --report ...` |
-| `resolve_paper_raw_metadata.py` | active | 解析/匹配 paper_raw metadata | 是（写 metadata） | `--all-unmatched --apply --allow-network --write-candidates` |
-| `curate_paper_raw.py` | active | 校验 metadata/catalog，写 `catalog_ready` | 是（写 status） | `--all-ready --apply` |
-| `formalize_paper_raw.py` | active | 正式化 paper_raw → ready_for_commit | 是（改名、回填 catalog） | `--all-ready --apply --report ...` |
-| `commit_paper_raw_to_papers.py` | active | 事务性安装 paper_raw → data/papers | 是（移动文件） | `--all-ready --apply` |
-| `rebuild_all_catalog.py` | active | 重建 all.catalog.json | 是 | `--apply` |
-| `validate_v2_library.py` | active | 验证正式库完整性 | 否 | 直接运行 |
-| `pack_repo.py` | active | 打包审计快照（audit snapshot） | 是（写 zip） | `python scripts/pack_repo.py`（默认 audit）或 `--profile source`（纯源码） |
-| `agent_acceptance.py` | active | **agent 统一收尾命令**（fast 默认 / `--full` 全量） | 是（写 zip） | `python scripts/agent_acceptance.py` / `--full` / `--profile source` |
-
-`agent_acceptance.py --snapshot-mode` 仅用于无 `.git` 的解包审计环境：跳过 git index hygiene，
-但仍运行 compile/tests、根目录卫生检查、`pack_repo.py` 与 snapshot ZIP 清单校验。真实 Git 仓库
-默认仍使用 `python scripts/agent_acceptance.py` 或 `--full`。
-
-## Metadata / PDF fetch（元数据与 PDF 获取）
-
-| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
-|------|------|------|----------|----------|
-| `fetch_pdf_for_paper_raw.py` | active | DOI → PDF 获取并 attach | 是（写 PDF） | `--paper-number <id> --resolver auto --apply` |
-| `match_paper_raw_metadata.py` | active | 匹配 paper_raw metadata | 是 | `--apply` |
-| `attach_pdf_to_paper_raw.py` | active | 手动 attach PDF 到 paper_raw | 是 | `--apply` |
+Real migration apply requires explicit authorization after inventory, backup,
+dry-run reports, and fixture acceptance. Agent tests always use temporary roots.
 
 ## Discovery / Metadata discovery
 
-| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
-|------|------|------|----------|----------|
-| `discover_papers.py` | active | 单关键词 DOI discovery；调用统一 coordinator，page journal-first、Backfill cursor CAS、pending drain budget、durable export / optional paper_raw staging | 否（discovery-only export）；是（`--stage-to-paper-raw --apply`） | `conda run -n mineru python scripts/discover_papers.py "keyword" --mode hybrid --refresh-pages 2 --backfill-pages 5 --page-size 50 --max-candidates 50` |
-| `discover_papers_concurrent.py` | active | 多关键词 discovery coordinator wrapper；不再启动每关键词子进程，`--max-workers` 是全局 lane 并发上限，provider limiter 全局共享 | 否（discovery-only export）；是（`--stage-to-paper-raw --apply`） | `conda run -n mineru python scripts/discover_papers_concurrent.py --query "q1" --query "q2" --max-workers 4 --mode hybrid --stage-to-paper-raw --apply` |
-| `manage_discovery_keywords.py` | active | 关键词小本本只读/管理：`--list` / `--show` / `--enable` / `--disable` / `--reset-backfill "kw"`（清理 terminal/retry 状态 + 重置 cursor）；除 `--list` 外要求 notebook 已存在 | 否（只读/重置 cursor，不动 paper_raw） | `conda run -n mineru python scripts/manage_discovery_keywords.py --list` |
-| `migrate_discovery_notebooks_v2.py` | repair | 将旧 schema v1 keyword notebook 归档并迁移到 v2，Backfill cursor 重置为 `"*"` 安全重扫 | 是（仅 discovery notebook runtime） | `conda run -n mineru python scripts/migrate_discovery_notebooks_v2.py --apply` |
+`discover_papers.py`, `discover_papers_concurrent.py`,
+`manage_discovery_keywords.py`, and `migrate_discovery_notebooks_v2.py` manage
+the concurrent Refresh/Backfill discovery queue. The concurrent wrapper is the
+normal broad-search entry point.
 
-## MinerU conversion（MinerU 转换）
+## Complete root script inventory
 
-| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
-|------|------|------|----------|----------|
-| `start_mineru_services.py` | active | 启动 mineru-api 服务 | 否 | `--wait --restart-if-stale` |
-| `stop_mineru_services.py` | active | 停止 mineru-api 服务 | 否 | 直接运行 |
-| `check_mineru_processes.py` | diagnostic | 检查 mineru 进程健康状态 | 否 | 直接运行 |
-| `smoke_mineru_conversion.py` | diagnostic | 单篇 live smoke test 验证 GPU 转换就绪 | 默认仅就绪诊断（无副作用）；`--apply` 才执行真实转换（写转换产物） | `--paper-number <id> --apply --report ...` |
-| `convert_paper_raw_batch.py` | active | 底层批量转换（被 convert_paper_raw_gpu 调用） | 是 | 通常不直接调用 |
-| `benchmark_mineru.py` | diagnostic | MinerU 性能基准测试 | 是（写临时文件） | 按需运行 |
-| `restore_paper_raw_from_mineru_output_cache.py` | repair | 从 output cache 恢复 paper_raw | 是 | 按需运行 |
-| `run_paper_raw_gpu_conversion_then_resolve.py` | compatibility wrapper | GPU 转换 + resolve 组合脚本 | 是 | 不推荐，用 SOP 分步命令 |
+The remaining root entry points are documented here by risk class so the index
+cannot silently omit an executable:
 
-## Writing workflow（写作流程）
+```text
+agent_acceptance.py
+attach_pdf_to_paper_raw.py
+audit_ingest_duplicates.py
+audit_metadata_quality.py
+audit_paper_number_ledger.py
+audit_paper_raw_duplicate_workspaces.py
+audit_raw_vs_paper_raw.py
+audit_source_provenance.py
+audit_third_party_licenses.py
+benchmark_mineru.py
+check_directory_hygiene.py
+check_mineru_processes.py
+check_write_quality_text.py
+check_write_tex_project.py
+commit_paper_raw_to_papers.py
+convert_paper_raw_batch.py
+convert_paper_raw_gpu.py
+create_write_job.py
+curate_paper_raw.py
+discover_papers.py
+discover_papers_concurrent.py
+doctor_ingest_pipeline.py
+doctor_write_pipeline.py
+export_job_bib.py
+fetch_pdf_for_paper_raw.py
+formalize_paper_raw.py
+freeze_paper_raw_metadata.py
+manage_discovery_keywords.py
+match_paper_raw_metadata.py
+migrate_discovery_notebooks_v2.py
+migrate_import_status_v2.py
+pack_repo.py
+preflight_paper_raw_import.py
+prepare_paper_raw_catalog_task.py
+prepare_write_article_workdir.py
+quarantine_unreferenced_workspaces.py
+apply_catalog_classification_result.py
+doctor_catalog_folders.py
+manage_catalog_categories.py
+plan_catalog_classification.py
+rebuild_catalog_folder_system.py
+reconcile_catalog_folders.py
+sync_catalog_categories.py
+reconcile_paper_raw_non_destructive.py
+repair_catalog_asset_refs.py
+repair_corrupted_markers.py
+repair_ledger_folder_names.py
+repair_paper_raw_derived_files.py
+repair_stale_formal_asset_manifests.py
+reset_paper_number_ledger.py
+resolve_paper_raw_metadata.py
+restore_paper_raw_from_mineru_output_cache.py
+revise_frozen_metadata.py
+rollback_formal_papers_to_paper_raw.py
+run_paper_raw_gpu_conversion_then_resolve.py
+smoke_mineru_conversion.py
+stage_network_metadata_to_paper_raw.py
+stage_raw_pdfs_to_paper_raw.py
+start_mineru_services.py
+stop_mineru_services.py
+validate_paper_raw_catalog.py
+validate_rolled_back_paper_raw.py
+validate_v2_library.py
+validate_write_job.py
+write_catalog_tex_article.py
+write_review.py
+```
 
-| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
-|------|------|------|----------|----------|
-| `create_write_job.py` | active | 创建写作 job | 是 | 按需运行 |
-| `prepare_write_article_workdir.py` | active | 准备写作文章工作目录 | 是 | 按需运行 |
-| `write_catalog_tex_article.py` | active | 从 catalog 生成 TeX 文章 | 是 | 按需运行 |
-| `write_review.py` | active | 生成审稿意见 | 是 | 按需运行 |
-| `check_write_tex_project.py` | diagnostic | 检查 TeX 项目完整性 | 否 | 直接运行 |
-| `check_write_quality_text.py` | diagnostic | 检查写作质量 | 否 | 直接运行 |
-| `export_job_bib.py` | active | 导出 job BibTeX | 是 | 按需运行 |
-| `validate_write_job.py` | diagnostic | 验证写作 job | 否 | 直接运行 |
-| `doctor_write_pipeline.py` | diagnostic | 诊断写作流水线 | 否 | 直接运行 |
-
-## Validation / doctor / audit（验证与审计）
-
-| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
-|------|------|------|----------|----------|
-| `audit_ingest_duplicates.py` | audit | 审计重复 PDF/DOI | 否 | `--strict` |
-| `audit_third_party_licenses.py` | audit | Read-only direct dependency license comparison | No | `--strict` |
-| `audit_source_provenance.py` | audit | Read-only scan for copied/adapted source, repo URLs, copyright headers, SPDX markers, and external integrations | No | `--strict` |
-| `audit_metadata_quality.py` | audit | 审计 metadata 质量 | 否 | 直接运行 |
-| `audit_paper_number_ledger.py` | admin-only | 审计编号账本、检测 empty orphan / metadata-only workspace；`--fix-empty-orphans --apply --reason ...` 仅清理严格空目录 | 是（仅显式 fix/reset/compact） | 默认只审计；正常不清理 |
-| `audit_paper_raw_duplicate_workspaces.py` | audit | 审计并清理重复 paper_raw 工作区 | 是（移入 quarantine） | `--apply-cleanup` |
-| `audit_raw_vs_paper_raw.py` | audit | 审计 raw vs paper_raw 一致性 | 否 | 直接运行 |
-| `preflight_paper_raw_import.py` | audit | 入库前预检 | 否 | 直接运行 |
-| `validate_rolled_back_paper_raw.py` | audit | 验证回退后的 paper_raw | 否 | 直接运行 |
-| `validate_metadata_only_assets.py` | compatibility wrapper | 验证 metadata-only 资产 | 否 | 兼容入口 |
-| `doctor_ingest_pipeline.py` | diagnostic | 诊断 ingest 流水线 | 否 | 直接运行 |
-| `check_directory_hygiene.py` | diagnostic | 检查目录卫生 | 否 | 直接运行 |
-| `discover_papers.py` | diagnostic | 发现/扫描 papers | 否 | 直接运行 |
-
-> **强契约（validation / rebuild / doctor）**
-> - `rebuild_all_catalog.py --apply` 对正式库是 **strict** 的：`data/papers/<paper_id>/`
->   只要出现任意正式资产（metadata/catalog/md/pdf/asset_manifest/images/`*.paper.number`）
->   就必须**完整**；缺 PDF、images、asset_manifest 或 `paper.number` marker 都会导致
->   `--apply` 失败、返回非 0、且 **不写/不覆盖** `all.catalog.json` / `paper_index.json`。
->   脚本不得静默跳过不完整论文，也不得写空索引覆盖已有索引。
-> - `validate_v2_library.py`：正式库每篇论文 **只能有一个** `<paper_id>.asset_manifest.json`；
->   `paper_raw` 阶段的 `<paper_number>.asset_manifest.json` 不得出现在 `data/papers`。
->   validator 会 glob 全部 `*.asset_manifest.json` 并拒绝额外 manifest（"unexpected asset manifest"）。
-> - `doctor_ingest_pipeline.py`：其 pytest step 使用隔离环境
->   `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` 与 **300s timeout**，避免本地第三方 pytest 插件
->   导致诊断流程挂起；超时返回 blocking failure（`returncode=124`，`error="timed out after 300s"`）。
-
-## Repair / admin-only（修复与管理）
-
-| 脚本 | 状态 | 用途 | 修改数据 | 推荐命令 |
-|------|------|------|----------|----------|
-| `repair_catalog_asset_refs.py` | repair | 修复 catalog asset refs | 是 | `--dry-run` 先，再 `--apply` |
-| `repair_corrupted_markers.py` | repair | 修复损坏的 marker 文件 | 是 | 按需运行 |
-| `repair_ledger_folder_names.py` | repair | 修复 ledger 文件夹名 | 是 | 按需运行 |
-| `repair_metadata_only_assets.py` | repair | 修复 metadata-only 资产 | 是 | 按需运行 |
-| `repair_paper_raw_derived_files.py` | repair | 修复 paper_raw 派生文件 | 是 | 按需运行 |
-| `repair_stale_formal_asset_manifests.py` | repair | 删除正式库残留 `<paper_number>.asset_manifest.json` | 是（删 stale） | `--dry-run` 先，再 `--apply` |
-| `reset_paper_number_ledger.py` | admin-only | 重置编号账本（危险） | 是（清零） | 仅 admin，正常绝不运行 |
-| `reconcile_paper_raw_non_destructive.py` | repair | 非破坏性协调 paper_raw | 是 | 按需运行 |
-| `quarantine_unreferenced_workspaces.py` | admin-only | 隔离未引用工作区 | 是（移入 quarantine） | 按需运行 |
-
-## Legacy / rejected compatibility wrappers（遗留/拒绝兼容入口）
-
-| 脚本 | 状态 | 用途 | 正常 SOP 替代 |
-|------|------|------|---------------|
-| `rollback_papers_to_raw.py` | rejected legacy entrypoint | 旧版回退入口 | `rollback_formal_papers_to_paper_raw.py` |
-| `prep_rolled_back_for_formalize.py` | rejected legacy entrypoint | 旧版回退后准备 | 正常 SOP: `curate → formalize → commit` |
-| `validate_metadata_only_assets.py` | compatibility wrapper | metadata-only 资产验证 | `validate_v2_library.py` |
-| `run_paper_raw_gpu_conversion_then_resolve.py` | compatibility wrapper | 转换+resolve 组合 | SOP 分步命令 |
+Audit/check/validate commands are read-only unless their own help explicitly
+offers an apply flag. Repair/reset/rollback/commit/stage/fetch/convert
+commands mutate only with their explicit apply/confirmation gates.

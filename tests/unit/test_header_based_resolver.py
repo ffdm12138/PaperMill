@@ -44,7 +44,7 @@ def test_direct_pdf_uses_fixed_user_agent(monkeypatch, install_pdf_transport_get
     def fake_get(url, **kwargs):
         seen["url"] = url
         seen["headers"] = kwargs["headers"]
-        return FakeResponse(url=url, content=b"%PDF direct",
+        return FakeResponse(url=url, content=b"%PDF- direct",
                             content_type="application/pdf")
 
     install_pdf_transport_get(fake_get)
@@ -56,7 +56,7 @@ def test_direct_pdf_uses_fixed_user_agent(monkeypatch, install_pdf_transport_get
     result = resolver.resolve(_ctx())
 
     assert result.success is True
-    assert result.raw["content"] == b"%PDF direct"
+    assert result.raw["content"] == b"%PDF- direct"
     assert seen["headers"]["User-Agent"] == FIXED_USER_AGENT
     assert seen["headers"]["Cookie"] == "secret"
     assert result.metadata["headers_masked"] is True
@@ -76,7 +76,7 @@ def test_html_landing_page_pdf_link_is_downloaded(monkeypatch, install_pdf_trans
                 content=b'<html><a href="/paper.pdf">PDF</a></html>',
                 content_type="text/html",
             )
-        return FakeResponse(url=url, content=b"%PDF linked",
+        return FakeResponse(url=url, content=b"%PDF- linked",
                             content_type="application/pdf")
 
     install_pdf_transport_get(fake_get)
@@ -141,7 +141,7 @@ def test_redirect_to_unsafe_host_blocked(monkeypatch, install_pdf_transport_get)
     def fake_get(url, **kwargs):
         return FakeResponse(
             url="https://libgen.is/final.pdf",
-            content=b"%PDF fake",
+            content=b"%PDF- fake",
             content_type="application/pdf",
         )
 
@@ -161,7 +161,7 @@ def test_defaults_to_doi_org_without_base_or_template(monkeypatch, install_pdf_t
 
     def fake_get(url, **kwargs):
         seen_url["url"] = url
-        return FakeResponse(url=url, content=b"%PDF default",
+        return FakeResponse(url=url, content=b"%PDF- default",
                             content_type="application/pdf")
 
     install_pdf_transport_get(fake_get)
@@ -170,7 +170,7 @@ def test_defaults_to_doi_org_without_base_or_template(monkeypatch, install_pdf_t
     result = resolver.resolve(_ctx())
     assert result.success is True
     assert seen_url["url"] == "https://doi.org/10.1000/test"
-    assert result.raw["content"] == b"%PDF default"
+    assert result.raw["content"] == b"%PDF- default"
 
 
 # ── URL template DOI placeholders (parametrized) ───────────────────────
@@ -185,7 +185,7 @@ def test_url_template_doi_placeholders(monkeypatch, install_pdf_transport_get, t
 
     def fake_get(url, **kwargs):
         seen_url["url"] = url
-        return FakeResponse(url=url, content=b"%PDF", content_type="application/pdf")
+        return FakeResponse(url=url, content=b"%PDF-", content_type="application/pdf")
 
     install_pdf_transport_get(fake_get)
     resolver = HeaderBasedDoiResolver(url_template=template)

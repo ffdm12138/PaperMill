@@ -4,7 +4,7 @@ Each BibTeX entry is generated from the **job-local** copied article metadata
 (``write/jobs/<job_id>/article/<paper_number>/*.metadata.json``) and written into
 the job-local ``tex/references.bib`` file. The job-level export/validate paths
 never touch the global ``Catalog()`` / ``PaperLibrary()``; only
-``validate_catalog_citations`` (a global all.catalog audit helper) does.
+``validate_catalog_citations`` audits the live formal library.
 """
 from __future__ import annotations
 
@@ -13,10 +13,12 @@ import re
 from pathlib import Path
 
 from src import bib as bibmod
-from src.catalog import Catalog
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR
+from src.catalog_folders.reader import CatalogFolderReader
 from src.services.paper_library import PaperLibrary
 from src.writer.catalog_matcher import load_selected
 from src.writer.job_manager import JobManager
+from src.metadata.citation_readiness import citation_key_from_metadata, validate_citation_ready
 
 
 def resolve_work_dir(jdir: Path, work_dir: str) -> Path:
@@ -79,29 +81,41 @@ def job_local_bib_keys(pid_to_work_dir: dict[str, Path]) -> dict[str, str]:
     keys: dict[str, str] = {}
     for pid, wd in pid_to_work_dir.items():
         meta = _read_article_metadata(Path(wd))
-        raw = (meta.get("citation_key") if meta else "") or pid or ""
-        keys[pid] = bibmod.sanitize_paper_id(str(raw))
+        if not meta:
+            raise RuntimeError(f"job-local article metadata missing for paper_id={pid}")
+        keys[pid] = bibmod.sanitize_paper_id(citation_key_from_metadata(meta))
     return keys
 
 
 def _metadata_for_entry(entry: dict, library: PaperLibrary) -> dict:
-    embedded = entry.get("metadata")
-    if isinstance(embedded, dict) and embedded:
-        return embedded
-    key = entry.get("paper_number") or entry.get("paper_id") or ""
-    return library.load_metadata(str(key)) or {}
+    number = str(entry.get("paper_number") or "")
+    if not number:
+        raise RuntimeError("catalog entry lacks paper_number; citation lookup cannot fall back to paper_id")
+    metadata = library.load_metadata(number)
+    if not metadata:
+        raise RuntimeError(f"metadata missing for paper_number={number}; Catalog cannot substitute for citation data")
+    return metadata
 
 
 def validate_catalog_citations(catalog_data: dict | None = None) -> list[str]:
     """Validate that catalog entries can produce complete BibTeX records."""
-    cat = catalog_data or Catalog().load()
+    cat = catalog_data or {"papers": CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR).list_papers(["all"])}
     library = PaperLibrary()
     errors: list[str] = []
     seen: set[str] = set()
 
     for entry in cat.get("papers", []):
         ctx = f"paper_id={entry.get('paper_id', '?')}"
-        bib_key = bibmod.bib_key_for_entry(entry)
+        try:
+            metadata = _metadata_for_entry(entry, library)
+        except RuntimeError as exc:
+            errors.append(f"{ctx} {exc}")
+            continue
+        try:
+            bib_key = bibmod.sanitize_paper_id(citation_key_from_metadata(metadata))
+        except ValueError as exc:
+            errors.append(f"{ctx} {exc}")
+            continue
         if not bib_key:
             errors.append(f"{ctx} missing bib_key")
         elif bib_key in seen:
@@ -109,7 +123,7 @@ def validate_catalog_citations(catalog_data: dict | None = None) -> list[str]:
         else:
             seen.add(bib_key)
 
-        bibtex = bibmod.bibtex_for_entry(entry).strip()
+        bibtex = bibmod.bibtex_from_metadata(metadata,key=bib_key).strip()
         if not bibtex or not bibtex.startswith("@"):
             errors.append(f"{ctx} failed to generate BibTeX entry")
             continue
@@ -122,7 +136,6 @@ def validate_catalog_citations(catalog_data: dict | None = None) -> list[str]:
             if not re.search(rf"\b{field}\s*=", bibtex, re.IGNORECASE):
                 errors.append(f"{ctx} bibtex missing {field} field")
 
-        metadata = _metadata_for_entry(entry, library)
         doi = str(((metadata.get("identifiers") or {}).get("doi") or "")).strip()
         if doi and "doi" not in bibtex.lower():
             errors.append(f"{ctx} metadata has DOI but BibTeX does not include doi")
@@ -166,11 +179,9 @@ def export_job_bib(
             raise RuntimeError(
                 f"job-local article metadata missing for paper_id={pid}; "
                 "run prepare-workset --apply to copy it.")
-        doi = str(((meta.get("identifiers") or {}).get("doi") or "")).strip()
-        if not doi:
-            raise RuntimeError(
-                f"paper_id={pid} metadata lacks identifiers.doi; "
-                "cannot export references.bib without DOI.")
+        readiness = validate_citation_ready(meta)
+        if not readiness.ready:
+            raise RuntimeError(f"paper_id={pid} metadata is not citation-ready: {'; '.join(readiness.errors)}")
         key = job_local_bib_keys({pid: pid_to_work_dir[pid]})[pid]
         blocks.append(bibmod.bibtex_from_metadata(meta, key=key))
 

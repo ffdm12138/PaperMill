@@ -35,6 +35,7 @@ LLM_WORK_GUARD_FILES = {
     "src/writer/deep_reader.py",
     "scripts/check_write_tex_project.py",
     "scripts/prepare_write_article_workdir.py",
+    "src/services/repository_hygiene.py",
 }
 
 
@@ -147,22 +148,4 @@ def test_pack_and_hygiene_guard_runtime_artifacts(tmp_path):
     assert _should_pack("data/llm_work/demo/000001/full.md") is False
     assert _should_pack("write/001_old/tex/main.tex") is False
 
-    write_root = tmp_path / "write"
-    stale = write_root / "001_old" / "tex"
-    stale.mkdir(parents=True)
-    (stale / "main.tex").write_text("% stale", encoding="utf-8")
-    all_catalog = tmp_path / "data" / "catalog" / "all.catalog.json"
-    all_catalog.parent.mkdir(parents=True)
-    all_catalog.write_text(json.dumps({"papers": []}), encoding="utf-8")
-
-    report = check_directory_hygiene(
-        project_root=tmp_path,
-        all_catalog_path=all_catalog,
-        papers_dir=tmp_path / "data" / "papers",
-        paper_raw_dir=tmp_path / "data" / "paper_raw",
-        write_jobs_dir=write_root / "jobs",
-        write_root=write_root,
-    )
-
-    assert report["valid"] is True
-    assert any("stale write runtime artifact present" in warning for warning in report["warnings"])
+    assert _should_pack("data/catalog/all/0000000000000001") is False

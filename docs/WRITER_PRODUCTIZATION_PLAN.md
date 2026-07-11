@@ -17,7 +17,7 @@ items remain planned only.
 
 ## 1. Current Writer v0.1 Capability Boundary
 
-- `catalog-first selection`: uses local `data/catalog/all.catalog.json` as a
+- `catalog-folder selection`: uses one or more Chinese category folders as a
   content-only screening index. Job preparation can select by `paper_number` or
   catalog filters.
 - Initial generated catalog entries use `screening.read_decision = "pending"`.
@@ -68,7 +68,7 @@ items remain planned only.
 Provide one diagnostic entrypoint for the writer environment and existing jobs.
 It should check:
 
-- `data/catalog/all.catalog.json` exists locally and is readable.
+- the selected category folders exist, are clean, and contain valid links.
 - Formal paper assets referenced by selected jobs are complete.
 - `write/jobs/*` remains ignored and only `.gitkeep` is tracked.
 - TeX compiler availability is detected.
@@ -84,7 +84,7 @@ Provide one low-friction job creation entrypoint on top of the existing
 catalog-first preparation flow.
 
 - Accept either `--paper-numbers ...` or catalog filters such as
-  `--primary-domain`, `--topic`, `--read-decision`, `--min-relevance-score`,
+  `--domain`, `--read-decision`,
   and `--limit`.
   `--read-decision` is meaningful only after post-triage / writing-stage or
   human screening has annotated values beyond the initial `pending`.

@@ -279,9 +279,8 @@ def resolve_landing_page_to_pdf(
 
         transport_ctx = fetch_url_direct_then_proxy(
             current_url,
-            expected_content="html",
+            expected_content="any",
             headers=req_headers,
-            timeout=timeout_seconds,
             allow_redirects=True,
             stream=True,
         )

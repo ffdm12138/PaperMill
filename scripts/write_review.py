@@ -28,7 +28,8 @@ from src.writer.deep_reader import deep_read, mark_deep_reading_filled, prepare_
 from src.writer.story_builder import build_story, mark_story_filled
 from src.writer.tex_project import build_tex, mark_tex_content_filled
 from src.writer.figure_manager import copy_figures
-from src.catalog import Catalog
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR
+from src.catalog_folders.reader import CatalogFolderReader
 
 
 def cmd_create(args):
@@ -44,10 +45,10 @@ def cmd_create(args):
 
 
 def cmd_match(args):
-    info = match_catalog(args.job, topics=args.topics)
+    info = match_catalog(args.job, categories=args.categories, category_mode=args.category_mode)
     logger.info(f"目录匹配完成: {args.job}")
-    if args.topics:
-        logger.info(f"  topics: {args.topics}")
+    if args.categories:
+        logger.info(f"  categories: {args.categories}")
     logger.info(f"  prompt: {info['prompt_path']}")
     logger.info(f"  candidates: {info['candidates_path']}（含候选，need_fulltext=null）")
     logger.info(f"  selected: {info['selected_path']}（空，待 confirm-papers）")
@@ -74,7 +75,7 @@ def cmd_confirm_papers(args):
     # Paper IDs come from --papers, paper_numbers from --paper-numbers.
     # Resolve paper_numbers via Catalog into paper_ids.
     paper_ids = list(args.papers or [])
-    catalog = Catalog()
+    catalog = CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
     if args.paper_numbers:
         all_papers = catalog.list_papers()
         by_number = {p.get("paper_number"): p for p in all_papers}
@@ -197,8 +198,9 @@ def main():
 
     m = sub.add_parser("match")
     m.add_argument("--job", required=True)
-    m.add_argument("--topics", nargs="+", default=None,
-                   help="按 all.catalog flat classification.topic_tags / domains / methods 过滤")
+    m.add_argument("--categories", nargs="+", default=None,
+                   help="按一个或多个中文分类目录筛选")
+    m.add_argument("--category-mode", choices=["union", "intersection"], default="union")
     m.set_defaults(func=cmd_match)
 
     cp = sub.add_parser("confirm-papers"); cp.add_argument("--job", required=True)

@@ -2,8 +2,12 @@ import json
 import runpy
 import sys
 from pathlib import Path
+import pytest
 
-from src.services.v2_library import empty_catalog, empty_metadata
+from src.metadata.schema import empty_metadata
+from src.metadata.freeze import assert_metadata_frozen, freeze_metadata
+from src.metadata.pdf_identity import extract_pdf_identity_evidence
+from src.metadata.pdf_match import build_match_receipt, write_match_receipt
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -34,9 +38,15 @@ def _raw_folder(root: Path, source_id: str = PN1, *, doi: str = "10.1000/ok",
     metadata["first_author"] = {"family": "Wang", "display": "Wang A"}
     metadata["container"]["journal"] = "Test Journal"
     metadata["identifiers"]["doi"] = doi
-    metadata["metadata_match"]["status"] = "matched" if matched else "unmatched"
+    metadata["source"].update({"provider": "fixture", "raw_record_path": "source_records/metadata_source.fixture.json"})
     (folder / f"{source_id}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (folder / f"{source_id}.pdf").write_bytes(pdf_bytes)
+    (folder / f"{source_id}.pdf").write_bytes(pdf_bytes + (f" DOI {doi}".encode() if doi else b""))
+    (folder / "source_records").mkdir()
+    (folder / metadata["source"]["raw_record_path"]).write_text(json.dumps({"doi": doi}), encoding="utf-8")
+    if matched and doi.startswith("10.") and "/" in doi:
+        evidence = extract_pdf_identity_evidence(pdf_path=folder / f"{source_id}.pdf")
+        write_match_receipt(folder, build_match_receipt(folder, source_id, metadata, evidence, provider_records=[metadata["source"]["raw_record_path"]]))
+        freeze_metadata(folder, source_id)
     return folder
 
 
@@ -123,7 +133,7 @@ def test_convert_only_preflight_ready_skips_nonready(tmp_path, monkeypatch):
             calls.append(source_id)
             return {"success": True, "paper_number": source_id, "paper_raw_id": source_id}
 
-    import src.services.v2_library as v2_library
+    import src.ingest.paper_raw as v2_library
     monkeypatch.setattr(v2_library, "PaperRawConverter", FakeConverter)
     monkeypatch.setenv("MINERU_RUNNER", "cli")
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
@@ -150,8 +160,6 @@ def _status_folder(root: Path, source_id: str, status: str, *, doi: str = "") ->
     folder.mkdir(parents=True)
     metadata = empty_metadata(source_id)
     metadata["identifiers"]["doi"] = doi
-    if doi and status == "metadata_matched":
-        metadata["metadata_match"]["status"] = "matched"
     (folder / f"{source_id}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (folder / f"{source_id}.pdf").write_bytes(b"%PDF")
     (folder / ".import_status.json").write_text(json.dumps({"status": status}), encoding="utf-8")
@@ -159,7 +167,7 @@ def _status_folder(root: Path, source_id: str, status: str, *, doi: str = "") ->
 
 
 def _run_batch_dryrun(paper_raw: Path, monkeypatch, *extra: str) -> tuple[int, list]:
-    import src.services.v2_library as v2_library
+    import src.ingest.paper_raw as v2_library
 
     class FakeConverter:
         def __init__(self, paper_raw_dir):
@@ -206,11 +214,11 @@ def test_convert_report_metadata_fields(tmp_path, monkeypatch, capsys):
     assert items[PN1]["post_conversion_metadata_resolution_recommended"] is True
     assert items[PN1]["import_status"] == "doi_invalid"
 
-    # metadata_matched workspace is also planned, but no post-convert resolve needed.
+    # A legacy flat status cannot replace the independent match/freeze receipt.
     assert items[PN2]["status"] == "planned"
     assert items[PN2]["metadata_required_for_conversion"] is True
-    assert items[PN2]["metadata_ready_for_commit"] is True
-    assert items[PN2]["post_conversion_metadata_resolution_recommended"] is False
+    assert items[PN2]["metadata_ready_for_commit"] is False
+    assert items[PN2]["post_conversion_metadata_resolution_recommended"] is True
 
 
 def test_only_convertible_skips_commit_stage_workspace(tmp_path, monkeypatch, capsys):
@@ -272,38 +280,10 @@ def test_readiness_blocks_converted_but_unmatched_workspace(tmp_path):
     """Even when the PDF is already converted to Markdown, formalize/commit
     stays blocked until metadata is matched/manual_confirmed. Conversion-without-
     metadata is allowed; formal ingestion is not."""
-    from src.services.v2_library import assess_paper_raw_commit_readiness
-
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw, PN1, doi="10.1000/ok", matched=False)
     # Simulate already-converted assets (md + images present).
     (folder / f"{PN1}.md").write_text("# Converted", encoding="utf-8")
     (folder / "images").mkdir()
-    # A minimal content-only catalog so the gate reaches the metadata check.
-    catalog = empty_catalog()
-    catalog["library_locator"].update({"paper_number": PN1, "paper_id": PN1})
-    catalog["content_identity"].update({
-        "content_title_zh": "测试标题",
-        "content_title_original": "Converted",
-        "content_title_original_candidates": ["Converted"],
-        "content_language": "en",
-        "document_type": "article",
-    })
-    catalog["classification"]["primary_domain"] = "test"
-    catalog["terminology"] = [{"term_original": "converted", "term_zh": "转换"}]
-    catalog["screening"].update({"read_decision": "pending", "reason_zh": "用于预检"})
-    catalog["writing_value"]["short_summary"] = "测试摘要"
-    catalog["provenance"].update({"generated_at": "2026-07-03T00:00:00", "generator": "test"})
-    (folder / f"{PN1}.catalog.json").write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
-
-    readiness = assess_paper_raw_commit_readiness(
-        folder,
-        file_prefix=PN1,
-        papers_dir=tmp_path / "papers",
-        check_duplicates=True,
-    )
-
-    assert readiness["ready"] is False
-    assert any("metadata_match.status" in err for err in readiness["errors"])
-    assert readiness["metadata_layered_hint"] is not None
-    assert "formalize/commit is blocked" in readiness["metadata_layered_hint"]
+    with pytest.raises((ValueError, FileNotFoundError)):
+        assert_metadata_frozen(folder, PN1)

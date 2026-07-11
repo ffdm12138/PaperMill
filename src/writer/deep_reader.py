@@ -16,12 +16,12 @@ import shutil
 from pathlib import Path
 
 from src.writer.job_manager import JobManager
-from src.catalog import Catalog
+from src.catalog_folders.reader import CatalogFolderReader
 from src.naming import safe_child, validate_paper_id
 from src.writer.catalog_matcher import load_selected, selected_paper_ids
 from src.writer.bib_manager import job_local_bib_keys, resolve_work_dir
 from src.writer.safe_write import write_text_safely
-from config.settings import PAPERS_DIR, PAPER_MD_MAX_CHARS
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PAPER_MD_MAX_CHARS
 from src import bib as bibmod
 
 _WORKSET_MANIFEST = "planning/workset_manifest.json"
@@ -151,11 +151,11 @@ def _is_forbidden_source(path: Path) -> bool:
 def prepare_workset(job_id: str, jm: JobManager | None = None,
                     overwrite: bool = False,
                     papers_dir: Path = PAPERS_DIR,
-                    catalog: Catalog | None = None,
+                    catalog: CatalogFolderReader | None = None,
                     apply: bool = True) -> dict:
     """Plan or copy selected papers into write/jobs/<job_id>/article/<paper_number>/."""
     jm = jm or JobManager()
-    catalog = catalog or Catalog()
+    catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=papers_dir)
     sel = load_selected(job_id, jm)
     if sel.get("selection_status") != "confirmed":
         raise RuntimeError("selected_papers.json is not confirmed，拒绝复制 workset")
@@ -175,7 +175,11 @@ def prepare_workset(job_id: str, jm: JobManager | None = None,
         if not number:
             skipped.append({"paper_id": pid, "reason": "no_paper_number"})
             continue
-        source = safe_child(papers_dir, pid)
+        try:
+            source = Path(str(entry["formal_directory"]))
+        except (KeyError, ValueError):
+            skipped.append({"paper_id":pid,"paper_number":number,"reason":"formal_registry_resolution_failed"})
+            continue
         if _is_forbidden_source(source) or not source.exists():
             skipped.append({"paper_id": pid, "paper_number": number,
                             "reason": "formal_folder_missing_or_forbidden"})
@@ -220,7 +224,7 @@ def prepare_workset(job_id: str, jm: JobManager | None = None,
 def deep_read(job_id: str, paper_ids: list[str] | None = None,
               force: bool = False,
               jm: JobManager | None = None,
-              catalog: Catalog | None = None) -> dict:
+              catalog: CatalogFolderReader | None = None) -> dict:
     """对 selected_papers 生成精读笔记模板 + 证据表 + 候选图 + 精读 prompt。
 
     默认从 write/jobs/<job_id>/article/<paper_number>/ 读取全文与图片

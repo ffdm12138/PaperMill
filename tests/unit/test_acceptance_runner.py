@@ -34,7 +34,7 @@ def test_runner_normal_exit_zero(tmp_path: Path):
     """)
     rc = run_command_with_timeout(
         [sys.executable, str(script)],
-        timeout_seconds=30,
+        timeout_seconds=5,
         check=False,
     )
     assert rc == 0
@@ -47,10 +47,42 @@ def test_runner_normal_exit_nonzero(tmp_path: Path):
     """)
     rc = run_command_with_timeout(
         [sys.executable, str(script)],
-        timeout_seconds=30,
+        timeout_seconds=5,
         check=False,
     )
     assert rc == 3
+
+
+def test_runner_large_output_does_not_deadlock(tmp_path: Path):
+    script = _write_script(tmp_path / "large.py", """
+        print("x" * 1000)
+        for _ in range(2000):
+            print("payload")
+    """)
+    assert run_command_with_timeout(
+        [sys.executable, str(script)], timeout_seconds=10, check=False
+    ) == 0
+
+
+def test_runner_returns_when_descendant_keeps_output_handle(tmp_path: Path):
+    pid_file = tmp_path / "orphan_pid.txt"
+    child = _write_script(tmp_path / "orphan.py", f"""
+        import os, time
+        with open({str(pid_file)!r}, "w") as fh:
+            fh.write(str(os.getpid()))
+        time.sleep(600)
+    """)
+    parent = _write_script(tmp_path / "parent_exits.py", f"""
+        import subprocess, sys, time
+        subprocess.Popen([sys.executable, {str(child)!r}])
+        time.sleep(0.3)
+        print("parent passed", flush=True)
+    """)
+    assert run_command_with_timeout(
+        [sys.executable, str(parent)], timeout_seconds=5, check=False
+    ) == 0
+    if pid_file.exists():
+        assert _pid_state(int(pid_file.read_text())) in ("dead", "zombie")
 
 
 def test_runner_timeout_kills_process_tree(tmp_path: Path):
@@ -116,7 +148,7 @@ def test_runner_check_true_exits_on_nonzero(tmp_path: Path):
     with pytest.raises(SystemExit) as exc_info:
         run_command_with_timeout(
             [sys.executable, str(script)],
-            timeout_seconds=30,
+            timeout_seconds=5,
             check=True,
         )
     assert exc_info.value.code == 2

@@ -5,9 +5,10 @@ and discovery APIs keep their existing proxy/configuration behavior.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 import math
 import os
+import re
 import time
 import warnings
 from types import TracebackType
@@ -71,6 +72,15 @@ class PdfTransportConfig:
 
 
 @dataclass(frozen=True)
+class ContentInspection:
+    accepted: bool
+    detected_content: Literal["pdf", "html", "unknown"]
+    reason_code: str | None
+    content_type: str
+    prefix: bytes
+
+
+@dataclass(frozen=True)
 class TransportAttempt:
     request_url: str
     mode: TransportMode
@@ -82,6 +92,8 @@ class TransportAttempt:
     error_type: str = ""
     error_message: str = ""
     proxy_configured: bool = False
+    detected_content: str = "unknown"
+    reason_code: str = ""
 
     def to_safe_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +107,8 @@ class TransportAttempt:
             "error_type": self.error_type,
             "error_message": _redact_error_message(self.error_message),
             "proxy_configured": self.proxy_configured,
+            "detected_content": self.detected_content,
+            "reason_code": self.reason_code,
         }
 
 
@@ -115,9 +129,7 @@ class TransportResult:
         tb: TracebackType | None,
     ) -> None:
         if self.response is not None:
-            close_response = getattr(self.response, "close", None)
-            if callable(close_response):
-                close_response()
+            _close_response(self.response)
         if self._session is not None:
             self._session.close()
 
@@ -150,6 +162,8 @@ def fetch_url_direct_then_proxy(
     stream: bool = False,
     allow_redirects: bool = True,
     timeout: float | tuple[float, float] | None = None,
+    direct_timeout: float | tuple[float, float] | None = None,
+    proxy_timeout: float | tuple[float, float] | None = None,
     config: PdfTransportConfig | None = None,
     method: str = "GET",
     data: Any = None,
@@ -157,14 +171,18 @@ def fetch_url_direct_then_proxy(
 ) -> TransportResult:
     """Fetch *url* directly first, then via explicit proxy when retryable.
 
-    The transport layer does not validate PDF/HTML bodies and does not call
-    ``raise_for_status()``. Callers inspect terminal responses and perform
-    content validation inside the returned context manager.
+    Successful HTTP responses are accepted only when their body matches
+    ``expected_content``. A direct content mismatch is proxy-retryable.
     """
-    del expected_content  # content validation belongs to callers
     cfg = config or load_pdf_transport_config()
-    direct_timeout = timeout if timeout is not None else cfg.direct_timeout
-    proxy_timeout = timeout if timeout is not None else cfg.proxy_timeout
+    if timeout is not None:
+        warnings.warn(
+            "timeout is deprecated; use direct_timeout and proxy_timeout",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    direct_timeout = direct_timeout if direct_timeout is not None else (timeout if timeout is not None else cfg.direct_timeout)
+    proxy_timeout = proxy_timeout if proxy_timeout is not None else (timeout if timeout is not None else cfg.proxy_timeout)
     attempts: list[TransportAttempt] = []
 
     invalid_error = _invalid_url_error(url)
@@ -195,7 +213,14 @@ def fetch_url_direct_then_proxy(
     )
     attempts.append(direct.attempt)
 
-    if direct.response is not None and not _should_fallback_for_status(direct.response.status_code):
+    direct = _inspect_outcome(direct, expected_content)
+    attempts[-1] = direct.attempt
+
+    if (
+        direct.response is not None
+        and not _should_fallback_for_status(direct.response.status_code)
+        and (direct.response.status_code >= 400 or direct.attempt.success)
+    ):
         return TransportResult(response=direct.response, attempts=attempts, _session=direct.session)
 
     if direct.response is None and not direct.retryable:
@@ -204,7 +229,7 @@ def fetch_url_direct_then_proxy(
         return TransportResult(response=None, attempts=attempts, error=direct.attempt.error_message)
 
     if direct.response is not None:
-        direct.response.close()
+        _close_response(direct.response)
     if direct.session is not None:
         direct.session.close()
 
@@ -225,6 +250,17 @@ def fetch_url_direct_then_proxy(
         json=json,
     )
     attempts.append(proxy.attempt)
+    proxy = _inspect_outcome(proxy, expected_content)
+    attempts[-1] = proxy.attempt
+    if proxy.response is not None and not proxy.attempt.success and proxy.response.status_code < 400:
+        _close_response(proxy.response)
+        if proxy.session is not None:
+            proxy.session.close()
+        return TransportResult(
+            response=None,
+            attempts=attempts,
+            error=proxy.attempt.reason_code or "content_mismatch",
+        )
     return TransportResult(
         response=proxy.response,
         attempts=attempts,
@@ -256,23 +292,46 @@ def sanitize_url_for_persistence(
     )
 
 
-def sanitize_url_fields(value: Any, *, parent_key: str = "") -> Any:
-    """Sanitize only values whose field names have URL semantics."""
+def sanitize_for_persistence(value: Any, *, parent_key: str = "") -> Any:
+    """Recursively redact URLs, including URLs embedded in free text."""
+    if is_dataclass(value) and not isinstance(value, type):
+        value = asdict(value)
+    if isinstance(value, BaseException):
+        value = str(value)
     if isinstance(value, dict):
         return {
-            key: sanitize_url_fields(item, parent_key=str(key))
+            key: sanitize_for_persistence(item, parent_key=str(key))
             for key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         if _is_url_field(parent_key):
             return [
-                sanitize_url_for_persistence(item) if isinstance(item, str) else sanitize_url_fields(item)
+                sanitize_url_for_persistence(item) if isinstance(item, str) else sanitize_for_persistence(item)
                 for item in value
             ]
-        return [sanitize_url_fields(item) for item in value]
-    if isinstance(value, str) and _is_url_field(parent_key):
-        return sanitize_url_for_persistence(value)
+        return [sanitize_for_persistence(item) for item in value]
+    if isinstance(value, str):
+        if _is_url_field(parent_key):
+            return sanitize_url_for_persistence(value)
+        return _redact_urls_in_text(value)
     return value
+
+
+def sanitize_url_fields(value: Any, *, parent_key: str = "") -> Any:
+    """Backward-compatible name for the persistence-wide sanitizer."""
+    return sanitize_for_persistence(value, parent_key=parent_key)
+
+
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _redact_urls_in_text(value: str) -> str:
+    def replace_url(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        core = raw.rstrip(".,;:!?)]]}")
+        suffix = raw[len(core):]
+        return sanitize_url_for_persistence(core) + suffix
+    return _URL_IN_TEXT_RE.sub(replace_url, value)
 
 
 def _sanitize_url(
@@ -328,12 +387,77 @@ def _is_url_field(key: str) -> bool:
     return lowered in _URL_FIELD_NAMES or lowered.endswith("_url") or lowered.endswith("_urls")
 
 
+def inspect_response_content(
+    *, response: requests.Response, expected_content: ExpectedContent
+) -> ContentInspection:
+    """Classify a response from headers and a bounded body prefix."""
+    content_type = str(response.headers.get("content-type", "")).split(";", 1)[0].strip().lower()
+    prefix = _response_prefix(response)
+    stripped = prefix.lstrip().lower()
+    is_pdf = prefix.startswith(b"%PDF-")
+    html_marker = stripped.startswith((b"<!doctype html", b"<html", b"<?xml")) or any(
+        marker in stripped
+        for marker in (b"captcha", b"cloudflare", b"access denied", b"sign in", b"login")
+    )
+    is_html = content_type in {"text/html", "application/xhtml+xml"} or html_marker
+    detected: Literal["pdf", "html", "unknown"] = "pdf" if is_pdf else ("html" if is_html else "unknown")
+    if not prefix:
+        return ContentInspection(False, detected, "empty_body", content_type, prefix)
+    if expected_content == "any":
+        return ContentInspection(True, detected, None, content_type, prefix)
+    if expected_content == "pdf":
+        if is_html:
+            reason = "challenge_or_html" if html_marker else "expected_pdf_received_html"
+            return ContentInspection(False, detected, reason, content_type, prefix)
+        if not is_pdf:
+            return ContentInspection(False, detected, "missing_pdf_magic", content_type, prefix)
+        return ContentInspection(True, detected, None, content_type, prefix)
+    if is_pdf:
+        return ContentInspection(False, detected, "expected_html_received_pdf", content_type, prefix)
+    if not is_html:
+        return ContentInspection(False, detected, "expected_html_received_unknown", content_type, prefix)
+    return ContentInspection(True, detected, None, content_type, prefix)
+
+
+def _response_prefix(response: requests.Response, limit: int = 512) -> bytes:
+    cached = getattr(response, "_content", False)
+    if isinstance(cached, (bytes, bytearray)):
+        return bytes(cached[:limit])
+    raw = getattr(response, "raw", None)
+    if raw is not None and hasattr(raw, "read"):
+        try:
+            prefix = raw.read(limit, decode_content=True)
+        except TypeError:
+            prefix = raw.read(limit)
+        prefix = bytes(prefix or b"")
+        setattr(response, "_mineru_prefetched_prefix", prefix)
+        return prefix
+    content = getattr(response, "content", b"")
+    return bytes(content[:limit]) if isinstance(content, (bytes, bytearray)) else b""
+
+
 @dataclass
 class _RequestOutcome:
     response: requests.Response | None
     session: requests.Session | None
     attempt: TransportAttempt
     retryable: bool
+
+
+def _inspect_outcome(outcome: _RequestOutcome, expected_content: ExpectedContent) -> _RequestOutcome:
+    response = outcome.response
+    if response is None or response.status_code >= 400:
+        return outcome
+    inspection = inspect_response_content(response=response, expected_content=expected_content)
+    attempt = replace(
+        outcome.attempt,
+        success=inspection.accepted,
+        detected_content=inspection.detected_content,
+        reason_code=inspection.reason_code or "",
+        error_type="" if inspection.accepted else "ContentMismatch",
+        error_message="" if inspection.accepted else (inspection.reason_code or "content_mismatch"),
+    )
+    return _RequestOutcome(response, outcome.session, attempt, not inspection.accepted)
 
 
 def _request_once(
@@ -424,6 +548,12 @@ def _invalid_url_error(url: str) -> str:
     if not parts.netloc:
         return "InvalidURL"
     return ""
+
+
+def _close_response(response: Any) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
 
 
 def _should_fallback_for_status(status_code: int | None) -> bool:

@@ -25,14 +25,11 @@ from src.services.ingest_duplicate_guard import DuplicateIngestError, DuplicateR
 from src.services.ingest_state import METADATA_MANUAL_REVIEW_REQUIRED
 from src.services.metadata_quality import bibliographic_identity_gate, is_valid_normalized_doi
 from src.services.network_metadata_canonical import canonicalize_network_record
-from src.services.v2_library import (
-    PaperNumberLedger,
-    PaperRawAllocator,
-    empty_metadata,
-    merge_missing_metadata,
-    now_iso,
-    validate_metadata_schema,
-)
+from src.library.paper_number_ledger import PaperNumberLedger
+from src.metadata.schema import empty_metadata, validate_metadata_schema
+from src.metadata.normalization import merge_missing_metadata
+from src.ingest.models import now_iso
+from src.ingest.paper_raw import PaperRawAllocator
 
 
 DOI_REQUIRED_ERROR = "network/search metadata import requires metadata.identifiers.doi"
@@ -145,14 +142,7 @@ def _metadata_from_record(record: dict[str, Any] | str, paper_number: str | dict
     merged["entry_type"] = canonical.entry_type
     blocking = [warning for warning in canonical.warnings if "unknown provider type" in warning]
     ready, reasons = bibliographic_identity_gate(merged, blocking)
-    status = "matched" if ready else "unmatched"
-    merged["metadata_match"] = {
-        "status": status,
-        "source": provider or "network_search",
-        "confidence": confidence,
-        "matched_at": now_iso() if ready else "",
-        "warnings": reasons,
-    }
+    merged.pop("metadata_match", None)
     errors = validate_metadata_schema(merged)
     if paper_number and errors:
         raise ValueError("invalid network metadata: " + "; ".join(errors))
@@ -305,10 +295,7 @@ def stage_network_metadata_records(
                     doi=doi,
                 ))
                 item["safe_error"] = None
-                match = metadata.get("metadata_match") if isinstance(metadata.get("metadata_match"), dict) else {}
-                if match.get("status") != "matched":
-                    item["import_status"] = METADATA_MANUAL_REVIEW_REQUIRED
-                    item["warnings"] = list(match.get("warnings") or [])
+                item["import_status"] = "metadata_resolved"
             except DuplicateIngestError as exc:
                 item.update({
                     "status": "duplicate",

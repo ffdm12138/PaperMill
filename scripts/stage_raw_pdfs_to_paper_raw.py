@@ -13,7 +13,8 @@ from loguru import logger
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR, RAW_DIR
 from src.file_fingerprint import compute_file_hashes
 from src.services.ingest_duplicate_guard import DuplicateIngestError, check_pdf_duplicate
-from src.services.v2_library import PaperNumberLedger, PaperRawAllocator
+from src.library.paper_number_ledger import PaperNumberLedger
+from src.ingest.paper_raw import PaperRawAllocator
 
 
 def _is_pdf(path: Path) -> bool:

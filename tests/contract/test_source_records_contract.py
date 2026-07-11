@@ -11,7 +11,7 @@ from src.services.source_records import (
     resolve_metadata_source_record_path,
     write_fetch_result,
 )
-from src.services.v2_library import PaperRawAllocator
+from src.ingest.paper_raw import PaperRawAllocator
 from tests.factories.pdf_factory import write_fake_pdf
 
 

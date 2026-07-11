@@ -9,7 +9,8 @@ import pytest
 import scripts.convert_paper_raw_batch as batch
 from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_LANG, MINERU_METHOD
 from src.services.mineru_output_cache import MinerUOutputCache
-from src.services.v2_library import PaperRawConverter, empty_metadata
+from src.ingest.paper_raw import PaperRawConverter
+from src.metadata.schema import empty_metadata
 
 
 pytestmark = pytest.mark.unit
@@ -49,7 +50,6 @@ def _raw_folder(root: Path, source_id: str = PN1, *, pdf_bytes: bytes | None = N
     metadata["authors"] = [{"full_name": "Wang A", "family": "Wang", "given": "A", "orcid": "", "affiliation": ""}]
     metadata["container"]["journal"] = "Test Journal"
     metadata["identifiers"]["doi"] = f"10.1000/{source_id}"
-    metadata["metadata_match"]["status"] = "matched"
     (folder / f"{source_id}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (folder / f"{source_id}.pdf").write_bytes(pdf_bytes or (b"%PDF-cache-" + source_id.encode("ascii")))
     return folder

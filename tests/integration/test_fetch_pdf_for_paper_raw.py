@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 from src.fetch.models import FetchResult
-from src.services.v2_library import empty_metadata
+from src.library.paper_number_ledger import PaperNumberLedger
+from src.metadata.schema import empty_metadata
 from scripts.fetch_pdf_for_paper_raw import classify_pdf_fetch_candidate
 
 
@@ -25,6 +26,7 @@ def _metadata(paper_number: str, doi: str = "10.1000/fetch") -> dict:
 def _workspace(root: Path, paper_number: str = PN, *, doi: str = "10.1000/fetch", pdf: bool = False, status: str = "") -> Path:
     folder = root / paper_number
     folder.mkdir(parents=True)
+    PaperNumberLedger.write_marker(folder, paper_number, state="reserved")
     (folder / f"{paper_number}.metadata.json").write_text(json.dumps(_metadata(paper_number, doi)), encoding="utf-8")
     if pdf:
         (folder / f"{paper_number}.pdf").write_bytes(b"%PDF existing")
@@ -146,8 +148,8 @@ def test_apply_attaches_pdf_and_writes_sanitized_provenance(tmp_path, monkeypatc
     # fetch_result.json is a SEPARATE file from the metadata source record.
     # metadata.source.raw_record_path must NOT point at fetch_result.json.
     assert metadata["source"]["raw_record_path"] != "source_records/fetch_result.json"
-    assert metadata["links"]["pdf_url"] == "https://example.test/p.pdf"
-    assert metadata["links"]["landing_url"] == "https://example.test/landing"
+    assert metadata["links"]["pdf_url"] == ""
+    assert "landing_url" not in metadata["links"]
     fetch_path = folder / "source_records" / "fetch_result.json"
     assert fetch_path.exists()
     fetch_doc = json.loads(fetch_path.read_text(encoding="utf-8"))
@@ -167,6 +169,7 @@ def test_apply_attaches_pdf_and_writes_sanitized_provenance(tmp_path, monkeypatc
     assert stage["pdf_source"]["fetch_record_path"] == "source_records/fetch_result.json"
     assert stage["pdf_source"]["pdf_url"] == "https://example.test/p.pdf"
     assert stage["staged_pdf"]["sha256"]
+    assert (folder/f"{PN}.metadata_match.json").exists()
 
 
 def test_existing_pdf_skips_resolver_even_when_custom_or_unsafe(tmp_path, monkeypatch):

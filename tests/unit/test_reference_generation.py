@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from src.services.metadata_enrichment_service import normalize_crossref_metadata
 from src.services.metadata_resolver import patch_from_enrichment
-from src.services.v2_library import bibtex_from_metadata, format_reference_from_metadata
+from src.metadata.citation import bibtex_from_metadata, format_reference_from_metadata
 
 
 def _bi_metadata(doi: str = "10.1038/s41586-023-06185-3") -> dict:
@@ -100,18 +100,18 @@ def test_bibtex_from_metadata_uses_publication_fields_and_existing_doi_only():
     assert "doi =" not in no_doi
 
 
-def test_format_reference_from_metadata_apa_and_missing_doi_warning():
+def test_format_reference_from_metadata_apa_and_missing_doi_output():
     ref = format_reference_from_metadata(_bi_metadata())
 
     assert ref == (
         "Bi, K., Xie, L., Zhang, H., Chen, X., Gu, X., & Tian, Q. (2023). "
         "Accurate medium-range global weather forecasting with 3D neural networks. "
-        "Nature, 619(7970), 533-538. doi: 10.1038/s41586-023-06185-3"
+        "Nature, 619(7970), 533-538. https://doi.org/10.1038/s41586-023-06185-3"
     )
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        ref_without_doi = format_reference_from_metadata(_bi_metadata(doi=""))
+    ref_without_doi = format_reference_from_metadata(_bi_metadata(doi=""))
 
     assert "doi:" not in ref_without_doi
-    assert any("metadata.identifiers.doi is empty" in str(item.message) for item in caught)
+    # A persisted stable URL remains a legitimate reference locator even when
+    # the DOI field itself is absent.
+    assert ref_without_doi.endswith("https://doi.org/10.1038/s41586-023-06185-3")

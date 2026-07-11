@@ -197,7 +197,6 @@ class OriginalLinkResolver(PdfResolver):
             url,
             expected_content="pdf",
             headers={"User-Agent": FIXED_USER_AGENT},
-            timeout=30,
             allow_redirects=True,
             stream=True,
         ) as transport:
@@ -291,7 +290,6 @@ class OriginalLinkResolver(PdfResolver):
             url,
             expected_content="html",
             headers={"User-Agent": FIXED_USER_AGENT},
-            timeout=30,
             allow_redirects=True,
             stream=True,
         ) as transport:

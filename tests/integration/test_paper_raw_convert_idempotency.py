@@ -6,13 +6,9 @@ from pathlib import Path
 
 import scripts.convert_paper_raw_batch as batch
 from scripts.preflight_paper_raw_import import preflight_one
-from src.services.v2_library import (
-    PaperRawConverter,
-    V2PaperCommitService,
-    empty_catalog,
-    empty_metadata,
-    write_conversion_manifest_for_existing_assets,
-)
+from src.ingest.paper_raw import PaperRawConverter
+from src.ingest.conversion import write_conversion_manifest_for_existing_assets
+from src.metadata.schema import empty_metadata
 
 
 PN1 = "0000000000000001"
@@ -59,7 +55,6 @@ def _raw_folder(root: Path, source_id: str = PN1) -> Path:
     metadata["authors"] = [{"full_name": "Wang A", "family": "Wang", "given": "A", "orcid": "", "affiliation": ""}]
     metadata["container"]["journal"] = "Test Journal"
     metadata["identifiers"]["doi"] = f"10.1000/{source_id}"
-    metadata["metadata_match"]["status"] = "matched"
     (folder / f"{source_id}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (folder / f"{source_id}.pdf").write_bytes(b"%PDF-" + source_id.encode("ascii"))
     return folder
@@ -189,34 +184,3 @@ def test_preflight_marks_existing_conversion_as_converted(tmp_path):
     assert item["has_images_dir"] is True
 
 
-def test_formal_commit_removes_conversion_manifest(tmp_path):
-    from tests.helpers.paper_raw_factory import make_staged_source
-
-    raw = make_staged_source(
-        tmp_path,
-        PN1,
-        title_zh="转换清单",
-        title_original="Manifest Paper",
-        doi="10.1000/manifest",
-        family="wang",
-    )
-    pid = "2024_wang_转换清单"
-    assert (raw / f"{PN1}.conversion.json").exists()
-
-    from src.services.paper_raw_formalizer import PaperRawFormalizationService
-
-    formalized = PaperRawFormalizationService(
-        paper_raw_dir=raw.parent, papers_dir=tmp_path / "papers",
-        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
-        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
-    ).formalize(raw)
-    assert formalized.get("success"), formalized
-
-    result = V2PaperCommitService(
-        papers_dir=tmp_path / "papers",
-        all_catalog_path=tmp_path / "catalog" / "all.catalog.json",
-        ledger_path=tmp_path / "catalog" / "paper_number_ledger.json",
-    ).commit_paper_raw(formalized["folder"])
-
-    assert result["success"] is True
-    assert not (tmp_path / "papers" / pid / f"{pid}.conversion.json").exists()

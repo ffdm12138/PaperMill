@@ -119,7 +119,6 @@ def _download_pdf(
             url,
             expected_content="pdf",
             stream=True,
-            timeout=timeout,
         ) as transport:
             if transport_attempts is not None:
                 transport_attempts.extend(transport.safe_attempts)
@@ -139,6 +138,12 @@ def _download_pdf(
             # 至少 4 字节再判断，避免误拒合法 PDF。
             magic_buf = b""
             with tmp.open("wb") as fh:
+                prefetched = bytes(getattr(response, "_mineru_prefetched_prefix", b"") or b"")
+                if prefetched:
+                    total += len(prefetched)
+                    magic_buf = prefetched
+                    digest.update(prefetched)
+                    fh.write(prefetched)
                 for chunk in response.iter_content(chunk_size=1024 * 64):
                     if not chunk:
                         continue

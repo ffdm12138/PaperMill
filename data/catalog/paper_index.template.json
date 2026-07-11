@@ -1,6 +1,0 @@
-{
-  "schema_version": "2.0",
-  "description": "Path index only; bibliographic facts stay in metadata.json. Real paper_index.json is ignored.",
-  "updated_at": "",
-  "papers": []
-}

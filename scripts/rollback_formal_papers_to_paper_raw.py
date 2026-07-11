@@ -1,459 +1,534 @@
-"""Rollback formal ``data/papers`` assets into numbered ``data/paper_raw`` workspaces.
+"""CLI for rolling back formal papers to numeric paper_raw.
 
-Default mode is dry-run. ``--apply`` performs a staged copy, installs a raw
-workspace, archives the formal folder, rolls the ledger item from active back to
-reserved, and rebuilds the runtime indexes.
+Supports ``--paper-number``, ``--paper-id``, or ``--all-papers`` as
+mutually exclusive target selectors.  Default mode is dry-run; pass
+``--apply`` to execute.  Use ``--report PATH`` for structured JSON output.
+
+Core transaction logic lives in :mod:`src.ingest.rollback`.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
 import sys
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import ALL_CATALOG_PATH, PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
-from src.path_utils import normalize_repo_path, resolve_stored_path
-from src.services.asset_manifest import write_asset_manifest
+from config.settings import CATALOG_FOLDER_ROOT, PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from src.ingest.rollback import resolve_paper_number_by_paper_id, rollback_formal_papers
+from src.ingest.transactions import find_active_transaction_for_paper
+from src.library.paper_number_ledger import PaperNumberLedger
+from src.library.validation import validate_formal_paper
 from src.services.ingest_ids import PAPER_NUMBER_RE
-from src.services.ingest_state import write_import_status
-from src.services.metadata_quality import bibliographic_identity_gate
-from src.services.v2_library import (
-    AllCatalogBuilder,
-    PaperNumberLedger,
-    now_iso,
-    validate_metadata_schema,
-    write_conversion_manifest_for_existing_assets,
-)
-from src.utils.atomic_io import atomic_write_json
 
 
-FORBIDDEN_METADATA_TOP = {"abstract", "keywords", "pdf", "content", "notes", "bibtex", "citation_key"}
-FORBIDDEN_TITLE = {"short" + "_zh", "translated" + "_zh"}
-FORBIDDEN_SOURCE = {"raw" + "_record", "providers"}
-
-
-def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _marker_number(marker: Path) -> str:
-    if marker.name.endswith(".paper.number"):
-        candidate = marker.name[: -len(".paper.number")]
-        if PAPER_NUMBER_RE.match(candidate):
-            return candidate
-    try:
-        data = _load_json(marker)
-    except Exception:
-        data = {}
-    return str(data.get("paper_number") or "")
-
-
-def _formal_dirs(papers_dir: Path, *, all_papers: bool, paper_id: str | None) -> list[Path]:
-    if paper_id:
-        return [papers_dir / paper_id]
-    if not all_papers:
-        raise ValueError("--all or --paper-id is required")
-    if not papers_dir.exists():
-        return []
-    return sorted(p for p in papers_dir.iterdir() if p.is_dir() and not p.name.startswith("."))
-
-
-def _preflight_folder(folder: Path, paper_raw_dir: Path, ledger: PaperNumberLedger) -> dict[str, Any]:
-    pid = folder.name
-    errors: list[str] = []
-    warnings: list[str] = []
-    markers = sorted(folder.glob("*.paper.number"))
-    if len(markers) != 1:
-        errors.append(f"{pid}: expected exactly one .paper.number marker, found {len(markers)}")
-        number = ""
-    else:
-        number = _marker_number(markers[0])
-        if not PAPER_NUMBER_RE.match(number):
-            errors.append(f"{pid}: invalid paper_number marker {markers[0].name}")
-
-    required = {
-        "metadata": folder / f"{pid}.metadata.json",
-        "markdown": folder / f"{pid}.md",
-        "pdf": folder / f"{pid}.pdf",
-        "images": folder / "images",
-    }
-    for label, path in required.items():
-        if label == "images":
-            if not path.is_dir():
-                errors.append(f"{pid}: missing images/: {path}")
-        elif not path.exists():
-            errors.append(f"{pid}: missing {label}: {path}")
-
-    manifest = folder / f"{pid}.asset_manifest.json"
-    if not manifest.exists():
-        warnings.append(f"{pid}: missing formal asset manifest; raw manifest will be rebuilt")
-
-    metadata: dict[str, Any] = {}
-    if required["metadata"].exists():
-        try:
-            metadata = _load_json(required["metadata"])
-        except Exception as exc:
-            errors.append(f"{pid}: metadata invalid JSON: {exc}")
-        else:
-            for err in validate_metadata_schema(metadata):
-                errors.append(f"{pid}: {err}")
-            source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
-            for key in sorted(FORBIDDEN_SOURCE):
-                if key in source:
-                    errors.append(f"{pid}: metadata.source.{key} is forbidden in rollback strict-only mode")
-            if number:
-                if metadata.get("paper_number") != number:
-                    errors.append(f"{pid}: metadata.paper_number != marker paper_number")
-                if metadata.get("paper_raw_id") != number:
-                    errors.append(f"{pid}: metadata.paper_raw_id != marker paper_number")
-            status = str(((metadata.get("metadata_match") or {}).get("status")) or "")
-            if status in {"matched", "manual_confirmed"}:
-                ready, reasons = bibliographic_identity_gate(metadata)
-                if not ready:
-                    warnings.append(f"{pid}: metadata {status} but not citation-ready; will downgrade on rollback: {', '.join(reasons)}")
-
-    if number:
-        target = paper_raw_dir / number
-        if target.exists():
-            errors.append(f"{pid}: target paper_raw already exists: {target}")
-        ledger_item = (ledger.load().get("items") or {}).get(number)
-        if not ledger_item:
-            errors.append(f"{pid}: ledger missing paper_number {number}")
-        else:
-            state = ledger_item.get("state") or "active"
-            if state != "active":
-                errors.append(f"{pid}: ledger state is {state}; expected active")
-            stored = ledger_item.get("folder_path") or ""
-            resolved = resolve_stored_path(stored)
-            try:
-                same = resolved.resolve() == folder.resolve()
-            except OSError:
-                same = False
-            if stored and not same:
-                errors.append(f"{pid}: ledger folder_path does not point to formal folder")
-    return {
-        "paper_id": pid,
-        "paper_number": number,
-        "folder": str(folder),
-        "target": str(paper_raw_dir / number) if number else "",
-        "errors": errors,
-        "warnings": warnings,
-    }
-
-
-def _copy_file(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-
-
-def _clean_metadata(metadata: dict[str, Any], *, paper_number: str) -> tuple[dict[str, Any], list[str]]:
-    warnings: list[str] = []
-    metadata = dict(metadata)
-    metadata["schema_version"] = "2.0"
-    metadata["paper_number"] = paper_number
-    metadata["paper_raw_id"] = paper_number
-    for key in FORBIDDEN_METADATA_TOP:
-        metadata.pop(key, None)
-    title = metadata.get("title")
-    if isinstance(title, dict):
-        for key in FORBIDDEN_TITLE:
-            title.pop(key, None)
-    # Secondary defense: strict-only preflight already blocks source.raw_record
-    # / providers, but pop them here so a bypassed preflight cannot smuggle
-    # forbidden keys into the rolled-back metadata.
-    source = metadata.get("source")
-    if isinstance(source, dict):
-        for key in FORBIDDEN_SOURCE:
-            source.pop(key, None)
-    errors = validate_metadata_schema(metadata)
-    if errors:
-        warnings.extend(errors)
-    status = str(((metadata.get("metadata_match") or {}).get("status")) or "")
-    if status in {"matched", "manual_confirmed"}:
-        ready, reasons = bibliographic_identity_gate(metadata)
-        if not ready:
-            match = metadata.setdefault("metadata_match", {})
-            match["status"] = "unmatched"
-            existing = list(match.get("warnings") or [])
-            match["warnings"] = existing + [f"rollback downgraded metadata_match: {reason}" for reason in reasons]
-            warnings.extend(reasons)
-    return metadata, warnings
-
-
-def _stage_folder(formal: Path, staging: Path, *, paper_id: str, paper_number: str, keep_catalog: bool) -> dict[str, Any]:
-    staging.mkdir(parents=True)
-    _copy_file(formal / f"{paper_id}.metadata.json", staging / f"{paper_number}.metadata.json")
-    _copy_file(formal / f"{paper_id}.md", staging / f"{paper_number}.md")
-    _copy_file(formal / f"{paper_id}.pdf", staging / f"{paper_number}.pdf")
-    manifest = formal / f"{paper_id}.asset_manifest.json"
-    if manifest.exists():
-        _copy_file(manifest, staging / f"{paper_number}.asset_manifest.json")
-    if keep_catalog and (formal / f"{paper_id}.catalog.json").exists():
-        _copy_file(formal / f"{paper_id}.catalog.json", staging / f"{paper_number}.catalog.json")
-    shutil.copytree(formal / "images", staging / "images")
-    source_records = formal / "source_records"
-    if source_records.exists():
-        shutil.copytree(source_records, staging / "source_records", dirs_exist_ok=True)
-
-    metadata = _load_json(staging / f"{paper_number}.metadata.json")
-    metadata, warnings = _clean_metadata(metadata, paper_number=paper_number)
-    atomic_write_json(staging / f"{paper_number}.metadata.json", metadata, indent=2)
-    write_conversion_manifest_for_existing_assets(staging, paper_number)
-    write_asset_manifest(staging, prefix=paper_number, paper_number=paper_number, paper_id="", stage="paper_raw")
-
-    citation_ready, reasons = bibliographic_identity_gate(metadata)
-    status = str(((metadata.get("metadata_match") or {}).get("status")) or "")
-    rollback_status = (
-        "converted" if citation_ready and status in {"matched", "manual_confirmed"}
-        else "metadata_manual_review_required"
-    )
-    rollback_reason = (
-        "rolled back from formal library; converted assets preserved; regenerate catalog before formalize"
-        if citation_ready and status in {"matched", "manual_confirmed"}
-        else "rolled back from formal library but metadata is not citation-ready"
-    )
-    write_import_status(
-        staging,
-        rollback_status,
-        reason=rollback_reason,
-        warnings=warnings + ([] if citation_ready else reasons),
-        extra={
-            "paper_number": paper_number,
-            "paper_raw_id": paper_number,
-            "old_paper_id": paper_id,
-            "metadata_match_status": status,
-            "rolled_back_at": now_iso(),
-        },
-    )
-    atomic_write_json(staging / f"{paper_number}.paper.number", {
-        "paper_number": paper_number,
-        "folder_name": paper_number,
-        "state": "reserved",
-        "planned_paper_id": paper_id,
-    }, indent=2)
-    post_errors = _postcheck_staging(staging, paper_number, keep_catalog=keep_catalog)
-    return {"warnings": warnings, "postcheck_errors": post_errors}
-
-
-def _postcheck_staging(folder: Path, paper_number: str, *, keep_catalog: bool) -> list[str]:
-    errors: list[str] = []
-    required = [
-        folder / f"{paper_number}.metadata.json",
-        folder / f"{paper_number}.md",
-        folder / f"{paper_number}.pdf",
-        folder / "images",
-        folder / f"{paper_number}.asset_manifest.json",
-        folder / f"{paper_number}.conversion.json",
-        folder / f"{paper_number}.paper.number",
-    ]
-    for path in required:
-        if path.name == "images":
-            if not path.is_dir():
-                errors.append(f"missing images/: {path}")
-        elif not path.exists():
-            errors.append(f"missing required rollback asset: {path}")
-    try:
-        metadata = _load_json(folder / f"{paper_number}.metadata.json")
-        errors.extend(validate_metadata_schema(metadata))
-    except Exception as exc:
-        errors.append(f"metadata unreadable after rollback staging: {exc}")
-    if not keep_catalog and list(folder.glob("*.catalog.json")):
-        errors.append("catalog file exists despite default delete-catalog mode")
-    return errors
-
-
-def _install_one(
+def _resolve_paper_number(
     *,
-    formal: Path,
-    paper_raw_dir: Path,
-    archive_dir: Path,
-    ledger: PaperNumberLedger,
     paper_id: str,
-    paper_number: str,
-    keep_catalog: bool,
-) -> dict[str, Any]:
-    staging = archive_dir / "staging" / paper_number
-    backup = archive_dir / "papers_backup" / paper_id
-    target = paper_raw_dir / paper_number
-    if staging.exists():
-        shutil.rmtree(staging)
-    stage = _stage_folder(formal, staging, paper_id=paper_id, paper_number=paper_number, keep_catalog=keep_catalog)
-    if stage["postcheck_errors"]:
-        shutil.rmtree(staging, ignore_errors=True)
-        return {"status": "failed", "errors": stage["postcheck_errors"], "warnings": stage["warnings"]}
-
-    tmp_target = paper_raw_dir / f".rollback_{paper_number}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
-    archived = False
-    installed = False
-    try:
-        paper_raw_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(staging, tmp_target)
-        os.replace(tmp_target, target)
-        installed = True
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(formal), str(backup))
-        archived = True
-        ledger.rollback_active_to_reserved(paper_number, target, planned_paper_id=paper_id)
-    except Exception:
-        if tmp_target.exists():
-            shutil.rmtree(tmp_target, ignore_errors=True)
-        if archived and backup.exists() and not formal.exists():
-            shutil.move(str(backup), str(formal))
-        if installed and target.exists():
-            shutil.rmtree(target, ignore_errors=True)
-        raise
-    return {
-        "status": "rolled_back",
-        "paper_id": paper_id,
-        "paper_number": paper_number,
-        "raw_folder": normalize_repo_path(target),
-        "archive_folder": normalize_repo_path(backup),
-        "catalog_deleted": not keep_catalog,
-        "source_records_preserved": (target / "source_records").exists(),
-        "warnings": stage["warnings"],
-    }
-
-
-def rollback_formal_papers(
-    *,
     papers_dir: Path,
-    paper_raw_dir: Path,
-    ledger_path: Path,
-    all_catalog_path: Path,
-    archive_dir: Path,
-    all_papers: bool = False,
-    paper_id: str | None = None,
-    keep_catalog: bool = False,
-    apply: bool = False,
-) -> dict[str, Any]:
-    ledger = PaperNumberLedger(ledger_path)
-    candidates = _formal_dirs(papers_dir, all_papers=all_papers, paper_id=paper_id)
-    report: dict[str, Any] = {
-        "applied": apply,
-        "archive_dir": str(archive_dir),
-        "items": [],
-        "summary": {
-            "planned": 0,
-            "rolled_back": 0,
-            "failed": 0,
-            "catalogs_deleted": 0,
-            "source_records_preserved": 0,
-            "ledger_active_to_reserved": 0,
-            "blocking_errors": 0,
-        },
-    }
-    preflight = []
-    for folder in candidates:
-        item = _preflight_folder(folder, paper_raw_dir, ledger)
-        item["status"] = "blocked" if item["errors"] else "planned"
-        preflight.append(item)
-    report["items"] = preflight
-    report["summary"]["planned"] = sum(1 for item in preflight if not item["errors"])
-    report["summary"]["blocking_errors"] = sum(len(item["errors"]) for item in preflight)
-    if any(item["errors"] for item in preflight) or not apply:
-        return report
+    paper_raw_root: Path,
+    transaction_root: Path,
+    ledger: PaperNumberLedger,
+) -> str:
+    """Resolve paper_id → paper_number, raising on failure."""
+    return resolve_paper_number_by_paper_id(
+        paper_id=paper_id,
+        papers_dir=papers_dir,
+        paper_raw_root=paper_raw_root,
+        transaction_root=transaction_root,
+        ledger=ledger,
+    )
 
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    for item in preflight:
-        result = _install_one(
-            formal=Path(item["folder"]),
-            paper_raw_dir=paper_raw_dir,
-            archive_dir=archive_dir,
-            ledger=ledger,
-            paper_id=item["paper_id"],
-            paper_number=item["paper_number"],
-            keep_catalog=keep_catalog,
-        )
-        item.update(result)
-        if result["status"] == "rolled_back":
-            report["summary"]["rolled_back"] += 1
-            report["summary"]["ledger_active_to_reserved"] += 1
-            if result["catalog_deleted"]:
-                report["summary"]["catalogs_deleted"] += 1
-            if result["source_records_preserved"]:
-                report["summary"]["source_records_preserved"] += 1
-        elif result["status"] == "failed":
-            report["summary"]["failed"] += 1
-            report["summary"]["blocking_errors"] += len(result.get("errors") or []) or 1
+EXIT_OK = 0
+EXIT_ROLLBACK_FAILED = 1
+EXIT_CLI_ERROR = 2
+EXIT_BLOCKING = 3
 
-    builder = AllCatalogBuilder(papers_dir, all_catalog_path, ledger)
-    if report["summary"]["failed"] > 0:
-        report["index_rebuild"] = {
-            "status": "skipped_due_to_failed_items",
-            "reason": f"{report['summary']['failed']} item(s) failed postcheck; index not rebuilt to avoid inconsistency",
+PaperStatus = Literal[
+    "planned", "resumed", "completed", "failed", "not_started", "blocked"
+]
+
+REPORT_SCHEMA_VERSION = "1.0"
+
+
+@dataclass
+class PaperResult:
+    paper_number: str = ""
+    paper_id: str = ""
+    status: PaperStatus = "planned"
+    transaction_id: str | None = None
+    reason_code: str | None = None
+    message: str | None = None
+
+
+@dataclass
+class RollbackReport:
+    schema_version: str = REPORT_SCHEMA_VERSION
+    operation: str = "rollback_formal_to_paper_raw"
+    mode: Literal["dry_run", "apply"] = "dry_run"
+    requested_target: dict[str, Any] = field(default_factory=dict)
+    summary: dict[str, int] = field(default_factory=lambda: {
+        "discovered": 0,
+        "planned": 0,
+        "completed": 0,
+        "failed": 0,
+        "not_started": 0,
+        "blocking_errors": 0,
+    })
+    papers: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "operation": self.operation,
+            "mode": self.mode,
+            "requested_target": self.requested_target,
+            "summary": dict(self.summary),
+            "papers": list(self.papers),
         }
-    elif all_papers:
-        all_catalog = builder.build(write=True)
-        report["index_rebuild"] = {
-            "status": "written",
-            "all_catalog_count": len(all_catalog.get("papers", [])),
-            "errors": list(builder.last_errors),
-        }
-        if builder.last_errors:
-            report["summary"]["blocking_errors"] += len(builder.last_errors)
-    else:
-        planned = builder.build(write=False)
-        if builder.last_errors:
-            report["index_rebuild"] = {
-                "status": "failed_skipped_write",
-                "all_catalog_count": len(planned.get("papers", [])),
-                "errors": list(builder.last_errors),
-            }
-            report["summary"]["blocking_errors"] += len(builder.last_errors)
+
+    def add_paper_result(self, result: PaperResult) -> None:
+        self.papers.append({
+            "paper_number": result.paper_number,
+            "paper_id": result.paper_id,
+            "status": result.status,
+            "transaction_id": result.transaction_id,
+            "reason_code": result.reason_code,
+            "message": result.message,
+        })
+
+
+def _build_string_path(path: str) -> str:
+    """Ensure a path argument string is suitable for writing."""
+    # Prevent empty strings
+    if not path.strip():
+        return path
+    return path
+
+
+def _discover_all_papers_targets(
+    papers_dir: Path,
+    ledger: PaperNumberLedger,
+    *, paper_raw_root: Path, transaction_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Discover all valid formal papers, returning (valid_targets, blocking_errors)."""
+    targets: list[dict[str, Any]] = []
+    blocking: list[dict[str, Any]] = []
+
+    if not papers_dir.is_dir():
+        return targets, blocking
+
+    # Scan .paper.number markers first
+    marker_map: dict[str, str] = {}  # paper_number -> dir_name
+    for candidate in sorted(papers_dir.iterdir()):
+        if not candidate.is_dir() or candidate.name.startswith("."):
+            continue
+        markers = list(candidate.glob("*.paper.number"))
+        if markers:
+            try:
+                data = json.loads(markers[0].read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                blocking.append({
+                    "dir": candidate.name,
+                    "error": "corrupt_marker",
+                    "message": f"cannot read .paper.number marker in {candidate.name}",
+                })
+                continue
+            pn = str(data.get("paper_number") or "").strip()
+            if not PAPER_NUMBER_RE.match(pn):
+                blocking.append({
+                    "dir": candidate.name,
+                    "error": "invalid_paper_number",
+                    "message": f"marker paper_number={pn!r} not valid 16-digit",
+                })
+                continue
+            if pn in marker_map:
+                blocking.append({
+                    "dir": candidate.name,
+                    "error": "duplicate_paper_number",
+                    "message": f"paper_number={pn} claimed by {marker_map[pn]} and {candidate.name}",
+                })
+                continue
+            marker_map[pn] = candidate.name
         else:
-            all_catalog = builder.build(write=True)
-            report["index_rebuild"] = {
-                "status": "written",
-                "all_catalog_count": len(all_catalog.get("papers", [])),
-                "errors": [],
-            }
-    return report
+            # No marker — can't determine paper_number
+            blocking.append({
+                "dir": candidate.name,
+                "error": "missing_marker",
+                "message": f"no .paper.number marker in {candidate.name}",
+            })
+
+    if blocking:
+        return [], blocking
+
+    # Cross-validate with ledger
+    items = (ledger.load().get("items") or {})
+    for pn, dir_name in sorted(marker_map.items()):
+        item = items.get(pn) or {}
+        ledger_state = item.get("state") or ""
+        ledger_paper_id = item.get("paper_id") or ""
+
+        if ledger_state != "active":
+            blocking.append({
+                "paper_number": pn,
+                "paper_id": dir_name,
+                "error": "ledger_not_active",
+                "message": f"ledger state={ledger_state!r}, expected active",
+            })
+            continue
+
+        try:
+            info = validate_formal_paper(papers_dir / dir_name)
+        except Exception as exc:
+            blocking.append({
+                "paper_number": pn,
+                "paper_id": dir_name,
+                "error": "formal_validation_failed",
+                "message": str(exc),
+            })
+            continue
+
+        if info.get("paper_number") != pn or info.get("paper_id") != dir_name:
+            blocking.append({
+                "paper_number": pn,
+                "paper_id": dir_name,
+                "error": "formal_identity_mismatch",
+                "message": f"formal: number={info.get('paper_number')} id={info.get('paper_id')}",
+            })
+            continue
+
+        if ledger_paper_id and ledger_paper_id != dir_name:
+            blocking.append({
+                "paper_number": pn,
+                "paper_id": dir_name,
+                "error": "ledger_paper_id_mismatch",
+                "message": f"ledger paper_id={ledger_paper_id!r} vs dir={dir_name}",
+            })
+            continue
+
+        targets.append({
+            "paper_number": pn,
+            "paper_id": dir_name,
+        })
+
+    # Check for conflicting commit journals
+    for t in targets:
+        try:
+            active = find_active_transaction_for_paper(
+                transaction_root=transaction_root,
+                paper_number=t["paper_number"],
+                paper_raw_root=paper_raw_root,
+                papers_root=papers_dir,
+            )
+        except RuntimeError:
+            blocking.append({
+                "paper_number": t["paper_number"],
+                "paper_id": t["paper_id"],
+                "error": "ambiguous_transaction",
+                "message": "multiple active journals",
+            })
+            continue
+        if active is not None and active[0] == "commit":
+            blocking.append({
+                "paper_number": t["paper_number"],
+                "paper_id": t["paper_id"],
+                "error": "active_commit_transaction",
+                "message": "commit in progress",
+            })
+
+    # Recompute: remove blocked from valid
+    blocked_numbers = {b.get("paper_number") for b in blocking}
+    targets = [t for t in targets if t["paper_number"] not in blocked_numbers]
+
+    return targets, blocking
+
+
+def _write_report(report_path: str, report: RollbackReport) -> None:
+    """Atomically write the rollback report as JSON."""
+    from src.utils.atomic_io import atomic_write_json
+
+    rp = Path(report_path)
+    if rp.suffix.lower() != ".json":
+        raise ValueError("report path must have a .json extension")
+    rp.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(rp, report.to_dict(), indent=2)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Safely rollback formal papers into paper_raw workspaces.")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--all", action="store_true", help="rollback all formal paper folders")
-    group.add_argument("--paper-id", default=None, help="rollback a single formal paper_id")
-    parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
-    parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
-    parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
-    parser.add_argument("--all-catalog-path", type=Path, default=ALL_CATALOG_PATH)
-    parser.add_argument("--archive-dir", type=Path, default=None)
-    catalog_group = parser.add_mutually_exclusive_group()
-    catalog_group.add_argument("--keep-catalog", action="store_true", help="debug only: preserve catalog as <paper_number>.catalog.json; not for formal SOP")
-    catalog_group.add_argument("--delete-catalog", action="store_true", help="default formal SOP behavior")
-    parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--report", type=Path, default=None)
+    parser = argparse.ArgumentParser(
+        description="Transactionally roll back formal papers to paper_raw"
+    )
+    target_group = parser.add_mutually_exclusive_group()
+    target_group.add_argument(
+        "--paper-number",
+        help="16-digit paper number to roll back",
+    )
+    target_group.add_argument(
+        "--paper-id",
+        help="Paper ID to roll back",
+    )
+    target_group.add_argument(
+        "--all-papers",
+        action="store_true",
+        help="Roll back ALL formal papers",
+    )
+    parser.add_argument(
+        "--papers-dir",
+        default=str(PAPERS_DIR),
+        help="Formal papers directory",
+    )
+    parser.add_argument(
+        "--paper-raw-root",
+        default=str(PAPER_RAW_DIR),
+        help="Paper raw directory",
+    )
+    parser.add_argument(
+        "--transaction-root",
+        default=str(PAPER_RAW_DIR.parent / "transactions"),
+        help="Transaction journal root",
+    )
+    parser.add_argument(
+        "--ledger-path",
+        default=str(PAPER_NUMBER_LEDGER_PATH),
+        help="Ledger path",
+    )
+    parser.add_argument(
+        "--catalog-root",
+        default=str(CATALOG_FOLDER_ROOT),
+        help="Catalog folder root",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Execute rollback (default is dry-run)",
+    )
+    parser.add_argument(
+        "--report",
+        type=str,
+        default="",
+        metavar="PATH",
+        help="Write structured JSON report to PATH",
+    )
     args = parser.parse_args()
 
-    applying = args.apply and not args.dry_run
-    archive_dir = args.archive_dir or (args.papers_dir.parent / "transactions" / f"papers_rollback_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    report = rollback_formal_papers(
-        papers_dir=args.papers_dir,
-        paper_raw_dir=args.paper_raw_dir,
-        ledger_path=args.ledger_path,
-        all_catalog_path=args.all_catalog_path,
-        archive_dir=archive_dir,
-        all_papers=args.all,
-        paper_id=args.paper_id,
-        keep_catalog=args.keep_catalog,
-        apply=applying,
+    if not (args.paper_number or args.paper_id or args.all_papers):
+        parser.error("one of --paper-number, --paper-id, or --all-papers is required")
+
+    mode: Literal["dry_run", "apply"] = "apply" if args.apply else "dry_run"
+    report = RollbackReport(
+        mode=mode,
+        requested_target={
+            "paper_number": args.paper_number or None,
+            "paper_id": args.paper_id or None,
+            "all_papers": args.all_papers,
+        },
     )
+
+    papers_dir = Path(args.papers_dir)
+    paper_raw_root = Path(args.paper_raw_root)
+    transaction_root = Path(args.transaction_root)
+    ledger_path = Path(args.ledger_path)
+    catalog_root = Path(args.catalog_root)
+    ledger = PaperNumberLedger(ledger_path)
+
+    # ── Build target list ──────────────────────────────────────────
+    if args.all_papers:
+        targets, blocking = _discover_all_papers_targets(papers_dir, ledger, paper_raw_root=paper_raw_root, transaction_root=transaction_root)
+        report.summary["discovered"] = len(targets) + len(blocking)
+        report.summary["planned"] = len(targets)
+        report.summary["blocking_errors"] = len(blocking)
+
+        for b in blocking:
+            report.add_paper_result(PaperResult(
+                paper_number=b.get("paper_number", ""),
+                paper_id=b.get("paper_id", b.get("dir", "")),
+                status="blocked",
+                reason_code=b.get("error", "unknown"),
+                message=b.get("message", ""),
+            ))
+        for t in targets:
+            report.add_paper_result(PaperResult(
+                paper_number=t["paper_number"],
+                paper_id=t["paper_id"],
+                status="planned",
+            ))
+
+        if blocking and mode == "apply":
+            print(f"[BLOCKED] {len(blocking)} blocking error(s); no rollback executed.", flush=True)
+            for b in blocking:
+                print(f"  {b.get('paper_number','')} {b.get('paper_id',b.get('dir',''))}: {b.get('error','')}", flush=True)
+            if args.report:
+                _write_report(args.report, report)
+            return EXIT_BLOCKING
+
+        if mode == "dry_run":
+            print(f"[DRY-RUN] Discovered {len(targets)} formal paper(s) to roll back.", flush=True)
+            if blocking:
+                print(f"[DRY-RUN] {len(blocking)} blocking error(s) — cannot apply:", flush=True)
+                for b in blocking:
+                    print(f"  {b.get('paper_number','')} {b.get('paper_id',b.get('dir',''))}: {b.get('error','')}", flush=True)
+            else:
+                for t in targets:
+                    print(f"  Would roll back: number={t['paper_number']}, paper_id={t['paper_id']}", flush=True)
+            if args.report:
+                _write_report(args.report, report)
+            return EXIT_BLOCKING if blocking else EXIT_OK
+
+        # apply mode, no blocking
+        print(f"[APPLY] Rolling back {len(targets)} formal paper(s)...", flush=True)
+
+        paper_numbers_or_ids: list[dict[str, str | None]] = [
+            {"paper_number": t["paper_number"], "paper_id": None}
+            for t in targets
+        ]
+    elif args.paper_number:
+        paper_numbers_or_ids = [{"paper_number": args.paper_number, "paper_id": None}]
+    elif args.paper_id:
+        paper_numbers_or_ids = [{"paper_number": None, "paper_id": args.paper_id}]
+    else:
+        assert False, "unreachable"
+    # ────────────────────────────────────────────────────────────────
+
+    if mode == "dry_run" and not args.all_papers:
+        # Resolve and validate single-paper target
+        for item in paper_numbers_or_ids:
+            if item["paper_number"]:
+                if not PAPER_NUMBER_RE.match(item["paper_number"]):
+                    print(f"[ERROR] invalid paper_number: {item['paper_number']}", flush=True)
+                    if args.report:
+                        report.summary["blocking_errors"] = 1
+                        report.add_paper_result(PaperResult(
+                            paper_number=item["paper_number"],
+                            status="blocked",
+                            reason_code="invalid_paper_number",
+                        ))
+                        _write_report(args.report, report)
+                    return EXIT_CLI_ERROR
+                pnum = item["paper_number"]
+                pid_display = "(from paper_number)"
+            elif item["paper_id"]:
+                pid = item["paper_id"]
+                if "/" in pid or "\\" in pid or ".." in pid:
+                    print(f"[ERROR] invalid paper_id (contains path characters): {pid}", flush=True)
+                    return EXIT_CLI_ERROR
+                try:
+                    pnum = _resolve_paper_number(
+                        paper_id=pid,
+                        papers_dir=papers_dir,
+                        paper_raw_root=paper_raw_root,
+                        transaction_root=transaction_root,
+                        ledger=ledger,
+                    )
+                except Exception as exc:
+                    print(f"[ERROR] paper_id not found: {pid} ({exc})", flush=True)
+                    if args.report:
+                        report.summary["blocking_errors"] = 1
+                        report.add_paper_result(PaperResult(
+                            paper_id=pid,
+                            status="blocked",
+                            reason_code="paper_id_not_found",
+                            message=str(exc),
+                        ))
+                        _write_report(args.report, report)
+                    return EXIT_CLI_ERROR
+                pid_display = pid
+            else:
+                assert False, "unreachable"
+            print(f"[DRY-RUN] Would roll back: number={pnum}, paper_id={pid_display}", flush=True)
+            report.summary["discovered"] = len(paper_numbers_or_ids)
+            report.summary["planned"] = len(paper_numbers_or_ids)
+            report.add_paper_result(PaperResult(
+                paper_number=pnum,
+                paper_id=item["paper_id"] or "",
+                status="planned",
+            ))
+        if args.report:
+            _write_report(args.report, report)
+        return EXIT_OK
+
+    # ── Apply single or batch ─────────────────────────────────────
+    results: list[PaperResult] = []
+    report.summary["discovered"] = max(report.summary["discovered"], len(paper_numbers_or_ids))
+    report.summary["planned"] = max(report.summary["planned"], len(paper_numbers_or_ids))
+
+    for item in paper_numbers_or_ids:
+        pnum = item["paper_number"]
+        pid = item["paper_id"]
+        label = f"number={pnum or '?'} paper_id={pid or '?'}"
+        try:
+            print(f"  Rolling back: {label}", flush=True)
+            actual_number = rollback_formal_papers(
+                papers_dir=papers_dir,
+                paper_raw_root=paper_raw_root,
+                transaction_root=transaction_root,
+                ledger_path=ledger_path,
+                catalog_root=catalog_root,
+                paper_number=pnum,
+                paper_id=pid,
+            )
+            results.append(PaperResult(
+                paper_number=actual_number,
+                paper_id=pid or "",
+                status="completed",
+            ))
+            report.summary["completed"] += 1
+            print(f"    → completed", flush=True)
+        except RuntimeError as exc:
+            msg = str(exc)
+            results.append(PaperResult(
+                paper_number=pnum or "",
+                paper_id=pid or "",
+                status="failed",
+                reason_code="runtime_error",
+                message=msg,
+            ))
+            report.summary["failed"] += 1
+            print(f"    → FAILED: {msg}", flush=True)
+            break  # stop on first failure
+        except Exception as exc:
+            msg = str(exc)
+            results.append(PaperResult(
+                paper_number=pnum or "",
+                paper_id=pid or "",
+                status="failed",
+                reason_code="error",
+                message=msg,
+            ))
+            report.summary["failed"] += 1
+            print(f"    → FAILED: {msg}", flush=True)
+            break
+
+    # Mark remaining as not_started
+    done = report.summary["completed"] + report.summary["failed"]
+    if done < len(paper_numbers_or_ids):
+        for item in paper_numbers_or_ids[done:]:
+            results.append(PaperResult(
+                paper_number=item["paper_number"] or "",
+                paper_id=item["paper_id"] or "",
+                status="not_started",
+            ))
+        report.summary["not_started"] = len(paper_numbers_or_ids) - done
+
+    # Flush paper results into report
+    if not args.all_papers:
+        for r in results:
+            report.add_paper_result(r)
+
     if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    summary = report.get("summary", {})
-    return 1 if summary.get("blocking_errors") or summary.get("failed") else 0
+        _write_report(args.report, report)
+
+    if report.summary["failed"] > 0:
+        print(f"\nCompleted: {report.summary['completed']}, "
+              f"Failed: {report.summary['failed']}, "
+              f"Not started: {report.summary['not_started']}", flush=True)
+        return EXIT_ROLLBACK_FAILED
+
+    print(f"\nRolled back {report.summary['completed']} paper(s)", flush=True)
+    return EXIT_OK
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

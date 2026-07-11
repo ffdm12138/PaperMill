@@ -14,6 +14,8 @@ import pytest
 
 from src.discovery.discovery_receipt import (
     DiscoveryReceiptConflictError,
+    PersistedReceiptIdentity,
+    ReceiptLookupIdentity,
     ReceiptWriteResult,
     build_receipt_payload,
     normalize_receipt_identity,
@@ -157,14 +159,21 @@ def test_normalize_receipt_identity_accepts_valid_16_digit():
     assert result["paper_number"] == "0000000000000001"
 
 
-def test_normalize_receipt_identity_accepts_empty_paper_number():
-    """Empty paper_number is allowed for legacy receipts that predate the field."""
-    result = normalize_receipt_identity({
-        "candidate_id": "c1", "page_id": "p1",
-        "normalized_doi": "10.1/x",
-        "paper_number": "",
-    })
-    assert result["paper_number"] == ""
+def test_persisted_identity_requires_paper_number():
+    with pytest.raises(ValueError, match="paper_number"):
+        normalize_receipt_identity({
+            "candidate_id": "c1", "page_id": "p1",
+            "normalized_doi": "10.1/x", "paper_number": "",
+        })
+
+
+def test_lookup_and_persisted_identity_types_are_distinct():
+    lookup = ReceiptLookupIdentity("c1", "p1", "kw1", "openalex", "10.1/x")
+    persisted = PersistedReceiptIdentity(
+        "c1", "p1", "kw1", "openalex", "10.1/x", "0000000000000001"
+    )
+    assert not hasattr(lookup, "paper_number")
+    assert persisted.paper_number == "0000000000000001"
 
 
 def test_receipt_writer_rejects_payload_with_invalid_paper_number(tmp_path: Path):
@@ -174,3 +183,28 @@ def test_receipt_writer_rejects_payload_with_invalid_paper_number(tmp_path: Path
             candidate_id="c1", page_id="p1", keyword_id="kw1",
             normalized_doi="10.1/x", paper_number="123",
         )
+
+
+def test_receipt_writer_rejects_payload_workspace_mismatch(tmp_path: Path):
+    path = tmp_path / "0000000000000002" / "0000000000000001.discovery_receipt.json"
+    with pytest.raises(ValueError, match="receipt_paper_number_path_mismatch"):
+        write_or_validate_discovery_receipt(path, _payload())
+
+
+def test_receipt_writer_rejects_payload_filename_mismatch(tmp_path: Path):
+    path = tmp_path / "0000000000000001" / "0000000000000002.discovery_receipt.json"
+    with pytest.raises(ValueError, match="receipt_filename_invalid"):
+        write_or_validate_discovery_receipt(path, _payload())
+
+
+def test_receipt_writer_rejects_non_numeric_parent(tmp_path: Path):
+    path = tmp_path / "workspace" / "0000000000000001.discovery_receipt.json"
+    with pytest.raises(ValueError, match="receipt_workspace_invalid"):
+        write_or_validate_discovery_receipt(path, _payload())
+
+
+def test_receipt_writer_rejects_path_escape(tmp_path: Path):
+    allowed = tmp_path / "paper_raw"
+    path = tmp_path / "outside" / "0000000000000001" / "0000000000000001.discovery_receipt.json"
+    with pytest.raises(ValueError, match="receipt_workspace_invalid"):
+        write_or_validate_discovery_receipt(path, _payload(), workspace_root=allowed)

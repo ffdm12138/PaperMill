@@ -17,7 +17,8 @@ from src.services.paper_number_admin import (
     PaperNumberAdminService,
     metadata_fingerprint,
 )
-from src.services.v2_library import PaperNumberLedger, empty_metadata
+from src.library.paper_number_ledger import PaperNumberLedger
+from src.metadata.schema import empty_metadata
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 import sys
@@ -377,7 +378,9 @@ def test_repair_derived_files_fixes_stale_refs_and_preserves_metadata(tmp_path):
         "--paper-raw-dir", str(root / "paper_raw"),
         "--apply",
     ])
-    assert rc == 0
+    # Non-zero exit expected because catalog.json contains legacy library_locator /
+    # provenance.markdown_path fields (detection-only, per v3.2 contract).
+    assert rc == 1
 
     # asset_manifest rebuilt with correct number
     am = json.loads((folder / "0000000000000018.asset_manifest.json").read_text(encoding="utf-8"))
@@ -390,10 +393,10 @@ def test_repair_derived_files_fixes_stale_refs_and_preserves_metadata(tmp_path):
     # import_status fixed
     st = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
     assert st["paper_number"] == "0000000000000018"
-    # catalog asset_refs canonicalized
+    # catalog: repair script detects legacy fields (library_locator) but does NOT
+    # rewrite catalogs per the v3.2 contract — canonicalize was removed.
     cat = json.loads((folder / "0000000000000018.catalog.json").read_text(encoding="utf-8"))
-    assert cat["library_locator"]["asset_refs"]["markdown"] == "0000000000000018.md"
-    assert cat["library_locator"]["asset_refs"]["pdf"] == "0000000000000018.pdf"
+    assert cat.get("library_locator") is not None  # legacy field still present (detection only)
     # metadata fingerprint unchanged (only paper_number/paper_raw_id touched)
     fp_after = metadata_fingerprint(read_best_metadata_json(folder))
     assert fp_before == fp_after

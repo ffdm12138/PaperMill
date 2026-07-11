@@ -185,7 +185,7 @@ class TestDualLaneScheduling:
         paper_raw = tmp_path / "paper_raw"
         papers = tmp_path / "papers"
         # Create 50 existing DOIs in paper_raw.
-        from src.services.v2_library import empty_metadata
+        from src.metadata.schema import empty_metadata
 
         for i in range(50):
             ws = paper_raw / f"0000000000000{i:03d}"

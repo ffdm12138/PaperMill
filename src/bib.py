@@ -1,12 +1,14 @@
 """Per-job BibTeX helpers.
 
 Each paper's BibTeX is generated from per-paper ``metadata.json`` via
-``src/services/v2_library.py::bibtex_from_metadata``. Writing jobs write the
+``src.metadata.citation.bibtex_from_metadata``. Writing jobs write the
 selected entries into job-local ``tex/references.bib``.
 """
 import re
 
-from src.services.v2_library import bibtex_from_metadata, sanitize_paper_id
+from src.metadata.citation_readiness import citation_key_from_metadata, validate_citation_ready
+from src.metadata.citation import bibtex_from_metadata
+from src.naming import sanitize_paper_id
 
 
 def _entry_type_and_key(block: str) -> tuple[str, str]:
@@ -48,8 +50,7 @@ def parse_blocks(bib_text: str) -> dict[str, str]:
 
 
 def _resolve_metadata(entry: dict) -> dict:
-    """Get metadata for an entry. all.catalog entries no longer embed metadata,
-    so fall back to PaperLibrary by paper_number (then paper_id)."""
+    """Get Metadata for a Catalog-folder entry by stable identity."""
     meta = entry.get("metadata")
     if isinstance(meta, dict) and meta:
         return meta
@@ -72,13 +73,19 @@ def _resolve_metadata(entry: dict) -> dict:
 
 
 def bib_key_for_entry(entry: dict) -> str:
-    """v2 bib_key：metadata.citation_key 或 paper_id（经 sanitize）。"""
+    """Derive a citation key from metadata only; paper_id is never a fallback."""
     meta = _resolve_metadata(entry)
-    key = meta.get("citation_key") or entry.get("paper_id") or ""
-    return sanitize_paper_id(str(key))
+    if not meta:
+        raise RuntimeError("metadata is required for citation-key generation")
+    return sanitize_paper_id(citation_key_from_metadata(meta))
 
 
 def bibtex_for_entry(entry: dict) -> str:
-    """根据 all.catalog 条目生成单篇 BibTeX（来自 metadata.json）。"""
+    """根据单篇 Catalog 身份读取 Metadata 并生成 BibTeX。"""
     meta = _resolve_metadata(entry)
+    if not meta:
+        raise RuntimeError("metadata is required for BibTeX generation")
+    readiness = validate_citation_ready(meta)
+    if not readiness.ready:
+        raise RuntimeError("metadata is not citation-ready: " + "; ".join(readiness.errors))
     return bibtex_from_metadata(meta, key=bib_key_for_entry(entry))

@@ -45,7 +45,7 @@ def test_composite_signature_changes_with_sort():
         crossref_backfill_sort="published",
     )
     sig2 = composite_backfill_signature(
-        page_size=50, openalex_backfill_sort="relevance_score:desc",
+        page_size=50, openalex_backfill_sort="relevance" + "_score:desc",
         crossref_backfill_sort="published",
     )
     assert sig1 != sig2

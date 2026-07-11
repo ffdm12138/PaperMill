@@ -63,9 +63,8 @@ class HeaderBasedDoiResolver(PdfResolver):
         transport_attempts: list[dict[str, Any]] = []
         with fetch_url_direct_then_proxy(
             candidate_url,
-            expected_content="html",
+            expected_content="any",
             headers=request_headers,
-            timeout=self.timeout,
             allow_redirects=True,
             stream=True,
         ) as transport:

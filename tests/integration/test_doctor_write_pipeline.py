@@ -8,7 +8,7 @@ from scripts import doctor_write_pipeline as doctor
 def _args(tmp_path: Path, **kwargs) -> argparse.Namespace:
     defaults = {
         "job_id": None,
-        "all_catalog": tmp_path / "data" / "catalog" / "all.catalog.json",
+        "catalog_root": tmp_path / "data" / "catalog",
         "write_dir": tmp_path / "write" / "jobs",
         "repo_root": Path(__file__).resolve().parent.parent.parent,
     }
@@ -22,9 +22,9 @@ def test_doctor_without_catalog_is_source_valid_but_runtime_not_ready(tmp_path):
     assert report["valid"] is True
     assert report["source_valid"] is True
     assert report["runtime_ready"] is False
-    assert report["environment"]["all_catalog"]["exists"] is False
+    assert report["environment"]["catalog_folders"]["ready"] is False
     assert report["errors"] == []
-    assert any("rebuild_all_catalog.py --apply" in warning for warning in report["warnings"])
+    assert any("reconcile_catalog_folders.py --apply" in warning for warning in report["warnings"])
 
 
 def test_doctor_identifies_missing_job(tmp_path):

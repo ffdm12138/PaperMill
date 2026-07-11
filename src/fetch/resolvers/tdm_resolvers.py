@@ -115,7 +115,6 @@ class WileyTdmResolver(PdfResolver):
             url,
             expected_content="pdf",
             headers=headers,
-            timeout=30,
             allow_redirects=True,
             stream=True,
         ) as transport:
@@ -155,7 +154,6 @@ class SpringerDirectResolver(PdfResolver):
             url,
             expected_content="pdf",
             headers=headers,
-            timeout=30,
             allow_redirects=True,
             stream=True,
         ) as transport:
@@ -201,7 +199,6 @@ class ElsevierTdmResolver(PdfResolver):
             url,
             expected_content="pdf",
             headers=headers,
-            timeout=30,
             allow_redirects=True,
             stream=True,
         ) as transport:

@@ -15,10 +15,12 @@ the two inputs the skill reads: the metadata JSON and the MinerU Markdown.
   "first_author": { "family": "Déry", "display": "Déry" },
   "year": 1999,
   "container": { "journal": "Boundary-Layer Meteorology", "booktitle": "", "conference": "", "series": "", "publisher": "", "institution": "", "school": "" },
-  "identifiers": { "doi": "10.1023/A:100052170", "arxiv_id": "", "isbn": "", "issn": "" },
-  "metadata_match": { "status": "matched", "source": "crossref", "confidence": 0.93 }
+  "identifiers": { "doi": "10.1023/A:100052170", "arxiv_id": "", "isbn": "", "issn": "" }
 }
 ```
+
+The task builder separately verifies the immutable Metadata match/freeze
+receipts. Workflow state is never embedded in Metadata.
 
 ## markdown excerpt
 
@@ -30,5 +32,4 @@ Boundary-Layer Meteorology (1999)
 
 A one-dimensional bulk model of blowing snow is developed ...
 ```
-
 

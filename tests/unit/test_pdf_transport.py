@@ -14,10 +14,11 @@ from src.fetch.pdf_transport import (
 
 
 class _Resp:
-    def __init__(self, status_code=200, *, url="https://example.test/paper.pdf", content_type="application/pdf"):
+    def __init__(self, status_code=200, *, url="https://example.test/paper.pdf", content_type="application/pdf", content=b"%PDF-1.7\n"):
         self.status_code = status_code
         self.url = url
         self.headers = {"content-type": content_type}
+        self._content = content
         self.closed = False
 
     def close(self):
@@ -147,6 +148,44 @@ def test_timeout_precedence(monkeypatch):
     assert _Session.calls[1]["kwargs"]["timeout"] == 7
 
 
+def test_independent_timeout_overrides(monkeypatch):
+    _install(monkeypatch, requests.exceptions.ReadTimeout("timeout"), _Resp(200))
+    with fetch_url_direct_then_proxy(
+        "https://example.test/paper.pdf",
+        expected_content="pdf",
+        direct_timeout=3,
+        proxy_timeout=9,
+    ):
+        pass
+    assert [_Session.calls[0]["kwargs"]["timeout"], _Session.calls[1]["kwargs"]["timeout"]] == [3, 9]
+
+
+def test_direct_html_content_mismatch_falls_back_to_proxy(monkeypatch):
+    direct = _Resp(200, content_type="text/html", content=b"<html>captcha</html>")
+    proxy = _Resp(200, content_type="application/pdf", content=b"%PDF-1.7\n")
+    _install(monkeypatch, direct, proxy)
+    with fetch_url_direct_then_proxy(
+        "https://example.test/paper.pdf", expected_content="pdf"
+    ) as transport:
+        assert transport.response is proxy
+        assert [a.detected_content for a in transport.attempts] == ["html", "pdf"]
+        assert transport.attempts[0].reason_code == "challenge_or_html"
+
+
+def test_proxy_html_content_mismatch_is_typed_failure(monkeypatch):
+    _install(
+        monkeypatch,
+        _Resp(403),
+        _Resp(200, content_type="text/html", content=b"<html>login</html>"),
+    )
+    with fetch_url_direct_then_proxy(
+        "https://example.test/paper.pdf", expected_content="pdf"
+    ) as transport:
+        assert transport.response is None
+        assert transport.error == "challenge_or_html"
+        assert transport.attempts[-1].error_type == "ContentMismatch"
+
+
 def test_request_semantics_preserved(monkeypatch):
     _install(monkeypatch, _Resp(403), _Resp(200))
     headers = {"Authorization": "Bearer secret", "User-Agent": "fixed"}
@@ -215,7 +254,7 @@ def test_sanitize_url_handles_malformed_port_ipv6_and_unicode():
     assert sanitize_url_for_persistence("https://例子.测试/path.pdf?token=x") == "https://例子.测试/path.pdf"
 
 
-def test_sanitize_url_fields_only_touches_url_semantic_keys():
+def test_sanitize_url_fields_redacts_urls_in_every_nested_string():
     data = {
         "title": "https://example.test/title?token=not-a-url-field",
         "pdf_url": "https://user:pass@example.test/p.pdf?token=a",
@@ -228,10 +267,10 @@ def test_sanitize_url_fields_only_touches_url_semantic_keys():
         ],
     }
     safe = sanitize_url_fields(data)
-    assert safe["title"] == data["title"]
+    assert safe["title"] == "https://example.test/title"
     assert safe["pdf_url"] == "https://example.test/p.pdf"
     assert safe["attempts"][0]["request_url"] == "https://example.test/a.pdf"
-    assert safe["attempts"][0]["reason"] == data["attempts"][0]["reason"]
+    assert safe["attempts"][0]["reason"] == "failed at https://example.test/a.pdf"
     assert safe["attempts"][0]["redirect_chain"] == ["https://example.test/b.pdf"]
 
 

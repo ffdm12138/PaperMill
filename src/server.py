@@ -15,12 +15,12 @@ from pydantic import BaseModel, Field
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import API_CORS_ORIGINS, API_HOST, API_PORT, ALL_CATALOG_PATH, MINERU_API_KEY
-from src.catalog import Catalog
-from src.library import PaperLibrary
+from config.settings import API_CORS_ORIGINS, API_HOST, API_PORT, CATALOG_FOLDER_ROOT, MINERU_API_KEY, PAPERS_DIR
+from src.catalog_folders.reader import CatalogFolderReader
+from src.services.paper_library import PaperLibrary
 from src.naming import validate_job_id, validate_paper_id
 from src.prompt_builder import PromptBuilder
-from src.services.v2_library import AllCatalogBuilder, bibtex_from_metadata
+from src.metadata.citation import bibtex_from_metadata
 from src.writer.bib_manager import portability_check, validate_catalog_citations, validate_job_citations
 from src.writer.catalog_matcher import confirm_selected_papers, match_catalog
 from src.writer.deep_reader import deep_read, mark_deep_reading_filled, prepare_workset
@@ -34,7 +34,7 @@ from src.writer.topic_parser import normalize_task
 
 app = FastAPI(
     title="MinerU v2 文献资产库",
-    description="paper_raw 入库 + all.catalog 读取 + 按需全文复制",
+    description="paper_raw 入库 + 分类目录浏览 + 按需全文复制",
     version="4.0.0",
 )
 app.add_middleware(
@@ -44,8 +44,8 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-API-Key"],
 )
 
-catalog = Catalog()
-library = PaperLibrary(catalog=catalog)
+catalog = CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
+library = PaperLibrary(papers_dir=PAPERS_DIR)
 prompt_builder = PromptBuilder(catalog=catalog, library=library)
 job_manager = JobManager()
 
@@ -95,7 +95,8 @@ class CreateJobRequest(BaseModel):
 
 
 class MatchCatalogRequest(BaseModel):
-    topics: Annotated[list[TopicStr] | None, Field(max_length=20)] = None
+    categories: Annotated[list[TopicStr] | None, Field(max_length=20)] = None
+    category_mode: Annotated[str, Field(pattern="^(union|intersection)$")] = "union"
 
 
 class ConfirmPapersRequest(BaseModel):
@@ -140,19 +141,15 @@ async def index():
 
 
 @app.get("/catalog/all")
-async def get_all_catalog(rebuild: bool = False):
-    # Only an explicit ?rebuild=true writes to disk. A read on a missing
-    # all.catalog returns an in-memory snapshot without creating the file.
-    if rebuild:
-        return AllCatalogBuilder().build(write=True)
-    if not ALL_CATALOG_PATH.exists():
-        return AllCatalogBuilder().build_readonly_snapshot()
-    return json.loads(ALL_CATALOG_PATH.read_text(encoding="utf-8"))
+async def get_all_catalog():
+    try:
+        return {"papers": catalog.list_papers(["all"])}
+    except (RuntimeError, FileNotFoundError, ValueError) as exc: raise HTTPException(503,str(exc))
 
 
 @app.get("/catalog")
 async def get_catalog_alias():
-    return await get_all_catalog(rebuild=False)
+    return await get_all_catalog()
 
 
 @app.post("/upload")
@@ -191,24 +188,18 @@ async def get_image_by_number(paper_number: str, image_name: str):
 
 @app.post("/bibtex")
 async def generate_bibtex(req: BibtexRequest):
-    # Read-only: build an in-memory snapshot if all.catalog is missing; do not
-    # write to disk from a bibtex request.
-    if not ALL_CATALOG_PATH.exists():
-        data = AllCatalogBuilder().build_readonly_snapshot()
-    else:
-        data = json.loads(ALL_CATALOG_PATH.read_text(encoding="utf-8"))
     wanted_numbers = set(req.paper_numbers or [])
     wanted_ids = set(req.paper_ids or [])
     if not wanted_numbers and not wanted_ids:
         raise HTTPException(400, "paper_numbers or paper_ids required")
     entries = []
-    for item in data.get("papers", []):
-        if item.get("paper_number") in wanted_numbers or item.get("paper_id") in wanted_ids:
-            paper_key = item.get("paper_number") or item.get("paper_id")
-            metadata = library.load_metadata(paper_key)
-            if not metadata:
-                raise HTTPException(404, f"metadata asset not found: {paper_key}")
-            entries.append(bibtex_from_metadata(metadata, key=item.get("paper_id")))
+    for key in sorted(wanted_numbers|wanted_ids):
+        try: row=library.resolve(key)
+        except RuntimeError as exc: raise HTTPException(503,str(exc))
+        if not row: continue
+        number=str(row.get("paper_number") or ""); metadata=library.load_metadata(number)
+        if not metadata: raise HTTPException(404,f"metadata asset not found: {number}")
+        entries.append(bibtex_from_metadata(metadata))
     if not entries:
         raise HTTPException(404, "no matching papers")
     return {"bibtex": "\n\n".join(entries), "count": len(entries)}
@@ -216,7 +207,12 @@ async def generate_bibtex(req: BibtexRequest):
 
 @app.post("/validate/v2-library")
 async def validate_v2_library_api():
-    errors = catalog.validate()
+    try:
+        errors = catalog.validate()
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if errors:
+        raise HTTPException(503, "; ".join(errors))
     return {"valid": not errors, "errors": errors}
 
 
@@ -307,7 +303,7 @@ async def write_match_catalog(job_id: str, req: MatchCatalogRequest = Body(defau
     _check_job_id(job_id)
     if not job_manager.load_meta(job_id):
         raise HTTPException(404, f"job not found: {job_id}")
-    return match_catalog(job_id, jm=job_manager, catalog=catalog, topics=req.topics)
+    return match_catalog(job_id, jm=job_manager, catalog=catalog, categories=req.categories, category_mode=req.category_mode)
 
 
 @app.post("/write/jobs/{job_id}/confirm-papers")
@@ -398,12 +394,15 @@ async def write_validate(job_id: str):
 
 @app.get("/status")
 async def status():
+    try: count=len(catalog.list_papers()); category_state="ready"
+    except (RuntimeError, FileNotFoundError, ValueError): count=0; category_state="dirty_or_invalid"
     return {
         "status": "running",
         "version": "4.0.0",
         "mode": "pure_v2_paper_raw",
         "mineru_backend": "hybrid-engine",
-        "all_catalog_papers": len(catalog.list_papers()),
+        "formal_papers": count,
+        "category_state": category_state,
     }
 
 

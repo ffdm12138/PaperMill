@@ -13,14 +13,13 @@ from src.writer.job_manager import JobManager
 from src.writer.catalog_matcher import load_selected, selected_paper_ids
 from src.writer.safe_write import write_text_safely
 from src.writer.bib_manager import load_workset_manifest, job_local_bib_keys
-from src.catalog import Catalog
 
 
-def _job_local_research_cards(pid_to_work_dir: dict[str, Path]) -> dict[str, dict]:
-    """``{paper_id: research_card}`` read from copied ``article/<n>/<pid>.catalog.json``.
+def _job_local_catalog_cards(pid_to_work_dir: dict[str, Path]) -> dict[str, dict]:
+    """Build writer cards from copied Catalog v3.2 documents.
 
     Keeps build_story job-local: content summaries come from the copied article
-    catalog, not the global all.catalog.
+    Catalog, never a merged global document.
     """
     out: dict[str, dict] = {}
     for pid, wd in pid_to_work_dir.items():
@@ -30,7 +29,21 @@ def _job_local_research_cards(pid_to_work_dir: dict[str, Path]) -> dict[str, dic
                 cat = json.loads(cat_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 cat = {}
-            out[pid] = cat.get("research_card") or {}
+            identity = cat.get("content_identity") or {}
+            abstract = cat.get("abstract") or {}
+            methods = cat.get("methods") or {}
+            writing = cat.get("writing_value") or {}
+            out[pid] = {
+                "paper_number": cat.get("paper_number"),
+                "content_title_zh": identity.get("content_title_zh"),
+                "research_domains": identity.get("research_domains") or [],
+                "one_sentence_zh": abstract.get("one_sentence_zh") or "",
+                "methods_summary_zh": methods.get("overview_zh") or "",
+                "key_findings": [x.get("finding_zh", "") for x in cat.get("key_findings") or []],
+                "writing_use_cases": writing.get("use_cases") or [],
+                "read_decision": (cat.get("screening") or {}).get("read_decision", "pending"),
+                "asset_references": cat.get("figures_and_tables") or [],
+            }
         else:
             out[pid] = {}
     return out
@@ -78,14 +91,14 @@ def _read(p: Path) -> str:
 
 
 def build_story(job_id: str, force: bool = False, jm: JobManager | None = None,
-                catalog: Catalog | None = None) -> dict:
+                catalog: object | None = None) -> dict:
     """生成故事线 prompt + story_plan/chapter_outline 模板。
 
     前置：deep_read_notes_filled=True。
     """
     jm = jm or JobManager()
     # ``catalog`` is retained in the signature for callers/tests but no longer
-    # used here: cite keys and research_card summaries now come from the
+    # used here: cite keys and Catalog v3.2 summaries come from the
     # job-local copied article workspace.
     jdir = jm.job_dir(job_id)
     meta = jm.load_meta(job_id) or {}
@@ -104,12 +117,10 @@ def build_story(job_id: str, force: bool = False, jm: JobManager | None = None,
     evidence = _read(read_dir / "evidence_table.md")
     fig_cand = _read(read_dir / "figure_candidates.md")
 
-    # 结构化抽取每篇笔记；cite key 与 research_card 均来自 job-local article 副本。
+    # 结构化抽取每篇笔记；cite key 与 Catalog 内容均来自 job-local article 副本。
     pid_to_work_dir = load_workset_manifest(job_id, jm)
     bib_map = job_local_bib_keys(pid_to_work_dir)
-    research_cards = _job_local_research_cards(pid_to_work_dir)
-    one_sentence_map = {pid: rc.get("one_sentence_summary_zh", "") for pid, rc in research_cards.items()}
-    relevance_map = {pid: rc.get("usefulness_for_project_zh", "") for pid, rc in research_cards.items()}
+    catalog_cards = _job_local_catalog_cards(pid_to_work_dir)
 
     notes_dir = read_dir / "paper_notes"
     notes_summary = ""
@@ -120,8 +131,11 @@ def build_story(job_id: str, force: bool = False, jm: JobManager | None = None,
             text = _read(n)
             secs = extract_note_sections(text)
             notes_summary += f"\n\n### [{pid}]  \\cite{{{bib_map.get(pid,'')}}}\n"
-            notes_summary += f"one_sentence: {one_sentence_map.get(pid,'')}\n"
-            notes_summary += f"usefulness_for_project: {relevance_map.get(pid,'')}\n"
+            card = catalog_cards.get(pid, {})
+            notes_summary += f"one_sentence: {card.get('one_sentence_zh', '')}\n"
+            notes_summary += f"methods: {card.get('methods_summary_zh', '')}\n"
+            notes_summary += f"key_findings: {'; '.join(card.get('key_findings') or [])}\n"
+            notes_summary += f"writing_use_cases: {'; '.join(card.get('writing_use_cases') or [])}\n"
             for sk, sv in secs.items():
                 if sv:
                     notes_summary += f"- **{sk}**: {sv[:600]}\n"

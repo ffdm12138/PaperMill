@@ -20,7 +20,7 @@ python scripts/curate_paper_raw.py --all-ready --dry-run
 python scripts/curate_paper_raw.py --all-ready --apply
 python scripts/formalize_paper_raw.py --all-ready --apply --report reports/formalize_paper_raw.json
 python scripts/commit_paper_raw_to_papers.py --all-ready --apply
-python scripts/rebuild_all_catalog.py --apply
+python scripts/reconcile_catalog_folders.py --apply
 python scripts/validate_v2_library.py
 python scripts/stop_mineru_services.py
 ```
@@ -28,11 +28,13 @@ python scripts/stop_mineru_services.py
 Formal rollback/reingest SOP（only when explicitly rebuilding the formal library）:
 
 ```bash
-conda run -n mineru python scripts/rollback_formal_papers_to_paper_raw.py --all --dry-run --report reports/rollback_dryrun.json
-# Review report.summary.blocking_errors == 0 and failed == 0 before apply.
-conda run -n mineru python scripts/rollback_formal_papers_to_paper_raw.py --all --apply --report reports/rollback_apply.json
+# Dry-run first — always.
+conda run -n mineru python scripts/rollback_formal_papers_to_paper_raw.py --all-papers --report reports/rollback_dryrun.json
+# Review report: summary.blocking_errors == 0 and summary.failed == 0 before apply.
+# Apply only when dry-run is clean.
+conda run -n mineru python scripts/rollback_formal_papers_to_paper_raw.py --all-papers --apply --report reports/rollback_apply.json
 conda run -n mineru python scripts/validate_rolled_back_paper_raw.py
-conda run -n mineru python scripts/curate_paper_raw.py --all-matched --dry-run
+conda run -n mineru python scripts/curate_paper_raw.py --all-ready --dry-run
 # After paper_raw_catalog_curator writes <paper_number>.catalog.json:
 conda run -n mineru python scripts/curate_paper_raw.py --all-ready --apply
 conda run -n mineru python scripts/formalize_paper_raw.py --all-ready --apply --report reports/formalize_after_rollback.json
@@ -41,7 +43,13 @@ conda run -n mineru python scripts/validate_v2_library.py
 conda run -n mineru python scripts/pack_repo.py
 ```
 
-`rollback_formal_papers_to_paper_raw.py --keep-catalog` is debug-only; the formal SOP deletes old catalogs and regenerates content-only catalog files.
+- Default mode is **dry-run**; ``--apply`` is required to mutate data.
+- ``--paper-number``, ``--paper-id``, and ``--all-papers`` are mutually exclusive.
+- ``--paper-id`` resolves via active rollback journals first (for crash recovery), then active ledger entries.  Interrupted rollbacks are recovered by repeating the same command.
+- ``--report PATH`` writes a structured JSON report; review ``summary.blocking_errors`` before applying.
+- Never manually delete rollback journals, quarantine directories, or lock files.
+- Never directly modify the paper_number ledger during rollback.
+- ``--keep-catalog`` does not exist; the SOP always regenerates content-only catalog files.
 
 ## Launching MinerU services
 
@@ -78,14 +86,14 @@ uses a fixed in-code User-Agent, and never persists header values.
 v2.3 状态机：staging 阶段 reserve 16 位 paper_number；`curate_paper_raw.py` 只校验并写 `catalog_ready`（不改名、不分配 paper_number）；
 初始 catalog 生成阶段 `screening.read_decision` 必须固定为 `"pending"`，不得写成 `must_read` /
 `maybe_read` / `skip`；这些值只用于 post-triage / writing-stage catalog 或人工筛选；
-`formalize_paper_raw.py` 是 commit 前必经步骤（改名 + 复用/校验并 repoint reserved paper_number + `ready_for_commit`）；
-`commit_paper_raw_to_papers.py` 只接收 `ready_for_commit`，事务性安装，失败回滚不污染 `data/papers`。
+Phase 1–3 `formalize_paper_raw.py` 对 frozen workspace 必须 fail closed；后续 Phase 5 才启用 plan-only formalize，再由 Phase 6 commit staging 改名。
+`commit_paper_raw_to_papers.py` 只接收数字 workspace 的 current formalization plan，通过外置 journal 前向恢复安装。
 `formalize_paper_raw.py` / `commit_paper_raw_to_papers.py` 支持完整路径隔离
 （`--paper-raw-dir`/`--papers-dir`/`--ledger-path`/`--all-catalog-path`）；测试/agent 必须传 tmp
 `--ledger-path` 与 tmp `--all-catalog-path`，禁止污染真实 `data/catalog`。metadata 候选读转换后 Markdown 前 100 行。
 `formalize_paper_raw.py` 默认只接受 `converted_current`；legacy converted assets 必须在
 缺 manifest 的已转换资产必须先生成当前 manifest 或重新转换。普通 ingest 测试夹具从 16 位 `paper_number`
-开始，保留编号使用 reserved-specific 语义，不走 legacy `repoint()`。`Catalog.load()` fallback
+开始；formalize 不改名/repoint。`Catalog.load()`
 是 tolerant read-only snapshot，不写 ledger/marker/catalog 索引。
 
 ## Ingest layered semantics
@@ -99,7 +107,7 @@ Conversion layer:
 
 Formal library layer:
 - Formalize/commit requires strict metadata.
-- DOI must be valid; metadata_match.status must be matched or manual_confirmed.
+- Metadata freeze closure must be replay-valid; journal articles require a valid DOI.
 - BibTeX is generated from metadata, never from catalog.
 
 Summary: convert first is allowed; commit requires metadata.
@@ -148,13 +156,13 @@ Facts:
 - `data/raw/` is the manual PDF queue.
 - `data/paper_raw/` is the pre-ingest workspace.
 - `data/papers/` is formal storage.
-- `data/catalog/all.catalog.json` is the local generated content-only writing index.
+- `data/catalog/<category>/` is the folder-backed writing browse view.
 - `data/catalog/paper_number_ledger.json` owns stable numbering.
 - `write/jobs/<job_id>/article/<paper_number>/` is the writing article workspace.
 - `metadata.json` is the bibliographic source of truth for BibTeX.
-- `catalog.json` and `all.catalog.json` are content-only.
+- Each paper Catalog is content-only.
 - Network OpenAlex/CrossRef metadata with a valid DOI is staged as
-  `metadata_match.status = "matched"` / `.import_status.json status = "metadata_matched"`.
+  Metadata remains resolved until independent PDF evidence writes the match/freeze receipts.
 - Formalize rewrites catalog asset refs and `provenance.markdown_path` to final
   `<paper_id>` filenames. Use `scripts/repair_catalog_asset_refs.py --dry-run` before
   applying repairs to existing stale catalogs.

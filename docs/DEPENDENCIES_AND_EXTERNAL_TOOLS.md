@@ -125,25 +125,21 @@ In ingest v2.3, normal `data/paper_raw/<id>/` workspaces use the 16-digit
 `paper_number` reserved by staging. Six-digit `source_id` directories are
 legacy/migration only and must be migrated or repaired before normal conversion/formalize.
 
-以下路径是运行时产物 / 版权语料，**在 source profile 下不进入源码快照**
-（`python scripts/pack_repo.py --profile source` 强制排除）；但默认 audit profile
-（`python scripts/pack_repo.py`）会额外包含部分运行时样本用于审计调试：
+以下路径是运行时产物 / 版权语料，默认 audit 与 source profile 均不得进入源码快照：
 
 - `data/raw/`、`data/paper_raw/`、`data/papers/`、`data/import_work/`
-- `data/catalog/all.catalog.json`、`data/catalog/paper_index.json`、
+- `data/catalog/` 分类链接与 `.state/` 分类状态、
   `data/catalog/paper_number_ledger.json`（源码快照只提交对应 `.template.json` 空模板）
 - `write/jobs/`（写作运行时，只跟踪 `.gitkeep`）
 - PDF / Markdown / images / TeX 编译产物
 
-> **注意**：audit profile 下的 `mineru_snapshot.zip` 是审计快照，会主动扫描并包含
-> `data/papers/`、`data/paper_raw/` 中的 `.json` / `.md` / `.pdf` / 图片等
-> 被 `.gitignore` 忽略的样本资产，供 ChatGPT/Codex 审计、复现和调试。
-> **zip 中出现 allowlisted runtime sample 不代表 git 污染**。
-> 纯源码分发请使用 `--profile source`。详见 `docs/PROJECT_CONTRACT.md` 与 `AGENTS.md` §7。
+> **注意**：默认 audit profile 可包含 dirty/untracked 的轻量源码和
+> `tests/fixtures/synthetic_library/` 合成 fixture，但绝不扫描或抽样真实 runtime。
+> `snapshot_manifest.json` 必须报告 `runtime_files_included=0`。
 
 数据语义边界：
 
-- `all.catalog` 是 **content-only** 内容索引，不是书目库。
+- 每篇正式论文的 Catalog 是 **content-only** 内容档案，不是书目库。
 - `metadata`（`<paper_id>.metadata.json`）是 BibTeX / DOI / authors / year / journal 的
   事实源；catalog 与 metadata 仅通过 `paper_number` / `paper_id` 关联。
 

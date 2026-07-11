@@ -1,0 +1,5 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["schema_version", "task_id", "task_input_sha256", "paper_number", "paper_id", "catalog_path", "catalog_sha256", "classifier_skill_version", "categories"]
+}

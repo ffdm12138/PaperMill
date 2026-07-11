@@ -1,18 +1,17 @@
-"""Prompt 组装器：基于 v2 catalog + 全文构造给大模型的 prompt
+"""Prompt 组装器：基于 Catalog v3.2 投影和全文构造给大模型的 prompt
 
 核心约束：不调用任何 LLM，只返回可复制粘贴的 prompt 文本。
 每个 prompt 返回 chars / estimated_tokens / warning，便于长度控制。
 
 主键是 16 位 paper_number，paper_id 仅作辅助显示。
-all.catalog schema v3.1 是 content-only 内容索引；metadata/BibTeX
-事实从正式 paper 文件夹的 metadata.json 读取，路径经 paper_index.json 解析。
+分类目录是唯一浏览索引；metadata/BibTeX 事实从正式论文目录读取。
 """
+import json
 from loguru import logger
 
-from config.settings import PAPER_MD_MAX_CHARS
-from src.catalog import Catalog
-from src.library import PaperLibrary
-from src.services.v2_library import PaperCurationService
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PAPER_MD_MAX_CHARS
+from src.catalog_folders.reader import CatalogFolderReader
+from src.services.paper_library import PaperLibrary
 
 # prompt 超过此估算 token 数时给 warning
 PROMPT_TOKEN_WARN_THRESHOLD = 30000
@@ -37,34 +36,25 @@ def prompt_meta(prompt: str) -> dict:
 class PromptBuilder:
     """v2 prompt 生成：单篇 curation、目录规划、全文精读写作。"""
 
-    def __init__(self, catalog: Catalog | None = None, library: PaperLibrary | None = None):
-        self.catalog = catalog or Catalog()
+    def __init__(self, catalog: CatalogFolderReader | None = None, library: PaperLibrary | None = None):
+        self.catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
         self.library = library or PaperLibrary()
 
     # ---- 1. 单篇 catalog curation prompt ----
     def build_catalog_entry_prompt(self, paper_id: str) -> dict:
-        """为某篇正式论文生成 catalog curation prompt（委托 PaperCurationService.build_prompt）。"""
-        entry = self.catalog.get(paper_id)
-        if entry is None:
-            return {"success": False, "error": f"paper not found in all.catalog.json: {paper_id}"}
-        paper_key = entry.get("paper_number") or entry.get("paper_id") or paper_id
-        try:
-            folder = self.library.paper_dir(paper_key)
-        except Exception as exc:
-            return {"success": False, "error": f"paper folder not found for {paper_id}: {exc}"}
-        try:
-            prompt = PaperCurationService().build_prompt(folder)
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-        return {"success": True, "paper_id": paper_id, "prompt": prompt, **prompt_meta(prompt)}
+        """Formal Catalog recuration requires explicit rollback to numeric raw."""
+        return {"success": False, "error": "Catalog v3.2 recuration requires rollback to numeric paper_raw and prepare_paper_raw_catalog_task.py"}
 
     # ---- 2. 目录规划 prompt（paper_number-first）----
-    def build_catalog_planning_prompt(self, question: str) -> dict:
-        """输入研究问题，基于 all.catalog.json 让大模型规划该读哪些全文。"""
-        papers = self.catalog.list_papers()
+    def build_catalog_planning_prompt(self, question: str, categories: list[str] | None = None, category_mode: str = "union") -> dict:
+        """输入研究问题，基于所选分类中的独立 Catalog 规划精读。"""
+        papers = self.catalog.list_papers(categories, mode=category_mode)
         if not papers:
-            return {"success": False, "error": "all.catalog.json 为空，请先完成 paper_raw 入库与 curation"}
-        compact = self.catalog.build_compact_catalog()
+            return {"success": False, "error": "所选分类中没有可浏览的正式论文"}
+        compact = "\n\n--- batch ---\n\n".join(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in batch)
+            for batch in self.catalog.compact_batches(categories, mode=category_mode)
+        )
         prompt = f"""你是一位科研导师。用户提出一个研究问题，请基于下面的文献目录判断：
 1. 哪些 paper_number 应该打开全文阅读，给出每篇的理由；
 2. 哪些可跳过；

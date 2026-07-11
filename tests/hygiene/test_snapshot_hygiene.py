@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import zipfile
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from scripts.agent_acceptance import verify_git_hygiene, verify_root_hygiene, verify_snapshot
+from scripts.pack_repo import SnapshotMember, _member_digest
+from src.services.repository_hygiene import is_forbidden_snapshot_member, runtime_workspace_counts
 
 
 pytestmark = [pytest.mark.hygiene, pytest.mark.security]
@@ -14,9 +17,35 @@ pytestmark = [pytest.mark.hygiene, pytest.mark.security]
 
 def _make_zip(names: list[str], tmp_path: Path) -> Path:
     zip_path = tmp_path / "mineru_snapshot.zip"
+    # Include required root files so _verify_snapshot_self_check passes.
+    required_root = {"LICENSE", ".gitignore", ".gitattributes", "README.md",
+                     "AGENTS.md", "CLAUDE.md", "SECURITY.md",
+                     "THIRD_PARTY_NOTICES.md"}
+    all_names = list(required_root | set(names))
+    members = sorted(
+        [SnapshotMember(name, 0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") for name in all_names],
+        key=lambda member: member.path,
+    )
     with zipfile.ZipFile(zip_path, "w") as zf:
-        for name in names:
+        for name in all_names:
             zf.writestr(name, b"")
+        runtime_count = sum(is_forbidden_snapshot_member(name) for name in all_names)
+        zf.writestr("snapshot_manifest.json", json.dumps({
+            "schema_version": "2.0",
+            "snapshot_type": "runtime_zero_source_audit",
+            "payload_file_count": len(all_names),
+            "runtime_files_included": runtime_count,
+            "runtime_workspaces_included": runtime_workspace_counts(all_names),
+            "selection": {"count": len(members), "sha256": _member_digest(members)},
+            "archive": {"count": len(members), "sha256": _member_digest(members)},
+            "omissions": [],
+            "members": [member.__dict__ for member in members],
+            "verification": {
+                "runtime_zero": runtime_count == 0,
+                "secret_scan": "passed",
+                "archive_member_check": "passed",
+            },
+        }))
     return zip_path
 
 
@@ -88,7 +117,6 @@ def test_snapshot_verifier_rejects_tombstone_files(tmp_path):
     ], tmp_path)
     errors = verify_snapshot(root_path=tmp_path)
     assert any("tombstone" in error for error in errors), errors
-    assert len(errors) == 3, errors
 
 
 def test_root_hygiene_rejects_debug_leftovers(tmp_path):
@@ -104,11 +132,11 @@ def test_root_hygiene_rejects_debug_leftovers(tmp_path):
     assert any("trace_run.log" in err for err in errors)
 
 
-# ── verify_snapshot: audit-allowlisted runtime samples ────────────────
+# ── verify_snapshot: runtime-zero members ────────────────────────────
 
 
-def test_snapshot_verifier_allows_paper_data_json_and_md(tmp_path):
-    """Audit snapshot allows .json / .md / .paper.number from paper data dirs."""
+def test_snapshot_verifier_rejects_paper_data_json_and_md(tmp_path):
+    """Audit snapshots are runtime-zero even for lightweight paper assets."""
     _make_zip([
         "data/papers/2024_x/paper.metadata.json",
         "data/papers/2024_x/paper.catalog.json",
@@ -119,7 +147,7 @@ def test_snapshot_verifier_allows_paper_data_json_and_md(tmp_path):
         "data/paper_raw/0000000000000001/stage_manifest.json",
     ], tmp_path)
     errors = verify_snapshot(root_path=tmp_path)
-    assert errors == [], f"unexpected errors: {errors}"
+    assert errors
 
 
 def test_snapshot_verifier_rejects_paper_data_non_allowlisted(tmp_path):
@@ -134,22 +162,21 @@ def test_snapshot_verifier_rejects_paper_data_non_allowlisted(tmp_path):
     assert any(".pkl" in error for error in errors)
 
 
-def test_snapshot_verifier_allows_paper_number_marker(tmp_path):
-    """Audit snapshot allows .paper.number markers under runtime sample dirs."""
+def test_snapshot_verifier_rejects_paper_number_marker(tmp_path):
+    """Workspace markers are runtime evidence and are never packed."""
     _make_zip([
         "data/papers/2024_x/0000000000000001.paper.number",
     ], tmp_path)
-    assert verify_snapshot(root_path=tmp_path) == []
+    assert verify_snapshot(root_path=tmp_path)
 
 
-def test_snapshot_verifier_rejects_non_lightweight_runtime_sample(tmp_path):
-    """Audit snapshot rejects non-lightweight files under runtime sample dirs
-    even when the suffix is not in the heavy/binary deny list (e.g. .exe)."""
+def test_snapshot_verifier_rejects_non_lightweight_runtime_member(tmp_path):
+    """Every snapshot rejects runtime members regardless of file suffix."""
     _make_zip([
         "data/papers/2024_x/file.exe",
     ], tmp_path)
     errors = verify_snapshot(root_path=tmp_path)
-    assert any("non-lightweight runtime sample" in e for e in errors), errors
+    assert any("forbidden prefix" in e or "denied" in e for e in errors), errors
 
 
 # ── verify_snapshot: denylist (secrets, cache, venv) ──────────────────

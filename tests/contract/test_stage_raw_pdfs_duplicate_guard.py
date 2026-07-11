@@ -3,7 +3,7 @@ import runpy
 import sys
 from pathlib import Path
 
-from src.services.v2_library import empty_metadata
+from src.metadata.schema import empty_metadata
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -86,40 +86,3 @@ def test_stage_blocks_batch_pdf_duplicate_and_stages_only_first(tmp_path, monkey
     assert items[1]["status"] == "duplicate"
     assert "batch_pdf_duplicate" in items[1]["duplicate_reasons"]
 
-
-def test_legacy_paper_raw_workspace_blocks_restage(tmp_path, monkeypatch):
-    """A legacy/untitled paper_raw workspace must block re-staging the same PDF
-    instead of allowing a new 16-digit numbered workspace to be created."""
-    from tests.helpers.paper_raw_factory import make_legacy_workspace
-
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    pdf = raw / "paper.pdf"
-    legacy_pdf_bytes = b"%PDF legacy bytes"
-    pdf.write_bytes(legacy_pdf_bytes)
-    # pre-existing legacy workspace containing the same PDF
-    make_legacy_workspace(tmp_path, folder_name="1979_sykest_untitled",
-                          paper_number="0000000000000157", pdf_bytes=legacy_pdf_bytes, doi="10.1/legacy")
-    papers = tmp_path / "papers"
-    report = tmp_path / "report.json"
-    monkeypatch.syspath_prepend(str(_REPO_ROOT))
-
-    rc = _run_stage([
-        "stage_raw_pdfs_to_paper_raw.py",
-        "--raw-dir", str(raw),
-        "--paper-raw-dir", str(tmp_path / "paper_raw"),
-        "--papers-dir", str(papers),
-        "--ledger-path", str(tmp_path / "catalog" / "ledger.json"),
-        "--report", str(report),
-        "--move",
-        "--apply",
-    ])
-
-    assert rc == 1
-    assert pdf.exists(), "raw PDF must NOT be moved since staging was blocked"
-    # no new numbered workspace should have been created
-    paper_raw = tmp_path / "paper_raw"
-    assert not any(p.name.isdigit() and len(p.name) == 16 for p in paper_raw.iterdir() if p.is_dir())
-    item = json.loads(report.read_text(encoding="utf-8"))[0]
-    assert item["status"] == "duplicate"
-    assert "pdf_sha256_duplicate" in item["duplicate_reasons"]

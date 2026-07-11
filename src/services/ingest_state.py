@@ -16,7 +16,13 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from src.utils.atomic_io import atomic_write_json
+from filelock import FileLock
+
+from src.utils.atomic_io import atomic_write_json_unlocked
+
+
+class UnknownLegacyStatusError(ValueError):
+    """Raised when a flat legacy status has no registered v2 mapping."""
 
 
 # --- staging / convert -------------------------------------------------------
@@ -97,34 +103,62 @@ def write_import_status(
     import json
 
     folder = Path(folder)
-    path = folder / ".import_status.json"
-    existing: dict = {}
-    if path.exists():
+    # Active numeric workspaces persist only nested status v2.  The returned
+    # object still exposes ``status`` for callers being migrated, but that key
+    # is deliberately not written to disk.
+    if len(folder.name) == 16 and folder.name.isdigit() and (folder / f"{folder.name}.paper.number").exists():
+        from src.ingest.status import read_status, update_status
+        from src.ingest.workspace import PaperRawWorkspace
+        workspace = PaperRawWorkspace.from_path(folder)
+        mapping = {
+            READY_FOR_CONVERT:("pdf","attached"), CONVERTED:("conversion","complete"), STALE_CONVERSION:("conversion","failed"), PARTIAL_CONVERSION:("conversion","failed"), STAGE_FAILED:("pdf","failed"),
+            METADATA_CANDIDATES_FOUND:("metadata","resolving"), METADATA_RESOLVE_FAILED:("metadata","invalid"), METADATA_CANDIDATE_CONFLICT:("metadata","mismatch"), METADATA_MATCHED:("metadata","matched"), METADATA_MANUAL_REVIEW_REQUIRED:("metadata","mismatch"), METADATA_INVALID:("metadata","invalid"), METADATA_UNMATCHED:("metadata","mismatch"), METADATA_INCOMPLETE:("metadata","invalid"),
+            "staged_metadata":("metadata","resolved"),
+            "metadata_resolved":("metadata","resolved"),
+            CATALOG_GENERATION_FAILED:("catalog","invalid"), CATALOG_INVALID:("catalog","invalid"), CATALOG_READY:("catalog","validated"), FORMALIZE_FAILED:("formalization","failed"), PAPER_ID_MISMATCH:("catalog","invalid"), READY_FOR_COMMIT:("formalization","ready"), COMMIT_FAILED:("commit","failed"), COMMITTED:("commit","imported"), IMPORTED:("commit","imported"),
+        }
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                existing = data
-        except Exception:
-            existing = {}
-    created_at = existing.get("created_at") or now_iso()
-    payload: dict = {
-        "status": status,
-        "reason": reason,
-        "errors": errors or [],
-        "warnings": warnings or [],
-        "created_at": created_at,
-        "updated_at": now_iso(),
-    }
-    if extra:
-        for key, value in extra.items():
-            payload[key] = value
-    atomic_write_json(path, payload, indent=2)
-    return payload
+            dimension, target = mapping[status]
+        except (KeyError, TypeError) as exc:
+            raise UnknownLegacyStatusError(
+                f"unknown legacy import status {status!r} in {folder} from field 'status'; "
+                f"supported values: {', '.join(sorted(mapping))}"
+            ) from exc
+        fields={"reason":reason,"errors":errors or [],"warnings":warnings or []}
+        if extra: fields.update(extra)
+        payload=update_status(workspace,dimension,target,**fields)
+        return {**payload,"status":status}
+    path = folder / ".import_status.json"
+    lock = FileLock(str(folder / ".import_status.lock"))
+    with lock:
+        existing: dict = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    existing = data
+            except Exception:
+                existing = {}
+        created_at = existing.get("created_at") or now_iso()
+        payload: dict = {
+            "status": status,
+            "reason": reason,
+            "errors": errors or [],
+            "warnings": warnings or [],
+            "created_at": created_at,
+            "updated_at": now_iso(),
+        }
+        if extra:
+            for key, value in extra.items():
+                payload[key] = value
+        atomic_write_json_unlocked(path, payload, indent=2)
+        return payload
 
 
 def read_import_status(folder: str | Path) -> dict:
     """Read ``<folder>/.import_status.json``; ``{}`` if absent, ``json_invalid`` on error."""
-    path = Path(folder) / ".import_status.json"
+    folder = Path(folder)
+    path = folder / ".import_status.json"
     if not path.exists():
         return {}
     try:
@@ -133,4 +167,23 @@ def read_import_status(folder: str | Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {"status": "json_invalid"}
-    return data if isinstance(data, dict) else {"status": "json_invalid"}
+    if not isinstance(data, dict): return {"status":"json_invalid"}
+    if data.get("schema_version") == "2.0":
+        states={key:(data.get(key) or {}).get("state") for key in ("metadata","pdf","conversion","catalog","formalization","commit")}
+        if states["commit"]=="imported": status=IMPORTED
+        elif states["commit"]=="failed": status=COMMIT_FAILED
+        elif states["formalization"]=="ready": status=READY_FOR_COMMIT
+        elif states["formalization"]=="failed": status=FORMALIZE_FAILED
+        elif states["catalog"] in {"validated","frozen"}: status=CATALOG_READY
+        elif states["catalog"]=="invalid": status=CATALOG_INVALID
+        elif states["metadata"] in {"matched","frozen"}: status=METADATA_MATCHED
+        elif states["metadata"]=="mismatch": status=METADATA_MANUAL_REVIEW_REQUIRED
+        elif states["conversion"]=="complete": status=CONVERTED
+        elif states["pdf"]=="attached": status=READY_FOR_CONVERT
+        else: status=""
+        active={}
+        for dimension in ("commit","formalization","catalog","metadata","conversion","pdf"):
+            candidate=data.get(dimension) or {}
+            if candidate.get("reason") or candidate.get("errors") or candidate.get("warnings"): active=candidate; break
+        return {**data,"status":status,"reason":active.get("reason","") ,"errors":active.get("errors",[]),"warnings":active.get("warnings",[]),"created_at":data.get("created_at") or data.get("updated_at")}
+    return data

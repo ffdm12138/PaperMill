@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.services.ingest_ids import validate_paper_raw_id
 from src.services.ingest_state import write_import_status
 from src.services.metadata_resolver import (
@@ -69,7 +69,6 @@ def main() -> int:
     parser.add_argument("--paper-number", default=None)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
-    parser.add_argument("--all-catalog", type=Path, default=Path(ALL_CATALOG_PATH))
     parser.add_argument("--papers-dir", type=Path, default=Path(PAPERS_DIR))
     parser.add_argument("--manual-confirm", action="store_true")
     parser.add_argument("--candidate-id", default=None)
@@ -101,7 +100,6 @@ def main() -> int:
             report = resolve_metadata_candidates(
                 folder,
                 allow_network=True,
-                all_catalog_path=args.all_catalog,
                 papers_dir=args.papers_dir,
                 rate_limiter=rl,
             )
@@ -127,7 +125,6 @@ def main() -> int:
                         report,
                         manual_confirm=args.manual_confirm,
                         candidate_id=args.candidate_id,
-                        all_catalog_path=args.all_catalog,
                         papers_dir=args.papers_dir,
                     )
                     item.update(applied)

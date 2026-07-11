@@ -5,6 +5,7 @@ import pytest
 from src.writer.deep_reader import deep_read
 from src.writer.job_manager import JobManager
 from src.writer.story_builder import build_story
+from tests.factories.metadata_factory import make_minimal_metadata
 
 
 PAPER_ID = "2024_wang_test_paper"
@@ -27,6 +28,9 @@ def _job(tmp_path):
     article = jdir / "article" / PAPER_NUMBER
     article.mkdir(parents=True)
     (article / f"{PAPER_ID}.md").write_text("# Full text\n\nfull text", encoding="utf-8")
+    (article / f"{PAPER_ID}.metadata.json").write_text(
+        json.dumps(make_minimal_metadata(paper_number=PAPER_NUMBER), ensure_ascii=False), encoding="utf-8"
+    )
     (article / "images").mkdir()
     (jdir / "planning" / "workset_manifest.json").write_text(json.dumps({
         "job_id": info["job_id"],

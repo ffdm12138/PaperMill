@@ -4,7 +4,6 @@ Provides:
 - DOI extraction from filenames, fetch metadata record, MinerU markdown, PDF text (pymupdf)
 - Crossref API metadata query by DOI
 - Normalized bibliographic metadata from Crossref/OpenAlex/Semantic Scholar/Unpaywall
-- Proposed canonical paper_id generation
 - Fetch metadata record enrichment
 
 All network calls are isolated so tests can mock them.
@@ -21,7 +20,6 @@ from loguru import logger
 
 from src.discovery.models import normalize_doi
 from src.naming import sanitize_paper_id, validate_paper_id
-from src.services.paper_id import generate_paper_id
 
 # ── DOI regex ──────────────────────────────────────────────────────────
 # Matches: 10.xxxx/xxxxx, https://doi.org/10.xxxx/xxxxx, doi:10.xxxx/xxxxx, DOI 10.xxxx/xxxxx
@@ -159,7 +157,6 @@ class EnrichmentResult:
     published: str = ""
     source: str = ""           # crossref / openalex / semantic_scholar / unpaywall / manual
     confidence: float = 0.0
-    proposed_paper_id: str = ""
     chinese_title: str = ""
     warnings: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -183,7 +180,6 @@ class EnrichmentResult:
             "published": self.published,
             "source": self.source,
             "confidence": self.confidence,
-            "proposed_paper_id": self.proposed_paper_id,
             "chinese_title": self.chinese_title,
             "warnings": self.warnings,
             "raw": self.raw,
@@ -498,14 +494,6 @@ def enrich_from_doi(
         if not result.source or result.source == "doi_only":
             result.source = meta.get("source", result.source)
 
-    # Generate proposed_paper_id
-    result.proposed_paper_id = generate_paper_id(
-        year=result.year,
-        title=result.title,
-        authors=[result.first_author] if result.first_author else None,
-        chinese_title=chinese_title,
-    )
-
     return result
 
 
@@ -537,13 +525,6 @@ def enrich_from_metadata_record(record: dict, chinese_title: str = "") -> Enrich
             result.first_author = authors[0] if isinstance(authors, list) else str(authors)
         if result.source == "doi_only" or not result.source:
             result.source = record.get("source_kind") or record.get("resolver") or "metadata_record"
-        # Re-generate proposed_paper_id after filling gaps
-        result.proposed_paper_id = generate_paper_id(
-            year=result.year,
-            title=result.title,
-            authors=[result.first_author] if result.first_author else None,
-            chinese_title=chinese_title or record.get("chinese_title", ""),
-        )
         return result
 
     # No DOI — build from metadata record data only.
@@ -562,12 +543,6 @@ def enrich_from_metadata_record(record: dict, chinese_title: str = "") -> Enrich
         confidence=0.4,
         chinese_title=chinese_title or record.get("chinese_title", ""),
         warnings=["no DOI in metadata record; metadata from record only"],
-    )
-    result.proposed_paper_id = generate_paper_id(
-        year=result.year,
-        title=result.title,
-        authors=[result.first_author] if result.first_author else None,
-        chinese_title=result.chinese_title,
     )
     return result
 
@@ -615,12 +590,6 @@ def enrich_from_pdf(
             if not result.first_author:
                 result.first_author = authors[0] if authors else ""
         result.chinese_title = chinese_title or sidecar.get("chinese_title", "")
-        result.proposed_paper_id = generate_paper_id(
-            year=result.year,
-            title=result.title,
-            authors=[result.first_author] if result.first_author else None,
-            chinese_title=result.chinese_title,
-        )
         return result
 
     # 2. Try DOI from PDF filename
@@ -659,17 +628,6 @@ def enrich_from_pdf(
         result.title = pdf_path.stem
         result.warnings.append("no metadata record, title from filename stem")
 
-    result.proposed_paper_id = generate_paper_id(
-        year=result.year,
-        title=result.title,
-        authors=[result.first_author] if result.first_author else None,
-        chinese_title=chinese_title,
-    )
-    if not doi:
-        result.warnings.append(
-            "paper_id generated from filename fallback; "
-            "pass --doi/--title/--year/--paper-id or run metadata enrichment for canonical naming"
-        )
     return result
 
 

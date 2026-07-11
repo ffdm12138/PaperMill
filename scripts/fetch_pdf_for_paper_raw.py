@@ -35,7 +35,7 @@ from src.services.stage_manifest import (
     read_stage_manifest,
     update_stage_manifest,
 )
-from src.services.v2_library import PaperRawAllocator
+from src.ingest.paper_raw import PaperRawAllocator
 from src.utils.atomic_io import atomic_write_json
 
 
@@ -429,23 +429,10 @@ def _fetch_one(
             return item
 
         metadata = _read_json(meta_path)
-        links = metadata.setdefault("links", {})
-        if result.pdf_url:
-            links["pdf_url"] = sanitize_url_for_persistence(result.pdf_url)
-        if result.landing_url:
-            links["landing_url"] = sanitize_url_for_persistence(result.landing_url)
         fetch_record = _sanitized_fetch_record(result, attached, header_keys)
         # fetch_result.json is a SEPARATE file from metadata source records.
         # Never write the fetch result to metadata.source.raw_record_path.
         write_fetch_result(folder, fetch_record)
-        source = metadata.setdefault("source", {})
-        provider = str(source.get("provider") or metadata.get("source_type") or "network_search")
-        # raw_record_path must always point at a metadata source record, never
-        # at fetch_result.json.
-        source["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
-            source.get("raw_record_path") or "", provider,
-        )
-        atomic_write_json(meta_path, metadata, indent=2)
         # Enrich the stage_manifest pdf_source with fetch-specific details.
         existing_manifest = read_stage_manifest(folder)
         pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
@@ -459,6 +446,25 @@ def _fetch_one(
             doi=candidate.doi,
         ))
         update_stage_manifest(folder, updates={"pdf_source": pdf_source})
+        # Build the sole authoritative match sidecar from independent PDF
+        # bytes. If the PDF text layer exposes the DOI, network ingest can
+        # freeze immediately; otherwise conversion will regenerate richer
+        # evidence from Markdown before Catalog generation.
+        from src.metadata.pdf_identity import extract_pdf_identity_evidence
+        from src.metadata.pdf_match import build_match_receipt, write_match_receipt
+        from src.metadata.freeze import freeze_metadata
+        from src.ingest.status import update_status
+        from src.ingest.workspace import PaperRawWorkspace
+        evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{candidate.paper_number}.pdf")
+        provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
+        match=build_match_receipt(folder,candidate.paper_number,metadata,evidence,requested_doi=candidate.doi,provider_records=[provider_record] if provider_record else [])
+        write_match_receipt(folder,match)
+        if match["match_status"] in {"matched","manual_confirmed"}:
+            frozen=freeze_metadata(folder,candidate.paper_number)
+            update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
+            item["metadata_frozen"]=True
+        else:
+            update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=match["match_method"])
         item.update({
             **attached,
             "status": "attached",

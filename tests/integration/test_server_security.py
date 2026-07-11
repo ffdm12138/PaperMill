@@ -129,15 +129,12 @@ def test_status_runtime_ok(monkeypatch):
 
 # ---- 目录端点 ----
 
-def test_catalog_endpoints_ok():
+def test_catalog_endpoints_fail_closed_without_generation():
     resp = client.get("/catalog")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "papers" in data
+    assert resp.status_code == 503
 
     resp2 = client.post("/catalog/validate")
-    assert resp2.status_code == 200
-    assert "valid" in resp2.json()
+    assert resp2.status_code == 503
 
 
 # ---- Prompt 端点边界 ----

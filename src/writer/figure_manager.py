@@ -11,14 +11,13 @@ import re
 import shutil
 
 from src.writer.job_manager import JobManager
-from src.catalog import Catalog
 from src.naming import validate_paper_id, validate_image_name, safe_child
 from src.writer.bib_manager import job_local_bib_keys, resolve_work_dir
 
 
 def copy_figures(job_id: str, figures: list[dict] | None = None,
                  jm: JobManager | None = None,
-                 catalog: Catalog | None = None) -> dict:
+                 catalog: object | None = None) -> dict:
     """复制指定图到 write/jobs/<job_id>/figures/<paper_id>/ 并生成 source record README。
 
     figures: [{"paper_id","image","suggested_caption"?}]，为 None 时**不复制**任何图

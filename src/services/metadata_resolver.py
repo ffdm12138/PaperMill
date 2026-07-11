@@ -8,13 +8,11 @@ the sole metadata source. With ``--allow-network`` the resolver verifies extract
 candidates online or searches online when local candidates are missing. It produces
 scored candidates with evidence.
 
-The LLM-facing metadata resolver skill never sets ``metadata_match.status``; it only
-emits candidate patches + evidence + source + confidence + mismatch reason. This
-service may set ``metadata_match.status`` (matched / manual_confirmed) **only** in the
-deterministic ``apply`` step, after schema-compatible metadata and
-DOI/title/author/year/venue validation gates pass, or after explicit --manual-confirm.
-大模型 skill 不盖章；脚本 apply 层在确定性校验通过或人工确认后才可以盖章。The ``apply``
-fills ONLY empty metadata fields (via ``merge_missing_metadata``).
+The LLM-facing resolver and deterministic candidate-selection apply step never
+write embedded match state or the authoritative match receipt. They emit/select
+pure bibliographic candidates only. Independent PDF identity extraction then
+writes `<paper_number>.metadata_match.json`; Metadata freeze replays it. The
+``apply`` fills ONLY empty bibliographic fields (via ``merge_missing_metadata``).
 
 Hard rules:
 - Never fabricate DOI/author/year/venue/volume/pages. Facts come only from an
@@ -24,7 +22,7 @@ Hard rules:
 - Network-title-search candidates can NEVER be auto-matched; only ``manual_confirmed``
   via ``--manual-confirm --apply`` after passing the full gate.
 - Non-empty metadata fields are never overwritten (delegated to merge_missing_metadata).
-- ``metadata_match.status`` enum stays {unmatched, matched, manual_confirmed}.
+- Identifier conflicts cannot be overridden by candidate selection or ordinary manual confirmation.
 - Intermediate states live in side files (``.import_status.json``,
   ``<id>.metadata.candidates.json``, ``<id>.metadata.resolve_report.json``).
 
@@ -34,7 +32,7 @@ Reuses existing code (do not duplicate):
 - ``src.discovery.search_openalex`` (network keyword search / verification)
 - ``src.services.metadata_enrichment_service`` (DOI extraction + Crossref enrichment)
 - ``src.services.markdown_metadata_extractor`` (Markdown candidate extraction)
-- ``src.services.v2_library`` (empty_metadata, merge_missing_metadata, validation)
+- ``src.metadata.schema`` / ``src.metadata.normalization``
 """
 from __future__ import annotations
 
@@ -50,7 +48,7 @@ from typing import Any
 from loguru import logger
 from filelock import FileLock
 
-from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
 from src.discovery.resolve_crossref import (
     get_crossref_work_by_doi,
@@ -72,13 +70,8 @@ from src.services.metadata_enrichment_service import (
 )
 from src.services.metadata_quality import bibliographic_identity_gate
 from src.services.rate_limit import ProviderRateLimiter, default_config
-from src.services.v2_library import (
-    empty_metadata,
-    first_author_family,
-    merge_missing_metadata,
-    metadata_doi,
-    validate_metadata_schema,
-)
+from src.metadata.schema import empty_metadata, first_author_family, metadata_doi, validate_metadata_schema
+from src.metadata.normalization import merge_missing_metadata
 from src.services.source_records import write_metadata_source_record
 from src.fetch.proxy import get_fetch_proxies
 from src.utils.atomic_io import atomic_write_json
@@ -270,15 +263,11 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
-def formal_dois(
-    all_catalog_path: str | Path = ALL_CATALOG_PATH,
-    papers_dir: str | Path = PAPERS_DIR,
-) -> set[str]:
+def formal_dois(papers_dir: str | Path = PAPERS_DIR) -> set[str]:
     """Deprecated compatibility helper for formal-only DOI inventories.
 
     Active ingest duplicate checks must use ``ingest_duplicate_guard`` so DOI
     hits across both data/paper_raw and data/papers are considered.
-    ``all_catalog_path`` is kept for signature compatibility.
     """
     dois: set[str] = set()
     papers_dir = Path(papers_dir)
@@ -291,10 +280,7 @@ def formal_dois(
     return dois
 
 
-def formal_pdf_shas(
-    all_catalog_path: str | Path = ALL_CATALOG_PATH,
-    papers_dir: str | Path = PAPERS_DIR,
-) -> set[str]:
+def formal_pdf_shas(papers_dir: str | Path = PAPERS_DIR) -> set[str]:
     """Deprecated compatibility helper for formal-only PDF sha256 inventories."""
     shas: set[str] = set()
     papers_dir = Path(papers_dir)
@@ -435,6 +421,7 @@ def patch_from_enrichment(source_id: str, result: EnrichmentResult) -> dict:
 def patch_from_candidate(source_id: str, candidate: PaperCandidate) -> dict:
     """PaperCandidate (authors: list[str]) → nested patch with conservative split."""
     patch = empty_metadata(source_id, source_type="metadata_resolution")
+    patch.pop("metadata_match", None)
     if candidate.title:
         patch["title"]["original"] = candidate.title
     if candidate.year is not None:
@@ -1133,7 +1120,6 @@ def resolve_metadata_candidates(
     allow_network: bool = True,
     max_candidates: int = 5,
     min_confidence: float = MANUAL_REVIEW_THRESHOLD,
-    all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
     paper_raw_dir: str | Path | None = None,
     prefer_markdown: bool = False,
@@ -1163,7 +1149,6 @@ def resolve_metadata_candidates(
         allow_network=allow_network,
         max_candidates=max_candidates,
         min_confidence=min_confidence,
-        all_catalog_path=all_catalog_path,
         papers_dir=papers_dir,
         paper_raw_dir=paper_raw_dir,
         prefer_markdown=prefer_markdown,
@@ -1179,7 +1164,6 @@ def _resolve_metadata_candidates_impl(
     allow_network: bool = True,
     max_candidates: int = 5,
     min_confidence: float = MANUAL_REVIEW_THRESHOLD,
-    all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
     paper_raw_dir: str | Path | None = None,
     prefer_markdown: bool = False,
@@ -1188,6 +1172,8 @@ def _resolve_metadata_candidates_impl(
     folder = Path(folder)
     source_id = folder.name
     meta_path = folder / f"{source_id}.metadata.json"
+    from src.metadata.freeze import assert_metadata_write_allowed
+    assert_metadata_write_allowed(folder, source_id)
     pdf_path = folder / f"{source_id}.pdf"
     md_path = folder / f"{source_id}.md"
     paper_raw_root = Path(paper_raw_dir) if paper_raw_dir is not None else folder.parent
@@ -1489,7 +1475,6 @@ def apply_resolution(
     *,
     manual_confirm: bool = False,
     candidate_id: str | None = None,
-    all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
     paper_raw_dir: str | Path | None = None,
 ) -> dict:
@@ -1501,7 +1486,6 @@ def apply_resolution(
             report,
             manual_confirm=manual_confirm,
             candidate_id=candidate_id,
-            all_catalog_path=all_catalog_path,
             papers_dir=papers_dir,
             paper_raw_dir=paper_raw_root,
         )
@@ -1513,14 +1497,14 @@ def _apply_resolution_unlocked(
     *,
     manual_confirm: bool = False,
     candidate_id: str | None = None,
-    all_catalog_path: str | Path = ALL_CATALOG_PATH,
     papers_dir: str | Path = PAPERS_DIR,
     paper_raw_dir: str | Path | None = None,
 ) -> dict:
     """Apply a resolved candidate to metadata.json. Returns a result dict.
 
-    - auto_matched (authoritative, gate passed) → metadata_match.status=matched.
-    - --manual-confirm: may set manual_confirmed, but ONLY after passing the full
+    - candidate selection writes citation metadata once but does not assert a
+      PDF match; the independent receipt stage owns that decision.
+    - --manual-confirm selects a candidate only after passing the full
       DOI/dupe(DOI+sha)/conflict/completeness/no-overwrite gate. It relaxes ONLY
       the auto-score threshold, never the validation checks.
     """
@@ -1592,14 +1576,8 @@ def _apply_resolution_unlocked(
                 "chosen_candidate_id": chosen.candidate_id, "warnings": fail_reasons or [reason]}
 
     # ── Write ──
-    new_status = "matched" if can_auto else "manual_confirmed"
-    merged["metadata_match"] = {
-        "status": new_status,
-        "source": chosen.source,
-        "confidence": float(chosen.score),
-        "matched_at": _now_iso(),
-        "warnings": merge_warnings,
-    }
+    new_status = "resolved"
+    merged.pop("metadata_match", None)
     schema_errors = validate_metadata_schema(merged)
     if schema_errors:
         _write_import_status(folder, STATUS_MANUAL_REVIEW, "; ".join(schema_errors))
@@ -1618,7 +1596,7 @@ def _apply_resolution_unlocked(
     merged["source"] = source
     write_metadata_source_record(folder, provider, chosen.to_dict())
     atomic_write_json(meta_path, merged, indent=2)
-    _write_import_status(folder, STATUS_MATCHED, f"metadata_match.status={new_status} via candidate {chosen.candidate_id}")
+    _write_import_status(folder, "metadata_resolved", f"citation metadata selected from candidate {chosen.candidate_id}; PDF match pending")
 
     report.applied = True
     report.applied_status = new_status

@@ -482,6 +482,13 @@ class PageJournalStore:
     ) -> ClaimResult:
         with self.lock_for(page_path):
             data = self.read(page_path)
+            if data["state"] not in {"cursor_committed", "draining", "drained"}:
+                return ClaimResult(
+                    False,
+                    page_path,
+                    candidate_id_value,
+                    reason=f"page_not_claimable:{data['state']}",
+                )
             if data["state"] == "drained":
                 return ClaimResult(False, page_path, candidate_id_value, reason="page_drained")
             if data["state"] == "cursor_committed":
@@ -492,6 +499,9 @@ class PageJournalStore:
                     continue
                 status = item.get("status")
                 expires = parse_iso(item.get("lease_expires_at"))
+                next_attempt = parse_iso(item.get("next_attempt_at"))
+                if next_attempt and next_attempt > now_dt:
+                    return ClaimResult(False, page_path, candidate_id_value, reason="deferred_until_next_attempt")
                 if status == "processing" and expires and expires > now_dt:
                     return ClaimResult(False, page_path, candidate_id_value, reason="lease_active")
                 if status not in {"pending", "ready", "failed_retryable", "processing"}:
@@ -527,6 +537,49 @@ class PageJournalStore:
                     return True
         return False
 
+    def defer_candidate(
+        self,
+        page_path: Path,
+        *,
+        candidate_id_value: str,
+        worker_id: str,
+        reason: str,
+        drain_generation: str = "",
+        next_attempt_at: str | None = None,
+        updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Release a claimed candidate as retryable without making it terminal.
+
+        Used when another observation only has a temporary DOI claim, or when a
+        formal workspace needs repair outside the discovery drain loop. The
+        claim owner check mirrors ``commit_candidate`` so an unrelated worker
+        cannot steal or release another active lease.
+        """
+        with self.lock_for(page_path):
+            data = self.read(page_path)
+            for item in data["candidates"]:
+                if item.get("candidate_id") != candidate_id_value:
+                    continue
+                if item.get("status") != "processing" or item.get("claimed_by") != worker_id:
+                    raise InvalidStateTransition("only claim owner may defer processing candidate")
+                _transition_candidate(item, "failed_retryable")
+                item["claimed_by"] = None
+                item["claimed_at"] = None
+                item["lease_expires_at"] = None
+                item["last_deferred_reason"] = reason
+                if drain_generation:
+                    item["deferred_generation"] = drain_generation
+                if next_attempt_at:
+                    item["next_attempt_at"] = next_attempt_at
+                elif "next_attempt_at" in item:
+                    item.pop("next_attempt_at", None)
+                if updates:
+                    item.update(updates)
+                data["statistics"] = _statistics(data["candidates"])
+                _atomic_write_json_unlocked(page_path, data)
+                return dict(item)
+        raise KeyError(f"candidate not found: {candidate_id_value}")
+
     def commit_candidate(
         self,
         page_path: Path,
@@ -546,7 +599,7 @@ class PageJournalStore:
                 _transition_candidate(item, new_status)
                 if updates:
                     item.update(updates)
-                if new_status in TERMINAL_CANDIDATE_STATES:
+                if new_status in TERMINAL_CANDIDATE_STATES or new_status == "failed_retryable":
                     item["claimed_by"] = None
                     item["claimed_at"] = None
                     item["lease_expires_at"] = None
@@ -598,6 +651,9 @@ class PageJournalStore:
             for item in data["candidates"]:
                 status = item.get("status")
                 expires = parse_iso(item.get("lease_expires_at"))
+                next_attempt = parse_iso(item.get("next_attempt_at"))
+                if next_attempt and next_attempt > now_dt:
+                    continue
                 if status in {"pending", "ready", "failed_retryable"}:
                     out.append((ref.path, dict(item)))
                 elif status == "processing" and (not expires or expires <= now_dt):

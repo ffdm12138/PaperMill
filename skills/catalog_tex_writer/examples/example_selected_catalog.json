@@ -1,42 +1,24 @@
 {
   "schema_version": "1.0",
   "job_id": "example_catalog_article",
-  "source_catalog": "data/catalog/all.catalog.json",
+  "source_categories": ["all"],
   "papers": [
     {
       "paper_number": "0000000000000001",
-      "paper_id": "2024_author_example_one",
+      "paper_id": "2024_author_示例论文一",
       "content_identity": {
         "content_title_zh": "示例论文一",
-        "content_title_original_candidates": ["Example paper one"],
-        "content_language": "en",
-        "document_type": "article"
+        "research_domains": ["example_domain"],
+        "document_language": "en"
       },
-      "naming": {
-        "paper_id_title_zh": "示例论文一",
-        "paper_id_title_source": "content_identity.content_title_zh",
-        "paper_id_title_confidence": 1.0,
-        "paper_id_title_warnings": []
+      "abstract": {
+        "one_sentence_zh": "该研究用可复现实验回答示例问题。",
+        "summary_zh": "该研究比较了示例方法与基线。"
       },
-      "classification": {
-        "primary_domain": "example_domain",
-        "topic_tags": ["example topic"]
-      },
-      "screening": {
-        "relevance_score": 5,
-        "read_decision": "pending"
-      },
-      "research_card": {
-        "research_problem": "Example research problem",
-        "method_summary": "Example method summary",
-        "main_findings": ["Example finding"]
-      },
-      "evidence_profile": {
-        "key_claims": []
-      },
-      "content_notes": {
-        "short_summary": "Example paper used to demonstrate the job-local selected snapshot."
-      }
+      "methods": {"overview_zh": "使用留出验证比较模型。"},
+      "key_findings": [{"finding_zh": "示例方法优于基线。"}],
+      "screening": {"read_decision": "pending", "priority": null, "reason_zh": null},
+      "writing_value": {"use_cases": ["方法比较"]}
     }
   ]
 }

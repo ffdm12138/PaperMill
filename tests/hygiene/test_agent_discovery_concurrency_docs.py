@@ -79,47 +79,13 @@ def test_contract_documents_dual_lane():
 
 
 def test_pack_repo_excludes_discovery_reports():
-    """pack_repo.py must exclude data/discovery/reports/ from snapshot via _should_pack().
-
-    Uses AST to find the _DATA_SKIP_DIRS assignment (a set assigned to a Name node)
-    and verify "data/discovery/reports" is in it.
-    """
-    import ast
-
-    source = (ROOT / "scripts" / "pack_repo.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    found = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "_DATA_SKIP_DIRS":
-                    if isinstance(node.value, ast.Set):
-                        for elt in node.value.elts:
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str) \
-                                    and "data/discovery/reports" in elt.value:
-                                found = True
-                                break
-    assert found, "data/discovery/reports not found in _DATA_SKIP_DIRS assignment"
+    from src.services.repository_hygiene import is_forbidden_snapshot_member
+    assert is_forbidden_snapshot_member("data/discovery/reports/run.json")
 
 
 def test_pack_repo_excludes_keyword_notebooks():
-    """pack_repo.py must exclude data/discovery/keyword_notebooks/ (runtime progress)."""
-    import ast
-
-    source = (ROOT / "scripts" / "pack_repo.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    found = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "_DATA_SKIP_DIRS":
-                    if isinstance(node.value, ast.Set):
-                        for elt in node.value.elts:
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str) \
-                                    and "data/discovery/keyword_notebooks" in elt.value:
-                                found = True
-                                break
-    assert found, "data/discovery/keyword_notebooks not found in _DATA_SKIP_DIRS assignment"
+    from src.services.repository_hygiene import is_forbidden_snapshot_member
+    assert is_forbidden_snapshot_member("data/discovery/keyword_notebooks/state.json")
 
 
 def test_gitignore_excludes_keyword_notebooks():

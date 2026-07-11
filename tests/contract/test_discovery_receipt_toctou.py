@@ -56,6 +56,55 @@ def _worker_write_receipt(
         result_queue.put(("error", str(exc), candidate_id))
 
 
+def _collect_results(result_queue: multiprocessing.Queue, expected: int, timeout: float = 30) -> list[tuple]:
+    results = []
+    for _ in range(expected):
+        results.append(result_queue.get(timeout=timeout))
+    return results
+
+
+def _join_cleanly(procs: list[multiprocessing.Process], timeout: float = 30) -> None:
+    for proc in procs:
+        proc.join(timeout=timeout)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+        assert not proc.is_alive()
+        assert proc.exitcode == 0
+
+
+def _worker_conflict_loop(
+    root: str,
+    candidate_id: str,
+    barrier: multiprocessing.Barrier,
+    result_queue: multiprocessing.Queue,
+) -> None:
+    try:
+        for i in range(100):
+            paper_number = f"{i:016d}"
+            receipt_path = receipt_path_for(Path(root), paper_number)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            barrier.wait(timeout=15)
+            payload = build_receipt_payload(
+                candidate_id=candidate_id,
+                page_id="p1",
+                keyword_id="kw1",
+                normalized_doi="10.1234/abc",
+                paper_number=paper_number,
+            )
+            try:
+                result = write_or_validate_discovery_receipt(receipt_path, payload)
+                result_queue.put((i, "ok", result.status, candidate_id))
+            except DiscoveryReceiptConflictError:
+                result_queue.put((i, "conflict", "", candidate_id))
+    except Exception as exc:
+        try:
+            barrier.abort()
+        except Exception:
+            pass
+        result_queue.put((-1, "error", str(exc), candidate_id))
+
+
 def test_concurrent_receipt_writes_different_identity_no_double_create(
     tmp_path: Path,
 ):
@@ -70,27 +119,24 @@ def test_concurrent_receipt_writes_different_identity_no_double_create(
     receipt_path = receipt_path_for(tmp_path, paper_number)
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    barrier = multiprocessing.Barrier(2)
-    result_queue: multiprocessing.Queue = multiprocessing.Queue()
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(2)
+    result_queue: multiprocessing.Queue = ctx.Queue()
 
     procs = [
-        multiprocessing.Process(
+        ctx.Process(
             target=_worker_write_receipt,
             args=(str(receipt_path), "candidate-a", paper_number, barrier, result_queue),
         ),
-        multiprocessing.Process(
+        ctx.Process(
             target=_worker_write_receipt,
             args=(str(receipt_path), "candidate-b", paper_number, barrier, result_queue),
         ),
     ]
     for p in procs:
         p.start()
-    for p in procs:
-        p.join(timeout=30)
-
-    results = []
-    while not result_queue.empty():
-        results.append(result_queue.get_nowait())
+    results = _collect_results(result_queue, expected=2)
+    _join_cleanly(procs)
 
     # Exactly one "ok" with status "created", and one "conflict".
     ok_results = [r for r in results if r[0] == "ok"]
@@ -119,27 +165,24 @@ def test_concurrent_receipt_writes_same_identity_one_created_one_match(
     receipt_path = receipt_path_for(tmp_path, paper_number)
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    barrier = multiprocessing.Barrier(2)
-    result_queue: multiprocessing.Queue = multiprocessing.Queue()
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(2)
+    result_queue: multiprocessing.Queue = ctx.Queue()
 
     procs = [
-        multiprocessing.Process(
+        ctx.Process(
             target=_worker_write_receipt,
             args=(str(receipt_path), "candidate-a", paper_number, barrier, result_queue),
         ),
-        multiprocessing.Process(
+        ctx.Process(
             target=_worker_write_receipt,
             args=(str(receipt_path), "candidate-a", paper_number, barrier, result_queue),
         ),
     ]
     for p in procs:
         p.start()
-    for p in procs:
-        p.join(timeout=30)
-
-    results = []
-    while not result_queue.empty():
-        results.append(result_queue.get_nowait())
+    results = _collect_results(result_queue, expected=2)
+    _join_cleanly(procs)
 
     error_results = [r for r in results if r[0] == "error"]
     assert len(error_results) == 0, f"unexpected errors: {error_results}"
@@ -155,34 +198,26 @@ def test_concurrent_receipt_writes_same_identity_one_created_one_match(
 @pytest.mark.slow
 def test_concurrent_conflict_loop_100_iterations(tmp_path: Path):
     """Run the conflict test 100 times to confirm no intermittent double-create."""
-    for i in range(100):
-        paper_number = f"{i:016d}"
-        receipt_path = receipt_path_for(tmp_path, paper_number)
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(2)
+    result_queue: multiprocessing.Queue = ctx.Queue()
+    procs = [
+        ctx.Process(target=_worker_conflict_loop, args=(str(tmp_path), "candidate-a", barrier, result_queue)),
+        ctx.Process(target=_worker_conflict_loop, args=(str(tmp_path), "candidate-b", barrier, result_queue)),
+    ]
+    for proc in procs:
+        proc.start()
+    results = _collect_results(result_queue, expected=200, timeout=60)
+    _join_cleanly(procs, timeout=30)
 
-        barrier = multiprocessing.Barrier(2)
-        result_queue: multiprocessing.Queue = multiprocessing.Queue()
-
-        procs = [
-            multiprocessing.Process(
-                target=_worker_write_receipt,
-                args=(str(receipt_path), "candidate-a", paper_number, barrier, result_queue),
-            ),
-            multiprocessing.Process(
-                target=_worker_write_receipt,
-                args=(str(receipt_path), "candidate-b", paper_number, barrier, result_queue),
-            ),
-        ]
-        for p in procs:
-            p.start()
-        for p in procs:
-            p.join(timeout=30)
-
-        results = []
-        while not result_queue.empty():
-            results.append(result_queue.get_nowait())
-
-        ok_count = sum(1 for r in results if r[0] == "ok")
-        assert ok_count == 1, (
-            f"iteration {i}: expected 1 'created', got {ok_count}: {results}"
+    by_iteration: dict[int, list[tuple]] = {}
+    for result in results:
+        assert result[0] >= 0, f"worker error: {result}"
+        by_iteration.setdefault(result[0], []).append(result)
+    assert set(by_iteration) == set(range(100))
+    for i, iteration_results in sorted(by_iteration.items()):
+        ok_count = sum(1 for r in iteration_results if r[1] == "ok")
+        conflict_count = sum(1 for r in iteration_results if r[1] == "conflict")
+        assert ok_count == 1 and conflict_count == 1, (
+            f"iteration {i}: expected one ok and one conflict, got {iteration_results}"
         )

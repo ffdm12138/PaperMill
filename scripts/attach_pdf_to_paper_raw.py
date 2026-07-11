@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.services.ingest_duplicate_guard import DuplicateIngestError
 from src.services.ingest_ids import validate_paper_raw_id
-from src.services.v2_library import PaperRawAllocator
+from src.ingest.paper_raw import PaperRawAllocator
 
 
 def main() -> int:

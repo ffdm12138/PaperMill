@@ -43,7 +43,7 @@ from src.services.ingest_duplicate_guard import (
     resolve_paper_raw_identity,
 )
 from src.services.ingest_state import now_iso
-from src.services.v2_library import PaperNumberLedger
+from src.library.paper_number_ledger import PaperNumberLedger
 
 
 # Files that may live in an empty corpse workspace without counting as "real

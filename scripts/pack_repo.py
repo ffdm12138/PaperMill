@@ -1,45 +1,51 @@
-"""打包 git 跟踪的所有文件 + 轻量文本/结构文件为 audit snapshot zip。
+"""Build a runtime-zero source audit snapshot ZIP.
 
-这是 lightweight audit/handoff snapshot，不是纯源码 release 包，也不是完整数据备份。
+This is a lightweight audit/handoff snapshot, NOT a source release tarball
+or a full data backup.
 
-契约：
-- Git 仓库保持 source-only hygiene：真实文献资产、PDF、图片、运行时数据和日志不得被 git tracked。
-- 但 `mineru_snapshot.zip` 会在包含所有程序代码、测试、文档、配置的基础上，
-  额外扫描整个工作区中的轻量文本/结构文件（`.json` / `.md` / `.yaml` / `.toml` / `.csv`
-  / `.bib` / `.tex` / `.py` / `.sh` / `.bat` 等），包括被 `.gitignore` 忽略的
-  `data/papers`、`data/paper_raw` 等目录中的 catalog、metadata、markdown、source_records。
-- zip **不包含** PDF、图片、日志、缓存、临时文件、数据库、模型权重、密钥和大文件。
-- zip 中出现的轻量运行时样本不代表 git 污染。
-- **Workspace sampling**: `data/paper_raw/` 和 `data/papers/` 各最多保留
-  5 个样例 workspace（按目录名升序确定性选择）。
-  完整数据备份请使用专门的备份/导出流程。
-- **Secret scan**: 仅扫描进入 snapshot zip 的文件，不保证全仓无 secret。
-  完整仓库 secret 扫描请使用独立的 hygiene task。
+Contract:
+- Git repository maintains source-only hygiene: real paper assets, PDFs,
+  images, runtime data, and logs must not be git-tracked.
+- The snapshot includes all program source code, tests, docs, configs, and
+  lightweight text/structure files (`.json` / `.md` / `.yaml` / `.toml` / `.csv`
+  / `.bib` / `.tex` / `.py` / `.sh` / `.bat` etc.) from the workspace.
+- ZIP **excludes**: PDFs, images, logs, caches, temp files, databases, model
+  weights, secrets, large files, local tool state, runtime reports, and
+  real paper workspaces (paper_raw / papers / transactions).
+- **Runtime-zero**: no local tool state (`.workbuddy/`, `.reasonix/`),
+  no runtime reports (`data/cleanup_report.json`), no live paper workspaces
+  enter the snapshot regardless of profile.
+- **Secret scan**: only scans files entering the snapshot ZIP, does not
+  guarantee the full repo is secret-free.
 
-用法：
-    python scripts/pack_repo.py                         # audit profile (默认)
-    python scripts/pack_repo.py --profile source        # 仅 git-tracked source
+Usage:
+    python scripts/pack_repo.py                         # audit profile (default)
+    python scripts/pack_repo.py --profile source        # git-tracked source only
     python scripts/pack_repo.py --name v2 --profile audit
 """
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import zipfile
+import secrets
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+from src.services.repository_hygiene import (
+    is_forbidden_snapshot_member,
+    runtime_workspace_counts,
+)
 ZIP_NAME_BASE = "mineru_snapshot"
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
-_PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
-_WORKSPACE_SAMPLE_LIMIT = 5
 
 # ── Packaging profiles ────────────────────────────────────────────
-# audit (default): source code + git-ignored runtime samples
+# audit (default): source code + untracked lightweight source/synthetic fixtures
 # source:          only git-tracked source + .gitkeep
 PACK_PROFILE = "audit"
 
@@ -126,6 +132,8 @@ DENIED_NAMES = {
     "secrets.json",
     "service-account.json",
     ".dockerignore",
+    # Runtime reports
+    "cleanup_report.json",
 }
 
 # Path components whose contents are NEVER allowed in zip.
@@ -146,7 +154,24 @@ DENIED_PATH_PARTS = {
     "tmp",
     "temp",
     "logs",
+    "transactions",
 }
+
+# ── Required root-level files ──────────────────────────────────────────
+# These must be present in every snapshot ZIP regardless of profile.
+REQUIRED_ROOT_FILES: set[str] = {
+    "LICENSE",
+    ".gitignore",
+    ".gitattributes",
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
+}
+# Platform-specific additions (present in this repo).
+if (PROJECT_ROOT / "NOTICE").exists():
+    REQUIRED_ROOT_FILES.add("NOTICE")
 
 # Size limits (oversized files are skipped with a warning).
 SINGLE_FILE_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
@@ -170,6 +195,45 @@ class SecretFinding:
     rule: str
     path: str
     line: int
+
+
+@dataclass(frozen=True)
+class SnapshotMember:
+    path: str
+    size_bytes: int
+    sha256: str
+
+
+def _member_digest(members: list[SnapshotMember]) -> str:
+    payload = [
+        {"path": member.path, "size_bytes": member.size_bytes, "sha256": member.sha256}
+        for member in members
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_snapshot_plan(files: list[str]) -> list[SnapshotMember]:
+    members: list[SnapshotMember] = []
+    total = 0
+    for rel in sorted(set(files)):
+        src = PROJECT_ROOT / rel
+        if not _safe_for_zip(rel):
+            raise RuntimeError(f"unsafe selected snapshot path: {rel!r}")
+        if src.is_symlink():
+            raise RuntimeError(f"selected snapshot member is a symlink: {rel}")
+        if not src.is_file():
+            raise RuntimeError(f"selected snapshot member missing: {rel}")
+        raw = src.read_bytes()
+        size = len(raw)
+        if PACK_PROFILE == "audit" and size > SINGLE_FILE_MAX_BYTES:
+            raise RuntimeError(f"selected snapshot member exceeds single-file limit: {rel}")
+        total += size
+        if PACK_PROFILE == "audit" and total > ZIP_MAX_BYTES:
+            raise RuntimeError("selected snapshot members exceed total size limit")
+        members.append(SnapshotMember(rel, size, hashlib.sha256(raw).hexdigest()))
+    return members
 
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -315,8 +379,8 @@ def _should_pack(rel_path: str, *, require_lightweight: bool = False) -> bool:
     path = Path(rel_path)
     rel = rel_path.replace("\\", "/")
 
-    # 1. Skip local agent / research tooling state directories.
-    if path.parts and path.parts[0] in {".reasonix"}:
+    # 1. Apply the canonical repository runtime-zero policy.
+    if is_forbidden_snapshot_member(rel):
         return False
     # 2. Skip test migration tombstone files.
     if rel.endswith("._deleted") or rel.endswith(".py._deleted"):
@@ -352,24 +416,6 @@ def _should_pack(rel_path: str, *, require_lightweight: bool = False) -> bool:
         if rel not in _WRITE_KEEP:
             return False
 
-    # 10. Skip runtime data directories (non-gitkeep).
-    _DATA_SKIP_DIRS = {
-        "data/llm_work", "data/tmp", "data/logs", "data/jobs",
-        "data/transactions", "data/jobs/upload_staging",
-        "data/import_work",
-        "data/discovery/doi_candidates", "data/discovery/pdf_fetch_logs",
-        "data/discovery/fetch_logs", "data/discovery/queries",
-        "data/discovery/reports", "data/discovery/keyword_notebooks",
-        "data/discovery/pending_pages", "data/discovery/locks",
-        "data/discovery/exports", "data/discovery/logs",
-    }
-    # Committable example files that live inside otherwise-skipped runtime dirs.
-    _RUNTIME_DIR_KEEPERS = {".gitkeep", "keywords.example.txt"}
-    for skip_dir in _DATA_SKIP_DIRS:
-        if (rel.startswith(skip_dir + "/") or rel == skip_dir) \
-                and path.name not in _RUNTIME_DIR_KEEPERS:
-            return False
-
     # 11. Skip data/locks/*.lock files.
     if rel.startswith("data/locks/") and path.suffix == ".lock":
         return False
@@ -380,33 +426,11 @@ def _should_pack(rel_path: str, *, require_lightweight: bool = False) -> bool:
             return True
         return False
 
-    # 13. Skip locally generated catalog indexes / ledgers.
-    _GENERATED_CATALOG_FILES = {
-        "data/catalog/all.catalog.json",
-        "data/catalog/paper_index.json",
-        "data/catalog/paper_number_ledger.json",
-        "data/catalog/paper_number_ledger.json.bak",
-        "data/catalog/catalog_migration_report.json",
-        "data/catalog/metadata_quality_report.json",
-    }
-    if rel in _GENERATED_CATALOG_FILES:
-        return False
-
-    # 14. Skip generated catalog runtime files.
+    # 13. Catalog folders, links, assignments and classifier state are runtime.
     if rel.startswith("data/catalog/"):
-        cname = path.name.lower()
-        if cname.startswith("paper_number_ledger.bak_") and cname.endswith(".json"):
-            return False
-        if cname.endswith(".runtime.json"):
-            return False
+        return rel == "data/catalog/.gitkeep"
 
-    # 15. Source profile: block runtime data dirs entirely (only .gitkeep).
-    if PACK_PROFILE == "source":
-        _SRC_DATA_DIRS = {"data/paper_raw", "data/papers", "data/raw", "data/raw_all"}
-        if any(rel.startswith(d + "/") for d in _SRC_DATA_DIRS) or rel in _SRC_DATA_DIRS:
-            return path.name == ".gitkeep"
-
-    # 16. For extra-scanned (non-git) files: must be lightweight text.
+    # For extra-scanned (non-git) files: must be lightweight text.
     if require_lightweight:
         return _lightweight_suffix_match(rel, path)
 
@@ -420,9 +444,12 @@ def git_tracked_files(profile: str = "audit") -> list[str]:
     2. **Audit profile only**: extra workspace-wide scan for lightweight
        text/structure files (``.json`` / ``.md`` / ``.yaml`` / etc.) that
        pass ``_should_pack(require_lightweight=True)``.
-       This scans the entire project tree, so files in git-ignored directories
-       like ``data/papers/`` or ``data/paper_raw/`` are included if they
-       are lightweight text files.
+       Runtime directories remain excluded by ``_should_pack``.  This captures
+       dirty/untracked source and synthetic fixtures without leaking live data.
+
+    For the ``source`` profile, a valid git repository is REQUIRED.
+    If not available, the function prints an error and returns an empty list
+    (the caller exits non-zero).
     """
     try:
         # Only --cached (tracked files). Untracked-but-not-ignored files are
@@ -449,6 +476,7 @@ def git_tracked_files(profile: str = "audit") -> list[str]:
                 # Extra (audit only): workspace-wide scan for lightweight
                 # text/structure files (catalog, metadata, markdown, configs,
                 # source_records, etc.) even if git-ignored.
+                safe_set = set(safe)
                 if profile == "audit":
                     extras: list[str] = []
                     for path in sorted(PROJECT_ROOT.rglob("*")):
@@ -458,11 +486,17 @@ def git_tracked_files(profile: str = "audit") -> list[str]:
                         if _should_pack(rel, require_lightweight=True):
                             extras.append(rel)
                     if extras:
-                        safe_set = set(safe)
                         new_count = sum(1 for e in extras if e not in safe_set)
                         safe = sorted(safe_set | set(extras))
                         if new_count:
                             print(f"  Added {new_count} lightweight file(s) from workspace")
+
+                # Always inject REQUIRED_ROOT_FILES that exist on disk.
+                for name in sorted(REQUIRED_ROOT_FILES):
+                    if (PROJECT_ROOT / name).exists() and name not in safe_set:
+                        safe.append(name)
+                        safe_set.add(name)
+                        print(f"  [INJECT] required root file: {name}")
 
                 print(f"  Found {len(safe)} total files")
                 return safe
@@ -470,6 +504,11 @@ def git_tracked_files(profile: str = "audit") -> list[str]:
             print(f"[WARN] git ls-files failed: {result.stderr}")
     except Exception as e:
         print(f"[WARN] git ls-files unavailable: {e}")
+
+    # Source profile requires git; fail closed instead of falling back.
+    if profile == "source":
+        print("[ERROR] source profile requires a git repository; aborting")
+        sys.exit(1)
 
     files = _scan_repo_files()
     print(f"  Found {len(files)} files from filesystem scan")
@@ -494,133 +533,103 @@ def _scan_repo_files() -> list[str]:
         if not _should_pack(rel, require_lightweight=True):
             continue
         out.append(rel)
+    # Always inject REQUIRED_ROOT_FILES that exist on disk.
+    for name in sorted(REQUIRED_ROOT_FILES):
+        if (PROJECT_ROOT / name).exists() and name not in out:
+            out.append(name)
     return sorted(out)
 
 
-# -- workspace sampling ---------------------------------------------------
+# -- post-pack self-check ---------------------------------------------------
 
 
-def _is_papers_workspace(dir_path: Path) -> bool:
-    """A directory is a papers workspace if it contains any core paper asset."""
-    _CORE_GLOBS = ("*.metadata.json", "*.catalog.json", "*.paper.number", "*.pdf", "*.md")
-    return any(list(dir_path.glob(g)) for g in _CORE_GLOBS)
-
-
-def _selected_sample_workspaces(root: Path, limit: int = _WORKSPACE_SAMPLE_LIMIT) -> dict:
-    """Return deterministic sample workspace selections for the snapshot."""
-    result = {"paper_raw_selected": set(), "paper_raw_total": 0,
-              "papers_selected": set(), "papers_total": 0}
-    # paper_raw: only 16-digit subdirs
-    paper_raw_dir = root / "data" / "paper_raw"
-    if paper_raw_dir.exists():
-        raw_dirs = sorted(
-            [d for d in paper_raw_dir.iterdir()
-             if d.is_dir() and _PAPER_NUMBER_RE.match(d.name)],
-            key=lambda d: d.name
-        )
-        result["paper_raw_total"] = len(raw_dirs)
-        result["paper_raw_selected"] = {
-            d.relative_to(root).as_posix() for d in raw_dirs[:limit]
-        }
-    # papers: only subdirs containing core paper assets, skipping non-paper dirs
-    papers_dir = root / "data" / "papers"
-    _PAPERS_SKIP = {"images", "cache", "tmp", "logs", "reports", "__pycache__"}
-    if papers_dir.exists():
-        candidates = [
-            d for d in papers_dir.iterdir()
-            if d.is_dir() and d.name not in _PAPERS_SKIP
-            and not d.name.startswith(".") and _is_papers_workspace(d)
-        ]
-        papers_dirs = sorted(candidates, key=lambda d: d.name)
-        result["papers_total"] = len(papers_dirs)
-        result["papers_selected"] = {
-            d.relative_to(root).as_posix() for d in papers_dirs[:limit]
-        }
-    return result
-
-
-def _resolve_workspace_prefix(rel_path: str) -> str | None:
-    """Return workspace prefix like ``data/paper_raw/0000000000000001`` or None.
-
-    Root-level files (depth < 4) are never considered workspace files.
-    For ``data/paper_raw/``, only paths where the third component is a
-    16-digit number are workspace files.  For ``data/papers/``, paths
-    with at least 4 parts are workspace files.
-    """
-    path = Path(rel_path)
-    if len(path.parts) < 4:
-        return None
-    if path.parts[0] == "data" and path.parts[1] == "paper_raw":
-        if _PAPER_NUMBER_RE.match(path.parts[2]):
-            return f"data/paper_raw/{path.parts[2]}"
-        return None
-    if path.parts[0] == "data" and path.parts[1] == "papers":
-        return f"data/papers/{path.parts[2]}"
-    return None
-
-
-def _should_sample_keep(rel_path: str, sampling: dict) -> bool:
-    """Return True if the file should be included in the snapshot.
-
-    Files outside any workspace always pass.  Files inside a workspace
-    must belong to a selected workspace.
-    """
-    ws = _resolve_workspace_prefix(rel_path)
-    if ws is None:
-        return True
-    if ws.startswith("data/paper_raw/"):
-        return ws in sampling["paper_raw_selected"]
-    if ws.startswith("data/papers/"):
-        return ws in sampling["papers_selected"]
-    return True
-
-
-def _verify_snapshot_sampling(zip_path: Path, sampling: dict) -> list[str]:
-    """Post-pack self-check: verify workspace sampling constraints."""
+def _verify_snapshot_self_check(zip_path: Path) -> list[str]:
+    """Post-pack self-check: enforce the runtime-zero snapshot contract."""
     errors: list[str] = []
-    raw_ws: set[str] = set()
-    papers_ws: set[str] = set()
     manifest_count = 0
+    manifest = None
     with zipfile.ZipFile(zip_path, "r") as zf:
-        for name in zf.namelist():
+        names = zf.namelist()
+        payload = [name for name in names if name != "snapshot_manifest.json"]
+        runtime = [name for name in payload if is_forbidden_snapshot_member(name)]
+        workspaces = runtime_workspace_counts(payload)
+
+        # 1. Required root-level files
+        missing_required = REQUIRED_ROOT_FILES - set(names)
+        for missing in sorted(missing_required):
+            errors.append(f"required root file missing: {missing}")
+
+        # 2. ZIP member safety
+        for name in names:
+            if name.startswith("/") or (len(name) > 2 and name[1] == ":"):
+                errors.append(f"absolute path in zip: {name!r}")
+            if ".." in name.split("/"):
+                errors.append(f"path escape in zip: {name!r}")
+            if names.count(name) > 1:
+                errors.append(f"duplicate member in zip: {name!r}")
+            try:
+                info = zf.getinfo(name)
+                if info.flag_bits & 0x8000:
+                    errors.append(f"symlink member in zip: {name!r}")
+            except Exception:
+                pass
+
             if name == "snapshot_manifest.json":
                 manifest_count += 1
+                try: manifest = json.loads(zf.read(name).decode("utf-8"))
+                except Exception as exc: errors.append(f"invalid snapshot manifest: {exc}")
                 continue
-            ws = _resolve_workspace_prefix(name)
-            if ws is None:
-                continue
-            if ws.startswith("data/paper_raw/"):
-                raw_ws.add(ws)
-            elif ws.startswith("data/papers/"):
-                papers_ws.add(ws)
-    limit = _WORKSPACE_SAMPLE_LIMIT
-    if len(raw_ws) > limit:
-        errors.append(
-            f"snapshot contains {len(raw_ws)} paper_raw workspaces (limit: {limit})"
-        )
-    if len(papers_ws) > limit:
-        errors.append(
-            f"snapshot contains {len(papers_ws)} papers workspaces (limit: {limit})"
-        )
+            if name in runtime:
+                errors.append(f"runtime file present in snapshot: {name}")
     if manifest_count != 1:
         errors.append(f"snapshot_manifest.json count is {manifest_count}, expected 1")
     if not manifest_count:
         errors.append("snapshot_manifest.json missing from zip")
+    if manifest is not None:
+        expected = {
+            "schema_version": "2.0",
+            "snapshot_type": "runtime_zero_source_audit",
+            "payload_file_count": len(payload),
+            "runtime_files_included": len(runtime),
+            "runtime_workspaces_included": workspaces,
+        }
+        for key, value in expected.items():
+            if manifest.get(key) != value:
+                errors.append(f"snapshot manifest {key} mismatch: {manifest.get(key)!r} != {value!r}")
+        declared_members = manifest.get("members") or []
+        actual_members: list[SnapshotMember] = []
+        with zipfile.ZipFile(zip_path, "r") as verify_zf:
+            for name in payload:
+                raw = verify_zf.read(name)
+                actual_members.append(SnapshotMember(name, len(raw), hashlib.sha256(raw).hexdigest()))
+        actual_members.sort(key=lambda member: member.path)
+        if declared_members != [member.__dict__ for member in actual_members]:
+            errors.append("snapshot manifest members mismatch")
+        selection = manifest.get("selection") or {}
+        archive = manifest.get("archive") or {}
+        digest = _member_digest(actual_members)
+        for label, section in (("selection", selection), ("archive", archive)):
+            if section.get("count") != len(actual_members) or section.get("sha256") != digest:
+                errors.append(f"snapshot manifest {label} mismatch")
+        if manifest.get("omissions") != []:
+            errors.append("snapshot manifest omissions is not empty")
+        verification = manifest.get("verification") or {}
+        for key, value in {"runtime_zero": not runtime, "secret_scan": "passed", "archive_member_check": "passed"}.items():
+            if verification.get(key) != value:
+                errors.append(f"snapshot manifest verification.{key} mismatch")
     return errors
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Build audit snapshot ZIP (source + optional runtime samples)",
-    )
+    parser = argparse.ArgumentParser(description="Build runtime-zero source audit snapshot ZIP")
     parser.add_argument(
         "--name", type=str, default="",
         help="Suffix for zip filename, e.g. v2 -> mineru_snapshot_v2.zip",
     )
     parser.add_argument(
         "--profile", type=str, default="audit", choices=["audit", "source"],
-        help='Packaging profile: "audit" (default) includes git-ignored runtime '
-             'samples; "source" only includes git-tracked source + .gitkeep.',
+        help='Packaging profile: "audit" includes dirty lightweight source and synthetic fixtures; '
+             '"source" includes git-tracked source. Both exclude runtime data.',
     )
     args = parser.parse_args()
 
@@ -630,9 +639,10 @@ def main():
     suffix = args.name
     zip_name = f"{ZIP_NAME_BASE}_{suffix}.zip" if suffix else f"{ZIP_NAME_BASE}.zip"
     zip_path = PROJECT_ROOT / zip_name
+    temp_zip = zip_path.with_name(f"{zip_path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
 
     if PACK_PROFILE == "audit":
-        print(f"  Profile: audit (source + runtime samples)")
+        print(f"  Profile: audit (runtime-zero source + synthetic fixtures)")
     else:
         print(f"  Profile: source (git-tracked only)")
 
@@ -641,20 +651,16 @@ def main():
         print("[ERROR] No tracked files, aborting")
         sys.exit(1)
 
-    # Apply workspace sampling (always active; keeps snapshot lightweight)
-    sampling = _selected_sample_workspaces(PROJECT_ROOT, limit=_WORKSPACE_SAMPLE_LIMIT)
-    before = len(files)
-    files = [f for f in files if _should_sample_keep(f, sampling)]
-    dropped = before - len(files)
-    if dropped:
-        print(f"  [INFO] data/paper_raw sampled: {len(sampling['paper_raw_selected'])} of {sampling['paper_raw_total']} workspaces")
-        print(f"  [INFO] data/papers sampled: {len(sampling['papers_selected'])} of {sampling['papers_total']} workspaces")
-        print(f"         {dropped} file(s) from non-sampled workspaces excluded")
+    # Pre-flight: required root files that exist on disk must be in the pack.
+    _missing_root = [
+        name for name in sorted(REQUIRED_ROOT_FILES)
+        if (PROJECT_ROOT / name).exists() and name not in files
+    ]
+    if _missing_root:
+        print(f"[ERROR] Required root files missing from pack list: {_missing_root}")
+        sys.exit(1)
 
     # Secret scan on filtered list (only files entering the zip).
-    # This scan is scoped to the snapshot — it does not guarantee the
-    # full repository is secret-free.  Non-sampled workspaces are not
-    # in the zip and are intentionally not scanned here.
     secret_findings = scan_files_for_secrets(files)
     if secret_findings:
         print("[ERROR] Secret-like literal(s) found; refusing to pack")
@@ -664,91 +670,83 @@ def main():
             print(f"  ... {len(secret_findings) - 20} more")
         sys.exit(1)
 
+    try:
+        selected_members = _build_snapshot_plan(files)
+    except Exception as exc:
+        print(f"[ERROR] Snapshot selection failed: {exc}")
+        sys.exit(1)
     count = 0
-    skipped = 0
-    zip_total_bytes = 0
-    oversized: list[str] = []
 
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in sorted(files):
-            src = PROJECT_ROOT / f
-            if not src.exists():
-                print(f"  [SKIP] missing: {f}")
-                skipped += 1
-                continue
-            if not _safe_for_zip(f):
-                print(f"  [SKIP] unsafe path encoding: {f!r}")
-                skipped += 1
-                continue
-            # Size limits (audit profile)
-            file_size = src.stat().st_size
-            if PACK_PROFILE == "audit":
-                if file_size > SINGLE_FILE_MAX_BYTES:
-                    print(f"  [SKIP] oversized ({file_size / 1024 / 1024:.1f} MB): {f}")
-                    oversized.append(f)
-                    skipped += 1
-                    continue
-            zf.write(src, f)
-            zip_total_bytes += file_size
+    try:
+      with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        archived_members: list[SnapshotMember] = []
+        for member in selected_members:
+            src = PROJECT_ROOT / member.path
+            if src.is_symlink() or not src.is_file():
+                raise RuntimeError(f"selected snapshot member changed before archive: {member.path}")
+            raw = src.read_bytes()
+            current = SnapshotMember(member.path, len(raw), hashlib.sha256(raw).hexdigest())
+            if current != member:
+                raise RuntimeError(f"selected snapshot member changed before archive: {member.path}")
+            zf.writestr(member.path, raw)
+            archived_members.append(current)
             count += 1
-            # Total zip limit check
-            if PACK_PROFILE == "audit" and zip_total_bytes > ZIP_MAX_BYTES:
-                print(f"  [WARN] total zip size exceeds {ZIP_MAX_BYTES / 1024 / 1024:.0f} MB limit, stopping")
-                break
+        if archived_members != selected_members:
+            raise RuntimeError("snapshot archive omitted selected members")
 
         # Write snapshot manifest as last entry in the same session.
-        # Sanitize workspace paths: surrogates or other encoding-unsafe
-        # names (possible when a zip is decompressed cross-platform and
-        # re-packed) must not crash the manifest write.
-        def _manifest_safe_paths(paths: set[str]) -> tuple[list[str], int]:
-            safe: list[str] = []
-            skipped = 0
-            for p in sorted(paths):
-                if _safe_for_zip(p):
-                    safe.append(p)
-                else:
-                    skipped += 1
-            return safe, skipped
-
-        raw_included, raw_unsafe = _manifest_safe_paths(sampling["paper_raw_selected"])
-        papers_included, papers_unsafe = _manifest_safe_paths(sampling["papers_selected"])
+        # Build manifest from the actual ZIP members written so far.
+        written_members = [name for name in zf.namelist() if name != "snapshot_manifest.json"]
+        runtime_files_in_zip = [m for m in written_members if is_forbidden_snapshot_member(m)]
+        workspace_counts = runtime_workspace_counts(written_members)
+        synthetic_files = [m for m in written_members if m.startswith("tests/fixtures/synthetic_library/")]
         manifest = {
-            "snapshot_type": "lightweight",
-            "paper_raw_sample_limit": _WORKSPACE_SAMPLE_LIMIT,
-            "paper_raw_total_detected": sampling["paper_raw_total"],
-            "paper_raw_included": raw_included,
-            "papers_sample_limit": _WORKSPACE_SAMPLE_LIMIT,
-            "papers_total_detected": sampling["papers_total"],
-            "papers_included": papers_included,
-            "sampling_note": (
-                "Only sampled data/paper_raw and data/papers workspaces are "
-                "included.  Source data and git working tree are unchanged."
-            ),
+            "schema_version": "2.0",
+            "snapshot_type": "runtime_zero_source_audit",
+            "created_at": None,  # filled below
+            "payload_file_count": len(written_members),
+            "runtime_files_included": len(runtime_files_in_zip),
+            "runtime_workspaces_included": {
+                **workspace_counts,
+            },
+            "synthetic_fixtures_included": len(synthetic_files),
+            "selection": {"count": len(selected_members), "sha256": _member_digest(selected_members)},
+            "archive": {"count": len(archived_members), "sha256": _member_digest(archived_members)},
+            "omissions": [],
+            "members": [member.__dict__ for member in selected_members],
+            "excluded_runtime_categories": [
+                "paper_raw",
+                "papers",
+                "transactions",
+                "local_tool_state",
+                "runtime_reports",
+            ],
+            "verification": {
+                "runtime_zero": len(runtime_files_in_zip) == 0,
+                "secret_scan": "passed",
+                "archive_member_check": "passed",
+            },
         }
-        unsafe_total = raw_unsafe + papers_unsafe
-        if unsafe_total:
-            manifest["skipped_unsafe_manifest_paths"] = unsafe_total
+        import datetime
+        manifest["created_at"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
         zf.writestr("snapshot_manifest.json",
                     json.dumps(manifest, indent=2, ensure_ascii=False))
         count += 1  # manifest counts toward total
 
     # Post-pack self-check
-    check_errors = _verify_snapshot_sampling(zip_path, sampling)
-    if check_errors:
+      check_errors = _verify_snapshot_self_check(temp_zip)
+      if check_errors:
         print("[ERROR] Snapshot self-check failed:")
         for e in check_errors:
             print(f"  {e}")
         sys.exit(1)
+      os.replace(temp_zip, zip_path)
+    finally:
+      if temp_zip.exists():
+        temp_zip.unlink()
 
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"[OK] Packed: {zip_name} ({count} files, {size_mb:.1f} MB)")
-    if skipped:
-        print(f"     {skipped} file(s) skipped")
-    if oversized:
-        print(f"     {len(oversized)} oversized file(s) not included")
-    if dropped:
-        print(f"[INFO] data/paper_raw sampled: {len(sampling['paper_raw_selected'])} of {sampling['paper_raw_total']} workspaces")
-        print(f"[INFO] data/papers sampled: {len(sampling['papers_selected'])} of {sampling['papers_total']} workspaces")
     print(f"     {zip_path}")
 
 

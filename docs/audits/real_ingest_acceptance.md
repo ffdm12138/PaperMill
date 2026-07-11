@@ -38,7 +38,7 @@ runtime reports and paper lists do not enter source snapshots.
 
 ## Final Verification Summary
 
-- `rebuild_all_catalog.py --apply`: passed.
+- retired merged-index publication check: passed.
 - `validate_v2_library.py`: passed with no hard errors.
 - `audit_metadata_quality.py`: passed with no hard errors.
 - `doctor_ingest_pipeline.py`: passed.

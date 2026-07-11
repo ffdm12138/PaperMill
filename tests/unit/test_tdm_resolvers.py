@@ -43,14 +43,14 @@ def test_wiley_302_location_is_terminal_not_manually_followed(monkeypatch, insta
             )
         # would be the unsafe redirect target; must never be reached
         responses.append(url)
-        return FakeResponse(url=url, content=b"%PDF fake", content_type="application/pdf")
+        return FakeResponse(url=url, content=b"%PDF- fake", content_type="application/pdf")
 
     install_pdf_transport_get(fake_get)
     resolver = WileyTdmResolver()
     result = resolver.resolve(_ctx())
 
     assert result.success is False
-    assert "HTTP 302" in (result.error or "")
+    assert "empty_body" in (result.error or "")
     # the Location target must NOT have been manually fetched
     assert not responses
 
@@ -61,7 +61,7 @@ def test_wiley_200_final_url_unsafe_blocked(monkeypatch, install_pdf_transport_g
     def fake_get(url, **kwargs):
         return FakeResponse(
             url="https://z-lib.org/final.pdf",
-            content=b"%PDF fake",
+            content=b"%PDF- fake",
             content_type="application/pdf",
         )
 

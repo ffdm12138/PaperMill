@@ -1,12 +1,9 @@
 """Guard against reintroducing legacy metadata/catalog schema terms.
 
-Active code/docs/skills must speak only metadata v2.0 / catalog v3.1 /
-all.catalog v3.1 / paper_index v2.0 terminology.  Legacy field names such
+Active code/docs/skills must speak only metadata v2.0 / Catalog v3.2 /
+all.catalog v3.2 / paper_index v2.0 terminology.  Legacy field names such
 as ``short_zh`` (in metadata), bare ``content_title`` (in catalog), version
-string ``v1.1`` (on paper_index schema), and migration
-function names ``migrate_catalog_to_v2_0`` are forbidden outside of
-scripts/legacy/, one-shot migration scripts, and test fixtures that
-deliberately exercise legacy→current migration paths.
+string ``v1.1`` (on paper_index schema) are forbidden.
 
 Negative-lookahead assertions (e.g. ``content_title`` vs ``content_title_zh``)
 avoid false-positives on legitimate new fields.
@@ -51,9 +48,6 @@ FORBIDDEN_PATTERNS: list[tuple[str, str]] = [
      r'metadata schema.*v1\.1'),
     ("all.catalog schema v2.0 assertion",
      r'all\.catalog schema v2\.0'),
-    # Migration function that no longer exists
-    ("migrate_catalog_to_v2_0 import/call",
-     r'migrate_catalog_to_v2_0'),
     # paper_index is the only schema that previously used "1.1" and is now "2.0".
     ("paper_index schema_version 1.1",
      r'"schema_version": "1\.1"'),
@@ -70,12 +64,11 @@ EXEMPT_DIR_PREFIXES = {
 EXEMPT_FILES: set[str] = {
     # Validator code legitimately references short_zh/translated_zh as
     # forbidden-key constants (enforcement, not usage).
-    "src/services/v2_library.py",
+    "src/metadata/schema.py",
     # Filter code strips short_zh/translated_zh from compact patches.
     "src/services/metadata_resolver.py",
     # Repair/validate scripts reference legacy terms to detect and remove them.
     "scripts/repair_metadata_only_assets.py",
-    "scripts/validate_metadata_only_assets.py",
     # Patch-schema description explicitly lists the forbidden legacy
     # fields (it is telling the LLM not to generate them).
     "skills/paper_raw_metadata_resolver/metadata_patch_schema.json",
@@ -92,8 +85,7 @@ EXEMPT_FILES: set[str] = {
     "data/catalog/paper_number_ledger.template.json",
 }
 
-# Test files that legitimately use legacy fields in fixtures for
-# migration tests or validator-rejection tests.
+# Test files that legitimately use retired fields in validator-rejection tests.
 EXEMPT_TEST_FILES: set[str] = {
     "tests/legacy/test_legacy_repair_bad_formal_imports.py",
     "tests/legacy/test_legacy_paper_raw_formal_import_audit.py",

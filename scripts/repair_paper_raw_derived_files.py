@@ -12,7 +12,7 @@ This script is LAYERED to respect what each file type is allowed to change:
 * ``catalog.json``         — only asset_refs / provenance.markdown_path /
                              paper_number / paper_id via
                              ``canonicalize_catalog_asset_refs``; content fields
-                             (research_card, content_identity, ...) untouched.
+                             (content_identity, methods, findings, ...) untouched.
 * ``conversion.json``      — replace stale 16-digit tokens (paper_number + paths)
                              with the workspace's correct marker number.
 * ``stage_manifest.json``  — same stale-16-digit-token replacement.
@@ -42,12 +42,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.services.asset_manifest import build_asset_manifest, read_asset_manifest, write_asset_manifest
-from src.services.catalog_asset_refs import canonicalize_catalog_asset_refs
+from src.services.catalog_asset_refs import inspect_legacy_catalog_fields
 from src.services.ingest_duplicate_guard import is_paper_raw_workspace, read_best_metadata_json
 from src.services.ingest_ids import PAPER_NUMBER_RE
 from src.services.ingest_state import now_iso
 from src.services.paper_number_admin import metadata_fingerprint
-from src.services.v2_library import PaperNumberLedger
+from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json
 
 
@@ -157,22 +157,14 @@ def _repair_workspace(folder: Path, *, apply: bool) -> dict[str, Any]:
     catalog = _load_json(catalog_path)
     if catalog is not None:
         try:
-            new_catalog = canonicalize_catalog_asset_refs(
-                catalog, folder=folder, paper_number=correct_number, paper_id=pid or None, stage=stage
-            )
-            prov = new_catalog.get("provenance") if isinstance(new_catalog.get("provenance"), dict) else {}
-            orig_md = str(prov.get("original_markdown_path") or "")
-            if orig_md:
-                orig_tokens = _STANDALONE_16DIGIT.findall(orig_md)
-                if any(t != correct_number for t in orig_tokens):
-                    prov["original_markdown_path"] = ""
-                    new_catalog["provenance"] = prov
-            if new_catalog != catalog:
-                if apply:
-                    atomic_write_json(catalog_path, new_catalog, indent=2)
-                result["changes"].append("catalog: canonicalized asset_refs/provenance")
+            issues = inspect_legacy_catalog_fields(catalog)
+            if issues:
+                for issue in issues:
+                    result["warnings"].append(
+                        f"catalog legacy field {issue.json_path}: {issue.message}"
+                    )
         except Exception as exc:
-            result["warnings"].append(f"catalog repair failed: {exc}")
+            result["warnings"].append(f"catalog inspection failed: {exc}")
 
     # 3-5. derived JSON files — replace stale 16-digit tokens with correct_number.
     derived_json_patterns = (

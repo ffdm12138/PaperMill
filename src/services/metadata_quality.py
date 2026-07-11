@@ -56,7 +56,7 @@ def bibliographic_identity_gate(
     blocking_reasons: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
     """Return whether metadata is complete enough to be marked matched."""
-    from src.services.v2_library import validate_metadata_schema
+    from src.metadata.schema import validate_metadata_schema
 
     reasons: list[str] = []
     doi = normalized_metadata_doi(metadata)
@@ -91,7 +91,7 @@ def _has_venue(metadata: dict) -> bool:
     )
 
 
-def metadata_quality_hard_errors(metadata: dict) -> list[str]:
+def metadata_quality_hard_errors(metadata: dict, match_receipt: dict | None = None) -> list[str]:
     """Return formal-library hard metadata errors."""
     errors: list[str] = []
     doi = normalized_metadata_doi(metadata)
@@ -107,9 +107,9 @@ def metadata_quality_hard_errors(metadata: dict) -> list[str]:
         errors.append("invalid metadata.identifiers.doi")
     if not _has_venue(metadata):
         errors.append("missing metadata.container venue")
-    status = ((metadata.get("metadata_match") or {}).get("status") or "").strip()
+    status = str((match_receipt or {}).get("match_status") or "").strip()
     if status not in OK_MATCH_STATUSES:
-        errors.append("metadata.metadata_match.status must be matched or manual_confirmed")
+        errors.append("independent metadata match receipt must be matched or manual_confirmed")
     return errors
 
 
@@ -174,8 +174,10 @@ def audit_metadata_library(papers_dir: str | Path) -> dict:
                 papers.append(item)
                 continue
             metadata = _read_json(metadata_path)
+            receipt_path = folder / f"{paper_id}.metadata_match.json"
+            match_receipt = _read_json(receipt_path) if receipt_path.is_file() else None
             doi = normalized_metadata_doi(metadata)
-            item_errors = metadata_quality_hard_errors(metadata)
+            item_errors = metadata_quality_hard_errors(metadata, match_receipt)
             item = {
                 "paper_number": _paper_number_from_folder(folder),
                 "paper_id": paper_id,

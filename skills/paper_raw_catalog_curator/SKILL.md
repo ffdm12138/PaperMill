@@ -1,45 +1,47 @@
-# Paper Raw Catalog Curator Skill
+---
+name: paper_raw_catalog_curator
+description: Read one frozen numeric paper_raw workspace and produce a complete Catalog v3.2 content archive and semantic paper_id.
+---
 
-Use this skill to curate one `data/paper_raw/<paper_number>/` workspace after MinerU conversion. It must generate a **catalog v3.1** content-only JSON file from Markdown, PDF-derived text, and images.
+# Paper Raw Catalog Curator v3.2
 
-## Boundaries
+Use this skill only for `data/paper_raw/<16-digit paper_number>/` after both strict Metadata freeze and MinerU conversion are complete. The authoritative task is `<paper_number>.catalog_task.json`; do not infer paths or identity outside it.
 
-- `metadata.json` is the bibliographic source of truth: DOI, authors, year, journal, venue, pages, identifiers, and BibTeX never belong in catalog.
-- `catalog.json` is a content index for screening, evidence lookup, terminology, and writing reuse.
-- Bibliographic keys are forbidden in catalog at every nesting level.
-- Initial catalog generation must keep `screening.read_decision` as `"pending"`.
-- Do not emit v3.0 fields: no top-level `paper_number`, `paper_id`, `asset_refs`, no `naming`, and no `content_notes`.
-- If a score is not actually judged, use `null`; do not write default `5` values.
-- Reject or remove fixture text such as `测试夹具` and `test_fixture`.
-- `content_title_original_candidates` must never contain a paper-number-like value.
+## Read-only inputs
+
+- frozen `<paper_number>.metadata.json` for bibliographic context and the fixed `paper_id_prefix` only;
+- `<paper_number>.md`, `images/`, conversion manifest;
+- trusted abstract candidates and hashes listed by the task envelope;
+- `catalog_schema.json`.
+
+Never write Metadata, match/freeze receipts, status, ledger, formalization, transactions, indexes, or `data/papers`.
 
 ## Output
 
-Write `<paper_number>.catalog.json` in the same workspace. The file must follow `catalog_schema.json` and include only these top-level groups:
+Write exactly `<paper_number>.catalog.json`, schema `3.2`. It is a complete content-understanding archive, not a label set. It must contain:
 
-`schema_version`, `library_locator`, `content_identity`, `classification`, `screening`, `research_card`, `writing_value`, `evidence_profile`, `figure_inventory`, `terminology`, `quality_control`, `provenance`.
+- top-level `paper_number` and `paper_id`;
+- Chinese content title, research domains, document language;
+- trusted original abstract source when present, a Chinese synthesis, and a one-sentence summary;
+- background, knowledge gap, research question and objectives;
+- methods, data/study design, findings, mechanisms and limitations;
+- terminology or a meaningful not-applicable reason;
+- figures/tables with interpretations and machine-readable evidence refs;
+- writing value and initial screening with `read_decision="pending"`;
+- the exact task hashes and skill version in provenance.
 
-## Required Content
+`paper_id` must equal the task’s fixed `<year>_<first_author>_` prefix plus the model-written `content_title_zh`. Do not change the prefix, truncate the Chinese title, or add `_2`, paper numbers, or hashes.
 
-- `library_locator`: `paper_number`, `paper_id`, `paper_dir`, and same-folder `asset_refs`.
-- `content_identity`: Chinese content title, original title, source/confidence, language, document type.
-- `classification`: primary domain, secondary domains, topic/method/phenomenon/material/model/application tags.
-- `research_card`: problem, question, objective, study object, method, data/experiment, findings, mechanisms, limitations, usefulness.
-- `writing_value`: summaries, possible writing uses, supported arguments, contrasts, best sections, citation context, open questions.
-- `evidence_profile`: key claims, equations, figures, tables, quoted terms, section/page evidence.
-- `figure_inventory`: extraction status plus image/figure items.
-- `terminology`: Chinese-English technical terms.
-- `quality_control`: completeness, missing fields, warnings, fixture flag, fallback flag.
-- `provenance`: source paths, generated time, generator, generator version, hashes, generation mode, model if used.
+## Abstract integrity
 
-## Naming Rule
+`abstract.source.origin` is one of `paper_explicit_abstract`, `provider_author_abstract`, `provider_unspecified_abstract`, or `not_found`. Copy source text only from a task candidate. If no trusted candidate exists, set `status=not_found`, `origin=not_found`, `text=null`, `source_ref=null`. Generated prose belongs only in `summary_zh` and `one_sentence_zh`.
 
-Formalize derives `paper_id` from:
+## Evidence refs
 
-`metadata.year + metadata.first_author.family + catalog.content_identity.content_title_zh`
+Every evidence ref has exactly `asset`, `locator_type`, `locator`, `quote_hint`, `figure_label`, and `image_ref`. Use logical Markdown sections, figure/table labels, pages, or `images/...` paths. Never use absolute paths, `..`, raw/formal filenames, or invented sections.
 
-The curator does not rename folders and does not output final `paper_id`; it only supplies the Chinese content title used later by formalize.
+## Forbidden output
 
-## Validation
+Do not create structured citation fields anywhere in Catalog: `doi`, `authors`, `publication_year`, `journal`, `volume`, `issue`, `pages`, `publisher`, `bibtex`, `csl`, or `citation_key`. Natural-language discussion of dates, named researchers, datasets, regions, or theories remains valid paper content.
 
-The generated catalog must pass `src.services.v2_library.validate_catalog_schema()`. A catalog is invalid if it contains bibliographic fields, v3.0 keys, fixture text, empty `classification.primary_domain`, empty `terminology`, empty `provenance.generated_at`, empty `provenance.generator`, or fake default screening scores.
+After output, Python performs JSON Schema validation, semantic/evidence validation, task closure replay, duplicate/path-budget checks, and Catalog freeze. If validation reports `catalog_repair_required`, revise only the Catalog output; never modify Metadata or task inputs.

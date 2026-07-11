@@ -31,7 +31,7 @@ def _ctx(metadata: dict) -> ResolveContext:
 
 def test_direct_pdf_url_success(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
-        return FakeResponse(url=url, content=b"%PDF direct content", content_type="application/pdf")
+        return FakeResponse(url=url, content=b"%PDF- direct content", content_type="application/pdf")
 
     install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
@@ -41,7 +41,7 @@ def test_direct_pdf_url_success(monkeypatch, install_pdf_transport_get):
 
     assert result.success is True
     assert result.is_direct_pdf is True
-    assert result.raw["content"] == b"%PDF direct content"
+    assert result.raw["content"] == b"%PDF- direct content"
     assert result.pdf_url == "https://example.test/paper.pdf"
 
 
@@ -53,7 +53,7 @@ def test_landing_page_pdf_link_success(monkeypatch, install_pdf_transport_get):
     def fake_get(url, **kwargs):
         calls.append(url)
         if "paper.pdf" in url:
-            return FakeResponse(url=url, content=b"%PDF linked", content_type="application/pdf")
+            return FakeResponse(url=url, content=b"%PDF- linked", content_type="application/pdf")
         return FakeResponse(
             url="https://example.test/landing",
             content=b'<html><a href="/paper.pdf">PDF</a></html>',
@@ -84,7 +84,7 @@ def test_content_type_pdf_but_invalid_magic_rejected(monkeypatch, install_pdf_tr
     result = resolver.resolve(ctx)
 
     assert result.success is False
-    assert "valid PDF" in result.error
+    assert "missing_pdf_magic" in result.error
 
 
 # ── 4. unsafe host is blocked, no network request ────────────────────
@@ -154,7 +154,7 @@ def test_direct_fails_landing_succeeds(monkeypatch, install_pdf_transport_get):
                 content=b'<html><a href="/real.pdf">PDF</a></html>',
                 content_type="text/html",
             )
-        return FakeResponse(url=url, content=b"%PDF real", content_type="application/pdf")
+        return FakeResponse(url=url, content=b"%PDF- real", content_type="application/pdf")
 
     install_pdf_transport_get(fake_get)
     resolver = OriginalLinkResolver()
@@ -175,7 +175,7 @@ def test_direct_pdf_redirect_to_unsafe_host_blocked(monkeypatch, install_pdf_tra
         # request URL is safe, but the final URL after redirect is unsafe
         return FakeResponse(
             url="https://sci-hub.se/final.pdf",
-            content=b"%PDF fake",
+            content=b"%PDF- fake",
             content_type="application/pdf",
         )
 

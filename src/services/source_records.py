@@ -14,6 +14,8 @@ accidentally overwrites a metadata source record with a fetch result.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -23,18 +25,159 @@ from src.utils.atomic_io import atomic_write_json
 SOURCE_RECORDS_DIR = "source_records"
 FETCH_RESULT_FILENAME = "fetch_result.json"
 METADATA_SOURCE_PREFIX = "metadata_source"
-_DEFAULT_PROVIDER = "manual"
+# Windows reserved filenames (case-insensitive, no extension).
+_WINDOWS_RESERVED = frozenset({
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+})
 
 
-def _safe_provider(provider: str) -> str:
-    """Normalize a provider name for use in a filename (lowercase, no spaces)."""
-    cleaned = (str(provider or "")).strip().lower().replace(" ", "_")
-    return cleaned or _DEFAULT_PROVIDER
+class InvalidProviderIdentityError(ValueError):
+    """Raised when a provider name cannot be safely normalized to a filename slug."""
+    pass
+
+
+class SourceRecordPathEscapeError(ValueError):
+    """Raised when a resolved source-record path escapes the source_records/ directory."""
+    pass
+
+
+def normalize_provider_slug(provider: str) -> str:
+    """Return a safe, deterministic filename slug for a provider identity.
+
+    Rules (in order):
+    1. Input must be a non-empty string.
+    2. Unicode NFC-normalized.
+    3. Strip leading/trailing whitespace.
+    4. Lowercased.
+    5. Spaces replaced with a single ``_``.
+    6. Allow only ``[a-z0-9][a-z0-9._-]{0,63}``.
+    7. Collapse consecutive ``_``, ``.``, ``-`` into one.
+    8. Must not be empty after cleaning.
+    9. Must not be a Windows reserved name (CON, PRN, AUX, NUL, COM[1-9], LPT[1-9]).
+    10. Must not start or end with ``.``, ``-``, or ``_``.
+    11. Must not contain ``/``, ``\\``, ``..``, ``:``, NUL, or control characters.
+
+    Raises ``InvalidProviderIdentityError`` on any violation.
+    """
+    if not isinstance(provider, str) or not provider:
+        raise InvalidProviderIdentityError("provider must be a non-empty string")
+
+    # Unicode NFC normalization
+    slug = unicodedata.normalize("NFC", provider)
+
+    # Reject control chars / NUL
+    for ch in slug:
+        if ord(ch) < 0x20 or ch == "\x7f":
+            raise InvalidProviderIdentityError(
+                f"provider contains control character: {ch!r}"
+            )
+
+    # Reject path separators and colon
+    for forbidden in ("/", "\\", "..", ":"):
+        if forbidden in slug:
+            raise InvalidProviderIdentityError(
+                f"provider contains forbidden sequence: {forbidden!r}"
+            )
+
+    slug = slug.strip()
+    if not slug:
+        raise InvalidProviderIdentityError("provider is empty after stripping")
+
+    slug = slug.lower()
+
+    # Replace spaces with underscore
+    slug = slug.replace(" ", "_")
+
+    # Collapse consecutive separators
+    slug = re.sub(r"[._-]{2,}", lambda m: m.group(0)[0], slug)
+
+    # Remove leading/trailing dots, hyphens, underscores
+    slug = slug.strip("._-")
+
+    if not slug:
+        raise InvalidProviderIdentityError("provider is empty after sanitization")
+
+    # Length limit
+    if len(slug) > 64:
+        raise InvalidProviderIdentityError(
+            f"provider slug too long ({len(slug)} chars, max 64)"
+        )
+
+    # Character class
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", slug):
+        raise InvalidProviderIdentityError(
+            f"provider slug contains invalid characters: {slug!r}"
+        )
+
+    # Windows reserved name check
+    if slug.split(".")[0] in _WINDOWS_RESERVED:
+        raise InvalidProviderIdentityError(
+            f"provider slug is a Windows reserved name: {slug!r}"
+        )
+
+    return slug
 
 
 def metadata_source_rel_path(provider: str) -> str:
     """Return the repo-relative POSIX path for a metadata source record."""
-    return f"{SOURCE_RECORDS_DIR}/{METADATA_SOURCE_PREFIX}.{_safe_provider(provider)}.json"
+    return build_metadata_source_rel_path(provider)
+
+
+def build_metadata_source_rel_path(provider: str) -> str:
+    """Build the only canonical Metadata source-record relative path."""
+    slug = normalize_provider_slug(provider)
+    return f"{SOURCE_RECORDS_DIR}/{METADATA_SOURCE_PREFIX}.{slug}.json"
+
+
+def validate_metadata_source_rel_path(path: str) -> str:
+    """Validate and canonicalize a stored Metadata source-record path."""
+    if not isinstance(path, str) or not path or path != path.strip():
+        raise SourceRecordPathEscapeError("raw_record_path must be a non-empty canonical string")
+    if "\\" in path or path.startswith("/") or ":" in path or ".." in path:
+        raise SourceRecordPathEscapeError(f"invalid raw_record_path: {path!r}")
+    match = re.fullmatch(r"source_records/metadata_source\.([a-z0-9][a-z0-9._-]{0,63})\.json", path)
+    if not match:
+        raise SourceRecordPathEscapeError(f"invalid metadata source-record path: {path!r}")
+    provider = normalize_provider_slug(match.group(1))
+    canonical = build_metadata_source_rel_path(provider)
+    if path != canonical:
+        raise SourceRecordPathEscapeError(f"non-canonical metadata source-record path: {path!r}")
+    return canonical
+
+
+def resolve_safe_source_record_target(workspace: Path, filename: str) -> Path:
+    """Return a direct, non-symlink target inside a real workspace.
+
+    This closes known-path symlink escapes. It does not claim complete
+    protection from a hostile process racing filesystem changes.
+    """
+    workspace = Path(workspace)
+    if workspace.is_symlink() or not workspace.exists() or not workspace.is_dir():
+        raise SourceRecordPathEscapeError(f"workspace must be an existing real directory: {workspace}")
+    workspace_resolved = workspace.resolve(strict=True)
+    root = workspace_resolved / SOURCE_RECORDS_DIR
+    if root.is_symlink():
+        raise SourceRecordPathEscapeError(f"source_records must not be a symlink: {root}")
+    if root.exists() and not root.is_dir():
+        raise SourceRecordPathEscapeError(f"source_records must be a directory: {root}")
+    root.mkdir(exist_ok=True)
+    if root.is_symlink():
+        raise SourceRecordPathEscapeError(f"source_records became a symlink: {root}")
+    root_resolved = root.resolve(strict=True)
+    if root_resolved.parent != workspace_resolved:
+        raise SourceRecordPathEscapeError(f"source_records escapes workspace: {root_resolved}")
+    if Path(filename).name != filename or not filename:
+        raise SourceRecordPathEscapeError(f"invalid source-record filename: {filename!r}")
+    target = root_resolved / filename
+    if target.is_symlink():
+        raise SourceRecordPathEscapeError(f"source-record target must not be a symlink: {target}")
+    if target.exists() and target.is_dir():
+        raise SourceRecordPathEscapeError(f"source-record target must not be a directory: {target}")
+    if target.parent.resolve(strict=True) != root_resolved:
+        raise SourceRecordPathEscapeError(f"source-record target escapes workspace: {target}")
+    return target
 
 
 def fetch_result_rel_path() -> str:
@@ -65,12 +208,18 @@ def write_metadata_source_record(
     """Write a metadata source record to ``source_records/metadata_source.<provider>.json``.
 
     Returns the absolute path written. Never writes to ``fetch_result.json``.
+
+    Security: validates the resolved path is strictly contained within the
+    ``source_records/`` subdirectory of *folder*.  Raises
+    ``SourceRecordPathEscapeError`` if the path would escape.
     """
-    folder = Path(folder)
-    rel = metadata_source_rel_path(provider)
-    path = folder / rel
-    atomic_write_json(path, record, indent=2)
-    return path
+    provider_slug = normalize_provider_slug(provider)
+    target = resolve_safe_source_record_target(
+        Path(folder), f"{METADATA_SOURCE_PREFIX}.{provider_slug}.json"
+    )
+    atomic_write_json(target, record, indent=2)
+    resolve_safe_source_record_target(Path(folder), target.name)
+    return target
 
 
 def write_fetch_result(
@@ -84,10 +233,9 @@ def write_fetch_result(
     """
     from src.fetch.pdf_transport import sanitize_url_fields
 
-    folder = Path(folder)
-    rel = fetch_result_rel_path()
-    path = folder / rel
+    path = resolve_safe_source_record_target(Path(folder), FETCH_RESULT_FILENAME)
     atomic_write_json(path, {"fetch_result": sanitize_url_fields(fetch_record)}, indent=2)
+    resolve_safe_source_record_target(Path(folder), path.name)
     return path
 
 
@@ -110,9 +258,9 @@ def ensure_raw_record_path_is_metadata_source(
     preserve the caller-supplied path (it may already be a valid metadata
     source path).
     """
-    if raw_record_path and not is_fetch_result_path(raw_record_path):
-        return raw_record_path
-    return metadata_source_rel_path(provider)
+    if not raw_record_path or is_fetch_result_path(raw_record_path):
+        return build_metadata_source_rel_path(provider)
+    return validate_metadata_source_rel_path(raw_record_path)
 
 
 def resolve_metadata_source_record_path(

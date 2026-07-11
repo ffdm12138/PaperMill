@@ -1,7 +1,7 @@
 # Example input: paper_raw/0000000000000001/
 
 This is a sample MinerU Markdown excerpt for an unmatched paper_raw folder.
-The metadata.json has `metadata_match.status = "unmatched"` and an empty
+The metadata.json is not frozen yet and has an empty
 `identifiers.doi`. The resolver skill reads this Markdown header region to
 find a DOI and bibliographic candidates.
 
@@ -16,8 +16,7 @@ find a DOI and bibliographic candidates.
   "authors": [{ "full_name": "", "family": "", "given": "", "orcid": "", "affiliation": "" }],
   "year": null,
   "container": { "journal": "" },
-  "identifiers": { "doi": "" },
-  "metadata_match": { "status": "unmatched", "source": "", "confidence": 0.0 }
+  "identifiers": { "doi": "" }
 }
 ```
 
@@ -41,4 +40,3 @@ We develop a fully coupled snowpack/atmosphere model...
 Note: the DOI `10.5194/tc-8-395-2014` appears in the header region (before
 `## References`) and is a valid candidate. The DOI `10.1007/978-3-642-61171-1_19`
 appears only in the References section and must NOT be used as this paper's DOI.
-

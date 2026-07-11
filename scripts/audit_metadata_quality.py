@@ -8,12 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import CATALOG_DIR, PAPERS_DIR
+from config.settings import CATALOG_STATE_ROOT, PAPERS_DIR
 from src.services.metadata_quality import audit_metadata_library
 from src.utils.atomic_io import atomic_write_json
 
 
-DEFAULT_REPORT_PATH = CATALOG_DIR / "metadata_quality_report.json"
+DEFAULT_REPORT_PATH = CATALOG_STATE_ROOT / "metadata_quality_report.json"
 
 
 def main(argv: list[str] | None = None) -> int:

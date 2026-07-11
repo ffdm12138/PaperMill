@@ -26,6 +26,7 @@ class DuplicateRef:
     paper_id: str
     folder: str
     source: str
+    workspace_kind: str = ""
     doi: str = ""
     pdf_md5: str = ""
     pdf_sha256: str = ""
@@ -252,6 +253,7 @@ def _paper_raw_ref(
         paper_id=paper_raw_id,
         folder=normalize_repo_path(folder),
         source=source,
+        workspace_kind="paper_raw",
         doi=doi,
         pdf_md5=md5,
         pdf_sha256=sha256,
@@ -265,6 +267,7 @@ def _papers_ref(folder: Path, metadata: dict, *, source: str, doi: str = "", md5
         paper_id=folder.name,
         folder=normalize_repo_path(folder),
         source=source,
+        workspace_kind="formal",
         doi=doi,
         pdf_md5=md5,
         pdf_sha256=sha256,

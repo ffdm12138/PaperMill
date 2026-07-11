@@ -8,14 +8,11 @@ from src.services.ingest_duplicate_guard import (
     check_doi_duplicate,
     check_pdf_duplicate,
 )
-from src.services.v2_library import empty_metadata
-from tests.helpers.paper_raw_factory import make_legacy_workspace
+from src.metadata.schema import empty_metadata
 
 
 PN1 = "0000000000000001"
 PN2 = "0000000000000002"
-LEGACY_FOLDER = "1979_sykest_untitled"
-LEGACY_PN = "0000000000000157"
 
 
 def _write_metadata(folder: Path, name: str, *, doi: str = "", md5: str = "", sha256: str = "", paper_number: str | None = None) -> None:
@@ -35,18 +32,6 @@ def _write_metadata(folder: Path, name: str, *, doi: str = "", md5: str = "", sh
             "files": {"pdf": {"path": f"{name}.pdf", "md5": md5, "sha256": sha256, "file_size": 4}},
         }, ensure_ascii=False), encoding="utf-8")
     (folder / f"{name}.metadata.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-
-
-def _make_legacy_workspace(paper_raw: Path, *, pdf_bytes: bytes, doi: str = "10.1000/legacy", paper_number: str = LEGACY_PN) -> Path:
-    """Build a legacy/untitled workspace via the shared factory (writes the
-    ``*.paper.number`` marker in the factory helper, which is grep-allowlisted)."""
-    return make_legacy_workspace(
-        paper_raw.parent,
-        folder_name=LEGACY_FOLDER,
-        paper_number=paper_number,
-        pdf_bytes=pdf_bytes,
-        doi=doi,
-    )
 
 
 def test_pdf_duplicate_checks_actual_paper_raw_and_papers(tmp_path):
@@ -138,55 +123,6 @@ def test_duplicate_guard_reads_nested_stage_manifest_hashes_without_pdf(tmp_path
     assert result.blocking is True
     assert "pdf_sha256_duplicate" in result.reasons
     assert result.refs[0].paper_number == PN1
-
-
-def test_legacy_untitled_workspace_indexed_and_duplicate_detected(tmp_path):
-    """A legacy untitled workspace must be a dedup source with a truthful paper_number."""
-    pdf_bytes = b"%PDF legacy dup bytes"
-    paper_raw = tmp_path / "paper_raw"
-    legacy = _make_legacy_workspace(paper_raw, pdf_bytes=pdf_bytes, doi="10.1000/legacy")
-
-    numbered = paper_raw / PN1
-    numbered.mkdir(parents=True)
-    (numbered / f"{PN1}.pdf").write_bytes(pdf_bytes)
-    _write_metadata(numbered, PN1, doi="10.1000/legacy")
-
-    incoming = tmp_path / "incoming.pdf"
-    incoming.write_bytes(pdf_bytes)
-
-    result = check_pdf_duplicate(incoming, paper_raw_dir=paper_raw, papers_dir=tmp_path / "papers")
-
-    assert result.blocking is True
-    legacy_refs = [r for r in result.refs if r.scope == "paper_raw" and r.folder.endswith(LEGACY_FOLDER)]
-    assert legacy_refs, "legacy workspace should be indexed as a duplicate source"
-    ref = legacy_refs[0]
-    assert ref.paper_number == LEGACY_PN
-    assert ref.paper_id == LEGACY_FOLDER
-
-
-def test_skip_self_via_resolved_paper_number_for_legacy_folder(tmp_path):
-    """skip_paper_number must exclude a legacy workspace by marker number OR folder name."""
-    paper_raw = tmp_path / "paper_raw"
-    _make_legacy_workspace(paper_raw, pdf_bytes=b"%PDF legacy self", doi="10.1000/legacy")
-
-    papers = tmp_path / "papers"
-
-    # skipping by the resolved marker paper_number
-    by_number = check_doi_duplicate("10.1000/legacy", paper_raw_dir=paper_raw, papers_dir=papers, skip_paper_number=LEGACY_PN)
-    assert by_number.blocking is False
-
-    # skipping by the legacy folder name (how resolver/preflight pass source_id)
-    by_name = check_doi_duplicate("10.1000/legacy", paper_raw_dir=paper_raw, papers_dir=papers, skip_paper_number=LEGACY_FOLDER)
-    assert by_name.blocking is False
-
-    # but a different DOI that only the legacy folder holds still blocks when skipping by number
-    _write_metadata(paper_raw / LEGACY_FOLDER, LEGACY_FOLDER, doi="10.1000/legacy", paper_number=LEGACY_PN)
-    other = paper_raw / PN2
-    other.mkdir(parents=True)
-    _write_metadata(other, PN2, doi="10.1000/sibling")
-    other_result = check_doi_duplicate("10.1000/sibling", paper_raw_dir=paper_raw, papers_dir=papers, skip_paper_number=LEGACY_PN)
-    assert other_result.blocking is True
-    assert other_result.refs[0].paper_number == PN2
 
 
 def test_quarantine_excluded_by_default_indexed_with_include_quarantine(tmp_path):

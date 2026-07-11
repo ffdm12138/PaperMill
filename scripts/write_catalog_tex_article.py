@@ -116,9 +116,12 @@ def _section_text(entries: list[dict], title: str, language: str) -> dict[str, s
         )
         basis_lines = ["\\section{Literature Basis}"]
         for entry in entries:
-            card = entry["catalog"].get("research_card") or {}
-            summary = card.get("one_sentence_summary_zh") or card.get("main_conclusion_zh") or _paper_label(entry)
-            basis_lines.append(f"{_tex_escape(_paper_label(entry))} highlights {_tex_escape(summary)} \\cite{{{entry['bib_key']}}}.")
+            catalog = entry["catalog"]
+            summary = (catalog.get("abstract") or {}).get("one_sentence_zh")
+            methods = (catalog.get("methods") or {}).get("overview_zh")
+            findings = "; ".join(x.get("finding_zh", "") for x in catalog.get("key_findings") or [])
+            content = "; ".join(x for x in (summary, methods, findings) if x) or "content unavailable"
+            basis_lines.append(f"{_tex_escape(_paper_label(entry))}: {_tex_escape(content)} \\cite{{{entry['bib_key']}}}.")
         discussion = (
             "\\section{Discussion}\n"
             "Across the selected literature, the catalog evidence suggests that a useful synthesis should separate "
@@ -137,9 +140,13 @@ def _section_text(entries: list[dict], title: str, language: str) -> dict[str, s
         )
         basis_lines = ["\\section{文献基础}"]
         for entry in entries:
-            card = entry["catalog"].get("research_card") or {}
-            summary = card.get("one_sentence_summary_zh") or card.get("main_conclusion_zh") or _paper_label(entry)
-            basis_lines.append(f"{_tex_escape(_paper_label(entry))}指出：{_tex_escape(summary)}\\cite{{{entry['bib_key']}}}。")
+            catalog = entry["catalog"]
+            summary = (catalog.get("abstract") or {}).get("one_sentence_zh")
+            methods = (catalog.get("methods") or {}).get("overview_zh")
+            findings = "；".join(x.get("finding_zh", "") for x in catalog.get("key_findings") or [])
+            uses = "；".join((catalog.get("writing_value") or {}).get("use_cases") or [])
+            content = "；".join(x for x in (summary, methods, findings, uses) if x) or "内容不可用"
+            basis_lines.append(f"{_tex_escape(_paper_label(entry))}：{_tex_escape(content)}\\cite{{{entry['bib_key']}}}。")
         discussion = (
             "\\section{讨论}\n"
             "从这些文献的 catalog 信息看，后续综述应把物理机制、模型假设、实验或观测证据分开组织，"

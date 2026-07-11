@@ -47,8 +47,8 @@ def test_resolver_skill_documents_boundaries():
     assert "fabricate" in text or "编造" in text
     # LLM-guessed DOI is invalid
     assert "llm" in text and ("invalid" in text or "无效" in text)
-    # must NOT set metadata_match.status
-    assert "metadata_match.status" in text
+    # must NOT write match authority
+    assert "match receipt" in text
     assert "不得" in text or "must not" in text or "must not set" in text
     # outputs candidates + patch only
     assert "candidates" in text and "patch" in text
@@ -67,17 +67,13 @@ def test_resolver_skill_requires_converted_md_and_online_verification():
     assert "同一 schema" in text or "same schema" in tl or "结构同" in text
     # never fabricate
     assert "不得编造" in text or "never fabricate" in tl
-    # fail-closed keeps status unmatched
-    assert "unmatched" in tl
+    assert "unresolved" in tl or "no_candidates" in tl
 
 
 def test_resolver_skill_does_not_set_match_status():
     text = (_ROOT / "SKILL.md").read_text(encoding="utf-8")
-    # resolver must not stamp metadata_match.status as matched itself;
-    # matched/manual_confirmed only comes from the validation/commit path
-    assert "metadata_match.status" in text
-    assert ("不得" in text and "matched" in text) or "must not set" in text.lower()
-    assert "manual_confirmed" in text or "manual_confirm" in text.lower()
+    assert "match receipt" in text
+    assert "不得" in text or "must not" in text.lower()
 
 
 def test_candidate_schema_requires_doi_pattern():
@@ -144,18 +140,11 @@ def test_resolver_skill_manual_path_convert_before_resolve():
 
 
 def test_resolver_skill_status_permission():
-    """SKILL.md must state that LLM-facing skill never sets metadata_match.status."""
     text = (_ROOT / "SKILL.md").read_text(encoding="utf-8")
     tl = text.lower()
-    # LLM-facing skill never sets metadata_match.status
-    assert "metadata_match.status" in text
-    assert "LLM-facing skill" in text
-    assert "不得" in text and "matched" in text
-    # apply step may set status only after deterministic validation or manual confirmation
-    assert "apply" in tl
-    assert "deterministic" in tl or "脚本" in text or "校验" in text
-    assert "manual" in tl and ("confirm" in tl or "确认" in text)
-    assert "大模型 skill 不盖章" in text
+    assert "llm-facing" in tl
+    assert "match receipt" in tl
+    assert "不得" in text and "independent" in tl
 
 
 def test_metadata_resolver_service_docstring_status_authority():
@@ -164,9 +153,8 @@ def test_metadata_resolver_service_docstring_status_authority():
     head = text.split('"""', 2)[1]
     assert "converted Markdown is the primary evidence" in head
     assert "optional hints" in head
-    assert "never sets ``metadata_match.status``" in head
-    assert "deterministic ``apply`` step" in head
-    assert "explicit --manual-confirm" in head
+    assert "never" in head and "authoritative match receipt" in head
+    assert "independent pdf identity extraction" in head.lower()
 
 
 def test_resolver_skill_mentions_markdown_first_100_before_pdf_fallback():

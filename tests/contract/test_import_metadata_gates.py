@@ -8,8 +8,7 @@ from src.discovery.models import PaperCandidate
 from src.services.asset_manifest import write_asset_manifest
 from src.services.network_metadata_staging import _metadata_from_record
 from src.services.metadata_resolver import patch_from_candidate
-from src.services.v2_library import empty_catalog, empty_metadata, validate_metadata_schema
-from tests.helpers.paper_raw_factory import fill_valid_catalog_v31
+from src.metadata.schema import empty_metadata, validate_metadata_schema
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -114,14 +113,10 @@ def test_network_metadata_maps_publication_fields(tmp_path, monkeypatch):
     assert metadata["publication"]["number"] == "3"
     assert metadata["publication"]["issue"] == "3"
     assert metadata["publication"]["pages"] == "45-56"
-    assert metadata["metadata_match"]["status"] == "matched"
-    assert metadata["metadata_match"]["source"] == "openalex"
-    assert metadata["metadata_match"]["confidence"] == 0.80
+    assert "metadata_match" not in metadata
     assert validate_metadata_schema(metadata) == []
     status = json.loads((paper_raw / "0000000000000001" / ".import_status.json").read_text(encoding="utf-8"))
-    assert status["status"] == "metadata_matched"
-    assert status["doi"] == "10.1000/example"
-    assert status["source_provider"] == "openalex"
+    assert status["metadata"]["state"] == "resolved"
 
 
 def test_crossref_raw_canonicalizes_structured_metadata():
@@ -154,7 +149,7 @@ def test_crossref_raw_canonicalizes_structured_metadata():
     assert metadata["publication"]["pages"] == "11-22"
     assert metadata["identifiers"]["issn"] == "1234-5678"
     assert metadata["identifiers"]["isbn"] == "9780000000000"
-    assert metadata["metadata_match"]["status"] == "matched"
+    assert "metadata_match" not in metadata
 
 
 def test_openalex_type_and_affiliation_are_canonicalized():
@@ -181,7 +176,7 @@ def test_openalex_type_and_affiliation_are_canonicalized():
     assert metadata["authors"][0]["family"] == "Smith"
     assert metadata["authors"][0]["affiliation"] == "Example University"
     assert metadata["links"]["pdf_url"] == "https://example.test/paper.pdf"
-    assert metadata["metadata_match"]["status"] == "matched"
+    assert "metadata_match" not in metadata
 
 
 def test_canonicalization_merges_resolution_and_candidate_raw_by_field():
@@ -255,14 +250,9 @@ def test_network_metadata_with_doi_but_missing_authors_or_venue_is_not_matched(t
     assert rc == 0
     folder = paper_raw / "0000000000000001"
     metadata = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
-    assert metadata["metadata_match"]["status"] == "unmatched"
-    warnings = metadata["metadata_match"]["warnings"]
-    assert "missing authors" in warnings
-    assert "missing first_author.family" in warnings
-    assert "missing container journal/conference/booktitle" in warnings
+    assert "metadata_match" not in metadata
     status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
-    assert status["status"] == "metadata_manual_review_required"
-    assert "metadata_matched" != status["status"]
+    assert status["metadata"]["state"] == "resolved"
 
 
 def test_network_metadata_complete_record_can_be_matched(tmp_path, monkeypatch):
@@ -292,7 +282,7 @@ def test_network_metadata_complete_record_can_be_matched(tmp_path, monkeypatch):
 
     assert rc == 0
     metadata = json.loads((paper_raw / "0000000000000001" / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
-    assert metadata["metadata_match"]["status"] == "matched"
+    assert "metadata_match" not in metadata
     assert validate_metadata_schema(metadata) == []
 
 
@@ -391,35 +381,12 @@ def test_fetch_rejects_invalid_doi_before_provider(tmp_path, monkeypatch):
 
 
 def test_validate_formal_library_requires_doi(tmp_path):
-    pid = "2024_wang_测试论文"
-    folder = tmp_path / "papers" / pid
-    folder.mkdir(parents=True)
-    metadata = empty_metadata(pid)
+    from src.metadata.citation_readiness import validate_citation_ready
+    metadata = empty_metadata("0000000000000001")
     metadata["title"]["original"] = "Test Paper"
     metadata["year"] = 2024
     metadata["authors"] = [{"full_name": "Wang A", "family": "Wang", "given": "A", "orcid": "", "affiliation": ""}]
     metadata["container"]["journal"] = "Test Journal"
-    metadata["metadata_match"]["status"] = "matched"
-    catalog = fill_valid_catalog_v31(
-        empty_catalog(),
-        paper_number="0000000000000001",
-        title_zh="测试论文",
-        title_original="Test Paper",
-        domain="test",
-    )
-    catalog["library_locator"]["paper_id"] = pid
-    (folder / f"{pid}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{pid}.catalog.json").write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
-    (folder / f"{pid}.md").write_text("# Test", encoding="utf-8")
-    (folder / f"{pid}.pdf").write_bytes(b"%PDF")
-    (folder / "images").mkdir()
-    marker_name = "0000000000000001" + ".paper.number"
-    (folder / marker_name).write_text("0000000000000001", encoding="utf-8")
-    write_asset_manifest(folder, prefix=pid, paper_number="0000000000000001", paper_id=pid, stage="papers")
-    all_catalog = tmp_path / "catalog" / "all.catalog.json"
-    all_catalog.parent.mkdir()
-    all_catalog.write_text(json.dumps({"schema_version": "1.0", "papers": []}), encoding="utf-8")
-
-    errors, _ = validate_v2_library(papers_dir=tmp_path / "papers", all_catalog_path=all_catalog, check_paths=False)
-
-    assert any(f"{pid} metadata.identifiers.doi is required in formal library" in err for err in errors)
+    result = validate_citation_ready(metadata)
+    assert not result.ready
+    assert "journal article requires valid DOI" in result.errors

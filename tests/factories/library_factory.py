@@ -7,7 +7,7 @@ from tests.factories.catalog_factory import make_minimal_catalog
 from tests.factories.metadata_factory import make_minimal_metadata
 from tests.factories.pdf_factory import write_fake_pdf
 from tests.factories.source_record_factory import write_metadata_source_record
-from src.services.v2_library import PaperNumberLedger
+from src.library.paper_number_ledger import PaperNumberLedger
 
 
 def make_minimal_paths(tmp_path: Path) -> dict[str, Path]:

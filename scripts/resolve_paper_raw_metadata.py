@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
-from config.settings import ALL_CATALOG_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.services.ingest_ids import validate_paper_raw_id
 from src.services.ingest_state import write_import_status
 from src.services.metadata_resolver import (
@@ -48,8 +48,11 @@ from src.services.metadata_resolve_checkpoint import (
     is_done as checkpoint_is_done,
 )
 from src.services.rate_limit import ProviderRateLimiter, load_config as load_rate_config
-from src.services.v2_library import metadata_doi, metadata_is_matched
+from src.metadata.schema import metadata_doi
 from src.utils.atomic_io import atomic_write_json
+from src.metadata.pdf_identity import extract_pdf_identity_evidence
+from src.metadata.pdf_match import build_match_receipt, write_match_receipt
+from src.metadata.freeze import freeze_metadata
 
 
 def _source_ids(root: Path, all_unmatched: bool, all_papers: bool, one: str | None) -> list[str]:
@@ -68,8 +71,9 @@ def _source_ids(root: Path, all_unmatched: bool, all_papers: bool, one: str | No
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 except Exception:
                     continue
-                status = ((meta.get("metadata_match") or {}).get("status") or "")
-                if status == "unmatched":
+                receipt = p / f"{p.name}.metadata_match.json"
+                freeze = p / f"{p.name}.metadata_freeze.json"
+                if not receipt.exists() or not freeze.exists():
                     out.append(p.name)
             else:
                 # --all: process every workspace with a metadata file
@@ -79,15 +83,12 @@ def _source_ids(root: Path, all_unmatched: bool, all_papers: bool, one: str | No
 
 
 def _is_citation_ready(folder: Path, paper_number: str) -> bool:
-    """True when metadata is already matched/manual_confirmed with a valid DOI."""
-    meta_path = folder / f"{paper_number}.metadata.json"
-    if not meta_path.exists():
-        return False
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        from src.metadata.freeze import assert_metadata_frozen
+        assert_metadata_frozen(folder,paper_number)
+        return True
     except Exception:
         return False
-    return metadata_is_matched(meta) and bool(metadata_doi(meta))
 
 
 def _import_status_for_report(report) -> str:
@@ -151,7 +152,6 @@ def main() -> int:
     parser.add_argument("--all", action="store_true",
                         help="process all paper_raw workspaces with a metadata file (not just unmatched)")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
-    parser.add_argument("--all-catalog", type=Path, default=Path(ALL_CATALOG_PATH))
     parser.add_argument("--papers-dir", type=Path, default=Path(PAPERS_DIR))
     network = parser.add_mutually_exclusive_group()
     network.add_argument("--allow-network", action="store_true")
@@ -254,7 +254,6 @@ def main() -> int:
                 allow_network=allow_network,
                 max_candidates=args.max_candidates,
                 min_confidence=args.min_confidence,
-                all_catalog_path=args.all_catalog,
                 papers_dir=args.papers_dir,
                 paper_raw_dir=args.paper_raw_dir,
                 prefer_markdown=args.prefer_markdown,
@@ -291,16 +290,24 @@ def main() -> int:
                     )
 
             if apply_changes:
+                from src.metadata.freeze import assert_metadata_write_allowed
+                assert_metadata_write_allowed(folder, source_id)
                 applied = apply_resolution(
                     folder, report,
                     manual_confirm=args.manual_confirm,
                     candidate_id=args.candidate_id,
-                    all_catalog_path=args.all_catalog,
                     papers_dir=args.papers_dir,
                     paper_raw_dir=args.paper_raw_dir,
                 )
                 item.update(applied)
                 item["status"] = applied.get("status", "applied") if applied.get("applied") else "manual_review_required"
+                if applied.get("applied") and (folder / f"{source_id}.pdf").exists():
+                    resolved_meta=json.loads((folder / f"{source_id}.metadata.json").read_text(encoding="utf-8"))
+                    evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{source_id}.pdf",markdown_path=folder/f"{source_id}.md",conversion_manifest_path=next(iter(folder.glob(f"{source_id}.conversion.json")),None))
+                    receipt = build_match_receipt(folder, source_id, resolved_meta, evidence)
+                    write_match_receipt(folder, receipt)
+                    if receipt.get("match_status") == "matched":
+                        freeze_metadata(folder, source_id)
             else:
                 item["applied"] = False
                 item["status"] = report.decision

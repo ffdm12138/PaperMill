@@ -8,7 +8,7 @@ from src.discovery.models import CandidateBatch, PaperCandidate
 from src.discovery.pipeline import discover_papers
 from src.discovery.search_openalex import parse_openalex_work
 from src.services.openalex_credentials import OpenAlexCredentials, safe_request_error_summary
-from src.services.v2_library import empty_metadata
+from src.metadata.schema import empty_metadata
 
 
 pytestmark = pytest.mark.unit

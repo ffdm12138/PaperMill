@@ -26,7 +26,7 @@ from src.discovery.pending_queue import (
     reconcile_discovery_workspace,
 )
 from src.services.network_metadata_staging import stage_network_metadata_records
-from src.services.v2_library import PaperNumberLedger
+from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json
 
 
@@ -70,12 +70,13 @@ def _stage_full_workspace(tmp_path: Path, cid: str) -> Path:
         [{
             "title": "T",
             "doi": DOI,
-            "discovery_context": {
-                "candidate_id": cid,
-                "page_id": "p1",
-                "keyword_id": "kw",
-                "normalized_doi": DOI,
-            },
+                "discovery_context": {
+                    "candidate_id": cid,
+                    "page_id": "p1",
+                    "keyword_id": "kw",
+                    "provider": "openalex",
+                    "normalized_doi": DOI,
+                },
         }],
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -114,6 +115,7 @@ def test_source_record_only_returns_retryable_incomplete(tmp_path: Path):
             "record": {"doi": DOI, "title": "T"},
             "discovery_context": {
                 "candidate_id": cid, "page_id": "p1", "keyword_id": "kw",
+                "provider": "openalex",
                 "normalized_doi": DOI,
             },
         },
@@ -121,7 +123,7 @@ def test_source_record_only_returns_retryable_incomplete(tmp_path: Path):
     )
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "retryable_incomplete"
@@ -142,10 +144,11 @@ def test_case_c_drain_reuses_paper_number(tmp_path: Path):
         {
             "provider": "openalex",
             "record": {"doi": DOI, "title": "T"},
-            "discovery_context": {
-                "candidate_id": cid, "page_id": "p1", "keyword_id": "kw",
-                "normalized_doi": DOI,
-            },
+                "discovery_context": {
+                    "candidate_id": cid, "page_id": "p1", "keyword_id": "kw",
+                    "provider": "openalex",
+                    "normalized_doi": DOI,
+                },
         },
         indent=2,
     )
@@ -168,13 +171,11 @@ def test_case_b_metadata_present_receipt_missing_backfills(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
-    # Metadata + manifest + import_status + terminal ledger all present, so the
-    # backfilled receipt completes the workspace → recovered.
-    assert result.status in {"recovered", "retryable_incomplete"}
-    assert receipt.exists()
+    assert result.status == "retryable_incomplete"
+    assert not receipt.exists()
 
 
 def test_case_d_receipt_present_manifest_missing(tmp_path: Path):
@@ -186,7 +187,7 @@ def test_case_d_receipt_present_manifest_missing(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "retryable_incomplete"
@@ -210,10 +211,10 @@ def test_case_e_ledger_terminal_receipt_missing(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
-    assert result.status in {"recovered", "retryable_incomplete"}
+    assert result.status == "retryable_incomplete"
     assert result.paper_number == PAPER_NUMBER
     # After drain the receipt is backfilled and the candidate is staged.
     report = _drain(tmp_path, store)
@@ -243,7 +244,7 @@ def test_case_f_conflicting_receipt_not_overwritten(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "receipt_conflict"

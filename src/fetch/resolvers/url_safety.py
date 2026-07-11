@@ -61,8 +61,9 @@ def limit_content(response: requests.Response) -> bytes:
         raise ValueError(f"PDF exceeds MINERU_FETCH_MAX_BYTES={MINERU_FETCH_MAX_BYTES}")
 
     # 2. Stream the body in bounded chunks, aborting once the limit is crossed.
-    chunks: list[bytes] = []
-    total = 0
+    prefetched = bytes(getattr(response, "_mineru_prefetched_prefix", b"") or b"")
+    chunks: list[bytes] = [prefetched] if prefetched else []
+    total = len(prefetched)
     for chunk in response.iter_content(chunk_size=64 * 1024):
         if not chunk:
             continue

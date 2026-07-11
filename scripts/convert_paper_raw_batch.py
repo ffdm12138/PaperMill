@@ -19,7 +19,9 @@ from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_METHOD
 from src.discovery.models import normalize_doi
 from src.services.ingest_ids import validate_paper_raw_id
 from src.services.metadata_quality import is_valid_normalized_doi
-from src.services.v2_library import PaperRawConverter, metadata_doi, metadata_is_matched
+from src.ingest.paper_raw import PaperRawConverter
+from src.metadata.schema import metadata_doi
+from src.metadata.freeze import assert_metadata_frozen
 
 
 _WRAPPER_ENV = "MINERU_GPU_WRAPPER_ACTIVE"
@@ -86,7 +88,7 @@ def _read_metadata(root: Path, source_id: str) -> dict:
         return {}
 
 
-def _metadata_ready_for_commit(metadata: dict) -> bool:
+def _metadata_ready_for_commit(root: Path, source_id: str, metadata: dict) -> bool:
     """True only when metadata is matched/manual_confirmed AND DOI is valid.
 
     This is the formalize/commit gate. Conversion does NOT require this — this
@@ -95,7 +97,9 @@ def _metadata_ready_for_commit(metadata: dict) -> bool:
     """
     if not metadata:
         return False
-    if not metadata_is_matched(metadata):
+    try:
+        assert_metadata_frozen(root/source_id,source_id)
+    except Exception:
         return False
     doi = normalize_doi(metadata_doi(metadata))
     return bool(doi) and is_valid_normalized_doi(doi)
@@ -107,7 +111,7 @@ def _metadata_fields_for_report(root: Path, source_id: str) -> dict:
     metadata = _read_metadata(root, source_id)
     return {
         "import_status": import_status,
-        "metadata_ready_for_commit": _metadata_ready_for_commit(metadata),
+        "metadata_ready_for_commit": _metadata_ready_for_commit(root,source_id,metadata),
         # Conversion only requires the metadata *shell* (staging/import-owned
         # workspace contract), NOT complete matched metadata. DOI/journal/pages
         # are required only at formalize/commit time. See docs/PROJECT_CONTRACT.md
@@ -120,6 +124,7 @@ def _metadata_fields_for_report(root: Path, source_id: str) -> dict:
         "metadata_required_for_conversion": True,
         "post_conversion_metadata_resolution_recommended": (
             import_status in POST_CONVERSION_RESOLVE_RECOMMENDED_STATUSES
+            or not _metadata_ready_for_commit(root, source_id, metadata)
         ),
     }
 
@@ -612,6 +617,44 @@ def main() -> int:
                 elif result.get("success"):
                     item["status"] = "converted"
                     item["stage"] = "done"
+                    # Conversion is metadata-independent, but when a citation
+                    # record already exists this is the first point at which
+                    # independent Markdown identity evidence is available.
+                    try:
+                        from src.metadata.pdf_identity import extract_pdf_identity_evidence
+                        from src.metadata.pdf_match import build_match_receipt, write_match_receipt
+                        from src.metadata.freeze import freeze_metadata
+                        from src.metadata.freeze import assert_metadata_frozen
+                        from src.ingest.status import update_status
+                        from src.ingest.workspace import PaperRawWorkspace
+                        folder = args.paper_raw_dir / source_id
+                        metadata_path = folder / f"{source_id}.metadata.json"
+                        pdf_path = folder / f"{source_id}.pdf"
+                        if metadata_path.exists() and pdf_path.exists():
+                            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                            freeze_path=folder/f"{source_id}.metadata_freeze.json"
+                            if freeze_path.exists():
+                                assert_metadata_frozen(folder,source_id)
+                                item["metadata_frozen"]=True
+                            else:
+                                evidence = extract_pdf_identity_evidence(
+                                    pdf_path=pdf_path,
+                                    markdown_path=folder / f"{source_id}.md",
+                                    conversion_manifest_path=folder / f"{source_id}.conversion.json",
+                                )
+                                provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
+                                receipt = build_match_receipt(folder, source_id, metadata, evidence,
+                                                              requested_doi=((metadata.get("identifiers") or {}).get("doi") or ""),provider_records=[provider_record] if provider_record else [])
+                                write_match_receipt(folder, receipt)
+                                item["metadata_match_method"] = receipt["match_method"]
+                                if receipt["match_status"] in {"matched","manual_confirmed"}:
+                                    frozen=freeze_metadata(folder, source_id); update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
+                                    item["metadata_frozen"] = True
+                                else:
+                                    update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=receipt["match_method"])
+                                    item["metadata_match_status"] = receipt["match_status"]
+                    except Exception as exc:
+                        item.setdefault("warnings", []).append(f"metadata match/freeze deferred: {exc}")
                 else:
                     item["status"] = "failed"
                     item["stage"] = "failed"

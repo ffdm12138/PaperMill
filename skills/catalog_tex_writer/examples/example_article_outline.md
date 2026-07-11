@@ -11,8 +11,9 @@ article metadata-derived BibTeX keys.
 
 ## Literature Basis
 
-Summarize each copied article's catalog `research_card` and `screening`
-information. Do not invent DOI, authors, year, journal, volume, issue, or pages.
+Summarize each copied Catalog v3.2 document's `abstract.one_sentence_zh`,
+`methods.overview_zh`, `key_findings`, and `writing_value.use_cases`. Do not
+invent DOI, authors, year, journal, volume, issue, or pages.
 
 ## Discussion
 

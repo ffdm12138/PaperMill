@@ -13,11 +13,13 @@ import pytest
 
 from src.fetch.models import FetchResult
 from src.services.source_records import (
+    InvalidProviderIdentityError,
     fetch_result_rel_path,
     is_fetch_result_path,
     metadata_source_rel_path,
 )
-from src.services.v2_library import PaperRawAllocator, empty_metadata
+from src.ingest.paper_raw import PaperRawAllocator
+from src.metadata.schema import empty_metadata
 from src.services.ingest_state import read_import_status
 from config.settings import PAPER_NUMBER_LEDGER_PATH
 
@@ -53,7 +55,6 @@ def _stage_network_metadata(tmp_path: Path, doi: str = "10.1000/net-meta") -> tu
     meta["title"]["original"] = "Network Metadata Paper"
     meta["year"] = 2024
     meta["source"]["provider"] = "crossref"
-    meta["metadata_match"]["status"] = "matched"
     result = allocator.allocate_metadata(meta, source_type="network_search",
                                          raw_record={"provider": "crossref", "record": {"DOI": doi}})
     return paper_raw, Path(result["folder"]), result["paper_number"]
@@ -105,7 +106,7 @@ def _fetch_pdf_for_workspace(paper_raw: Path, folder: Path, paper_number: str,
 
 STAGE_MANIFEST_REQUIRED_KEYS = {"schema_version", "paper_number", "paper_raw_id", "workflow_path",
                                 "source_type", "pdf_source", "staged_pdf", "created_at", "updated_at"}
-IMPORT_STATUS_REQUIRED_KEYS = {"status", "reason", "errors", "warnings", "created_at"}
+IMPORT_STATUS_REQUIRED_KEYS = {"schema_version", "paper_number", "metadata", "pdf", "conversion", "catalog", "formalization", "commit", "updated_at"}
 
 
 # ── 1. Manual PDF stage sidecar JSON schema complete ───────────────────
@@ -253,7 +254,8 @@ def test_metadata_not_polluted_by_sidecar(tmp_path):
 
 def test_source_records_path_helpers():
     assert metadata_source_rel_path("crossref") == "source_records/metadata_source.crossref.json"
-    assert metadata_source_rel_path("") == "source_records/metadata_source.manual.json"
+    with pytest.raises(InvalidProviderIdentityError):
+        metadata_source_rel_path("")
     assert fetch_result_rel_path() == "source_records/fetch_result.json"
     assert is_fetch_result_path("source_records/fetch_result.json")
     assert not is_fetch_result_path("source_records/metadata_source.crossref.json")

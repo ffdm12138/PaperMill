@@ -13,17 +13,14 @@ from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import normalize_doi
 from src.file_fingerprint import compute_file_hashes
 from src.naming import safe_child
+from src.metadata.freeze import assert_metadata_frozen
 from src.services.ingest_duplicate_guard import check_doi_duplicate, check_pdf_duplicate
 from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.ingest_state import write_import_status
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.source_records import validate_metadata_source_record_exists
-from src.services.v2_library import (
-    FORMALIZE_METADATA_LAYERED_HINT,
-    metadata_is_matched,
-    now_iso,
-    validate_metadata_schema,
-)
+from src.ingest.models import now_iso
+from src.metadata.schema import validate_metadata_schema
 from src.utils.atomic_io import atomic_write_json
 _BLOCKING_STATUSES = {
     "metadata_missing",
@@ -37,6 +34,7 @@ _BLOCKING_STATUSES = {
     "pdf_md5_duplicate",
     "pdf_md5_collision_or_inconsistent_hash",
 }
+FORMALIZE_METADATA_LAYERED_HINT = "conversion may proceed, but formalize/commit is blocked until Metadata match/freeze succeeds"
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -114,9 +112,11 @@ def preflight_one(
         if not doi or not is_valid_normalized_doi(doi):
             errors.append("doi_invalid")
             details.append("metadata.identifiers.doi is missing or invalid")
-        if not metadata_is_matched(metadata):
+        try:
+            assert_metadata_frozen(folder, source_id)
+        except Exception as exc:
             errors.append("metadata_unmatched")
-            details.append("metadata_match.status must be matched or manual_confirmed")
+            details.append(f"independent metadata match/freeze receipt invalid: {exc}")
         if doi:
             dup_doi = check_doi_duplicate(
                 doi,
@@ -166,9 +166,9 @@ def preflight_one(
     images_dir = folder / "images"
     has_markdown = markdown_path.exists() and markdown_path.stat().st_size > 0
     has_images_dir = images_dir.exists() and images_dir.is_dir()
-    if not errors and has_markdown and has_images_dir:
+    if has_markdown and has_images_dir:
         status = "converted"
-        details.append("paper_raw already has converted Markdown/assets")
+        details.append("paper_raw already has converted Markdown/assets; formal metadata gates remain separate")
     else:
         status = _status_from_errors(errors)
     item = {

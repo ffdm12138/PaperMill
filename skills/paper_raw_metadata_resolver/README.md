@@ -16,7 +16,7 @@ values as the paper DOI.
 
 It is metadata-first, not catalog-first. It must NOT read `data/papers` or the
 catalog, must NOT invent DOI/author/year/venue (an LLM-guessed DOI is invalid),
-and must NOT set `metadata_match.status` — the final `matched`/`manual_confirmed`
+and must NOT write embedded match state or the independent match receipt — the final identity decision
 status is assigned only by the existing validation / human-confirmation / commit
 path. Output is a candidates file plus a patch that fills only empty fields; the
 patch uses the **same metadata schema as network-fetched metadata** (an
@@ -24,4 +24,3 @@ patch uses the **same metadata schema as network-fetched metadata** (an
 simplified旁路 format. The patch is applied by
 `scripts/resolve_paper_raw_metadata.py --apply`, which re-checks DOI validity,
 duplicates, conflicts, and completeness.
-

@@ -1,7 +1,6 @@
-"""Prepare an ignored write/jobs/<job_id> article workspace from all.catalog.
+"""Prepare an ignored write job from Catalog-folder-selected formal papers.
 
-Global all.catalog is a content-only screening index.  The generated
-selected_catalog.json is a per-job content-only working snapshot; bibliographic
+The generated selected_catalog.json is a per-job content-only working snapshot; bibliographic
 metadata is **not** cached there — citation truth comes from the copied
 ``article/<paper_number>/*.metadata.json``.
 """
@@ -18,7 +17,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import ALL_CATALOG_PATH, PAPERS_DIR, PROJECT_ROOT
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PROJECT_ROOT
+from src.catalog_folders.reader import CatalogFolderReader
 from src.naming import safe_child, validate_job_id
 from src.path_utils import normalize_repo_path
 from src.utils.atomic_io import atomic_write_json
@@ -42,54 +42,17 @@ def _validate_paper_number(paper_number: str) -> str:
     return str(paper_number)
 
 
+def _selection_sort_key(paper: dict) -> tuple[int, str]:
+    decision_rank = {"priority": 0, "read": 1, "pending": 2, "skip": 3}
+    return (
+        decision_rank.get(str(paper.get("read_decision") or ""), 4),
+        str(paper.get("paper_number") or ""),
+    )
+
+
 def _entry_catalog(entry: dict) -> dict:
-    """all.catalog v3.1 entries are flat content entries."""
+    """Return one independent Catalog entry."""
     return entry
-
-
-def _matches_filter(entry: dict, args: argparse.Namespace) -> bool:
-    catalog = _entry_catalog(entry)
-    classification = catalog.get("classification") or {}
-    screening = catalog.get("screening") or {}
-
-    if args.primary_domain:
-        primary = str(classification.get("primary_domain") or "").lower()
-        domains = [str(x).lower() for x in (
-            classification.get("secondary_domains") or classification.get("domains") or []
-        )]
-        wanted = args.primary_domain.lower()
-        if wanted != primary and wanted not in domains:
-            return False
-
-    if args.topic:
-        haystack = " ".join(
-            str(x)
-            for x in (
-                (classification.get("topic_tags") or classification.get("topics") or [])
-                + (classification.get("methods_tags") or [])
-                + (classification.get("phenomena_tags") or [])
-                + (classification.get("material_tags") or [])
-                + (classification.get("model_tags") or [])
-                + (classification.get("keywords_en") or [])
-                + (classification.get("keywords_zh") or [])
-            )
-        ).lower()
-        if args.topic.lower() not in haystack:
-            return False
-
-    if args.read_decision:
-        if str(screening.get("read_decision") or "") != args.read_decision:
-            return False
-
-    if args.min_relevance_score is not None:
-        try:
-            score = float(screening.get("relevance_score"))
-        except (TypeError, ValueError):
-            return False
-        if score < float(args.min_relevance_score):
-            return False
-
-    return True
 
 
 def _is_forbidden_source(path: Path) -> bool:
@@ -102,11 +65,11 @@ def _is_forbidden_source(path: Path) -> bool:
     return any(rel.endswith(item) or f"{item}/" in rel for item in forbidden)
 
 
-def _source_dir_for_entry(entry: dict, papers_dir: Path) -> Path:
+def _source_dir_for_entry(entry: dict) -> Path:
     paper_id = str(entry.get("paper_id") or "").strip()
     if not paper_id:
         raise ValueError(f"{entry.get('paper_number')} missing paper_id")
-    source = safe_child(papers_dir, paper_id)
+    source=Path(str(entry.get("formal_directory") or ""))
     if _is_forbidden_source(source):
         raise ValueError(f"write article source must be formal papers dir, got: {source}")
     if source.exists():
@@ -117,7 +80,7 @@ def _source_dir_for_entry(entry: dict, papers_dir: Path) -> Path:
 def _compact_selected_entry(entry: dict, source: Path) -> dict:
     """Build one per-job selected_catalog entry (strictly content-only).
 
-    NOTE: this is a WRITE-JOB SNAPSHOT, not the global all.catalog. It keeps
+    This write-job snapshot keeps
     content fields flat and carries **no** bibliographic metadata and **no**
     path fields — metadata lives in the copied
     ``article/<paper_number>/*.metadata.json`` and path tracking lives in
@@ -134,13 +97,17 @@ def _compact_selected_entry(entry: dict, source: Path) -> dict:
         "paper_id": paper_id,
         # content (from catalog.json)
         "content_identity": catalog.get("content_identity") or {},
-        "classification": catalog.get("classification") or {},
+        "abstract": catalog.get("abstract") or {},
+        "research_context": catalog.get("research_context") or {},
+        "methods": catalog.get("methods") or {},
+        "data_and_study_design": catalog.get("data_and_study_design") or {},
+        "key_findings": catalog.get("key_findings") or [],
+        "mechanisms": catalog.get("mechanisms") or [],
+        "limitations": catalog.get("limitations") or [],
+        "terminology": catalog.get("terminology") or {},
+        "figures_and_tables": catalog.get("figures_and_tables") or [],
         "screening": catalog.get("screening") or {},
-        "research_card": catalog.get("research_card") or {},
         "writing_value": catalog.get("writing_value") or {},
-        "evidence_profile": catalog.get("evidence_profile") or {},
-        "figure_inventory": catalog.get("figure_inventory") or {},
-        "quality_control": catalog.get("quality_control") or {},
     }
 
 
@@ -167,14 +134,8 @@ def _select_entries(catalog_data: dict, args: argparse.Namespace) -> list[dict]:
             raise KeyError(f"paper_number not found: {', '.join(missing)}")
         selected = [by_number[n] for n in wanted]
     else:
-        selected = [p for p in papers if _matches_filter(p, args)]
-        selected.sort(
-            key=lambda p: (
-                float(((_entry_catalog(p).get("screening") or {}).get("relevance_score")) or 0),
-                str(p.get("paper_number") or ""),
-            ),
-            reverse=True,
-        )
+        selected = papers
+        selected.sort(key=_selection_sort_key)
     if args.limit:
         selected = selected[: args.limit]
     return selected
@@ -182,14 +143,14 @@ def _select_entries(catalog_data: dict, args: argparse.Namespace) -> list[dict]:
 
 def prepare_workdir(args: argparse.Namespace) -> dict:
     job_id = validate_job_id(args.job_id or f"article_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    all_catalog_path = Path(args.all_catalog)
+    catalog_root = Path(args.catalog_root)
     papers_dir = Path(args.papers_dir)
     write_dir = Path(args.write_dir)
     job_dir = safe_child(write_dir, job_id)
     article_dir = safe_child(job_dir, "article")
     reports_dir = safe_child(job_dir, "reports")
 
-    catalog_data = _read_json(all_catalog_path)
+    catalog_data={"papers":CatalogFolderReader(root=catalog_root,papers_dir=papers_dir).list_papers(args.categories,mode=args.category_mode)}
     selected = _select_entries(catalog_data, args)
     if not selected:
         raise ValueError("no papers selected")
@@ -202,7 +163,7 @@ def prepare_workdir(args: argparse.Namespace) -> dict:
         paper_id = str(entry.get("paper_id") or "").strip()
         if not paper_id:
             raise ValueError(f"{paper_number} missing paper_id")
-        source = _source_dir_for_entry(entry, papers_dir)
+        source = _source_dir_for_entry(entry)
         _check_formal_folder(source, paper_id)
         target = article_dir / paper_number
         item = _compact_selected_entry(entry, source)
@@ -249,7 +210,7 @@ def prepare_workdir(args: argparse.Namespace) -> dict:
     selected_catalog = {
         "schema_version": "1.0",
         "job_id": job_id,
-        "source_catalog": normalize_repo_path(all_catalog_path),
+        "source_categories": args.categories or ["all"],
         "papers": [_content_only(item) for item in planned],
     }
     job_json = {
@@ -269,18 +230,16 @@ def prepare_workdir(args: argparse.Namespace) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare write/jobs/<job_id>/article from all.catalog.")
+    parser = argparse.ArgumentParser(description="Prepare write/jobs/<job_id>/article from Catalog folders.")
     parser.add_argument("--job-id", default=None)
     parser.add_argument("--paper-numbers", nargs="+", default=None)
-    parser.add_argument("--primary-domain", default=None)
-    parser.add_argument("--topic", default=None)
-    parser.add_argument("--read-decision", default=None)
-    parser.add_argument("--min-relevance-score", type=float, default=None)
+    parser.add_argument("--categories", nargs="+", default=None)
+    parser.add_argument("--category-mode", choices=["union", "intersection"], default="union")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--all-catalog", type=Path, default=Path(ALL_CATALOG_PATH))
+    parser.add_argument("--catalog-root", type=Path, default=Path(CATALOG_FOLDER_ROOT))
     parser.add_argument("--papers-dir", type=Path, default=Path(PAPERS_DIR))
     parser.add_argument("--write-dir", type=Path, default=Path(WRITE_DIR))
     return parser

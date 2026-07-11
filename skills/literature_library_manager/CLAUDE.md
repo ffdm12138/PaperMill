@@ -44,7 +44,7 @@ Conversion layer:
 
 Formal library layer:
 - Formalize/commit requires strict metadata.
-- DOI must be valid; metadata_match.status must be matched or manual_confirmed.
+- Metadata freeze closure must be replay-valid; journal articles require a valid DOI.
 - BibTeX is generated from metadata, never from catalog.
 
 Summary: convert first is allowed; commit requires metadata.

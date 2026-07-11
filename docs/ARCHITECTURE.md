@@ -1,156 +1,40 @@
 # Architecture
 
-MinerU v2 使用单一入库工作区和单一正式目录。
+## Domain ownership
 
-## Data Flow（网络 metadata 路径概览）
+- `paper_number` is the permanent 16-digit identity managed by the ledger.
+- Metadata v2.0 is the immutable bibliographic record and only citation source.
+- Catalog v3.2 is each paper's independent content dossier and owns `paper_id`.
+- `paper_raw` is the numeric mutable pre-commit workspace.
+- `papers` contains complete immutable formal assets.
+- `catalog` is a folder-backed browsing view, never a merged document.
 
-```text
-network metadata (with DOI)
--> paper_raw/<paper_number> reserved workspace
--> PDF fetch (by DOI)
--> MinerU conversion
--> curation（catalog_ready）
--> formalize（改名 + reuse/repoint reserved paper_number + ready_for_commit）
--> formal paper folder
--> all catalog rebuild
-```
+## Formal identity and classification
 
-Network metadata path: metadata arrives with a DOI already assigned; PDF fetch follows
-from that DOI; conversion follows PDF staging. 手动 PDF 路径见下方 "Manual PDF ingest
-order"（先转换，再从 md 解析 metadata）。
+The live formal registry verifies active ledger rows against every formal
+directory, marker, Metadata, Catalog and asset manifest. It persists no path
+map. DOI keyword notebooks contribute stable Chinese category definitions.
+An LLM reads one paper Catalog and records an independent positive or negative
+decision for every active category.
 
-Metadata-only PDF fetch does not create a separate import system. The fetch CLI scans
-existing 16-digit `paper_raw` workspaces, reads DOI only from each metadata file, downloads
-into a temporary fetch area, and calls `PaperRawAllocator.attach_pdf()` so duplicate guard,
-hashes, metadata.pdf, and final `<paper_number>.pdf` naming stay centralized. Header-based
-fetch is an explicit custom resolver with a fixed in-code User-Agent; user header values are
-per-run only and are not persisted.
+`data/catalog/all/` links every active paper. `_pending/` links papers with
+missing or stale decisions. Chinese category folders contain controlled links
+to complete formal directories and may overlap. Assignment files preserve both
+positive and negative decisions; Catalog content is never rewritten.
 
-## Manual PDF ingest order
+## Transactions
 
-```text
-1. Put PDF into data/raw/ (manual PDF queue).
-2. Run stage_raw_pdfs_to_paper_raw.py --move --apply to consume the queue, reserve a 16-digit paper_number, and allocate data/paper_raw/<paper_number>/.
-3. Run managed MinerU readiness checks (`start_mineru_services.py --wait --restart-if-stale`,
-   `check_mineru_processes.py`, and one `smoke_mineru_conversion.py`) before
-   `convert_paper_raw_gpu.py --all --apply` formal conversion (produces <paper_number>.md).
-4. Run paper_raw_metadata_resolver:
-   - read converted <paper_number>.md,
-   - extract DOI/title/authors/year/venue candidates,
-   - verify online (or search online when md lacks enough candidates),
-   - produce a schema-compatible metadata patch / resolved candidates.
-5. Run paper_raw_catalog_curator:
-   - read converted <paper_number>.md,
-   - produce a content-only catalog (v3.1).
-   - set `screening.read_decision` to `"pending"`; final `must_read` / `maybe_read` / `skip`
-     decisions are post-triage / writing-stage annotations only.
-   `curate_paper_raw.py --apply` validates metadata/catalog and writes `.import_status.json status=catalog_ready`; it does NOT rename the folder or allocate a paper_number.
-6. Run `formalize_paper_raw.py --all-ready --apply`: in `data/paper_raw` rename `paper_raw/<paper_number>` folder/files to `<paper_id>`, reuse the reserved 16-digit `paper_number`, backfill catalog links, write `<paper_id>.formalization.json` + `<16位>.paper.number`, and set `status=ready_for_commit`.
-7. Run `commit_paper_raw_to_papers.py --all-ready --apply`: transactional install (final validate → staging copytree → self-check → os.replace → activate ledger → rebuild all.catalog → postcheck → delete source). Only `ready_for_commit` folders are accepted; any post-install failure rolls back and removes `data/papers/<paper_id>`.
-8. Rebuild data/catalog/all.catalog.json.
-```
+Commit installs and validates hidden staging, activates the ledger, requests
+category reconciliation, then removes numeric raw data. Ledger activation is
+the formal commit point. Classification does not run inside the transaction;
+a failure leaves a repairable `DIRTY` marker and never rolls back a valid paper.
+Rollback restores numeric raw assets, reserves the ledger entry, reconciles all
+category links, removes the assignment and then deletes quarantine.
 
-Both `paper_raw_metadata_resolver` and `paper_raw_catalog_curator` depend on the
-converted MinerU Markdown. The metadata resolver produces bibliographic metadata
-(same schema as network-fetched metadata); the catalog curator produces a
-content-only catalog (no DOI/authors/year/journal). They may run in parallel
-after conversion, but a formal commit to `data/papers/` requires **both** valid
-metadata and a valid content catalog — incomplete `paper_raw` folders stay
-outside `data/papers/`.
+Category updates hold one category lock, create `DIRTY`, reconcile from the
+ledger, formal directories, registry and assignments, validate, then clear the
+marker. Writers fail closed while dirty and read Catalogs in batches of 10–20.
 
-`formalize_paper_raw.py` and `commit_paper_raw_to_papers.py` both expose full
-path-isolation flags (`--paper-raw-dir` / `--papers-dir` / `--ledger-path` /
-`--all-catalog-path`). Tests and agents MUST pass a tmp `--ledger-path` and tmp
-`--all-catalog-path` to avoid polluting the real `data/catalog/`. After
-formalize renames `0000000000000001` → `<paper_id>`, the reserved ledger entry is
-repointed to the renamed `<paper_id>` workspace (via `repoint_reserved`), so at
-`ready_for_commit` the ledger matches the real folder. Metadata candidates are
-read from the converted Markdown first 100 physical lines.
-Formalize accepts only `converted_current`; converted assets without a current
-manifest are reported as `conversion_manifest_missing` and must be repaired by
-writing a current manifest or by reconverting before normal ingest continues.
-Preserved paper numbers are reserved for paper_raw first and
-then repointed after rename; the legacy `repoint()` path is not part of the
-normal ingest flow. `Catalog.load()` fallback builds a tolerant read-only
-snapshot only and does not write ledger, marker, per-paper catalog, all.catalog,
-or paper_index files.
-
-Formal conversion enters through `scripts/convert_paper_raw_gpu.py`; the lower-level
-`convert_paper_raw_batch.py` remains for compatibility/debugging and warns on direct
-formal use. The wrapper defaults `MINERU_REQUIRE_GPU=true`, `CUDA_VISIBLE_DEVICES=0`,
-and conversion first checks the local `output/mineru_cache/` raw-output cache. Cache
-reuse is accepted only when PDF md5/sha256/file size and `backend/method/lang/effort`
-match; cache hits restore md/images/manifests without GPU preflight or `MinerULock`.
-`output/` is a local runtime cache and is excluded from git and snapshots.
-and requires both `nvidia-smi` and current-env `torch.cuda.is_available()` to pass.
-If using persistent `mineru-api`, start that server with `CUDA_VISIBLE_DEVICES=0` in
-its own shell; client-side environment changes cannot alter an already-running API process.
-Recommended service control is `python scripts/start_mineru_services.py --wait --restart-if-stale`
-before conversion and `python scripts/stop_mineru_services.py` after conversion.
-`/health` is liveness only; formal batch readiness also requires managed service
-identity, `READY_FOR_CONVERSION`, and a recent successful smoke report.
-MinerU conversion has no process-level timeout; health/preflight/lock timeouts
-are separate checks. Metadata title/author/affiliation/abstract/keyword/DOI
-candidates come from converted Markdown first 100 lines as front-matter evidence
-before PDF title fallback.
-
-`data/raw/` is a queue / raw 是待处理队列 for manual PDF imports. Successful
-normal staging moves PDFs out of `data/raw/`; copy mode is reserved for
-debugging, backup, tests, or explicit one-off inspection.
-
-## Ingest layered semantics
-
-Ingest layered semantics (conversion does not require metadata; formalize/commit does):
-
-Conversion layer:
-- PDF conversion to Markdown/images does not require complete metadata.
-- Missing DOI or unmatched metadata must not block MinerU conversion.
-- Conversion output Markdown is a valid metadata-resolution source.
-
-Formal library layer:
-- Formalize/commit requires strict metadata.
-- DOI must be valid; metadata_match.status must be matched or manual_confirmed.
-- BibTeX is generated from metadata, never from catalog.
-
-Summary: convert first is allowed; commit requires metadata.
-
-### Conversion candidate guidance
-
-- Normal SOP uses `--only-convertible`; conversion does not require complete metadata.
-- `--only-preflight-ready` is a legacy/compatibility flag. Do not use it as the normal
-  gate for manual or network imports because it couples conversion to metadata readiness.
-- Manual PDF bootstrap converts first, then resolves metadata from the converted Markdown.
-
-## Components
-
-- `src/services/v2_library.py`: paper_raw allocation, PDF staging, MinerU conversion guard, curation, formal commit, paper_number ledger, all.catalog rebuild, formal asset validation, and metadata-derived BibTeX helpers.
-- `src/catalog.py`: read-only all catalog access and compact catalog text.
-- `src/library.py`: formal Markdown and image lookup through all catalog.
-- `src/server.py`: v2 read/API work surface; it never commits directly to `data/papers/`.
-- `scripts/*paper_raw*.py`: the only formal import CLIs.
-- `src/bib.py`: per-paper BibTeX via `bibtex_from_metadata` from `metadata.json` (no global `references.bib`); `src/writer/bib_manager.py` exports a per-job `tex/references.bib`.
-- `scripts/create_write_job.py` / `scripts/prepare_write_article_workdir.py`: create a catalog-first writing job and copy selected formal paper folders to `write/jobs/<job_id>/article/<paper_number>/`.
-
-## Writing boundary
-
-- `skills/catalog_tex_writer` is the only default article-writing skill.
-- `skills/paper_raw_metadata_resolver` and `skills/paper_raw_catalog_curator` are ingest-side support skills, not article-writing skills.
-- `skills/literature_library_manager` is a library / ingest management skill; it may describe how to create a writing job, but it is not the article-writing skill.
-- `scripts/write_review.py` / `src/writer/*` is an advanced / experimental multi-stage writer workflow, not the default entry and not legacy.
-- All active writing workflows must use `write/jobs/<job_id>/article/<paper_number>/` as the only copied article workspace.
-- Active writing workflows must not read from or write to the legacy llm work directory; it is forbidden.
-
-## Facts
-
-- `data/paper_raw/` is the pre-ingest workspace.
-- `data/papers/` is the only formal asset storage.
-- `data/catalog/all.catalog.json` is the local generated content-only catalog index (per-paper catalog schema v3.1, with `library_locator` / `content_identity.content_title_zh` / `writing_value` / `quality_control`; no bibliographic metadata); the repository commits `all.catalog.template.json` instead of real local state.
-- catalog natural-language values default to Chinese for Chinese search, classification, paper selection, and writing workflows; JSON keys/schema enums stay English, and technical terms may remain English. Metadata remains the original/canonical bibliographic source.
-- Initial generated catalog entries keep `screening.read_decision = "pending"`; writing-stage or human post-triage workflows may later annotate `must_read` / `maybe_read` / `skip`.
-- `data/catalog/paper_index.json` is the local generated paper_number → asset path index (metadata/catalog/markdown/pdf/images), no bibliographic fields; the repository commits `paper_index.template.json`.
-- `data/catalog/paper_number_ledger.json` owns local long-term numbering; the repository commits `paper_number_ledger.template.json`, not the real ledger.
-- `write/jobs/<job_id>/article/<paper_number>/` is the only model-facing copied article workspace.
-- Network/search metadata records must carry DOI before they can be staged into `paper_raw`.
-- Manual PDF records may start without DOI, but curation and formal commit require `metadata.identifiers.doi`.
-- Formal library metadata completeness is enforced in `src/services/v2_library.py` and `scripts/validate_v2_library.py`; incomplete `paper_raw` folders stay outside `data/papers/`.
-- Bibliography helpers read only metadata fields, never catalog summaries or converted Markdown text.
+For the manual PDF path, stage the PDF, convert it first, then resolve Metadata
+from converted front matter. Network ingest may stage Metadata before fetching
+and converting the PDF.

@@ -83,7 +83,7 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
     the candidate staged without re-allocating a paper number.
     """
     from src.services.network_metadata_staging import stage_network_metadata_records
-    from src.services.v2_library import PaperNumberLedger
+    from src.library.paper_number_ledger import PaperNumberLedger
 
     store = PageJournalStore(tmp_path / "pages")
     path = _page(store, tmp_path, doi="10.1234/source-record")
@@ -98,12 +98,13 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
         [{
             "title": "T",
             "doi": "10.1234/source-record",
-            "discovery_context": {
-                "candidate_id": cid,
-                "page_id": page["page_id"],
-                "keyword_id": page["keyword_id"],
-                "normalized_doi": "10.1234/source-record",
-            },
+                "discovery_context": {
+                    "candidate_id": cid,
+                    "page_id": page["page_id"],
+                    "keyword_id": page["keyword_id"],
+                    "provider": page["provider"],
+                    "normalized_doi": "10.1234/source-record",
+                },
         }],
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -175,12 +176,13 @@ def test_source_record_only_not_marked_staged(tmp_path: Path):
         {
             "provider": "openalex",
             "record": {"doi": "10.1234/source-only", "title": "T"},
-            "discovery_context": {
-                "candidate_id": cid,
-                "page_id": page["page_id"],
-                "keyword_id": page["keyword_id"],
-                "normalized_doi": "10.1234/source-only",
-            },
+                "discovery_context": {
+                    "candidate_id": cid,
+                    "page_id": page["page_id"],
+                    "keyword_id": page["keyword_id"],
+                    "provider": page["provider"],
+                    "normalized_doi": "10.1234/source-only",
+                },
         },
         indent=2,
     )

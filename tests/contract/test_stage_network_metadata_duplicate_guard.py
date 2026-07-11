@@ -3,7 +3,7 @@ import runpy
 import sys
 from pathlib import Path
 
-from src.services.v2_library import empty_metadata
+from src.metadata.schema import empty_metadata
 from src.services.network_metadata_staging import stage_network_metadata_records
 
 
@@ -35,7 +35,6 @@ def _paper_raw_doi(root: Path, number: str, doi: str) -> None:
     folder.mkdir(parents=True)
     meta = empty_metadata(number, source_type="network_search")
     meta["identifiers"]["doi"] = doi
-    meta["metadata_match"]["status"] = "matched"
     (folder / f"{number}.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
 
 

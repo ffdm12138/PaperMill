@@ -34,7 +34,7 @@ from src.services.metadata_resolve_checkpoint import (
     is_done,
     save_checkpoint,
 )
-from src.services.v2_library import empty_metadata
+from src.metadata.schema import empty_metadata
 
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -296,13 +296,9 @@ def test_checkpoint_resume(tmp_path):
 def test_citation_ready_metadata_skipped(tmp_path, monkeypatch):
     """The CLI must skip paper_raw workspaces whose metadata is already
     matched + has a valid DOI, unless --force is given."""
-    paper_raw = tmp_path / "paper_raw"
-    folder = paper_raw / "0000000000000001"
-    folder.mkdir(parents=True)
-    meta = empty_metadata("0000000000000001", source_type="manual_pdf")
-    meta["identifiers"]["doi"] = "10.1000/ready"
-    meta["metadata_match"]["status"] = "matched"
-    (folder / "0000000000000001.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    from tests.integration.test_frozen_v32_transaction_pipeline import _workspace
+    workspace,_,_,_= _workspace(tmp_path)
+    paper_raw=workspace.root.parent; folder=workspace.root
 
     # Any network call should explode if attempted
     from src.services import metadata_resolver as mr
@@ -312,7 +308,6 @@ def test_citation_ready_metadata_skipped(tmp_path, monkeypatch):
         "resolve_paper_raw_metadata.py",
         "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(paper_raw),
-        "--all-catalog", str(tmp_path / "catalog" / "all.catalog.json"),
         "--papers-dir", str(tmp_path / "papers"),
         "--allow-network",
         "--write-candidates",
@@ -340,7 +335,6 @@ def test_rate_probe_processes_only_n_papers(tmp_path, monkeypatch, capsys):
         folder = paper_raw / f"{i:016d}"
         folder.mkdir()
         meta = empty_metadata(f"{i:016d}", source_type="manual_pdf")
-        meta["metadata_match"]["status"] = "unmatched"
         (folder / f"{i:016d}.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
 
     # Disable network to avoid real calls
@@ -351,7 +345,6 @@ def test_rate_probe_processes_only_n_papers(tmp_path, monkeypatch, capsys):
         "resolve_paper_raw_metadata.py",
         "--all-unmatched",
         "--paper-raw-dir", str(paper_raw),
-        "--all-catalog", str(tmp_path / "catalog" / "all.catalog.json"),
         "--papers-dir", str(tmp_path / "papers"),
         "--rate-probe",
         "--probe-size", "3",

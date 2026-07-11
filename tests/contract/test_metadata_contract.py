@@ -8,7 +8,7 @@ from src.services.source_records import (
     resolve_metadata_source_record_path,
     validate_metadata_source_record_exists,
 )
-from src.services.v2_library import validate_metadata_schema
+from src.metadata.schema import validate_metadata_schema
 from tests.factories.library_factory import make_paper_raw_item
 from tests.factories.metadata_factory import make_minimal_metadata
 

@@ -26,11 +26,10 @@ affiliation/abstract/keyword/DOI candidates before PDF title fallback.
 - 不得编造 DOI/作者/年份/期刊/卷期页；LLM 推测的 DOI 无效。
 - 联网验证：md 抽到 DOI 必须联网核对（Crossref/OpenAlex/Unpaywall），
   网络结果优先于 md 中 OCR 错误字段；md 抽不到足够线索则联网查询。
-- 联网不可用时 fail-closed：保持 `metadata_match.status = unmatched`，保留已抽取候选，
+- 联网不可用时 fail-closed：保持 Metadata unresolved，保留已抽取候选，
   请求人工复核，绝不伪造 matched metadata。
-- 不得设置 `metadata_match.status`（尤其不能自己盖章 `matched`）；只能输出 candidates +
+- 不得写内嵌 match 或独立 match receipt；只能输出 candidates +
   patch + warnings + evidence + confidence + source + mismatch reason。是否
   matched/manual_confirmed 由现有验证 / 人工确认 / commit 路径决定。
 - patch 只补空字段，结构同 `empty_metadata` 子集，由 `merge_missing_metadata` 合并，
   与网络抓取 metadata 同一 schema，不分叉。
-

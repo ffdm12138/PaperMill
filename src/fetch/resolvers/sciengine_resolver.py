@@ -83,7 +83,6 @@ class SciEngineResolver(PdfResolver):
                 candidate_url,
                 expected_content="html",
                 headers=headers,
-                timeout=self.timeout,
                 allow_redirects=True,
                 stream=True,
             ) as transport:

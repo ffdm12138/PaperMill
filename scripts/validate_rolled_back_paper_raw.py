@@ -9,11 +9,12 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import ALL_CATALOG_PATH, PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.path_utils import resolve_stored_path
 from src.services.ingest_ids import PAPER_NUMBER_RE
 from src.services.metadata_quality import bibliographic_identity_gate
-from src.services.v2_library import PaperNumberLedger, validate_metadata_schema
+from src.library.paper_number_ledger import PaperNumberLedger
+from src.metadata.schema import validate_metadata_schema
 
 
 FORBIDDEN_TOP = {"abstract", "keywords", "pdf", "content", "notes", "bibtex", "citation_key"}
@@ -83,11 +84,13 @@ def _metadata_errors(folder: Path, paper_number: str, metadata: dict[str, Any]) 
     if raw_record_path and not _source_record_exists(folder, raw_record_path):
         errors.append(f"source.raw_record_path does not exist: {raw_record_path}")
     citation_ready, reasons = bibliographic_identity_gate(metadata)
-    status = str(((metadata.get("metadata_match") or {}).get("status")) or "")
+    receipt_path = folder / f"{paper_number}.metadata_match.json"
+    receipt = _load_json(receipt_path) if receipt_path.is_file() else {}
+    status = str(receipt.get("match_status") or "")
     states.update({
         "schema_valid": not validate_metadata_schema(metadata),
         "citation_ready": citation_ready,
-        "matched_consistent": status != "matched" or citation_ready,
+        "matched_consistent": status not in {"matched", "manual_confirmed"} or citation_ready,
         "metadata_match_status": status,
         "citation_reasons": reasons,
     })
@@ -119,7 +122,6 @@ def validate_rolled_back_state(
     papers_dir: Path = PAPERS_DIR,
     paper_raw_dir: Path = PAPER_RAW_DIR,
     ledger_path: Path = PAPER_NUMBER_LEDGER_PATH,
-    all_catalog_path: Path = ALL_CATALOG_PATH,
 ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -200,8 +202,6 @@ def validate_rolled_back_state(
         elif item_state == "reserved" and number not in raw_number_set:
             warnings.append(f"ledger: reserved orphan (no paper_raw folder): {number}")
 
-    errors.extend(_check_empty_index(all_catalog_path, schema_version="3.1", label="all.catalog"))
-    errors.extend(_check_empty_index(all_catalog_path.parent / "paper_index.json", schema_version="2.0", label="paper_index"))
 
     for root in (papers_dir, paper_raw_dir):
         if not root.exists():
@@ -218,14 +218,12 @@ def main() -> int:
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
-    parser.add_argument("--all-catalog-path", type=Path, default=ALL_CATALOG_PATH)
     args = parser.parse_args()
 
     errors, warnings, states = validate_rolled_back_state(
         papers_dir=args.papers_dir,
         paper_raw_dir=args.paper_raw_dir,
         ledger_path=args.ledger_path,
-        all_catalog_path=args.all_catalog_path,
     )
     valid = not errors
     print(f"valid={'True' if valid else 'False'} errors={len(errors)} warnings={len(warnings)}")

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import PAPER_RAW_DIR
 from src.services.ingest_ids import validate_paper_raw_id
 from src.services.mineru_output_cache import MinerUOutputCache
-from src.services.v2_library import PaperRawConverter
+from src.ingest.paper_raw import PaperRawConverter
 
 
 def _source_ids(root: Path, args) -> list[str]:
@@ -85,4 +85,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

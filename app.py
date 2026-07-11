@@ -8,19 +8,22 @@ import gradio as gr
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config.settings import MINERU_BACKEND, MINERU_EFFORT
-from src.catalog import Catalog
-from src.library import PaperLibrary
+from config.settings import CATALOG_FOLDER_ROOT, MINERU_BACKEND, MINERU_EFFORT, PAPERS_DIR
+from src.catalog_folders.reader import CatalogFolderReader
+from src.services.paper_library import PaperLibrary
 from src.prompt_builder import PromptBuilder
 
 
-catalog = Catalog()
-library = PaperLibrary(catalog=catalog)
+catalog = CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
+library = PaperLibrary(papers_dir=PAPERS_DIR)
 prompt_builder = PromptBuilder(catalog=catalog, library=library)
 
 
 def list_papers():
-    papers = catalog.list_papers()
+    try:
+        papers = catalog.list_papers()
+    except RuntimeError as exc:
+        return f"文献索引尚未发布或校验失败：{exc}"
     if not papers:
         return "文献库为空。请先通过 paper_raw CLI 完成入库。"
     lines = ["| # | paper_number | paper_id | title |", "|---|---|---|---|"]
@@ -68,11 +71,16 @@ def gen_fulltext_prompt(question, paper_ids_text):
 
 
 def get_status():
+    try:
+        count=len(catalog.list_papers()); index_state="已发布"
+    except (RuntimeError, FileNotFoundError, ValueError):
+        count=0; index_state="未发布/校验失败"
     return f"""## 系统状态
 | 项目 | 状态 |
 |---|---|
 | 模式 | current_metadata_catalog |
-| 文献数量 | {len(catalog.list_papers())} |
+| 文献数量 | {count} |
+| 索引 generation | {index_state} |
 | MinerU 后端 | {MINERU_BACKEND} |
 | Effort | {MINERU_EFFORT} |
 """

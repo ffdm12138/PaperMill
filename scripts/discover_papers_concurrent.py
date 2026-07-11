@@ -1,15 +1,9 @@
 """Run multiple discover_papers.py queries concurrently.
 
-Wrapper that fans out independent keyword queries to discover_papers.py as
-subprocesses, one per (deduplicated) keyword, using a thread pool.  Each
-query gets its own output directory, report file (in staging mode), and
-log file, named with index + batch_stamp to prevent collisions.
-
-Each subprocess runs the dual-lane (Refresh + Backfill) discovery for its
-keyword and persists progress to a per-keyword notebook under
-``data/discovery/keyword_notebooks/``. ``--max-workers`` bounds how many
-keyword subprocesses run at once; provider rate limiting is enforced
-inside each subprocess.
+Run multiple keyword queries through the single in-process discovery
+coordinator. ``--max-workers`` is the global lane executor cap shared by all
+keywords; provider limiters and page budgets are shared within the coordinator
+run.
 
 Usage:
     conda run -n mineru python scripts/discover_papers_concurrent.py \
@@ -20,10 +14,8 @@ Usage:
 import argparse
 import json
 import re
-import subprocess
 import sys
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,9 +34,6 @@ from config.settings import (  # noqa: E402
     PAPERS_DIR,
 )
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch  # noqa: E402
-
-
-DISCOVER_SCRIPT = PROJECT_ROOT / "scripts" / "discover_papers.py"
 
 
 def _slugify(text: str, max_len: int = 60) -> str:
@@ -77,14 +66,14 @@ def _dedupe_keywords(queries: list[str]) -> list[str]:
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run multiple discover_papers.py queries concurrently (dual-lane).",
+        description="Run multiple discovery queries with the in-process coordinator.",
     )
     parser.add_argument("--query", "-q", action="append", default=[], dest="queries",
                         help="Search query (repeatable).")
     parser.add_argument("--queries-file", type=Path, default=None,
                         help="File with one query per line (# comments and blank lines ignored).")
     parser.add_argument("--max-workers", type=int, default=4,
-                        help="Maximum concurrent keyword subprocesses (default: 4).")
+                        help="Global lane worker cap for the in-process coordinator (default: 4).")
     parser.add_argument("--max-candidates", type=int, default=50,
                         help="Max NEW candidates per keyword after filtering existing DOIs (default: 50).")
     parser.add_argument("--limit-per-query", type=int, default=None,
@@ -116,13 +105,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DISCOVERY_DIR / "doi_candidates",
                         help="Base output directory for DOI candidates.")
     parser.add_argument("--stage-to-paper-raw", action="store_true",
-                        help="Pass --stage-to-paper-raw to each subprocess.")
+                        help="Stage valid DOI candidates through the shared coordinator.")
     parser.add_argument("--apply", action="store_true",
                         help="Pass --apply (requires --stage-to-paper-raw).")
     parser.add_argument("--skip-duplicates", action="store_true",
                         help="Pass --skip-duplicates (requires --stage-to-paper-raw).")
     parser.add_argument("--hide-existing", action="store_true",
-                        help="Pass --hide-existing to each subprocess (query-phase filter).")
+                        help="Hide existing DOI candidates during query-phase filtering.")
     parser.add_argument("--paper-raw-dir", type=Path, default=PAPER_RAW_DIR)
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
     parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
@@ -165,133 +154,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     if args.until_exhausted and args.max_pages_total is None:
         parser.error("--until-exhausted requires explicit --max-pages-total")
     return args
-
-
-def _build_command(
-    query: str,
-    index: int,
-    batch_stamp: str,
-    args: argparse.Namespace,
-) -> tuple[list[str], Path, Path | None, Path]:
-    slug = _slugify(query)
-    per_query_output = args.output_dir / f"concurrent_{batch_stamp}" / f"{index:03d}_{slug}"
-
-    page_size = args.page_size
-    if args.limit_per_query is not None:
-        page_size = args.limit_per_query
-
-    cmd = [
-        sys.executable,
-        str(DISCOVER_SCRIPT),
-        query,
-        "--output-dir", str(per_query_output),
-        "--max-candidates", str(args.max_candidates),
-        "--page-size", str(page_size),
-        "--mode", args.mode,
-        "--refresh-pages", str(args.refresh_pages),
-        "--backfill-pages", str(args.backfill_pages),
-        "--keyword-notebook-dir", str(args.keyword_notebook_dir),
-        "--doi-resolution-budget", str(args.doi_resolution_budget),
-    ]
-    if args.sort:
-        cmd.extend(["--sort", args.sort])
-    if args.until_exhausted:
-        cmd.append("--until-exhausted")
-    if args.max_pages_total is not None:
-        cmd.extend(["--max-pages-total", str(args.max_pages_total)])
-    if args.reset_keyword_progress:
-        cmd.append("--reset-keyword-progress")
-
-    report_path: Path | None = None
-    if args.stage_to_paper_raw:
-        cmd.append("--stage-to-paper-raw")
-        report_path = args.report_dir / f"stage_{index:03d}_{slug}_{batch_stamp}.json"
-        cmd.extend(["--report", str(report_path)])
-    if args.apply:
-        cmd.append("--apply")
-    if args.skip_duplicates:
-        cmd.append("--skip-duplicates")
-    if args.hide_existing:
-        cmd.append("--hide-existing")
-
-    log_path = args.log_dir / f"discover_{index:03d}_{slug}_{batch_stamp}.log"
-    return cmd, per_query_output, report_path, log_path
-
-
-def _run_one(
-    query: str,
-    index: int,
-    batch_stamp: str,
-    args: argparse.Namespace,
-) -> dict:
-    """Run one discover_papers.py subprocess and return result metadata."""
-    cmd, per_query_output, report_path, log_path = _build_command(query, index, batch_stamp, args)
-    started_at = datetime.now(timezone.utc).isoformat()
-
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as log_fh:
-        log_fh.write(f"# command: {' '.join(cmd)}\n# started: {started_at}\n")
-        log_fh.flush()
-        result = subprocess.run(
-            cmd,
-            stdout=log_fh,
-            stderr=subprocess.STDOUT,
-            cwd=PROJECT_ROOT,
-        )
-    ended_at = datetime.now(timezone.utc).isoformat()
-
-    return {
-        "index": index,
-        "query": query,
-        "slug": _slugify(query),
-        "returncode": result.returncode,
-        "output_dir": str(per_query_output),
-        "report_path": str(report_path) if report_path else None,
-        "log": str(log_path),
-        "started_at": started_at,
-        "ended_at": ended_at,
-    }
-
-
-def _aggregate_lane_reports(results: list[dict]) -> dict:
-    """Aggregate refresh/backfill/candidates/stage from per-query reports."""
-    agg = {
-        "keywords": {"total": len(results), "full_success": 0, "partial": 0, "failed": 0, "skipped": 0},
-        "refresh": {"pages": 0, "items": 0, "provider_failures": 0},
-        "backfill": {"pages_advanced": 0, "exhausted_states": 0, "provider_failures": 0},
-        "candidates": {"combined": 0, "unique_doi": 0, "existing": 0, "new": 0, "selected": 0},
-        "stage": {"staged": 0, "duplicate": 0, "failed": 0, "planned": 0},
-    }
-    for r in results:
-        rp = r.get("report_path")
-        if not rp:
-            continue
-        rp_path = Path(rp)
-        if not rp_path.is_file():
-            continue
-        try:
-            data = json.loads(rp_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        status = data.get("status", "failed")
-        if status == "success":
-            agg["keywords"]["full_success"] += 1
-        elif status == "partial_success":
-            agg["keywords"]["partial"] += 1
-        elif status in ("skipped", "exhausted"):
-            agg["keywords"]["skipped"] += 1
-        else:
-            agg["keywords"]["failed"] += 1
-        for key in ("refresh", "backfill", "candidates"):
-            section = data.get(key) or {}
-            for k, v in section.items():
-                if k in agg[key] and isinstance(v, (int, float)):
-                    agg[key][k] += v
-        stage = data.get("stage") or {}
-        for k in ("staged", "duplicate", "failed", "planned"):
-            if k in stage:
-                agg["stage"][k] += stage[k]
-    return agg
 
 
 def main_internal(argv: list[str]) -> int:

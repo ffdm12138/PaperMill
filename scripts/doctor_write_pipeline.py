@@ -12,7 +12,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import ALL_CATALOG_PATH, PROJECT_ROOT
+from config.settings import CATALOG_FOLDER_ROOT, PROJECT_ROOT
 from scripts.check_write_quality_text import check_write_quality_text
 from scripts.check_write_tex_project import check_tex_project
 from src.naming import safe_child, validate_job_id
@@ -135,7 +135,7 @@ def _check_job(job_id: str, write_dir: Path) -> dict[str, Any]:
 
 def doctor_write_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(args.repo_root)
-    all_catalog = Path(args.all_catalog)
+    catalog_root = Path(args.catalog_root)
     write_dir = Path(args.write_dir)
 
     key_scripts = _check_key_scripts(repo_root)
@@ -145,11 +145,11 @@ def doctor_write_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
     errors: list[str] = []
     warnings: list[str] = []
-    runtime_ready = all_catalog.exists()
-    if not all_catalog.exists():
+    runtime_ready = (catalog_root / "all").exists() and not (catalog_root / ".state" / "DIRTY").exists()
+    if not runtime_ready:
         warnings.append(
-            f"{all_catalog} is a runtime index and is not expected in a clean source snapshot. "
-            "Run python scripts/rebuild_all_catalog.py --apply after papers are present."
+            f"{catalog_root} is not a ready Catalog-folder view. "
+            "Run python scripts/reconcile_catalog_folders.py --apply after papers are present."
         )
     if not tracked_jobs["ok"]:
         errors.append("write/jobs has tracked runtime files")
@@ -171,9 +171,9 @@ def doctor_write_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         "errors": errors,
         "warnings": warnings,
         "environment": {
-            "all_catalog": {
-                "path": normalize_repo_path(all_catalog) if all_catalog.exists() else str(all_catalog),
-                "exists": all_catalog.exists(),
+            "catalog_folders": {
+                "path": normalize_repo_path(catalog_root) if catalog_root.exists() else str(catalog_root),
+                "ready": runtime_ready,
             },
             "write_jobs_tracking": tracked_jobs,
             "key_scripts": key_scripts,
@@ -192,7 +192,7 @@ def _print_human(report: dict[str, Any]) -> None:
         f"errors={len(report['errors'])} warnings={len(report.get('warnings') or [])}"
     )
     env = report["environment"]
-    print(f"all_catalog_exists={env['all_catalog']['exists']}")
+    print(f"catalog_folders_ready={env['catalog_folders']['ready']}")
     print(f"write_jobs_tracking_ok={env['write_jobs_tracking']['ok']}")
     print(f"tex_compiler_available={env['tex_compiler']['available']}")
     if report.get("job"):
@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Diagnose writer pipeline environment and jobs.")
     parser.add_argument("--job-id", default=None)
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--all-catalog", type=Path, default=Path(ALL_CATALOG_PATH))
+    parser.add_argument("--catalog-root", type=Path, default=Path(CATALOG_FOLDER_ROOT))
     parser.add_argument("--write-dir", type=Path, default=Path(WRITE_DIR))
     parser.add_argument("--repo-root", type=Path, default=Path(PROJECT_ROOT))
     return parser

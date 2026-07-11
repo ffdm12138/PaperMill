@@ -18,7 +18,7 @@ from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.services.ingest_duplicate_guard import is_paper_raw_workspace
 from src.services.ingest_ids import PAPER_NUMBER_RE
-from src.services.v2_library import PaperNumberLedger, now_iso
+from src.library.paper_number_ledger import PaperNumberLedger, now_iso
 from src.utils.atomic_io import atomic_write_json
 
 

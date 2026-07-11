@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
+
+from src.ingest.status import read_status, update_status
+from src.ingest.workspace import PaperRawWorkspace
 
 from src.services import ingest_state
 from src.services.ingest_state import (
@@ -80,3 +86,38 @@ def test_read_import_status_returns_empty_when_absent(tmp_path: Path):
 def test_read_import_status_returns_json_invalid_on_bad_json(tmp_path: Path):
     (tmp_path / ".import_status.json").write_text("{not json", encoding="utf-8")
     assert read_import_status(tmp_path) == {"status": "json_invalid"}
+
+
+def _numeric_workspace(tmp_path: Path) -> PaperRawWorkspace:
+    number = "0000000000000001"
+    folder = tmp_path / number
+    folder.mkdir()
+    (folder / f"{number}.paper.number").write_text(
+        json.dumps({"paper_number": number, "folder_name": number, "state": "active"}),
+        encoding="utf-8",
+    )
+    return PaperRawWorkspace.from_path(folder)
+
+
+def test_nested_status_updates_preserve_concurrent_dimensions(tmp_path: Path):
+    workspace = _numeric_workspace(tmp_path)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(update_status, workspace, "metadata", "resolved"),
+            pool.submit(update_status, workspace, "pdf", "attached"),
+        ]
+        for future in futures:
+            future.result(timeout=5)
+    status = read_status(workspace)
+    assert status["metadata"]["state"] == "resolved"
+    assert status["pdf"]["state"] == "attached"
+    assert not (workspace.root / ".import_status.json.tmp").exists()
+
+
+def test_unknown_legacy_status_fails_without_mutating_disk(tmp_path: Path):
+    workspace = _numeric_workspace(tmp_path)
+    before = list(workspace.root.iterdir())
+    with pytest.raises(ingest_state.UnknownLegacyStatusError, match="unknown legacy"):
+        write_import_status(workspace.root, "metadata_resovled_typo")
+    assert list(workspace.root.iterdir()) == before
+    assert not workspace.status.exists()

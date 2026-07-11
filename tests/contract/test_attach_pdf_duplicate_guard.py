@@ -3,7 +3,8 @@ import runpy
 import sys
 from pathlib import Path
 
-from src.services.v2_library import PaperRawAllocator, empty_metadata
+from src.ingest.paper_raw import PaperRawAllocator
+from src.metadata.schema import empty_metadata
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -111,7 +112,7 @@ def test_attach_replace_rolls_back_existing_pdf_if_copy_fails(tmp_path, monkeypa
     def fail_copy(*args, **kwargs):
         raise RuntimeError("copy failed")
 
-    monkeypatch.setattr("src.services.v2_library.shutil.copy2", fail_copy)
+    monkeypatch.setattr("src.ingest.paper_raw.shutil.copy2", fail_copy)
 
     try:
         PaperRawAllocator(paper_raw, papers_dir=tmp_path / "papers").attach_pdf(

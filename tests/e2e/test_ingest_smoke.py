@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.services.v2_library import PaperRawAllocator
+from src.ingest.paper_raw import PaperRawAllocator
 from tests.factories.pdf_factory import write_fake_pdf
 
 

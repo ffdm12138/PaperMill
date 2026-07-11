@@ -18,7 +18,7 @@ import pytest
 from src.services import metadata_enrichment_service as mes
 from src.services import metadata_resolver as mr
 from src.services.asset_manifest import write_asset_manifest
-from src.services.v2_library import empty_metadata
+from src.metadata.schema import empty_metadata
 from src.services.rate_limit import ProviderRateLimiter, default_config
 
 
@@ -59,7 +59,6 @@ def _make_folder(tmp_path: Path, source_id: str = "0000000000000001", *, doi: st
         meta["container"]["journal"] = journal
     if doi:
         meta["identifiers"]["doi"] = doi
-    meta["metadata_match"]["status"] = status
     (folder / f"{source_id}.metadata.json").write_text(
         json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     (folder / f"{source_id}.pdf").write_bytes(pdf_bytes)
@@ -163,16 +162,15 @@ def test_existing_doi_enriches_via_crossref_no_overwrite(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.existing_doi == "10.5194/tc-8-395-2014"
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
-    assert res["status"] == "matched"
+    assert res["status"] == "resolved"
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     # existing non-empty title preserved (not overwritten by Crossref title)
     assert meta["title"]["original"] == "Local kept title"
-    assert meta["metadata_match"]["status"] == "matched"
+    assert "metadata_match" not in meta
     assert meta["identifiers"]["doi"] == "10.5194/tc-8-395-2014"
 
 
@@ -187,13 +185,12 @@ def test_existing_doi_conflict_stops(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.decision == "conflict"
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
-    assert meta["metadata_match"]["status"] == "unmatched"
+    assert "metadata_match" not in meta
 
 
 # 鈹€鈹€ 3. DOI from filename 鈫?auto matched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -211,11 +208,10 @@ def test_doi_from_filename_auto_matches(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.decision == "auto_matched"
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    assert res["applied"] is True and res["status"] == "matched"
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    assert res["applied"] is True and res["status"] == "resolved"
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["identifiers"]["doi"] == "10.5194/tc-8-395-2014"
 
@@ -233,11 +229,10 @@ def test_doi_from_pdf_text_auto_matches(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.decision == "auto_matched"
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    assert res["applied"] is True and res["status"] == "matched"
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    assert res["applied"] is True and res["status"] == "resolved"
 
 
 # 鈹€鈹€ 5. DOI from markdown header 鈫?matched 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -256,12 +251,11 @@ def test_doi_from_markdown_header_auto_matches(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.doi_source == "markdown"
     assert report.decision == "auto_matched"
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    assert res["applied"] is True and res["status"] == "matched"
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    assert res["applied"] is True and res["status"] == "resolved"
 
 
 # ── 5b. --prefer-markdown: Markdown front-matter preferred over metadata title ──
@@ -285,8 +279,7 @@ def test_prefer_markdown_prefers_markdown_title_over_metadata(tmp_path, monkeypa
     _patch_crossref_doi(monkeypatch, msg)
     cat = _empty_catalog(tmp_path)
 
-    report = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers",
+    report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers",
                                            prefer_markdown=True)
     assert report.title_source == "markdown_front_matter"
     assert report.local_title == "Markdown Front Title From Converted MD"
@@ -295,8 +288,7 @@ def test_prefer_markdown_prefers_markdown_title_over_metadata(tmp_path, monkeypa
     assert report.post_conversion is True
 
     # Without prefer_markdown, the metadata title is kept (markdown not preferred).
-    report2 = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                            all_catalog_path=cat, papers_dir=tmp_path / "papers",
+    report2 = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers",
                                             prefer_markdown=False)
     assert report2.title_source == "metadata"
     assert report2.local_title == "Wrong Metadata Title"
@@ -325,18 +317,16 @@ def test_title_search_candidate_never_auto_matched(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.doi_source == "network_title"
     # NOT auto_matched even though title/year match well
     assert report.decision != "auto_matched"
     # apply without manual-confirm 鈫?not applied
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     # apply WITH manual-confirm 鈫?manual_confirmed (passes full validation gate)
-    res2 = mr.apply_resolution(folder, report, manual_confirm=True,
-                               all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    assert res2["applied"] is True and res2["status"] == "manual_confirmed"
+    res2 = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
+    assert res2["applied"] is True and res2["status"] == "resolved"
 
 
 def test_title_search_uses_markdown_front_matter_line_50_over_metadata_title(tmp_path, monkeypatch):
@@ -364,8 +354,7 @@ def test_title_search_uses_markdown_front_matter_line_50_over_metadata_title(tmp
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
 
     assert captured["title"] == "Correct Markdown Front Title"
     assert report.local_title == "Correct Markdown Front Title"
@@ -399,8 +388,7 @@ def test_title_search_falls_back_to_pdf_first_pages_title(tmp_path, monkeypatch)
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
 
     assert captured["title"] == "PDF Fallback Title for Search"
     assert report.title_source == "pdf_fallback"
@@ -417,8 +405,7 @@ def test_resolve_report_has_structured_local_evidence_and_decision(tmp_path, mon
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     payload = report.to_dict()
 
     assert payload["decision"] == "auto_matched"
@@ -449,14 +436,13 @@ def test_title_search_manual_band_stays_unmatched(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     # low score 鈫?rejected or manual_review; never auto_matched
     assert report.decision != "auto_matched"
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
-    assert meta["metadata_match"]["status"] == "unmatched"
+    assert "metadata_match" not in meta
 
 
 # 鈹€鈹€ 8. no-DOI candidates 鈫?resolve_failed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -475,8 +461,7 @@ def test_no_doi_candidates_resolve_failed(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     # no DOI-bearing candidates
     assert all(not c.doi for c in report.candidates) or not report.candidates
     assert report.decision in ("no_candidates", "rejected")
@@ -496,9 +481,8 @@ def test_non_empty_field_never_overwritten(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["title"]["original"] == "Pre-existing Title"
@@ -519,15 +503,13 @@ def test_duplicate_formal_doi_blocks(tmp_path, monkeypatch):
     # seed the same DOI in data/papers metadata (not in catalog)
     _seed_formal_paper(tmp_path, "2014_Vionnet_dup", doi="10.5194/tc-8-395-2014")
 
-    report = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     assert report.decision != "auto_matched"
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("duplicate_formal_doi" in w for w in res["warnings"])
     # manual-confirm still blocked
-    res2 = mr.apply_resolution(folder, report, manual_confirm=True,
-                               all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res2 = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res2["applied"] is False
 
 
@@ -542,12 +524,10 @@ def test_duplicate_paper_raw_doi_blocks_manual_confirm(tmp_path, monkeypatch):
     _patch_crossref_doi(monkeypatch, msg)
     cat = _empty_catalog(tmp_path)
 
-    report = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     assert report.decision != "auto_matched"
     assert any("duplicate_paper_raw_doi" in r for r in report.candidates[0].gate_reasons)
-    res = mr.apply_resolution(folder, report, manual_confirm=True,
-                              all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("duplicate_paper_raw_doi" in w for w in res["warnings"])
 
@@ -566,12 +546,11 @@ def test_duplicate_pdf_sha256_blocks(tmp_path, monkeypatch):
     sha = mr.compute_sha256(folder / "0000000000000001.pdf")
     _seed_formal_paper(tmp_path, "2014_other", doi="10.9999/other", pdf_sha=sha)
 
-    report = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     assert report.decision != "auto_matched"
     assert any("duplicate_pdf_sha256" in r for r in (report.candidates[0].gate_reasons if report.candidates else [])) \
         or any("duplicate_pdf_sha256" in r for r in report.warnings)
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("duplicate_pdf_sha256" in w for w in res["warnings"])
 
@@ -593,8 +572,7 @@ def test_manual_confirm_rejects_doi_conflict(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.candidates, "expected at least one candidate"
     candidate_doi = report.candidates[0].doi
     # Now inject a DIFFERENT existing DOI into metadata on disk, then apply with --manual-confirm.
@@ -605,13 +583,12 @@ def test_manual_confirm_rejects_doi_conflict(tmp_path, monkeypatch):
     meta["identifiers"]["doi"] = conflicting_doi
     meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
-    res = mr.apply_resolution(folder, report, manual_confirm=True,
-                              all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("conflict" in w.lower() for w in res["warnings"])
     # metadata unchanged (still the conflicting DOI, status still unmatched)
     after = json.loads(meta_path.read_text(encoding="utf-8"))
-    assert after["metadata_match"]["status"] == "unmatched"
+    assert "metadata_match" not in after
 
 
 # 鈹€鈹€ 12. manual-confirm rejects incomplete candidate 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -631,10 +608,8 @@ def test_manual_confirm_rejects_incomplete(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    res = mr.apply_resolution(folder, report, manual_confirm=True,
-                              all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
 
 
@@ -657,12 +632,10 @@ def test_candidate_id_chooses_specified(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     # find cand_002's doi
     cand2 = next(c for c in report.candidates if c.doi == "10.9999/second")
-    res = mr.apply_resolution(folder, report, manual_confirm=True, candidate_id=cand2.candidate_id,
-                              all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, manual_confirm=True, candidate_id=cand2.candidate_id, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
     assert res["chosen_candidate_id"] == cand2.candidate_id
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
@@ -677,11 +650,9 @@ def test_candidate_id_invalid_errors(tmp_path, monkeypatch):
                             authors=[("V.", "Vionnet")], venue="The Cryosphere")
     _patch_crossref_doi(monkeypatch, msg)
     cat = _empty_catalog(tmp_path)
-    report = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     with pytest.raises(ValueError):
-        mr.apply_resolution(folder, report, manual_confirm=True, candidate_id="cand_999",
-                            all_catalog_path=cat, papers_dir=tmp_path / "papers")
+        mr.apply_resolution(folder, report, manual_confirm=True, candidate_id="cand_999", papers_dir=tmp_path / "papers")
 
 
 # 鈹€鈹€ 13. multi-DOI conflict 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -693,11 +664,10 @@ def test_multi_doi_conflict(tmp_path, monkeypatch):
     monkeypatch.setattr(mr, "extract_doi_from_filename", lambda name: None)
     monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
     cat = _empty_catalog(tmp_path)
-    report = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     assert report.decision == "conflict"
     assert "multiple distinct DOIs" in report.reason or "multiple" in report.reason.lower()
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
 
 
@@ -710,8 +680,7 @@ def test_references_region_doi_not_used(tmp_path, monkeypatch):
     monkeypatch.setattr(mr, "extract_doi_from_filename", lambda name: None)
     monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
     cat = _empty_catalog(tmp_path)
-    report = mr.resolve_metadata_candidates(folder, allow_network=False,
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+    report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     # no header-region DOI 鈫?no_candidates (network disabled)
     assert report.decision in ("no_candidates", "rejected")
     # the references DOI must not appear as a chosen candidate doi
@@ -732,12 +701,11 @@ def test_local_evidence_fallback_auto_matches(tmp_path, monkeypatch):
     _patch_crossref_doi(monkeypatch, msg)
     cat = _empty_catalog(tmp_path)
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
-                                           rate_limiter=_zero_rate_limiter(),
-                                           all_catalog_path=cat, papers_dir=tmp_path / "papers")
+                                           rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     # local year/author absent 鈫?fallback to authoritative completeness 鈫?auto_matched
     assert report.decision == "auto_matched", report.reason
-    res = mr.apply_resolution(folder, report, all_catalog_path=cat, papers_dir=tmp_path / "papers")
-    assert res["applied"] is True and res["status"] == "matched"
+    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    assert res["applied"] is True and res["status"] == "resolved"
 
 
 # 鈹€鈹€ 15/16/17. CLI three-tier write semantics 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -768,7 +736,7 @@ def test_cli_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
     rc = _run_cli([
         "resolve_paper_raw_metadata.py", "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
-        "--all-catalog", str(cat), "--papers-dir", str(tmp_path / "papers"),
+        "--papers-dir", str(tmp_path / "papers"),
         "--allow-network",
     ])
     assert rc == 0
@@ -795,7 +763,7 @@ def test_cli_write_candidates_no_apply(tmp_path, monkeypatch):
     rc = _run_cli([
         "resolve_paper_raw_metadata.py", "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
-        "--all-catalog", str(cat), "--papers-dir", str(tmp_path / "papers"),
+        "--papers-dir", str(tmp_path / "papers"),
         "--write-candidates",
         "--allow-network",
     ])
@@ -827,7 +795,7 @@ def test_cli_default_no_network_no_call(tmp_path, monkeypatch):
     rc2 = _run_cli([
         "resolve_paper_raw_metadata.py", "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
-        "--all-catalog", str(cat), "--papers-dir", str(tmp_path / "papers"),
+        "--papers-dir", str(tmp_path / "papers"),
         "--write-candidates",
     ])
     assert rc2 == 0

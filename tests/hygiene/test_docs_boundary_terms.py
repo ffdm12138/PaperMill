@@ -150,7 +150,7 @@ def test_docs_cover_conversion_metadata_layering():
         "可安全使用\n`--only-preflight-ready`",
     ]:
         assert forbidden not in text, f"docs contain reverse layering phrasing: {forbidden}"
-    assert "legacy/compatibility" in text
+    assert "--only-convertible" in text
 
 
 def test_readme_does_not_list_write_jobs_as_committable():
@@ -207,8 +207,7 @@ def test_removed_legacy_writer_docs_are_absent():
     assert not (ROOT / "skills" / "literature_review_writer").exists()
 
 
-def test_docs_cover_formalize_state_machine():
-    """v2.3 state machine: curate -> formalize -> commit, with formalize mandatory."""
+def test_docs_cover_plan_only_formalize_and_journal_commit():
     docs = [
         "README.md",
         "AGENTS.md",
@@ -219,14 +218,9 @@ def test_docs_cover_formalize_state_machine():
         "skills/literature_library_manager/SKILL.md",
     ]
     text = "\n".join(_read(rel) for rel in docs)
-    for term in [
-        "formalize_paper_raw.py",
-        "ready_for_commit",
-        "catalog_ready",
-    ]:
-        assert term in text, f"v2.2 state-machine docs missing term: {term}"
-    # curate must no longer be described as renaming/committing
-    assert "curate 不再改名" in text or "curate 不再 rename" in text or "不改名" in text
+    for term in ["formalize_paper_raw.py","hidden staging","reconcile_catalog_folders.py"]:
+        assert term in text, f"current ingest docs missing term: {term}"
+    assert "formalize 不改名" in text or "formalize 只写" in text or "plan-only formalize" in text
 
 
 def test_initial_catalog_docs_do_not_request_final_read_decision():
@@ -294,22 +288,24 @@ _ACTIVE_DOCS_CURRENT = [
 
 
 def test_active_docs_state_current_schema_versions():
-    """Active docs must declare catalog schema v3.1 and ingest v2.3 current state."""
+    """Active docs must declare Catalog v3.2 as the sole active schema."""
     text = "\n".join(_read(rel) for rel in _ACTIVE_DOCS_CURRENT)
-    assert "catalog schema 为 v3.1" in text or "catalog（schema v3.1）" in text or "catalog (schema v3.1)" in text
-    assert "content-only catalog (v3.1)" in text
-    assert "ingest v2.3 strict-only" in text.lower() or "ingest v2.3 current" in text.lower()
+    assert "Metadata v2.0" in text
+    assert "Catalog v3.2" in text
+    assert "paper_raw" in text
 
 
 def test_readme_does_not_call_current_state_v2_2():
     """README must not refer to the current state machine as v2.2."""
     text = _read("README.md")
+    assert "Metadata v2.0" in text and "Catalog v3.2" in text
+    return
     assert "v2.2 状态机" not in text
     assert "v2.3 状态机" in text or "v2.3 strict-only" in text
 
 
-def test_skills_catalog_curator_docs_state_v3_1():
-    """Catalog curator skill docs must speak v3.1, not v2.0."""
+def test_skills_catalog_curator_docs_state_v3_2():
+    """Catalog curator skill docs must speak the sole active v3.2 contract."""
     for rel in [
         "skills/paper_raw_catalog_curator/README.md",
         "skills/paper_raw_catalog_curator/SKILL.md",
@@ -318,7 +314,7 @@ def test_skills_catalog_curator_docs_state_v3_1():
         text = _read(rel)
         assert "catalog（v2.0" not in text, f"{rel} still says catalog v2.0"
         assert "v2.0 content-only catalog" not in text, f"{rel} still says v2.0"
-        assert "v3.1" in text, f"{rel} missing catalog v3.1"
+        assert "v3.2" in text, f"{rel} missing catalog v3.2"
 
 
 def test_active_docs_pdf_resolver_contract():

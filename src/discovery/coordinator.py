@@ -246,6 +246,45 @@ def _batch_status(keyword_reports: list[KeywordDiscoveryReport]) -> tuple[str, i
     return "success", 0
 
 
+def _validate_discovery_options(
+    options: DiscoveryOptions,
+    keywords: list[str],
+    *,
+    max_workers: int,
+) -> None:
+    if max_workers < 1:
+        raise ValueError(f"max_workers must be >= 1; got {max_workers!r}")
+    if not keywords or not any(str(keyword or "").strip() for keyword in keywords):
+        raise ValueError("keywords must contain at least one non-blank query")
+    if options.mode not in {"refresh", "backfill", "hybrid"}:
+        raise ValueError(f"mode must be one of refresh/backfill/hybrid; got {options.mode!r}")
+    if options.page_size < 1:
+        raise ValueError(f"page_size must be >= 1; got {options.page_size!r}")
+    if options.refresh_pages < 0:
+        raise ValueError(f"refresh_pages must be >= 0; got {options.refresh_pages!r}")
+    if options.backfill_pages < 1:
+        raise ValueError(f"backfill_pages must be >= 1; got {options.backfill_pages!r}")
+    if options.max_candidates < 0:
+        raise ValueError(f"max_candidates must be >= 0; got {options.max_candidates!r}")
+    if options.max_pending_candidates < 1:
+        raise ValueError(f"max_pending_candidates must be >= 1; got {options.max_pending_candidates!r}")
+    if options.resume_pending_candidates < 0 or options.resume_pending_candidates >= options.max_pending_candidates:
+        raise ValueError(
+            "resume_pending_candidates must satisfy 0 <= resume < max_pending_candidates; "
+            f"got resume={options.resume_pending_candidates!r}, max={options.max_pending_candidates!r}"
+        )
+    if options.max_pages_total is not None and options.max_pages_total < 1:
+        raise ValueError(f"max_pages_total must be a positive integer or None; got {options.max_pages_total!r}")
+    if options.until_exhausted and options.max_pages_total is None:
+        raise ValueError("max_pages_total must be a positive integer when until_exhausted=True; got None")
+    if options.until_exhausted and options.mode not in {"backfill", "hybrid"}:
+        raise ValueError(f"until_exhausted requires mode backfill or hybrid; got {options.mode!r}")
+    if options.apply and not options.stage_to_paper_raw:
+        raise ValueError("apply=True requires stage_to_paper_raw=True")
+    if options.skip_duplicates and not options.stage_to_paper_raw:
+        raise ValueError("skip_duplicates=True requires stage_to_paper_raw=True")
+
+
 def _aggregate(keyword_reports: list[KeywordDiscoveryReport], budget: PageBudget) -> dict[str, Any]:
     agg = {
         "keywords": {
@@ -321,8 +360,7 @@ def run_discovery_batch(
     rate_limiters: dict[str, ProviderRateLimiter] | None = None,
 ) -> BatchDiscoveryReport:
     options = options or DiscoveryOptions()
-    if options.resume_pending_candidates < 0 or options.resume_pending_candidates >= options.max_pending_candidates:
-        raise ValueError("resume_pending_candidates must satisfy 0 <= resume < max_pending_candidates")
+    _validate_discovery_options(options, keywords, max_workers=max_workers)
     fetch_page = fetch_page or _default_fetch_page
     notebook = KeywordNotebookStore(options.notebook_dir)
     journal = PageJournalStore(options.pending_pages_dir)
@@ -331,7 +369,7 @@ def run_discovery_batch(
         "openalex": ProviderRateLimiter(default_config()),
         "crossref": ProviderRateLimiter(default_config()),
     }
-    limiter_lock = threading.Lock()
+    limiter_locks = {provider: threading.Lock() for provider in PROVIDERS}
     worker_id = f"worker-{uuid.uuid4().hex[:12]}"
     keyword_reports: dict[str, KeywordDiscoveryReport] = {}
 
@@ -353,7 +391,7 @@ def run_discovery_batch(
             **kwargs,
             domain_id=options.domain_id,
             rate_limiter=limiters.get(provider),
-            limiter_lock=limiter_lock,
+            limiter_lock=limiter_locks.setdefault(provider, threading.Lock()),
         )
 
     def run_refresh(keyword: str, nb: dict[str, Any], refresh_run_id: str, backpressure: bool) -> LaneReport:

@@ -61,3 +61,68 @@ returned to callers.
 - snapshot / archive / report outputs
 - plaintext in source files (the secret scanner in `scripts/pack_repo.py`
   detects hardcoded assignments and blocks packaging)
+
+## Source-Record Provider Path Security
+
+A security boundary exists between the external provider identifier and the
+filesystem path where source records are stored. Every provider name MUST be
+normalized through ``normalize_provider_slug()`` in
+``src/services/source_records.py`` before being used in any file path.
+
+The slug function enforces:
+- Strict character whitelist ``[a-z0-9][a-z0-9._-]{0,63}``
+- Rejection of path separators (``/``, ``\\``), directory traversal (``..``),
+  colons, control characters, NUL bytes, and Windows reserved names
+- Unicode NFC normalization with length limit and stripping
+
+The file writer additionally applies a **resolved containment check**:
+the target path must be a direct child of the resolved ``source_records/``
+directory of the paper workspace. Any escape raises
+``SourceRecordPathEscapeError``.
+
+Metadata ``raw_record_path`` values are validated at schema level: they must be
+POSIX-relative, be under ``source_records/``, and contain no ``..`` or
+backslash components.
+
+**If you discover a path-escape vulnerability**: open an issue immediately; do
+not commit code that uses string concatenation to build file paths from
+external provider strings.
+
+## Snapshot (Packaging) Security Boundary
+
+Repository source snapshots produced by ``scripts/pack_repo.py`` follow a
+strict **runtime-zero** policy:
+
+- Local tool state directories (``.workbuddy/``, ``.reasonix/``) are always
+  excluded regardless of profile or git-tracked status.
+- Runtime reports (``data/cleanup_report.json``) are always excluded.
+- Real ``data/paper_raw/`` and ``data/papers/`` workspaces are always excluded.
+- No runtime transaction journals, logs, caches, temporary files, credentials
+  files, or live data enter the snapshot.
+
+The snapshot manifest declares ``runtime_files_included`` and undergoes a
+self-check that verifies the archive matches the declared runtime-zero
+invariant. If the check fails, the ZIP is deleted and the command exits
+non-zero.
+
+Runtime-zero exclusions are defined centrally in
+``src/services/repository_hygiene.py`` and consumed by the packer and verifier.
+
+Transaction journals are untrusted persisted input. Recovery accepts trusted
+roots from configuration or CLI arguments, validates all lexical and resolved
+paths and symlink chains before mutation, and never derives a destructive root
+from a journal path. Destructive helpers reject symlinks by default.
+
+Fetch reports are sanitized recursively before persistence: credentials and
+all URL query strings are removed even when a URL appears inside free-form
+error text. Discovery exports are trusted only after identity, DOI, path,
+record-count, byte-size, and SHA-256 validation. Snapshot creation builds an
+immutable selection plan and fails closed if any selected file disappears,
+changes, becomes a symlink, exceeds a limit, or is omitted from the archive.
+Other file-type exclusions remain in ``scripts/pack_repo.py`` as the constants
+The canonical runtime classification and placeholder allowlist live in
+``src/services/repository_hygiene.py``; archive-format deny rules remain in
+``scripts/pack_repo.py``.
+
+**If you discover a packaging leak**: open an issue immediately with the
+snapshot type, profile, and the unexpected file path found in the archive.

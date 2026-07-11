@@ -188,6 +188,10 @@ def test_normal_tests_do_not_handwrite_ready_for_commit_artifacts():
         # pack_repo workspace sampling tests create *.paper.number markers as
         # test fixtures for sampling rules — these are not formalize artifacts.
         "tests/unit/test_pack_repo_rules.py",
+        # Concurrency regression fixtures intentionally build minimal numeric
+        # workspaces and durable commit journals in tmp_path.
+        "tests/e2e/test_transaction_concurrency.py",
+        "tests/contract/test_ingest_state_machine.py",
     }
     tokens = ("ready_for_commit", ".paper.number", "formalization.json")
     write_ops = (".write_text(", "atomic_write_json(", "_write_json(")

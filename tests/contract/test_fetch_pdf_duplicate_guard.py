@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from src.fetch.models import FetchResult
-from src.services.v2_library import empty_metadata
+from src.metadata.schema import empty_metadata
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent

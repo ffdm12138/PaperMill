@@ -10,7 +10,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import ALL_CATALOG_PATH, PAPERS_DIR, PROJECT_ROOT
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PROJECT_ROOT
 from scripts.prepare_write_article_workdir import prepare_workdir
 from src.naming import safe_child, validate_job_id
 from src.path_utils import normalize_repo_path
@@ -41,18 +41,16 @@ def _selected_summary(report: dict[str, Any]) -> str:
     lines = [
         "# Selected Papers",
         "",
-        "| paper_number | paper_id | title | read_decision | relevance |",
-        "| --- | --- | --- | --- | --- |",
+        "| paper_number | paper_id | title | read_decision |",
+        "| --- | --- | --- | --- |",
     ]
     for item in report.get("papers") or []:
-        screening = item.get("screening") or {}
         lines.append(
-            "| {paper_number} | {paper_id} | {title} | {decision} | {score} |".format(
+            "| {paper_number} | {paper_id} | {title} | {decision} |".format(
                 paper_number=item.get("paper_number", ""),
                 paper_id=item.get("paper_id", ""),
                 title=_paper_title(item).replace("|", "\\|"),
-                decision=screening.get("read_decision", ""),
-                score=screening.get("relevance_score", ""),
+                decision=(item.get("screening") or {}).get("read_decision", ""),
             )
         )
     lines.append("")
@@ -92,15 +90,13 @@ def create_write_job(args: argparse.Namespace) -> dict[str, Any]:
     prepare_args = argparse.Namespace(
         job_id=args.job_id,
         paper_numbers=args.paper_numbers,
-        primary_domain=args.primary_domain,
-        topic=args.topic,
-        read_decision=args.read_decision,
-        min_relevance_score=args.min_relevance_score,
+        categories=args.categories,
+        category_mode=args.category_mode,
         limit=args.limit,
         apply=True,
         dry_run=False,
         overwrite=args.overwrite,
-        all_catalog=Path(args.all_catalog),
+        catalog_root=Path(args.catalog_root),
         papers_dir=Path(args.papers_dir),
         write_dir=Path(args.write_dir),
     )
@@ -133,12 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--job-id", default=None)
     parser.add_argument("--paper-numbers", nargs="+", default=None)
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--primary-domain", default=None)
-    parser.add_argument("--topic", default=None)
-    parser.add_argument("--read-decision", default=None)
-    parser.add_argument("--min-relevance-score", type=float, default=None)
+    parser.add_argument("--categories", nargs="+", default=None)
+    parser.add_argument("--category-mode", choices=["union", "intersection"], default="union")
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--all-catalog", type=Path, default=Path(ALL_CATALOG_PATH))
+    parser.add_argument("--catalog-root", type=Path, default=Path(CATALOG_FOLDER_ROOT))
     parser.add_argument("--papers-dir", type=Path, default=Path(PAPERS_DIR))
     parser.add_argument("--write-dir", type=Path, default=Path(WRITE_DIR))
     return parser

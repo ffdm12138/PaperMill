@@ -55,9 +55,11 @@ MINERU_TMP_DIR = DATA_DIR / "tmp" / "mineru_raw_output"  # MinerU 原始输出�
 MINERU_LOG_DIR = DATA_DIR / "logs"          # MinerU 转换性能日志
 
 # 目录与账本
-CATALOG_DIR = DATA_DIR / "catalog"          # AI 维护的文献理解目录
-ALL_CATALOG_PATH = CATALOG_DIR / "all.catalog.json"
-PAPER_NUMBER_LEDGER_PATH = CATALOG_DIR / "paper_number_ledger.json"
+CATALOG_FOLDER_ROOT = DATA_DIR / "catalog"
+CATALOG_STATE_ROOT = CATALOG_FOLDER_ROOT / ".state"
+CATALOG_ALL_DIR = CATALOG_FOLDER_ROOT / "all"
+CATALOG_PENDING_DIR = CATALOG_FOLDER_ROOT / "_pending"
+PAPER_NUMBER_LEDGER_PATH = CATALOG_FOLDER_ROOT / "paper_number_ledger.json"
 DISCOVERY_DIR = DATA_DIR / "discovery"
 DISCOVERY_KEYWORD_NOTEBOOK_DIR = DISCOVERY_DIR / "keyword_notebooks"
 DISCOVERY_PENDING_PAGES_DIR = DISCOVERY_DIR / "pending_pages"
@@ -163,7 +165,7 @@ def enforce_backend_effort_override(parser, args) -> None:
 # 全文阅读 prompt 的单篇最大字符数（防止 prompt 过长）
 PAPER_MD_MAX_CHARS = _env_int("MINERU_PAPER_MD_MAX_CHARS", 12000, min_val=1)
 
-# 文献研究方向配置（用于 catalog screening.relevance_score 与 research_card 字段）
+# 文献研究方向配置（用于 Catalog v3.2 research_domains）
 RESEARCH_DOMAIN = _env_str("MINERU_RESEARCH_DOMAIN", "")
 
 # 写作/综述风格配置（用于 prompt builder）
@@ -178,7 +180,7 @@ SUPPORTED_FORMATS = {".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg"}
 for d in [
     RAW_DIR, PAPER_RAW_DIR, PAPERS_DIR,
     MINERU_TMP_DIR, MINERU_LOG_DIR,
-    CATALOG_DIR, DISCOVERY_DIR,
+    CATALOG_FOLDER_ROOT, CATALOG_STATE_ROOT, DISCOVERY_DIR,
     DISCOVERY_KEYWORD_NOTEBOOK_DIR,
     DISCOVERY_PENDING_PAGES_DIR, DISCOVERY_LOCKS_DIR, DISCOVERY_EXPORTS_DIR,
     JOBS_DIR, UPLOAD_STAGING_DIR,

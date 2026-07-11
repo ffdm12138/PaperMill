@@ -22,7 +22,7 @@ from src.discovery.keyword_notebook import (
 from src.discovery.models import PaperCandidate
 from src.discovery.pipeline import discover_papers_dual_lane
 from src.discovery.provider_models import DiscoveryPage
-from src.services.v2_library import empty_metadata
+from src.metadata.schema import empty_metadata
 
 
 pytestmark = pytest.mark.integration

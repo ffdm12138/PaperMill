@@ -102,7 +102,7 @@ tests, and SWIG/PyMuPDF imports; they did not fail validation.
   sets `status=ready_for_commit`.
 - `commit_paper_raw_to_papers.py` is now a transactional install: gate on
   `ready_for_commit` + formalization.json + marker → staging copytree → self-check
-  → `os.replace` → `activate_reserved` → rebuild all.catalog → postcheck → delete
+  → `os.replace` → `activate_reserved` → postcheck → delete
   source. Any post-install failure rolls back (removes `data/papers/<paper_id>`,
   deactivates the ledger number back to reserved). Fixes the v2.1 bug where a
   postcheck failure left a half-installed formal folder.
@@ -129,6 +129,6 @@ tests, and SWIG/PyMuPDF imports; they did not fail validation.
   conversion manifests. Handwritten formalization artifacts are limited to
   repair/audit/corruption negative cases.
 - `Catalog.load()` fallback is a tolerant read-only snapshot and does not write
-  ledger entries, markers, per-paper catalogs, all.catalog, or paper_index.
+  ledger entries, markers, or per-paper Catalogs.
 - `v2_library.py` remains intentionally unsplit in this patch; future module
   splitting is tracked in `docs/TECH_DEBT.md`.

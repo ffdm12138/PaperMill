@@ -36,7 +36,7 @@ from src.services.ingest_duplicate_guard import (
     build_ingest_duplicate_index,
 )
 from src.services.ingest_state import now_iso, read_import_status, write_import_status
-from src.services.v2_library import PaperNumberLedger
+from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json
 
 

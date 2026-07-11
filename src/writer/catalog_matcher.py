@@ -1,10 +1,11 @@
-"""Catalog matching for review-writing jobs using v2 all.catalog.json."""
+"""Catalog matching from deterministic Catalog v3.2 projections."""
 from __future__ import annotations
 
 import json
 from datetime import datetime
 
-from src.catalog import Catalog, build_compact_catalog_text
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR
+from src.catalog_folders.reader import CatalogFolderReader
 from src.naming import validate_paper_id
 from src.utils.atomic_io import atomic_write_json
 from src.writer.job_manager import JobManager
@@ -34,48 +35,34 @@ def selected_paper_ids(job_id: str, jm: JobManager | None = None) -> list[str]:
     return [p.get("paper_id") for p in data.get("selected_papers", []) if p.get("paper_id")]
 
 
-def _filter_by_topics(papers: list[dict], topics: list[str] | None) -> list[dict]:
-    if not topics:
-        return papers
-    wanted = set(topics)
-    out = []
-    for item in papers:
-        classification = item.get("classification") or {}
-        item_topics = set(
-            (classification.get("topic_tags") or [])
-            + (classification.get("domains") or [])
-            + (classification.get("methods") or [])
-        )
-        if wanted & item_topics:
-            out.append(item)
-    return out
+def build_compact_catalog_text(papers: list[dict]) -> str:
+    return "\n\n".join(json.dumps(paper, ensure_ascii=False) for paper in papers)
 
 
 def match_catalog(
     job_id: str,
     jm: JobManager | None = None,
-    catalog: Catalog | None = None,
+    catalog: CatalogFolderReader | None = None,
     force: bool = False,
-    topics: list[str] | None = None,
+    categories: list[str] | None = None,
+    category_mode: str = "union",
 ) -> dict:
     """Generate a catalog matching prompt and empty selected list."""
     jm = jm or JobManager()
-    catalog = catalog or Catalog()
+    catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
     jdir = jm.job_dir(job_id)
     norm = (jdir / "input" / "normalized_task.md").read_text(encoding="utf-8")
 
-    papers = _filter_by_topics(catalog.list_papers(), topics)
-    compact = build_compact_catalog_text(papers)
+    papers = catalog.list_papers(categories, mode=category_mode)
+    compact = "\n\n--- batch ---\n\n".join(build_compact_catalog_text(batch) for batch in catalog.compact_batches(categories, mode=category_mode))
 
     candidates = []
     for item in papers:
-        content_identity = item.get("content_identity") or {}
-        screening = item.get("screening") or {}
         candidates.append({
             "paper_number": item.get("paper_number"),
             "paper_id": item.get("paper_id"),
-            "title": content_identity.get("content_title_zh") or "",
-            "catalog_priority": screening.get("reading_priority") or screening.get("method_quality_score"),
+            "title": item.get("content_title_zh") or "",
+            "catalog_priority": item.get("read_decision"),
             "candidate_reason": "",
             "expected_use": "",
             "need_fulltext": None,
@@ -88,7 +75,7 @@ def match_catalog(
         "candidate_papers": candidates,
         "excluded_papers": [],
         "status": "prompt_generated",
-        "match_topics": topics or [],
+        "match_categories": categories or ["all"], "category_mode": category_mode,
     }, indent=2)
 
     sel_path = jdir / "planning" / "selected_papers.json"
@@ -113,7 +100,7 @@ def match_catalog(
         encoding="utf-8",
     )
 
-    prompt = f"""你是一位科研导师。请根据研究任务与 v2 文献目录，判断哪些文献需要全文精读。
+    prompt = f"""你是一位科研导师。请根据研究任务与 Catalog v3.2 快速投影，判断哪些文献需要全文精读。
 
 要求：
 1. 输出 JSON；
@@ -146,10 +133,10 @@ def confirm_selected_papers(
     selected: list[dict],
     confirmed_by: str = "manual",
     jm: JobManager | None = None,
-    catalog: Catalog | None = None,
+    catalog: CatalogFolderReader | None = None,
 ) -> dict:
     jm = jm or JobManager()
-    catalog = catalog or Catalog()
+    catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
     if not selected:
         raise ValueError("selected cannot be empty")
 
