@@ -61,3 +61,11 @@ runtime-zero, and the secret scan.
 
 Final reports give collected/passed/skipped counts, durations, anything not
 run, and pack evidence. A timeout is a failure, never a pass.
+
+## Current test suite
+
+- **1763 tests collected** (down from 1869 after July 2026 cleanup)
+- **Full gate** (`not stress and not external`): 1752 passed, 8 skipped, 0 failed
+- **Contract/hygiene gate**: 360 passed
+- **Fast gate** (`not process and not slow and not stress and not external`): 353 passed
+- **Snapshot**: runtime-zero, 481 payload files, 0 runtime files, secret scan passed

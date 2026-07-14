@@ -6,6 +6,7 @@ __pycache__/
 
 # ===== Local agent / research tooling state (never commit or pack) =====
 .reasonix/
+.local/
 # Tombstone files from test migration — must never re-enter repo or snapshot
 *._deleted
 *.py._deleted
@@ -30,7 +31,9 @@ data/discovery/locks/**
 data/discovery/exports/**
 data/discovery/logs/**
 data/discovery/reports/**
+data/discovery/keyword_notebooks_retired/**
 data/catalog/*
+data/catalog/.*
 data/catalog/metadata_quality_report.json
 data/cleanup_report.json
 data/locks/*.lock

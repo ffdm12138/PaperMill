@@ -4,6 +4,7 @@ import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.models import PaperCandidate
+from src.discovery.keyword_notebook import KeywordNotebookStore
 
 
 pytestmark = pytest.mark.unit
@@ -44,8 +45,14 @@ def test_provider_limiters_use_provider_scoped_locks(tmp_path):
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
     )
+    store = KeywordNotebookStore(options.notebook_dir)
+    for keyword, english in (("主题甲", "alpha"), ("主题乙", "beta")):
+        store.create_notebook(keyword, search_queries=[
+            {"query": keyword, "language": "zh", "source": "pytest"},
+            {"query": english, "language": "en", "source": "pytest"},
+        ])
 
-    run_discovery_batch(["alpha", "beta"], options=options, max_workers=2, fetch_page=fetch)
+    run_discovery_batch(["主题甲", "主题乙"], options=options, max_workers=2, fetch_page=fetch)
 
     assert len(seen_lock_ids["openalex"]) == 1
     assert len(seen_lock_ids["crossref"]) == 1

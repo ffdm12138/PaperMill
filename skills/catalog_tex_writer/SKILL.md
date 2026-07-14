@@ -15,8 +15,8 @@ job-local `article/` directory.
 
 1. Read `write/jobs/<job_id>/selected_catalog.json` first.
 2. For each selected `paper_number`, read
-   `write/jobs/<job_id>/article/<paper_number>/<paper_id>.catalog.json`.
-3. Read `write/jobs/<job_id>/article/<paper_number>/<paper_id>.metadata.json`
+   `write/jobs/<job_id>/article/<paper_number>/<paper_name>.catalog.json`.
+3. Read `write/jobs/<job_id>/article/<paper_number>/<paper_name>.metadata.json`
    for citation facts and BibTeX.
 4. Read copied Markdown only when a claim needs full-text confirmation.
 

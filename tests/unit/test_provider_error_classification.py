@@ -148,8 +148,8 @@ def test_failed_page_carries_failure_class():
     """failed_page must accept and store failure_class/http_status/retry_after."""
     page = failed_page(
         provider="openalex",
-        original_keyword="kw",
-        expanded_query="kw",
+        keyword_zh="关键词",
+        query="kw",
         lane="backfill",
         request_cursor="*",
         page_size=25,
@@ -168,8 +168,8 @@ def test_failed_page_defaults_failure_class_to_none():
     """When failure_class is not passed, it defaults to None (backward compat)."""
     page = failed_page(
         provider="openalex",
-        original_keyword="kw",
-        expanded_query="kw",
+        keyword_zh="关键词",
+        query="kw",
         lane="backfill",
         request_cursor="*",
         page_size=25,
@@ -184,8 +184,8 @@ def test_discovery_page_to_dict_includes_new_fields():
     """to_dict must serialize the new fields."""
     page = failed_page(
         provider="openalex",
-        original_keyword="kw",
-        expanded_query="kw",
+        keyword_zh="关键词",
+        query="kw",
         lane="backfill",
         request_cursor="*",
         page_size=25,

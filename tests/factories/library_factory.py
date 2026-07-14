@@ -17,7 +17,6 @@ def make_minimal_paths(tmp_path: Path) -> dict[str, Path]:
         "papers_dir": tmp_path / "papers",
         "catalog_dir": tmp_path / "catalog",
         "ledger_path": tmp_path / "catalog" / "paper_number_ledger.json",
-        "all_catalog_path": tmp_path / "catalog" / "all.catalog.json",
     }
 
 

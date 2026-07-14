@@ -65,17 +65,17 @@ def _load_article_entries(job_dir: Path, selected: dict) -> list[dict]:
     article_dir = job_dir / "article"
     for item in selected.get("papers") or []:
         number = str(item.get("paper_number") or "")
-        paper_id = str(item.get("paper_id") or "")
+        paper_name = str(item.get("paper_name") or "")
         folder = article_dir / number
         metadata = _read_json(_find_one(folder, "*.metadata.json"))
         catalog = _read_json(_find_one(folder, "*.catalog.json"))
         out.append({
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "folder": folder,
             "metadata": metadata,
             "catalog": catalog,
-            "bib_key": bib_key_for_entry({"paper_id": paper_id, "metadata": metadata}),
+            "bib_key": bib_key_for_entry({"paper_name": paper_name, "metadata": metadata}),
         })
     return out
 
@@ -91,7 +91,7 @@ def _paper_label(entry: dict) -> str:
     title = (
         (metadata.get("title") or {}).get("original")
         or (catalog.get("content_identity") or {}).get("content_title_zh")
-        or entry.get("paper_id")
+        or entry.get("paper_name")
     )
     authors = metadata.get("authors") or []
     first = authors[0] if authors else {}
@@ -182,7 +182,7 @@ def write_article(args: argparse.Namespace) -> dict:
     if tex_dir.exists() and args.apply and not args.overwrite:
         raise FileExistsError(f"tex directory already exists: {tex_dir}")
 
-    bib_entries = [bibtex_for_entry({"paper_id": e["paper_id"], "metadata": e["metadata"]}) for e in entries]
+    bib_entries = [bibtex_for_entry({"paper_name": e["paper_name"], "metadata": e["metadata"]}) for e in entries]
     bib_text = "\n\n".join(bib_entries) + "\n"
     bib_keys = sorted(parse_blocks(bib_text).keys())
     sections = _section_text(entries, args.title, args.language)

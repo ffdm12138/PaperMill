@@ -5,7 +5,7 @@ destructive operation (rmtree, copytree, os.replace):
 
     1. transaction_id is a canonical UUID (no legacy non-UUID format).
     2. paper_number matches ``^[0-9]{16}$``.
-    3. paper_id contains no path separators, ``..``, drive prefixes, or NUL.
+    3. paper_name contains no path separators, ``..``, drive prefixes, or NUL.
     4. Every resolved path stays inside its expected root (containment).
     5. Symlink chains are rejected — no symlink on any parent component
        between root and candidate.
@@ -22,7 +22,7 @@ import uuid as _uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.naming import validate_paper_id as _validate_paper_id
+from src.naming import validate_paper_name as _validate_paper_name
 
 # ── Exceptions ─────────────────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ class TransactionSymlinkError(TransactionPathError):
 # ── Pattern constants ──────────────────────────────────────────────────
 
 _PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
-_PAPER_ID_SAFE_RE = re.compile(r"^[A-Za-z0-9_\-一-鿿]+$")
+_paper_name_SAFE_RE = re.compile(r"^[A-Za-z0-9_\-一-鿿]+$")
 
 
 # ── Identity validators ────────────────────────────────────────────────
@@ -86,18 +86,18 @@ def validate_paper_number(value: str) -> str:
     return value
 
 
-def validate_paper_id(value: str) -> str:
-    """Return validated paper_id or raise.
+def validate_paper_name(value: str) -> str:
+    """Return validated paper_name or raise.
 
-    Reuses ``src.naming.validate_paper_id`` for the character-level
+    Reuses ``src.naming.validate_paper_name`` for the character-level
     rules, then adds extra guards for ``..``, separators, drive prefixes
     and NUL beyond what the base validator enforces.
     """
     if not isinstance(value, str) or not value:
-        raise TransactionIdentityError("paper_id must be a non-empty string")
+        raise TransactionIdentityError("paper_name must be a non-empty string")
     _assert_no_path_escape(value)
-    # Reuse the project's existing paper_id character checks
-    _validate_paper_id(value)
+    # Reuse the project's existing paper_name character checks
+    _validate_paper_name(value)
     return value
 
 
@@ -303,14 +303,14 @@ def commit_source_workspace_path(paper_raw_root: Path, paper_number: str) -> Pat
     return (paper_raw_root / paper_number).resolve()
 
 
-def commit_staging_path(papers_root: Path, paper_id: str, transaction_id: str) -> Path:
+def commit_staging_path(papers_root: Path, paper_name: str, transaction_id: str) -> Path:
     """Return the expected commit staging path."""
-    return (papers_root / f".{paper_id}.staging_{transaction_id}").resolve()
+    return (papers_root / f".{paper_name}.staging_{transaction_id}").resolve()
 
 
-def commit_final_path(papers_root: Path, paper_id: str) -> Path:
+def commit_final_path(papers_root: Path, paper_name: str) -> Path:
     """Return the expected commit final (formal) path."""
-    return (papers_root / paper_id).resolve()
+    return (papers_root / paper_name).resolve()
 
 
 def rollback_staging_path(paper_raw_root: Path, paper_number: str, transaction_id: str) -> Path:
@@ -318,9 +318,9 @@ def rollback_staging_path(paper_raw_root: Path, paper_number: str, transaction_i
     return (paper_raw_root / f".rollback_{paper_number}_{transaction_id}").resolve()
 
 
-def rollback_quarantine_path(papers_root: Path, paper_id: str, transaction_id: str) -> Path:
+def rollback_quarantine_path(papers_root: Path, paper_name: str, transaction_id: str) -> Path:
     """Return the expected rollback formal quarantine path."""
-    return (papers_root / f".{paper_id}.rollback_quarantine_{transaction_id}").resolve()
+    return (papers_root / f".{paper_name}.rollback_quarantine_{transaction_id}").resolve()
 
 
 # ── Commit journal validation ───────────────────────────────────────────
@@ -344,7 +344,7 @@ def validate_commit_journal(
     # --- Identity fields ---
     transaction_id = validate_transaction_id(str(raw.get("transaction_id") or ""))
     paper_number = validate_paper_number(str(raw.get("paper_number") or ""))
-    paper_id = validate_paper_id(str(raw.get("paper_id") or ""))
+    paper_name = validate_paper_name(str(raw.get("paper_name") or ""))
 
     # --- Journal filename consistency ---
     expected_name = commit_journal_name(transaction_id)
@@ -430,11 +430,11 @@ def validate_commit_journal(
     check_destructive_path(
         papers_root, staging_path,
         field="staging_path",
-        expected_name=f".{paper_id}.staging_{transaction_id}",
+        expected_name=f".{paper_name}.staging_{transaction_id}",
         not_equal_to=source_path,
     )
     # Enforce exact canonical path
-    expected_staging = commit_staging_path(papers_root, paper_id, transaction_id)
+    expected_staging = commit_staging_path(papers_root, paper_name, transaction_id)
     assert_exact_path(staging_path, expected_staging, field="staging_path")
 
     # --- Final ---
@@ -445,11 +445,11 @@ def validate_commit_journal(
     check_destructive_path(
         papers_root, final_path,
         field="final_path",
-        expected_name=paper_id,
+        expected_name=paper_name,
         not_equal_to=staging_path,
     )
     # Enforce exact canonical path
-    expected_final = commit_final_path(papers_root, paper_id)
+    expected_final = commit_final_path(papers_root, paper_name)
     assert_exact_path(final_path, expected_final, field="final_path")
     if source_path.resolve(strict=False) == final_path.resolve(strict=False):
         raise TransactionContainmentError("commit source aliases final path")
@@ -457,7 +457,7 @@ def validate_commit_journal(
     return {
         "transaction_id": transaction_id,
         "paper_number": paper_number,
-        "paper_id": paper_id,
+        "paper_name": paper_name,
         "phase": phase,
         "source_workspace": source_path,
         "staging_path": staging_path,
@@ -485,7 +485,7 @@ def validate_rollback_journal(
     # --- Identity fields ---
     transaction_id = validate_transaction_id(str(raw.get("transaction_id") or ""))
     paper_number = validate_paper_number(str(raw.get("paper_number") or ""))
-    paper_id = validate_paper_id(str(raw.get("paper_id") or ""))
+    paper_name = validate_paper_name(str(raw.get("paper_name") or ""))
 
     # --- Journal filename ---
     expected_name = rollback_journal_name(transaction_id)
@@ -513,10 +513,10 @@ def validate_rollback_journal(
     check_destructive_path(
         papers_root, formal_path,
         field="formal_path",
-        expected_name=paper_id,
+        expected_name=paper_name,
     )
     # Enforce exact canonical path
-    expected_formal = commit_final_path(papers_root, paper_id)
+    expected_formal = commit_final_path(papers_root, paper_name)
     assert_exact_path(formal_path, expected_formal, field="formal_path")
 
     # --- Raw path ---
@@ -556,13 +556,13 @@ def validate_rollback_journal(
         field="formal_quarantine",
     )
     # Enforce exact canonical path
-    expected_quarantine = rollback_quarantine_path(papers_root, paper_id, transaction_id)
+    expected_quarantine = rollback_quarantine_path(papers_root, paper_name, transaction_id)
     assert_exact_path(quarantine_path, expected_quarantine, field="formal_quarantine")
 
     return {
         "transaction_id": transaction_id,
         "paper_number": paper_number,
-        "paper_id": paper_id,
+        "paper_name": paper_name,
         "phase": phase,
         "formal_path": formal_path,
         "raw_path": raw_path,

@@ -32,7 +32,7 @@ def _paper_title(item: dict[str, Any]) -> str:
     return str(
         _catalog_value(item, "content_identity", "content_title_zh")
         or _catalog_value(item, "metadata", "title", "original")
-        or item.get("paper_id")
+        or item.get("paper_name")
         or ""
     )
 
@@ -41,14 +41,14 @@ def _selected_summary(report: dict[str, Any]) -> str:
     lines = [
         "# Selected Papers",
         "",
-        "| paper_number | paper_id | title | read_decision |",
+        "| paper_number | paper_name | title | read_decision |",
         "| --- | --- | --- | --- |",
     ]
     for item in report.get("papers") or []:
         lines.append(
-            "| {paper_number} | {paper_id} | {title} | {decision} |".format(
+            "| {paper_number} | {paper_name} | {title} | {decision} |".format(
                 paper_number=item.get("paper_number", ""),
-                paper_id=item.get("paper_id", ""),
+                paper_name=item.get("paper_name", ""),
                 title=_paper_title(item).replace("|", "\\|"),
                 decision=(item.get("screening") or {}).get("read_decision", ""),
             )

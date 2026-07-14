@@ -16,8 +16,8 @@ python scripts/write_catalog_tex_article.py --job-id demo --title "Mini Review" 
 python scripts/check_write_tex_project.py --job-id demo --compile
 ```
 
-The writing workflow uses the local generated `data/catalog/all.catalog.json`
-only as a content-only screening index, then copies selected paper folders into
-the job. `selected_catalog.json` is a per-job working snapshot, not the global
-catalog. TeX and BibTeX generation must use the copied `article/` metadata, not
+The writing workflow reads paper Catalogs through `data/catalog/<category>/`
+category folders. Each member link points to a complete formal paper directory.
+`selected_catalog.json` is a per-job working snapshot, not the global catalog.
+TeX and BibTeX generation must use the copied `article/` metadata, not
 direct `data/papers` paths.

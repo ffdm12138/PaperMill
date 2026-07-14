@@ -75,9 +75,9 @@
         <!-- 文献列表 -->
         <div class="card">
             <h2>文献库 <button class="btn btn-ghost btn-sm" onclick="loadPapers()">🔄 刷新</button></h2>
-            <div class="hint">点击 paper_id 可查看全文；右侧按钮生成对应 prompt（不调 LLM，仅复制粘贴）。</div>
+            <div class="hint">点击 paper_name 可查看全文；右侧按钮生成对应 prompt（不调 LLM，仅复制粘贴）。</div>
             <table>
-                <thead><tr><th>#</th><th>paper_id</th><th>原始文件</th><th>字符</th><th>图</th><th>摘要</th><th>操作</th></tr></thead>
+                <thead><tr><th>#</th><th>paper_name</th><th>原始文件</th><th>字符</th><th>图</th><th>摘要</th><th>操作</th></tr></thead>
                 <tbody id="papersBody"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
             </table>
         </div>
@@ -92,19 +92,19 @@
             </div>
 
             <div id="tab-entry">
-                <div class="row"><input type="text" id="entryPid" placeholder="paper_id（从上方列表复制）"></div>
+                <div class="row"><input type="text" id="entryPid" placeholder="paper_name（从上方列表复制）"></div>
                 <button class="btn btn-primary" onclick="genEntry()">生成「补全该文献目录条目」Prompt</button>
             </div>
 
             <div id="tab-plan" class="hidden">
                 <div class="row"><input type="text" id="planQ" placeholder="研究问题，如：风吹雪升华参数化的发展脉络"></div>
                 <button class="btn btn-primary" onclick="genPlan()">生成「根据目录规划阅读」Prompt</button>
-                <p class="hint">需先完成 paper_raw 入库与 curation（all.catalog.json）。</p>
+                <p class="hint">需先完成 paper_raw 入库与 Catalog 分类。</p>
             </div>
 
             <div id="tab-full" class="hidden">
                 <div class="row"><input type="text" id="fullQ" placeholder="研究问题"></div>
-                <div class="row"><input type="text" id="fullIds" placeholder="paper_id 列表，逗号分隔，如 1999_dery_吹雪体相模型,2025_huang_雪粒破碎促进升华"></div>
+                <div class="row"><input type="text" id="fullIds" placeholder="paper_name 列表，逗号分隔，如 1999_dery_吹雪体相模型,2025_huang_雪粒破碎促进升华"></div>
                 <button class="btn btn-primary" onclick="genFull()">生成「基于全文写作」Prompt</button>
             </div>
 
@@ -118,8 +118,8 @@
 
         <!-- 目录 -->
         <div class="card">
-            <h2>文献目录 (all.catalog.json) <button class="btn btn-ghost btn-sm" onclick="validateCatalog()">校验</button> <button class="btn btn-ghost btn-sm" onclick="loadCatalog()">查看目录</button></h2>
-            <div class="hint">目录由 curation 生成，事实源为 <code>data/catalog/all.catalog.json</code>。</div>
+            <h2>Catalog 分类目录 <button class="btn btn-ghost btn-sm" onclick="validateCatalog()">校验</button> <button class="btn btn-ghost btn-sm" onclick="loadCatalog()">查看目录</button></h2>
+            <div class="hint">事实源为 <code>data/catalog/&lt;中文关键词分类&gt;/</code>，每个成员链接到完整正式论文目录。</div>
             <pre id="catalogView" class="mdview" style="min-height:120px;"></pre>
         </div>
 
@@ -130,9 +130,9 @@
                 <button class="tab active" onclick="viewerTab('md',event)">Markdown</button>
                 <button class="tab" onclick="viewerTab('img',event)">图片</button>
             </div>
-            <div id="viewerMd"><pre class="mdview" id="viewerMdPre" style="min-height:200px;">点击文献列表中的 paper_id 查看全文</pre></div>
+            <div id="viewerMd"><pre class="mdview" id="viewerMdPre" style="min-height:200px;">点击文献列表中的 paper_name 查看全文</pre></div>
             <div id="viewerImg" class="hidden">
-                <div class="hint" id="imgHint">点击文献列表中的 paper_id 加载图片</div>
+                <div class="hint" id="imgHint">点击文献列表中的 paper_name 加载图片</div>
                 <div id="imgGrid" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
             </div>
         </div>
@@ -149,7 +149,7 @@
                 const d = await (await fetch(API + '/status')).json();
                 const lib = d.library;
                 document.getElementById('statusBar').innerHTML =
-                    `<span>● 运行中</span><span>文献: ${lib.total_papers} 篇</span><span>字符: ${lib.total_md_chars}</span><span>图片: ${lib.total_images}</span><span>目录条目: ${d.catalog_papers}</span>`;
+                    `<span>● 运行中</span><span>正式论文: ${d.formal_papers} 篇</span><span>分类状态: ${d.category_state}</span>`;
             } catch(e) {
                 document.getElementById('statusBar').innerHTML = '<span style="color:red">服务未连接</span>';
             }
@@ -164,7 +164,7 @@
                 const papers = d.papers;
                 if (!papers.length) { body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:20px">暂无文献</td></tr>'; return; }
                 body.innerHTML = papers.map((p, i) => {
-                    const pid = p.paper_id;
+                    const pid = p.paper_name;
                     const raw = p.raw_pdf.split(/[\\/]/).pop();
                     return `<tr>
                         <td>${i+1}</td>
@@ -238,8 +238,8 @@
 
         async function genEntry() {
             const pid = document.getElementById('entryPid').value.trim();
-            if (!pid) return showToast('请填 paper_id', true);
-            const r = await fetch(API + '/prompt/catalog-entry', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paper_id:pid})});
+            if (!pid) return showToast('请填 paper_name', true);
+            const r = await fetch(API + '/prompt/catalog-entry', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paper_name:pid})});
             const d = await r.json();
             if (!r.ok) return showToast(d.detail || '失败', true);
             currentPrompt = d.prompt; document.getElementById('promptOut').value = d.prompt;
@@ -257,8 +257,8 @@
         async function genFull() {
             const q = document.getElementById('fullQ').value.trim();
             const ids = document.getElementById('fullIds').value.split(',').map(s=>s.trim()).filter(Boolean);
-            if (!q || !ids.length) return showToast('请填问题和 paper_id', true);
-            const r = await fetch(API + '/prompt/read-fulltext', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,paper_ids:ids})});
+            if (!q || !ids.length) return showToast('请填问题和 paper_name', true);
+            const r = await fetch(API + '/prompt/read-fulltext', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,paper_names:ids})});
             const d = await r.json();
             if (!r.ok) return showToast(d.detail || '失败', true);
             currentPrompt = d.prompt; document.getElementById('promptOut').value = d.prompt;
@@ -296,7 +296,7 @@
                 try {
                     const r = await fetch(API + '/upload', {method:'POST', body:form});
                     const d = await r.json();
-                    status.innerHTML = d.status === 'success' ? `✅ ${file.name} → ${d.paper_id} (${d.md_chars} 字符, ${d.images_count} 图)` : `❌ ${file.name}: ${d.detail||'失败'}`;
+                    status.innerHTML = d.status === 'success' ? `✅ ${file.name} → ${d.paper_name} (${d.md_chars} 字符, ${d.images_count} 图)` : `❌ ${file.name}: ${d.detail||'失败'}`;
                 } catch(e) { status.innerHTML = `❌ ${file.name}: ${e.message}`; }
             }
             loadPapers(); loadStatus(); loadCatalog();

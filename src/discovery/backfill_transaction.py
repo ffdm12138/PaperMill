@@ -1,6 +1,6 @@
 """Journal-first Backfill page transaction.
 
-The state execution lock serializes one keyword+expansion+provider backfill
+The state execution lock serializes one keyword+query+provider backfill
 state across processes while avoiding long-held notebook locks. Provider
 requests happen under the state lock, but notebook file locks are held only for
 short cursor reads / CAS commits.
@@ -13,9 +13,9 @@ from typing import Any, Callable, Literal
 
 from filelock import FileLock, Timeout
 
+from src.discovery.constants import INITIAL_CURSOR
 from src.discovery.keyword_notebook import (
     CursorConflictError,
-    INITIAL_CURSOR,
     KeywordNotebookStore,
 )
 from src.discovery.page_journal import (
@@ -101,21 +101,24 @@ def _result(
 
 def recover_last_committed_journal(
     *,
-    keyword: str,
+    keyword_zh: str,
     keyword_id: str,
-    expansion_id: str,
+    query_id: str,
+    query: str,
+    query_language: str,
     provider: str,
+    request_signature_hash: str,
     notebook_store: KeywordNotebookStore,
     journal_store: PageJournalStore,
 ) -> BackfillTransactionResult | None:
     """Idempotently cross the journal cursor-commit boundary after a crash."""
-    bf = notebook_store.get_backfill_state(keyword, expansion_id, provider)
+    bf = notebook_store.get_backfill_state(keyword_zh, query_id, provider)
     page_id_value = str(bf.get("last_committed_page_id") or "")
     if not page_id_value:
         return None
     page_path = journal_store.page_path(
         keyword_id=keyword_id,
-        expansion_id=expansion_id,
+        query_id=query_id,
         provider=provider,
         lane="backfill",
         page_id=page_id_value,
@@ -142,7 +145,10 @@ def recover_last_committed_journal(
         )
     expected = {
         "keyword_id": keyword_id,
-        "expansion_id": expansion_id,
+        "keyword_zh": keyword_zh,
+        "query_id": query_id,
+        "query": query,
+        "query_language": query_language,
         "provider": provider,
         "lane": "backfill",
         "page_id": page_id_value,
@@ -157,6 +163,15 @@ def recover_last_committed_journal(
                 error_type="journal_corruption",
                 stop_reason="recovery_corruption",
             )
+    if page_data.get("request_signature", {}).get("hash") != request_signature_hash:
+        return _result(
+            status="failed_retryable",
+            page_path=page_path,
+            page_id=page_id_value,
+            safe_error="last committed journal request signature mismatch",
+            error_type="journal_corruption",
+            stop_reason="recovery_corruption",
+        )
     state = str(page_data.get("state") or "")
     if state in {"cursor_committed", "draining", "drained"}:
         return None
@@ -200,18 +215,19 @@ def state_lock_path(
     locks_dir: Path,
     *,
     keyword_id: str,
-    expansion_id: str,
+    query_id: str,
     provider: str,
 ) -> Path:
-    return Path(locks_dir) / keyword_id / expansion_id / f"{provider}.backfill.lock"
+    return Path(locks_dir) / keyword_id / query_id / f"{provider}.backfill.lock"
 
 
 def run_backfill_page_transaction(
     *,
-    keyword: str,
+    keyword_zh: str,
     keyword_id: str,
-    expansion_id: str,
-    expanded_query: str,
+    query_id: str,
+    query: str,
+    query_language: str,
     provider: str,
     notebook_store: KeywordNotebookStore,
     journal_store: PageJournalStore,
@@ -229,18 +245,27 @@ def run_backfill_page_transaction(
     lock_path = state_lock_path(
         locks_dir,
         keyword_id=keyword_id,
-        expansion_id=expansion_id,
+        query_id=query_id,
         provider=provider,
     )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(lock_path), timeout=lock_timeout)
     try:
         with lock:
+            notebook_store.ensure_backfill_generation(
+                keyword_zh,
+                query_id,
+                provider,
+                request_signature_hash=request_signature["hash"],
+            )
             recovery = recover_last_committed_journal(
-                keyword=keyword,
+                keyword_zh=keyword_zh,
                 keyword_id=keyword_id,
-                expansion_id=expansion_id,
+                query_id=query_id,
+                query=query,
+                query_language=query_language,
                 provider=provider,
+                request_signature_hash=request_signature["hash"],
                 notebook_store=notebook_store,
                 journal_store=journal_store,
             )
@@ -253,7 +278,7 @@ def run_backfill_page_transaction(
             # cursor_committed; the totals were already advanced pre-crash.
             recovery_pages = recovery.pages_recovered if recovery is not None else 0
             recovery_journals = recovery.journals_recovered if recovery is not None else 0
-            if notebook_store.is_backfill_exhausted(keyword, expansion_id, provider):
+            if notebook_store.is_backfill_exhausted(keyword_zh, query_id, provider):
                 return _result(
                     status="exhausted",
                     page_path=None,
@@ -263,17 +288,17 @@ def run_backfill_page_transaction(
                     journals_recovered=recovery_journals,
                     stop_reason="provider_exhausted",
                 )
-            cursor = notebook_store.get_backfill_cursor(keyword, expansion_id, provider) or INITIAL_CURSOR
+            cursor = notebook_store.get_backfill_cursor(keyword_zh, query_id, provider) or INITIAL_CURSOR
             page_id_value = backfill_page_id(
                 keyword_id=keyword_id,
-                expansion_id=expansion_id,
+                query_id=query_id,
                 provider=provider,
                 request_signature_hash=request_signature["hash"],
                 request_cursor=cursor,
             )
             page_path = journal_store.page_path(
                 keyword_id=keyword_id,
-                expansion_id=expansion_id,
+                query_id=query_id,
                 provider=provider,
                 lane="backfill",
                 page_id=page_id_value,
@@ -287,8 +312,9 @@ def run_backfill_page_transaction(
             else:
                 page = fetch_page(
                     provider,
-                    expanded_query,
-                    original_keyword=keyword,
+                    query,
+                    keyword_zh=keyword_zh,
+                    query_language=query_language,
                     lane="backfill",
                     page_size=page_size,
                     cursor=cursor,
@@ -306,8 +332,8 @@ def run_backfill_page_transaction(
                             stop_reason="page_budget_exhausted",
                         )
                     notebook_store.record_backfill_error(
-                        keyword,
-                        expansion_id,
+                        keyword_zh,
+                        query_id,
                         provider,
                         error=page.safe_error or page.error_type or "failed",
                     )
@@ -329,14 +355,21 @@ def run_backfill_page_transaction(
                         safe_error=page.safe_error or page.error_type or "provider failed",
                         error_type=_error_type,
                     )
+                generation = int(
+                    notebook_store.get_backfill_state(
+                        keyword_zh, query_id, provider,
+                    ).get("generation") or 1
+                )
                 page_data = journal_store.make_page(
                     page_id=page_id_value,
                     keyword_id=keyword_id,
-                    keyword=keyword,
-                    expansion_id=expansion_id,
-                    expanded_query=expanded_query,
+                    keyword_zh=keyword_zh,
+                    query_id=query_id,
+                    query=query,
+                    query_language=query_language,
                     provider=provider,
                     lane="backfill",
+                    generation=max(1, generation),
                     request_signature_value=request_signature,
                     request_cursor=cursor,
                     next_cursor=page.next_cursor,
@@ -349,8 +382,8 @@ def run_backfill_page_transaction(
             if page_data["state"] == "fetched":
                 try:
                     notebook_store.commit_backfill_cursor(
-                        keyword,
-                        expansion_id,
+                        keyword_zh,
+                        query_id,
                         provider,
                         expected_cursor=cursor,
                         next_cursor=page_data.get("next_cursor"),

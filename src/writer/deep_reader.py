@@ -16,12 +16,12 @@ import shutil
 from pathlib import Path
 
 from src.writer.job_manager import JobManager
-from src.catalog_folders.reader import CatalogFolderReader
-from src.naming import safe_child, validate_paper_id
-from src.writer.catalog_matcher import load_selected, selected_paper_ids
+from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
+from src.naming import safe_child, validate_paper_name
+from src.writer.catalog_matcher import load_selected, selected_paper_names
 from src.writer.bib_manager import job_local_bib_keys, resolve_work_dir
 from src.writer.safe_write import write_text_safely
-from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PAPER_MD_MAX_CHARS
+from config.settings import PAPERS_DIR, PAPER_MD_MAX_CHARS
 from src import bib as bibmod
 
 _WORKSET_MANIFEST = "planning/workset_manifest.json"
@@ -81,7 +81,7 @@ def _figure_candidates_block(pid: str, library) -> str:
 
 
 def _load_workset(job_id: str, jm: JobManager, jdir: Path) -> tuple[dict | None, dict[str, str]]:
-    """Load workset_manifest.json and build paper_id → work_dir mapping.
+    """Load workset_manifest.json and build paper_name → work_dir mapping.
 
     Returns (manifest, pid_to_work_dir).  manifest is None if not prepared.
     ``work_dir`` values are resolved against the job root (relative or absolute),
@@ -93,7 +93,7 @@ def _load_workset(job_id: str, jm: JobManager, jdir: Path) -> tuple[dict | None,
     manifest = json.loads(wp.read_text(encoding="utf-8"))
     mapping: dict[str, str] = {}
     for entry in manifest.get("copied", []):
-        pid = entry.get("paper_id", "")
+        pid = entry.get("paper_name", "")
         wd = entry.get("work_dir", "")
         if pid and wd:
             mapping[pid] = str(resolve_work_dir(jdir, wd))
@@ -155,7 +155,7 @@ def prepare_workset(job_id: str, jm: JobManager | None = None,
                     apply: bool = True) -> dict:
     """Plan or copy selected papers into write/jobs/<job_id>/article/<paper_number>/."""
     jm = jm or JobManager()
-    catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=papers_dir)
+    catalog = catalog or create_safe_catalog_reader()
     sel = load_selected(job_id, jm)
     if sel.get("selection_status") != "confirmed":
         raise RuntimeError("selected_papers.json is not confirmed，拒绝复制 workset")
@@ -166,28 +166,28 @@ def prepare_workset(job_id: str, jm: JobManager | None = None,
     copied: list[dict] = []
     skipped: list[dict] = []
     for item in sel.get("selected_papers", []):
-        pid = item.get("paper_id", "")
+        pid = item.get("paper_name", "")
         entry = catalog.get(pid)
         if entry is None:
-            skipped.append({"paper_id": pid, "reason": "not_in_catalog"})
+            skipped.append({"paper_name": pid, "reason": "not_in_catalog"})
             continue
         number = str(entry.get("paper_number", "") or "")
         if not number:
-            skipped.append({"paper_id": pid, "reason": "no_paper_number"})
+            skipped.append({"paper_name": pid, "reason": "no_paper_number"})
             continue
         try:
             source = Path(str(entry["formal_directory"]))
         except (KeyError, ValueError):
-            skipped.append({"paper_id":pid,"paper_number":number,"reason":"formal_registry_resolution_failed"})
+            skipped.append({"paper_name":pid,"paper_number":number,"reason":"formal_registry_resolution_failed"})
             continue
         if _is_forbidden_source(source) or not source.exists():
-            skipped.append({"paper_id": pid, "paper_number": number,
+            skipped.append({"paper_name": pid, "paper_number": number,
                             "reason": "formal_folder_missing_or_forbidden"})
             continue
         target = safe_child(article_dir, number)
         if target.exists():
             if not overwrite:
-                skipped.append({"paper_id": pid, "paper_number": number, "reason": "exists"})
+                skipped.append({"paper_name": pid, "paper_number": number, "reason": "exists"})
                 continue
             if apply:
                 shutil.rmtree(target)
@@ -203,7 +203,7 @@ def prepare_workset(job_id: str, jm: JobManager | None = None,
             rel_work_dir = target.relative_to(jdir).as_posix()
         except ValueError:
             rel_work_dir = str(target)
-        copied.append({"paper_id": pid, "paper_number": number,
+        copied.append({"paper_name": pid, "paper_number": number,
                         "work_dir": rel_work_dir, "status": status})
 
     manifest = {
@@ -221,7 +221,7 @@ def prepare_workset(job_id: str, jm: JobManager | None = None,
     return manifest
 
 
-def deep_read(job_id: str, paper_ids: list[str] | None = None,
+def deep_read(job_id: str, paper_names: list[str] | None = None,
               force: bool = False,
               jm: JobManager | None = None,
               catalog: CatalogFolderReader | None = None) -> dict:
@@ -231,7 +231,7 @@ def deep_read(job_id: str, paper_ids: list[str] | None = None,
     （要求先运行 prepare-workset --apply）。
 
     前置：catalog_selection_confirmed=True。
-    paper_ids 为 None 时取 selected_papers.json 中已确认的列表。
+    paper_names 为 None 时取 selected_papers.json 中已确认的列表。
     """
     jm = jm or JobManager()
     # ``catalog`` is retained in the signature for callers/tests but no longer
@@ -247,30 +247,30 @@ def deep_read(job_id: str, paper_ids: list[str] | None = None,
         raise RuntimeError(
             "Cannot deep-read before selected_papers.json is confirmed. "
             "Run confirm-papers first.")
-    if paper_ids is None:
-        paper_ids = [p["paper_id"] for p in sel.get("selected_papers", [])]
-    if not paper_ids:
+    if paper_names is None:
+        paper_names = [p["paper_name"] for p in sel.get("selected_papers", [])]
+    if not paper_names:
         raise RuntimeError("selected_papers 为空，无可精读文献。")
-    for pid in paper_ids:
+    for pid in paper_names:
         try:
-            validate_paper_id(pid)
+            validate_paper_name(pid)
         except ValueError as e:
-            raise RuntimeError(f"Invalid paper_id: {pid!r} — {e}")
+            raise RuntimeError(f"Invalid paper_name: {pid!r} — {e}")
 
     # Resolve reading source from the prepared job-local article workset.
     manifest, pid_to_dir = _load_workset(job_id, jm, jdir)
     if manifest is None:
         raise RuntimeError(
             "workset_manifest.json not found. "
-            "Run `write_review.py prepare-workset --job ... --apply` first.")
-    missing = [pid for pid in paper_ids if pid not in pid_to_dir]
+            "Run `scripts/create_write_job.py --paper-nums ... --apply` first.")
+    missing = [pid for pid in paper_names if pid not in pid_to_dir]
     if missing:
         raise RuntimeError(
             f"workset missing papers: {missing}. "
             "Re-run prepare-workset to copy them into write/jobs/<job_id>/article/.")
     source_label = f"write/jobs/{job_id}/article"
     lib = _WorksetLibrary(pid_to_dir)
-    for pid in paper_ids:
+    for pid in paper_names:
         if not lib.exists(pid):
             raise RuntimeError(f"找不到 Markdown ({source_label}): {pid}")
 
@@ -280,12 +280,12 @@ def deep_read(job_id: str, paper_ids: list[str] | None = None,
     # Cite keys come from the job-local copied article metadata, not the global
     # catalog — they must match export_job_bib / copy_figures exactly.
     bib_key_of = job_local_bib_keys(pid_to_dir)
-    full_texts = lib.read_multiple(paper_ids)
+    full_texts = lib.read_multiple(paper_names)
 
     created_notes = []
     write_results = []
     fig_lines = []
-    for pid in paper_ids:
+    for pid in paper_names:
         bib = bib_key_of.get(pid, "")
         note_path = notes_dir / f"{pid}.md"
         wr = write_text_safely(
@@ -323,7 +323,7 @@ def deep_read(job_id: str, paper_ids: list[str] | None = None,
     write_results.append(fc_wr)
 
     fulltext_block = ""
-    for pid in paper_ids:
+    for pid in paper_names:
         md = full_texts.get(pid, "(读取失败)")
         bib = bib_key_of.get(pid, "")
         fulltext_block += f"\n\n## [{pid}]  \\cite{{{bib}}}\n\n{md}\n"
@@ -373,7 +373,7 @@ def validate_deep_reading_notes(job_id: str, jm: JobManager | None = None) -> li
     jm = jm or JobManager()
     jdir = jm.job_dir(job_id)
     errors = []
-    pids = selected_paper_ids(job_id, jm)
+    pids = selected_paper_names(job_id, jm)
     if not pids:
         return ["selected_papers 未确认或为空，无法校验精读笔记"]
 
@@ -390,16 +390,16 @@ def validate_deep_reading_notes(job_id: str, jm: JobManager | None = None) -> li
     ev = jdir / "reading" / "evidence_table.md"
     if ev.exists():
         ev_text = ev.read_text(encoding="utf-8")
-        # 有效行：表格数据行，含 paper_id 或 bib_key 标识，非占位
+        # 有效行：表格数据行，含 paper_name 或 bib_key 标识，非占位
         valid_rows = [ln for ln in ev_text.splitlines()
                       if ln.startswith("| ") and "待填" not in ln
                       and ln.count("|") >= 5 and not ln.startswith("| Claim")]
         # 去掉表头分隔行
         valid_rows = [r for r in valid_rows if not re.match(r"^\|\s*[-:|]+\s*\|", r)]
         if not valid_rows:
-            errors.append("evidence_table.md 无有效 claim（至少一条含 paper_id/bib_key 的数据行）")
+            errors.append("evidence_table.md 无有效 claim（至少一条含 paper_name/bib_key 的数据行）")
         else:
-            # 检查证据表覆盖率：选中的 paper_id 至少 70% 出现在 evidence 行中
+            # 检查证据表覆盖率：选中的 paper_name 至少 70% 出现在 evidence 行中
             referenced_pids = set()
             for row in valid_rows:
                 for pid in pids:

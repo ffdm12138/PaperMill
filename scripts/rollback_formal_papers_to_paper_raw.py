@@ -1,6 +1,6 @@
 """CLI for rolling back formal papers to numeric paper_raw.
 
-Supports ``--paper-number``, ``--paper-id``, or ``--all-papers`` as
+Supports ``--paper-number``, ``--paper-name``, or ``--all-papers`` as
 mutually exclusive target selectors.  Default mode is dry-run; pass
 ``--apply`` to execute.  Use ``--report PATH`` for structured JSON output.
 
@@ -18,7 +18,7 @@ from typing import Any, Literal
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import CATALOG_FOLDER_ROOT, PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
-from src.ingest.rollback import resolve_paper_number_by_paper_id, rollback_formal_papers
+from src.ingest.rollback import resolve_paper_number_by_paper_name, rollback_formal_papers
 from src.ingest.transactions import find_active_transaction_for_paper
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.library.validation import validate_formal_paper
@@ -27,15 +27,15 @@ from src.services.ingest_ids import PAPER_NUMBER_RE
 
 def _resolve_paper_number(
     *,
-    paper_id: str,
+    paper_name: str,
     papers_dir: Path,
     paper_raw_root: Path,
     transaction_root: Path,
     ledger: PaperNumberLedger,
 ) -> str:
-    """Resolve paper_id → paper_number, raising on failure."""
-    return resolve_paper_number_by_paper_id(
-        paper_id=paper_id,
+    """Resolve paper_name → paper_number, raising on failure."""
+    return resolve_paper_number_by_paper_name(
+        paper_name=paper_name,
         papers_dir=papers_dir,
         paper_raw_root=paper_raw_root,
         transaction_root=transaction_root,
@@ -57,7 +57,7 @@ REPORT_SCHEMA_VERSION = "1.0"
 @dataclass
 class PaperResult:
     paper_number: str = ""
-    paper_id: str = ""
+    paper_name: str = ""
     status: PaperStatus = "planned"
     transaction_id: str | None = None
     reason_code: str | None = None
@@ -93,7 +93,7 @@ class RollbackReport:
     def add_paper_result(self, result: PaperResult) -> None:
         self.papers.append({
             "paper_number": result.paper_number,
-            "paper_id": result.paper_id,
+            "paper_name": result.paper_name,
             "status": result.status,
             "transaction_id": result.transaction_id,
             "reason_code": result.reason_code,
@@ -169,12 +169,12 @@ def _discover_all_papers_targets(
     for pn, dir_name in sorted(marker_map.items()):
         item = items.get(pn) or {}
         ledger_state = item.get("state") or ""
-        ledger_paper_id = item.get("paper_id") or ""
+        ledger_paper_name = item.get("paper_name") or ""
 
         if ledger_state != "active":
             blocking.append({
                 "paper_number": pn,
-                "paper_id": dir_name,
+                "paper_name": dir_name,
                 "error": "ledger_not_active",
                 "message": f"ledger state={ledger_state!r}, expected active",
             })
@@ -185,33 +185,33 @@ def _discover_all_papers_targets(
         except Exception as exc:
             blocking.append({
                 "paper_number": pn,
-                "paper_id": dir_name,
+                "paper_name": dir_name,
                 "error": "formal_validation_failed",
                 "message": str(exc),
             })
             continue
 
-        if info.get("paper_number") != pn or info.get("paper_id") != dir_name:
+        if info.get("paper_number") != pn or info.get("paper_name") != dir_name:
             blocking.append({
                 "paper_number": pn,
-                "paper_id": dir_name,
+                "paper_name": dir_name,
                 "error": "formal_identity_mismatch",
-                "message": f"formal: number={info.get('paper_number')} id={info.get('paper_id')}",
+                "message": f"formal: number={info.get('paper_number')} id={info.get('paper_name')}",
             })
             continue
 
-        if ledger_paper_id and ledger_paper_id != dir_name:
+        if ledger_paper_name and ledger_paper_name != dir_name:
             blocking.append({
                 "paper_number": pn,
-                "paper_id": dir_name,
-                "error": "ledger_paper_id_mismatch",
-                "message": f"ledger paper_id={ledger_paper_id!r} vs dir={dir_name}",
+                "paper_name": dir_name,
+                "error": "ledger_paper_name_mismatch",
+                "message": f"ledger paper_name={ledger_paper_name!r} vs dir={dir_name}",
             })
             continue
 
         targets.append({
             "paper_number": pn,
-            "paper_id": dir_name,
+            "paper_name": dir_name,
         })
 
     # Check for conflicting commit journals
@@ -226,7 +226,7 @@ def _discover_all_papers_targets(
         except RuntimeError:
             blocking.append({
                 "paper_number": t["paper_number"],
-                "paper_id": t["paper_id"],
+                "paper_name": t["paper_name"],
                 "error": "ambiguous_transaction",
                 "message": "multiple active journals",
             })
@@ -234,7 +234,7 @@ def _discover_all_papers_targets(
         if active is not None and active[0] == "commit":
             blocking.append({
                 "paper_number": t["paper_number"],
-                "paper_id": t["paper_id"],
+                "paper_name": t["paper_name"],
                 "error": "active_commit_transaction",
                 "message": "commit in progress",
             })
@@ -267,8 +267,8 @@ def main() -> int:
         help="16-digit paper number to roll back",
     )
     target_group.add_argument(
-        "--paper-id",
-        help="Paper ID to roll back",
+        "--paper-name",
+        help="Paper name to roll back",
     )
     target_group.add_argument(
         "--all-papers",
@@ -314,15 +314,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not (args.paper_number or args.paper_id or args.all_papers):
-        parser.error("one of --paper-number, --paper-id, or --all-papers is required")
+    if not (args.paper_number or args.paper_name or args.all_papers):
+        parser.error("one of --paper-number, --paper-name, or --all-papers is required")
 
     mode: Literal["dry_run", "apply"] = "apply" if args.apply else "dry_run"
     report = RollbackReport(
         mode=mode,
         requested_target={
             "paper_number": args.paper_number or None,
-            "paper_id": args.paper_id or None,
+            "paper_name": args.paper_name or None,
             "all_papers": args.all_papers,
         },
     )
@@ -344,7 +344,7 @@ def main() -> int:
         for b in blocking:
             report.add_paper_result(PaperResult(
                 paper_number=b.get("paper_number", ""),
-                paper_id=b.get("paper_id", b.get("dir", "")),
+                paper_name=b.get("paper_name", b.get("dir", "")),
                 status="blocked",
                 reason_code=b.get("error", "unknown"),
                 message=b.get("message", ""),
@@ -352,14 +352,14 @@ def main() -> int:
         for t in targets:
             report.add_paper_result(PaperResult(
                 paper_number=t["paper_number"],
-                paper_id=t["paper_id"],
+                paper_name=t["paper_name"],
                 status="planned",
             ))
 
         if blocking and mode == "apply":
             print(f"[BLOCKED] {len(blocking)} blocking error(s); no rollback executed.", flush=True)
             for b in blocking:
-                print(f"  {b.get('paper_number','')} {b.get('paper_id',b.get('dir',''))}: {b.get('error','')}", flush=True)
+                print(f"  {b.get('paper_number','')} {b.get('paper_name',b.get('dir',''))}: {b.get('error','')}", flush=True)
             if args.report:
                 _write_report(args.report, report)
             return EXIT_BLOCKING
@@ -369,10 +369,10 @@ def main() -> int:
             if blocking:
                 print(f"[DRY-RUN] {len(blocking)} blocking error(s) — cannot apply:", flush=True)
                 for b in blocking:
-                    print(f"  {b.get('paper_number','')} {b.get('paper_id',b.get('dir',''))}: {b.get('error','')}", flush=True)
+                    print(f"  {b.get('paper_number','')} {b.get('paper_name',b.get('dir',''))}: {b.get('error','')}", flush=True)
             else:
                 for t in targets:
-                    print(f"  Would roll back: number={t['paper_number']}, paper_id={t['paper_id']}", flush=True)
+                    print(f"  Would roll back: number={t['paper_number']}, paper_name={t['paper_name']}", flush=True)
             if args.report:
                 _write_report(args.report, report)
             return EXIT_BLOCKING if blocking else EXIT_OK
@@ -381,13 +381,13 @@ def main() -> int:
         print(f"[APPLY] Rolling back {len(targets)} formal paper(s)...", flush=True)
 
         paper_numbers_or_ids: list[dict[str, str | None]] = [
-            {"paper_number": t["paper_number"], "paper_id": None}
+            {"paper_number": t["paper_number"], "paper_name": None}
             for t in targets
         ]
     elif args.paper_number:
-        paper_numbers_or_ids = [{"paper_number": args.paper_number, "paper_id": None}]
-    elif args.paper_id:
-        paper_numbers_or_ids = [{"paper_number": None, "paper_id": args.paper_id}]
+        paper_numbers_or_ids = [{"paper_number": args.paper_number, "paper_name": None}]
+    elif args.paper_name:
+        paper_numbers_or_ids = [{"paper_number": None, "paper_name": args.paper_name}]
     else:
         assert False, "unreachable"
     # ────────────────────────────────────────────────────────────────
@@ -409,27 +409,27 @@ def main() -> int:
                     return EXIT_CLI_ERROR
                 pnum = item["paper_number"]
                 pid_display = "(from paper_number)"
-            elif item["paper_id"]:
-                pid = item["paper_id"]
+            elif item["paper_name"]:
+                pid = item["paper_name"]
                 if "/" in pid or "\\" in pid or ".." in pid:
-                    print(f"[ERROR] invalid paper_id (contains path characters): {pid}", flush=True)
+                    print(f"[ERROR] invalid paper_name (contains path characters): {pid}", flush=True)
                     return EXIT_CLI_ERROR
                 try:
                     pnum = _resolve_paper_number(
-                        paper_id=pid,
+                        paper_name=pid,
                         papers_dir=papers_dir,
                         paper_raw_root=paper_raw_root,
                         transaction_root=transaction_root,
                         ledger=ledger,
                     )
                 except Exception as exc:
-                    print(f"[ERROR] paper_id not found: {pid} ({exc})", flush=True)
+                    print(f"[ERROR] paper_name not found: {pid} ({exc})", flush=True)
                     if args.report:
                         report.summary["blocking_errors"] = 1
                         report.add_paper_result(PaperResult(
-                            paper_id=pid,
+                            paper_name=pid,
                             status="blocked",
-                            reason_code="paper_id_not_found",
+                            reason_code="paper_name_not_found",
                             message=str(exc),
                         ))
                         _write_report(args.report, report)
@@ -437,12 +437,12 @@ def main() -> int:
                 pid_display = pid
             else:
                 assert False, "unreachable"
-            print(f"[DRY-RUN] Would roll back: number={pnum}, paper_id={pid_display}", flush=True)
+            print(f"[DRY-RUN] Would roll back: number={pnum}, paper_name={pid_display}", flush=True)
             report.summary["discovered"] = len(paper_numbers_or_ids)
             report.summary["planned"] = len(paper_numbers_or_ids)
             report.add_paper_result(PaperResult(
                 paper_number=pnum,
-                paper_id=item["paper_id"] or "",
+                paper_name=item["paper_name"] or "",
                 status="planned",
             ))
         if args.report:
@@ -456,8 +456,8 @@ def main() -> int:
 
     for item in paper_numbers_or_ids:
         pnum = item["paper_number"]
-        pid = item["paper_id"]
-        label = f"number={pnum or '?'} paper_id={pid or '?'}"
+        pid = item["paper_name"]
+        label = f"number={pnum or '?'} paper_name={pid or '?'}"
         try:
             print(f"  Rolling back: {label}", flush=True)
             actual_number = rollback_formal_papers(
@@ -467,11 +467,11 @@ def main() -> int:
                 ledger_path=ledger_path,
                 catalog_root=catalog_root,
                 paper_number=pnum,
-                paper_id=pid,
+                paper_name=pid,
             )
             results.append(PaperResult(
                 paper_number=actual_number,
-                paper_id=pid or "",
+                paper_name=pid or "",
                 status="completed",
             ))
             report.summary["completed"] += 1
@@ -480,7 +480,7 @@ def main() -> int:
             msg = str(exc)
             results.append(PaperResult(
                 paper_number=pnum or "",
-                paper_id=pid or "",
+                paper_name=pid or "",
                 status="failed",
                 reason_code="runtime_error",
                 message=msg,
@@ -492,7 +492,7 @@ def main() -> int:
             msg = str(exc)
             results.append(PaperResult(
                 paper_number=pnum or "",
-                paper_id=pid or "",
+                paper_name=pid or "",
                 status="failed",
                 reason_code="error",
                 message=msg,
@@ -507,7 +507,7 @@ def main() -> int:
         for item in paper_numbers_or_ids[done:]:
             results.append(PaperResult(
                 paper_number=item["paper_number"] or "",
-                paper_id=item["paper_id"] or "",
+                paper_name=item["paper_name"] or "",
                 status="not_started",
             ))
         report.summary["not_started"] = len(paper_numbers_or_ids) - done

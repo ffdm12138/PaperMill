@@ -2,22 +2,40 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 
 from src.discovery.keyword_notebook import (
     INITIAL_CURSOR,
     KeywordNotebookStore,
-    composite_backfill_signature,
-    expansion_key,
-    pagination_signature,
+    query_identity,
 )
+from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.models import PaperCandidate
-from src.discovery.pipeline import discover_papers_dual_lane
+from src.discovery.page_journal import PageJournalStore, request_signature
 
 
 pytestmark = pytest.mark.unit
+
+KEYWORD_ZH = "测试关键词"
+ZH_QUERY_ID = query_identity("zh", KEYWORD_ZH)
+
+
+def _seed_ready(root: Path, *, page_size: int) -> KeywordNotebookStore:
+    store = KeywordNotebookStore(root)
+    signature_hash = request_signature(page_size=page_size)["hash"]
+    store.ensure_notebook(KEYWORD_ZH)
+    store.sync_search_queries(
+        KEYWORD_ZH,
+        add=[
+            {"query": KEYWORD_ZH, "language": "zh", "source": "canonical"},
+            {"query": "test keyword", "language": "en", "source": "curated"},
+        ],
+        pag_sig=signature_hash,
+    )
+    store.set_enabled(KEYWORD_ZH, True)
+    return store
 
 
 def _cand(doi, title="T", source="openalex"):
@@ -47,7 +65,7 @@ def _install_fake_fetch(monkeypatch, openalex_pages, crossref_pages):
     """
     calls: list[dict] = []
 
-    def _fake_openalex(query, *, original_keyword, lane, page_size, cursor, sort=None,
+    def _fake_openalex(query, *, keyword_zh, lane, page_size, cursor, sort=None,
                        domain_id=None, rate_limiter=None, limiter_lock=None):
         calls.append({"provider": "openalex", "lane": lane, "cursor": cursor})
         pages = openalex_pages.get((lane, cursor))
@@ -55,7 +73,7 @@ def _install_fake_fetch(monkeypatch, openalex_pages, crossref_pages):
             return _FakePage([], next_cursor=None, exhausted=True)
         return pages
 
-    def _fake_crossref(query, *, original_keyword, lane, page_size, cursor, sort=None,
+    def _fake_crossref(query, *, keyword_zh, lane, page_size, cursor, sort=None,
                        order=None, domain_id=None, rate_limiter=None, limiter_lock=None):
         calls.append({"provider": "crossref", "lane": lane, "cursor": cursor})
         pages = crossref_pages.get((lane, cursor))
@@ -63,13 +81,52 @@ def _install_fake_fetch(monkeypatch, openalex_pages, crossref_pages):
             return _FakePage([], next_cursor=None, exhausted=True)
         return pages
 
-    monkeypatch.setattr("src.discovery.pipeline.search_openalex_page", _fake_openalex)
-    monkeypatch.setattr("src.discovery.pipeline.search_crossref_page", _fake_crossref)
+    def _fetch(provider, query, **kwargs):
+        if provider == "openalex":
+            return _fake_openalex(query, **kwargs)
+        if provider == "crossref":
+            return _fake_crossref(query, **kwargs)
+        raise AssertionError(f"unexpected provider: {provider}")
+
+    monkeypatch.setattr("src.discovery.coordinator._default_fetch_page", _fetch)
     return calls
+
+
+def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
+                   backfill_pages=5, page_size=50, max_candidates=50,
+                   notebook_dir: Path, paper_raw_dir: Path | None = None,
+                   papers_dir: Path | None = None, hide_existing=False):
+    runtime_base = notebook_dir / ".discovery_runtime"
+    options = DiscoveryOptions(
+        mode=mode,
+        refresh_pages=refresh_pages,
+        backfill_pages=backfill_pages,
+        page_size=page_size,
+        max_candidates=max_candidates,
+        hide_existing=hide_existing,
+        notebook_dir=notebook_dir,
+        pending_pages_dir=runtime_base / "pending_pages",
+        locks_dir=runtime_base / "locks",
+        exports_dir=runtime_base / "exports",
+        output_dir=runtime_base / "output",
+        paper_raw_dir=paper_raw_dir or (runtime_base / "paper_raw"),
+        papers_dir=papers_dir or (runtime_base / "papers"),
+    )
+    batch_report = run_discovery_batch([keyword], options=options, max_workers=2)
+    report_obj = batch_report.keywords[0]
+    candidates = []
+    journal = PageJournalStore(options.pending_pages_dir)
+    for ref in journal.list_pages([report_obj.keyword_id]):
+        data = journal.read(ref.path)
+        for item in data.get("candidates", []):
+            if item.get("status") in {"emitted", "staged"} and isinstance(item.get("candidate"), dict):
+                candidates.append(PaperCandidate.from_dict(item["candidate"]))
+    return SimpleNamespace(candidates=candidates[:max_candidates]), report_obj.to_dict()
 
 
 class TestDualLaneScheduling:
     def test_hybrid_runs_both_refresh_and_backfill(self, monkeypatch, tmp_path: Path):
+        _seed_ready(tmp_path, page_size=10)
         calls = _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -78,8 +135,8 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        batch, report = discover_papers_dual_lane(
-            "test kw",
+        batch, report = _run_discovery(
+            KEYWORD_ZH,
             mode="hybrid",
             refresh_pages=1,
             backfill_pages=1,
@@ -96,12 +153,9 @@ class TestDualLaneScheduling:
         assert report["backfill"]["pages_committed"] >= 1
 
     def test_refresh_always_starts_from_star(self, monkeypatch, tmp_path: Path):
-        store = KeywordNotebookStore(tmp_path)
-        sig = composite_backfill_signature(page_size=10)
-        store.ensure_keyword("test kw", ["test kw"], sig)
-        ekey = expansion_key("test kw", sig)
+        store = _seed_ready(tmp_path, page_size=10)
         # Advance backfill cursor so refresh could (incorrectly) pick it up.
-        store.advance_backfill("test kw", ekey, "openalex", next_cursor="DEEP", items_this_page=5)
+        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="DEEP", items_this_page=5)
         calls = _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -110,19 +164,16 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        discover_papers_dual_lane(
-            "test kw", mode="hybrid", refresh_pages=1, backfill_pages=1,
+        _run_discovery(
+            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=10, notebook_dir=tmp_path,
         )
         refresh_calls = [c for c in calls if c["lane"] == "refresh" and c["provider"] == "openalex"]
         assert all(c["cursor"] == INITIAL_CURSOR for c in refresh_calls)
 
     def test_backfill_resumes_from_saved_cursor(self, monkeypatch, tmp_path: Path):
-        store = KeywordNotebookStore(tmp_path)
-        sig = composite_backfill_signature(page_size=10)
-        store.ensure_keyword("test kw", ["test kw"], sig)
-        ekey = expansion_key("test kw", sig)
-        store.advance_backfill("test kw", ekey, "openalex", next_cursor="RESUME_HERE", items_this_page=5)
+        store = _seed_ready(tmp_path, page_size=10)
+        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="RESUME_HERE", items_this_page=5)
         calls = _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -131,21 +182,18 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        discover_papers_dual_lane(
-            "test kw", mode="hybrid", refresh_pages=1, backfill_pages=1,
+        _run_discovery(
+            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=10, notebook_dir=tmp_path,
         )
         backfill_calls = [c for c in calls if c["lane"] == "backfill" and c["provider"] == "openalex"]
         assert any(c["cursor"] == "RESUME_HERE" for c in backfill_calls)
         # Cursor advanced.
-        assert store.get_backfill_cursor("test kw", ekey, "openalex") == "RESUME2"
+        assert store.get_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex") == "RESUME2"
 
     def test_refresh_failure_does_not_reset_backfill_cursor(self, monkeypatch, tmp_path: Path):
-        store = KeywordNotebookStore(tmp_path)
-        sig = composite_backfill_signature(page_size=10)
-        store.ensure_keyword("test kw", ["test kw"], sig)
-        ekey = expansion_key("test kw", sig)
-        store.advance_backfill("test kw", ekey, "openalex", next_cursor="KEEPME", items_this_page=5)
+        store = _seed_ready(tmp_path, page_size=10)
+        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="KEEPME", items_this_page=5)
         _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -154,18 +202,15 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        discover_papers_dual_lane(
-            "test kw", mode="hybrid", refresh_pages=1, backfill_pages=1,
+        _run_discovery(
+            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=10, notebook_dir=tmp_path,
         )
-        assert store.get_backfill_cursor("test kw", ekey, "openalex") == "KEEPME"
+        assert store.get_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex") == "KEEPME"
 
     def test_backfill_failure_does_not_advance_cursor(self, monkeypatch, tmp_path: Path):
-        store = KeywordNotebookStore(tmp_path)
-        sig = composite_backfill_signature(page_size=10)
-        store.ensure_keyword("test kw", ["test kw"], sig)
-        ekey = expansion_key("test kw", sig)
-        store.advance_backfill("test kw", ekey, "openalex", next_cursor="BEFORE_FAIL", items_this_page=5)
+        store = _seed_ready(tmp_path, page_size=10)
+        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="BEFORE_FAIL", items_this_page=5)
         _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -174,11 +219,11 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        discover_papers_dual_lane(
-            "test kw", mode="hybrid", refresh_pages=1, backfill_pages=1,
+        _run_discovery(
+            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=10, notebook_dir=tmp_path,
         )
-        assert store.get_backfill_cursor("test kw", ekey, "openalex") == "BEFORE_FAIL"
+        assert store.get_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex") == "BEFORE_FAIL"
 
     def test_existing_dois_filtered_before_max_candidates(self, monkeypatch, tmp_path: Path):
         """Existing DOI observations are terminal and new candidates remain recoverable."""
@@ -206,8 +251,9 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        batch, report = discover_papers_dual_lane(
-            "test kw", mode="hybrid", refresh_pages=1, backfill_pages=1,
+        _seed_ready(tmp_path, page_size=200)
+        batch, report = _run_discovery(
+            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=200, max_candidates=100, notebook_dir=tmp_path,
             paper_raw_dir=paper_raw, papers_dir=papers, hide_existing=True,
         )
@@ -216,6 +262,7 @@ class TestDualLaneScheduling:
         assert report["candidates"]["existing_duplicates"] == 50
 
     def test_provider_failure_reported_as_partial_success(self, monkeypatch, tmp_path: Path):
+        _seed_ready(tmp_path, page_size=10)
         _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -224,21 +271,19 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        _, report = discover_papers_dual_lane(
-            "test kw", mode="hybrid", refresh_pages=1, backfill_pages=1,
+        _, report = _run_discovery(
+            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=10, notebook_dir=tmp_path,
         )
         assert report["status"] == "partial_success"
         assert report["backfill"]["provider_failures"] >= 1
 
     def test_skipped_when_keyword_disabled(self, monkeypatch, tmp_path: Path):
-        store = KeywordNotebookStore(tmp_path)
-        sig = pagination_signature()
-        store.ensure_keyword("test kw", ["test kw"], sig)
-        store.set_enabled("test kw", False)
+        store = _seed_ready(tmp_path, page_size=10)
+        store.set_enabled(KEYWORD_ZH, False)
         calls = _install_fake_fetch(monkeypatch, {}, {})
-        batch, report = discover_papers_dual_lane(
-            "test kw", mode="hybrid", refresh_pages=1, backfill_pages=1,
+        batch, report = _run_discovery(
+            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=10, notebook_dir=tmp_path,
         )
         assert report["status"] == "skipped"

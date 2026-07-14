@@ -49,7 +49,7 @@ CATALOG_READY = "catalog_ready"
 
 # --- formalize ---------------------------------------------------------------
 FORMALIZE_FAILED = "formalize_failed"
-PAPER_ID_MISMATCH = "paper_id_mismatch"
+PAPER_NAME_MISMATCH = "paper_name_mismatch"
 READY_FOR_COMMIT = "ready_for_commit"
 
 # --- commit ------------------------------------------------------------------
@@ -97,7 +97,7 @@ def write_import_status(
     Always includes: status, reason, errors, warnings, created_at, updated_at.
     ``created_at`` is preserved from an existing file (so repeated writes during
     a multi-stage pipeline keep the original timestamp); ``updated_at`` is
-    always refreshed. Any keys in ``extra`` (e.g. paper_id, paper_number,
+    always refreshed. Any keys in ``extra`` (e.g. paper_name, paper_number,
     source_id, pdf_sha256) are merged in alongside the canonical fields.
     """
     import json
@@ -115,7 +115,7 @@ def write_import_status(
             METADATA_CANDIDATES_FOUND:("metadata","resolving"), METADATA_RESOLVE_FAILED:("metadata","invalid"), METADATA_CANDIDATE_CONFLICT:("metadata","mismatch"), METADATA_MATCHED:("metadata","matched"), METADATA_MANUAL_REVIEW_REQUIRED:("metadata","mismatch"), METADATA_INVALID:("metadata","invalid"), METADATA_UNMATCHED:("metadata","mismatch"), METADATA_INCOMPLETE:("metadata","invalid"),
             "staged_metadata":("metadata","resolved"),
             "metadata_resolved":("metadata","resolved"),
-            CATALOG_GENERATION_FAILED:("catalog","invalid"), CATALOG_INVALID:("catalog","invalid"), CATALOG_READY:("catalog","validated"), FORMALIZE_FAILED:("formalization","failed"), PAPER_ID_MISMATCH:("catalog","invalid"), READY_FOR_COMMIT:("formalization","ready"), COMMIT_FAILED:("commit","failed"), COMMITTED:("commit","imported"), IMPORTED:("commit","imported"),
+            CATALOG_GENERATION_FAILED:("catalog","invalid"), CATALOG_INVALID:("catalog","invalid"), CATALOG_READY:("catalog","validated"), FORMALIZE_FAILED:("formalization","failed"), PAPER_NAME_MISMATCH:("catalog","invalid"), READY_FOR_COMMIT:("formalization","ready"), COMMIT_FAILED:("commit","failed"), COMMITTED:("commit","imported"), IMPORTED:("commit","imported"),
         }
         try:
             dimension, target = mapping[status]

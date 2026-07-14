@@ -89,20 +89,20 @@ def inspect_ingest_duplicates(
     metadata = _read_json(workspace.metadata)
     catalog = _read_json(workspace.catalog)
     current_keys = _asset_keys(workspace.metadata, workspace.pdf, workspace.markdown)
-    paper_id = str(catalog.get("paper_id") or "")
+    paper_name = str(catalog.get("paper_name") or "")
     findings: list[dict[str, Any]] = []
     duplicate_keys: set[str] = set()
     ledger_data = _load_ledger(ledger)
 
     ledger_item = ((ledger_data.get("items") or {}).get(workspace.paper_number) or {})
     ledger_state = str(ledger_item.get("state") or "")
-    ledger_paper_id = str(ledger_item.get("paper_id") or "")
-    if ledger_state == "active" and ledger_paper_id == paper_id:
-        findings.append({"kind": "paper_number", "classification": "same_paper_number_idempotent", "paper_number": workspace.paper_number, "paper_id": paper_id})
+    ledger_paper_name = str(ledger_item.get("paper_name") or "")
+    if ledger_state == "active" and ledger_paper_name == paper_name:
+        findings.append({"kind": "paper_number", "classification": "same_paper_number_idempotent", "paper_number": workspace.paper_number, "paper_name": paper_name})
     elif ledger_item and ledger_state not in {"reserved", "allocating"}:
         findings.append({"kind": "paper_number", "classification": "conflict", "paper_number": workspace.paper_number, "state": ledger_state})
-    elif ledger_paper_id and ledger_paper_id != paper_id:
-        findings.append({"kind": "paper_number", "classification": "conflict", "paper_number": workspace.paper_number, "paper_id": ledger_paper_id})
+    elif ledger_paper_name and ledger_paper_name != paper_name:
+        findings.append({"kind": "paper_number", "classification": "conflict", "paper_number": workspace.paper_number, "paper_name": ledger_paper_name})
 
     raw_root = workspace.root.parent
     for other in sorted(path for path in raw_root.iterdir() if path.is_dir() and path != workspace.root and path.name.isdigit() and len(path.name) == 16):
@@ -134,9 +134,9 @@ def inspect_ingest_duplicates(
                     existing_number = str(_read_json(marker_paths[0]).get("paper_number") or "")
                 except Exception:
                     pass
-            if prefix == paper_id:
+            if prefix == paper_name:
                 classification = "same_paper_number_idempotent" if existing_number == workspace.paper_number else "conflict"
-                findings.append({"kind": "paper_id", "classification": classification, "paper_number": existing_number, "paper_id": prefix})
+                findings.append({"kind": "paper_name", "classification": classification, "paper_number": existing_number, "paper_name": prefix})
             try:
                 other_keys = _asset_keys(metadata_path, folder / f"{prefix}.pdf", folder / f"{prefix}.md")
             except Exception:
@@ -146,7 +146,7 @@ def inspect_ingest_duplicates(
                 if value and other_keys.get(kind) == value:
                     duplicate_keys.add(kind)
                     classification = "same_paper_number_idempotent" if existing_number == workspace.paper_number else "duplicate_existing_formal"
-                    findings.append({"kind": kind, "classification": classification, "paper_number": existing_number, "paper_id": prefix, "value": value})
+                    findings.append({"kind": kind, "classification": classification, "paper_number": existing_number, "paper_name": prefix, "value": value})
 
     classes = {str(item.get("classification")) for item in findings}
     if "conflict" in classes:

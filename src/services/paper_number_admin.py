@@ -696,7 +696,7 @@ class PaperNumberAdminService:
                 "state_before": info["state"] or "reserved",
                 "numbered_folder": info["numbered_folder"],
                 "created_at": ((info.get("ledger_item") or {}).get("created_at") or now_iso()),
-                "planned_paper_id": ((info.get("ledger_item") or {}).get("planned_paper_id") or ""),
+                "planned_paper_name": ((info.get("ledger_item") or {}).get("planned_paper_name") or ""),
                 "renumber_reason": reason,
             })
         return {"old_to_new": old_to_new, "items": items}
@@ -710,7 +710,7 @@ class PaperNumberAdminService:
             items[number] = {
                 "folder_name": folder_after.name,
                 "folder_path": normalize_repo_path(folder_after),
-                "planned_paper_id": item.get("planned_paper_id") or "",
+                "planned_paper_name": item.get("planned_paper_name") or "",
                 "state": "reserved",
                 "created_at": item.get("created_at") or now,
                 "renumbered_from": item["old_number"],

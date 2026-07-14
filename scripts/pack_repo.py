@@ -33,7 +33,7 @@ import subprocess
 import sys
 import zipfile
 import secrets
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -155,7 +155,121 @@ DENIED_PATH_PARTS = {
     "temp",
     "logs",
     "transactions",
+    ".local",
 }
+
+# Migration/operator state is deliberately excluded even when it lives
+# outside the normal runtime roots.  Example/template/schema files and
+# synthetic test fixtures are allowed so the contract itself can be tested.
+MIGRATION_STATE_FILENAMES = frozenset({
+    "mapping.json",
+    "plan.json",
+    "recovery-plan.json",
+})
+SAFE_ARTIFACT_MARKERS = frozenset({
+    "example", "examples", "template", "templates",
+    "schema", "schemas", "fixture", "fixtures",
+})
+_SAFE_ARTIFACT_NAME_RE = re.compile(
+    r"(?:^|[._-])(example|examples|template|templates|schema|schemas)"
+    r"(?:[._-]|$)",
+    re.IGNORECASE,
+)
+_SNAPSHOT_TEXT_SUFFIXES = frozenset({
+    ".json", ".jsonl", ".md", ".txt", ".yaml", ".yml", ".toml",
+})
+_SOURCE_SHA256_RE = re.compile(
+    r'"source_sha256"\s*:\s*"([0-9a-fA-F]{64})"',
+)
+_CONFIRMED_STATUS_RE = re.compile(
+    r'"status"\s*:\s*"confirmed"', re.IGNORECASE,
+)
+# Repair runtime filenames — historical catalog repair JSONs that contain
+# real paper_name, author lists, and per-paper mapping decisions.  These
+# are operator/historical artifacts, never part of the runtime-zero source.
+_REPAIR_RUNTIME_RE = re.compile(
+    r"repair_(?:final|mapping(?:_\w+)?|round\d+)\.json$",
+    re.IGNORECASE,
+)
+
+
+def _is_example_or_fixture_path(rel_path: str) -> bool:
+    """Return whether a path is an explicitly safe example/test fixture."""
+    path = PurePosixPath(rel_path.replace("\\", "/"))
+    parts = {part.casefold() for part in path.parts}
+    if parts & SAFE_ARTIFACT_MARKERS:
+        return True
+    return bool(_SAFE_ARTIFACT_NAME_RE.search(path.name))
+
+
+def _snapshot_artifact_exclusion_reason(rel_path: str) -> str | None:
+    """Return a reason when a source snapshot member is operator state."""
+    rel = rel_path.replace("\\", "/").strip("/")
+    path = PurePosixPath(rel)
+    name = path.name.casefold()
+    parts = {part.casefold() for part in path.parts}
+
+    if is_forbidden_snapshot_member(rel):
+        return "runtime state"
+    if rel.casefold().startswith("migrations/"):
+        if name.endswith(".real.json"):
+            return "real migration mapping/state"
+        if "confirmed" in name:
+            return "confirmed migration mapping/state"
+    if _is_example_or_fixture_path(rel):
+        return None
+    if name in MIGRATION_STATE_FILENAMES:
+        return "migration plan or mapping state"
+    if "backup" in parts:
+        return "transaction backup"
+    if "page_journals" in parts or "receipts" in parts:
+        return "discovery journal/receipt state"
+    if _REPAIR_RUNTIME_RE.search(name):
+        return "catalog repair runtime data"
+    if "temp_authors.json".casefold() == name:
+        return "catalog repair runtime data"
+    return None
+
+
+def _snapshot_sensitive_content_errors(rel_path: str, raw: bytes) -> list[str]:
+    """Conservatively reject real migration state by content as well as name."""
+    rel = rel_path.replace("\\", "/")
+    path = PurePosixPath(rel)
+    if _is_example_or_fixture_path(rel) or path.suffix.casefold() not in _SNAPSHOT_TEXT_SUFFIXES:
+        return []
+    high_risk = (
+        rel.casefold().startswith("migrations/")
+        or path.name.casefold() in MIGRATION_STATE_FILENAMES
+        or "mapping" in path.name.casefold()
+        or "journal" in path.name.casefold()
+        or "receipt" in path.name.casefold()
+    )
+    if not high_risk:
+        return []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return [f"unable to inspect sensitive migration member: {rel}"]
+
+    errors: list[str] = []
+    if _CONFIRMED_STATUS_RE.search(text) and (
+        '"source_notebook"' in text or '"source_sha256"' in text
+    ):
+        errors.append(f"confirmed mapping present in snapshot: {rel}")
+    for match in _SOURCE_SHA256_RE.finditer(text):
+        value = match.group(1).lower()
+        if len(set(value)) > 1:
+            errors.append(f"real source SHA mapping present in snapshot: {rel}")
+            break
+    if '"transaction_id"' in text or '"backup_manifest_sha256"' in text:
+        errors.append(f"migration transaction state present in snapshot: {rel}")
+    if '"request_signature"' in text or '"cursor"' in text:
+        errors.append(f"runtime cursor/journal state present in snapshot: {rel}")
+    # Real catalog repair mapping patterns (non-example files).
+    if not _is_example_or_fixture_path(rel):
+        if '"old_paper_name"' in text and '"new_paper_name"' in text and '"apply"' in text:
+            errors.append(f"real catalog repair mapping present in snapshot: {rel}")
+    return errors
 
 # ── Required root-level files ──────────────────────────────────────────
 # These must be present in every snapshot ZIP regardless of profile.
@@ -379,6 +493,11 @@ def _should_pack(rel_path: str, *, require_lightweight: bool = False) -> bool:
     path = Path(rel_path)
     rel = rel_path.replace("\\", "/")
 
+    # Exclude operator-controlled migration state before any suffix or
+    # profile-specific handling.  This also protects audit's untracked scan.
+    if _snapshot_artifact_exclusion_reason(rel):
+        return False
+
     # 1. Apply the canonical repository runtime-zero policy.
     if is_forbidden_snapshot_member(rel):
         return False
@@ -581,6 +700,13 @@ def _verify_snapshot_self_check(zip_path: Path) -> list[str]:
                 continue
             if name in runtime:
                 errors.append(f"runtime file present in snapshot: {name}")
+            reason = _snapshot_artifact_exclusion_reason(name)
+            if reason:
+                errors.append(f"sensitive snapshot member present ({reason}): {name}")
+            try:
+                errors.extend(_snapshot_sensitive_content_errors(name, zf.read(name)))
+            except KeyError:
+                errors.append(f"snapshot member disappeared during self-check: {name}")
     if manifest_count != 1:
         errors.append(f"snapshot_manifest.json count is {manifest_count}, expected 1")
     if not manifest_count:

@@ -4,13 +4,15 @@ from __future__ import annotations
 import re
 from pathlib import Path, PurePosixPath
 
-LOCAL_TOOL_STATE_PREFIXES = (".workbuddy/", ".reasonix/")
+LOCAL_TOOL_STATE_PREFIXES = (".workbuddy/", ".reasonix/", ".local/")
 RUNTIME_DATA_PREFIXES = (
     "data/paper_raw/", "data/papers/", "data/raw/", "data/raw_all/",
     "data/staging/", "data/transactions/", "data/tmp/", "data/logs/",
     "data/jobs/", "data/import_work/", "data/llm_work/", "data/locks/", "data/cache/",
     "data/discovery/doi_candidates/", "data/discovery/pdf_fetch_logs/",
     "data/discovery/fetch_logs/", "data/discovery/keyword_notebooks/",
+	"data/discovery/keyword_notebooks_retired/",
+    "data/discovery/page_journals/", "data/discovery/receipts/",
     "data/discovery/pending_pages/", "data/discovery/locks/",
     "data/discovery/exports/", "data/discovery/queries/",
     "data/discovery/reports/", "data/discovery/logs/",

@@ -17,11 +17,38 @@ from typing import Any, Iterable, Literal
 
 from filelock import FileLock
 
+from src.discovery.keyword_notebook import (
+    PROVIDERS,
+    detect_query_language,
+    keyword_id as make_keyword_id,
+    normalize_keyword,
+    query_identity,
+)
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
 
 
-PAGE_SCHEMA_VERSION = "1.0"
-INITIAL_CURSOR = "*"
+from src.discovery.constants import INITIAL_CURSOR
+
+
+PAGE_SCHEMA_VERSION = "2.0"
+
+# ── Exact field set for v2 page journals ───────────────────────────
+# ALL_V2_FIELDS is used to reject unknown fields.
+# REQUIRED_V2_FIELDS (a subset) is used to reject missing critical fields.
+PAGE_V2_FIELDS: frozenset[str] = frozenset({
+    "schema_version", "page_id", "keyword_id", "keyword_zh",
+    "query_id", "query", "query_language", "provider", "lane",
+    "generation", "request_signature",
+    "request_cursor", "next_cursor",
+    "provider_exhausted", "state",
+    "fetched_at", "cursor_committed_at", "drained_at",
+    "candidates", "statistics",
+    "refresh_run_id", "page_sequence",
+})
+
+# Backwards-compatible aliases used by the v3 migration module.
+PAGE_ALL_V2_FIELDS = PAGE_V2_FIELDS
+PAGE_REQUIRED_V2_FIELDS = PAGE_V2_FIELDS
 
 PageLane = Literal["refresh", "backfill"]
 PageState = Literal["fetched", "cursor_committed", "draining", "drained", "failed"]
@@ -163,7 +190,7 @@ def request_signature(
 def backfill_page_id(
     *,
     keyword_id: str,
-    expansion_id: str,
+    query_id: str,
     provider: str,
     request_signature_hash: str,
     request_cursor: str | None,
@@ -171,7 +198,7 @@ def backfill_page_id(
     return stable_hash(
         "backfill",
         keyword_id,
-        expansion_id,
+        query_id,
         provider,
         request_signature_hash,
         request_cursor or INITIAL_CURSOR,
@@ -181,7 +208,7 @@ def backfill_page_id(
 def refresh_page_id(
     *,
     keyword_id: str,
-    expansion_id: str,
+    query_id: str,
     provider: str,
     request_signature_hash: str,
     refresh_run_id: str,
@@ -190,7 +217,7 @@ def refresh_page_id(
     return stable_hash(
         "refresh",
         keyword_id,
-        expansion_id,
+        query_id,
         provider,
         request_signature_hash,
         refresh_run_id,
@@ -267,17 +294,78 @@ def _atomic_write_json_unlocked(path: Path, data: dict[str, Any]) -> None:
     _unlocked(path, data, indent=2)
 
 
-def _validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
+def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
+    """Strictly validate one active schema-v2 provider-page journal."""
     if not isinstance(data, dict):
         raise JournalCorruptError(f"journal root is not object: {path or ''}")
-    required = {"schema_version", "page_id", "provider", "lane", "state", "candidates"}
-    missing = sorted(required - set(data))
+    missing = sorted(PAGE_V2_FIELDS - set(data))
     if missing:
         raise JournalCorruptError(f"journal missing keys {missing}: {path or ''}")
+    unexpected = sorted(set(data) - PAGE_V2_FIELDS)
+    if unexpected:
+        raise JournalCorruptError(f"journal contains unexpected fields {unexpected}: {path or ''}")
     if data.get("schema_version") != PAGE_SCHEMA_VERSION:
         raise JournalCorruptError(f"journal schema_version must be {PAGE_SCHEMA_VERSION}: {path or ''}")
+    if not isinstance(data.get("page_id"), str) or not data["page_id"]:
+        raise JournalCorruptError(f"journal page_id must be non-blank: {path or ''}")
+    keyword_zh = data.get("keyword_zh")
+    if (
+        not isinstance(keyword_zh, str)
+        or not keyword_zh.strip()
+        or detect_query_language(keyword_zh) not in {"zh", "mixed"}
+    ):
+        raise JournalCorruptError(f"journal keyword_zh must be non-blank: {path or ''}")
+    if data.get("keyword_id") != make_keyword_id(keyword_zh):
+        raise JournalCorruptError(f"journal keyword_id does not match keyword_zh: {path or ''}")
+    query = data.get("query")
+    language = data.get("query_language")
+    if not isinstance(query, str) or not query.strip():
+        raise JournalCorruptError(f"journal query must be non-blank: {path or ''}")
+    if language not in {"zh", "en"} or detect_query_language(query) != language:
+        raise JournalCorruptError(f"journal query_language is invalid: {path or ''}")
+    expected_query_id = query_identity(language, normalize_keyword(query))
+    if data.get("query_id") != expected_query_id:
+        raise JournalCorruptError(f"journal query_id does not match query: {path or ''}")
+    if data.get("provider") not in PROVIDERS:
+        raise JournalCorruptError(f"invalid provider: {data.get('provider')}: {path or ''}")
+    if data.get("lane") not in {"refresh", "backfill"}:
+        raise JournalCorruptError(f"invalid lane: {data.get('lane')}: {path or ''}")
+    generation = data.get("generation")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise JournalCorruptError(f"journal generation must be a positive integer: {path or ''}")
     if data.get("state") not in _PAGE_TRANSITIONS:
         raise JournalCorruptError(f"invalid page state: {data.get('state')}: {path or ''}")
+    signature = data.get("request_signature")
+    if not isinstance(signature, dict):
+        raise JournalCorruptError(f"journal request_signature must be object: {path or ''}")
+    signature_required = {
+        "sort", "filters", "page_size", "pagination_schema_version", "hash",
+    }
+    if not signature_required.issubset(signature):
+        raise JournalCorruptError(f"journal request_signature is incomplete: {path or ''}")
+    if not isinstance(signature.get("filters"), dict):
+        raise JournalCorruptError(f"journal request_signature.filters must be object: {path or ''}")
+    try:
+        expected_signature = request_signature(
+            sort=str(signature.get("sort") or ""),
+            filters=signature.get("filters"),
+            page_size=int(signature["page_size"]),
+            pagination_schema_version=str(signature["pagination_schema_version"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise JournalCorruptError(f"journal request_signature is invalid: {path or ''}") from exc
+    if signature != expected_signature:
+        raise JournalCorruptError(f"journal request_signature hash/content mismatch: {path or ''}")
+    if data.get("request_cursor") is not None and not isinstance(data.get("request_cursor"), str):
+        raise JournalCorruptError(f"journal request_cursor must be string or null: {path or ''}")
+    if data.get("next_cursor") is not None and not isinstance(data.get("next_cursor"), str):
+        raise JournalCorruptError(f"journal next_cursor must be string or null: {path or ''}")
+    if not isinstance(data.get("provider_exhausted"), bool):
+        raise JournalCorruptError(f"journal provider_exhausted must be boolean: {path or ''}")
+    for field_name in ("fetched_at", "cursor_committed_at", "drained_at"):
+        value = data.get(field_name)
+        if value is not None and not isinstance(value, str):
+            raise JournalCorruptError(f"journal {field_name} must be string or null: {path or ''}")
     if not isinstance(data.get("candidates"), list):
         raise JournalCorruptError(f"journal candidates must be list: {path or ''}")
     for item in data["candidates"]:
@@ -286,7 +374,12 @@ def _validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
         status = item.get("status")
         if status not in _CANDIDATE_TRANSITIONS:
             raise JournalCorruptError(f"invalid candidate state {status}: {path or ''}")
+    if not isinstance(data.get("statistics"), dict):
+        raise JournalCorruptError(f"journal statistics must be object: {path or ''}")
     return data
+
+
+_validate_page = validate_page
 
 
 @dataclass(frozen=True)
@@ -294,7 +387,7 @@ class PageRef:
     path: Path
     page_id: str
     keyword_id: str
-    expansion_id: str
+    query_id: str
     provider: str
     lane: str
     state: str
@@ -320,18 +413,17 @@ class PageJournalStore:
 
     def __init__(self, root_dir: str | Path):
         self.root_dir = Path(root_dir)
-        self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def page_path(
         self,
         *,
         keyword_id: str,
-        expansion_id: str,
+        query_id: str,
         provider: str,
         lane: PageLane,
         page_id: str,
     ) -> Path:
-        return self.root_dir / keyword_id / expansion_id / provider / lane / f"{page_id}.json"
+        return self.root_dir / keyword_id / query_id / provider / lane / f"{page_id}.json"
 
     @staticmethod
     def lock_for(path: Path) -> FileLock:
@@ -345,9 +437,10 @@ class PageJournalStore:
         return _validate_page(data, path)
 
     def write_page(self, page: dict[str, Any]) -> Path:
+        page = validate_page(page)
         path = self.page_path(
             keyword_id=page["keyword_id"],
-            expansion_id=page["expansion_id"],
+            query_id=page["query_id"],
             provider=page["provider"],
             lane=page["lane"],
             page_id=page["page_id"],
@@ -366,9 +459,10 @@ class PageJournalStore:
         *,
         page_id: str,
         keyword_id: str,
-        keyword: str,
-        expansion_id: str,
-        expanded_query: str,
+        keyword_zh: str,
+        query_id: str,
+        query: str,
+        query_language: str,
         provider: str,
         lane: PageLane,
         request_signature_value: dict[str, Any],
@@ -376,6 +470,7 @@ class PageJournalStore:
         next_cursor: str | None,
         provider_exhausted: bool,
         candidates: list[PaperCandidate],
+        generation: int = 1,
         refresh_run_id: str | None = None,
         page_sequence: int | None = None,
         state: PageState = "fetched",
@@ -386,11 +481,13 @@ class PageJournalStore:
             "schema_version": PAGE_SCHEMA_VERSION,
             "page_id": page_id,
             "keyword_id": keyword_id,
-            "keyword": keyword,
-            "expansion_id": expansion_id,
-            "expanded_query": expanded_query,
+            "keyword_zh": keyword_zh,
+            "query_id": query_id,
+            "query": query,
+            "query_language": query_language,
             "provider": provider,
             "lane": lane,
+            "generation": int(generation),
             "refresh_run_id": refresh_run_id,
             "page_sequence": page_sequence,
             "request_signature": request_signature_value,
@@ -449,7 +546,7 @@ class PageJournalStore:
                 path=path,
                 page_id=data["page_id"],
                 keyword_id=data["keyword_id"],
-                expansion_id=data["expansion_id"],
+                query_id=data["query_id"],
                 provider=data["provider"],
                 lane=data["lane"],
                 state=data["state"],

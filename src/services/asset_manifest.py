@@ -53,7 +53,7 @@ def build_asset_manifest(
     *,
     prefix: str,
     paper_number: str,
-    paper_id: str = "",
+    paper_name: str = "",
     stage: str,
     extra_files: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -79,7 +79,7 @@ def build_asset_manifest(
     return {
         "schema_version": ASSET_MANIFEST_VERSION,
         "paper_number": paper_number,
-        "paper_id": paper_id,
+        "paper_name": paper_name,
         "stage": stage,
         "files": files,
     }
@@ -90,7 +90,7 @@ def write_asset_manifest(
     *,
     prefix: str,
     paper_number: str,
-    paper_id: str = "",
+    paper_name: str = "",
     stage: str,
     extra_files: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -98,7 +98,7 @@ def write_asset_manifest(
         folder,
         prefix=prefix,
         paper_number=paper_number,
-        paper_id=paper_id,
+        paper_name=paper_name,
         stage=stage,
         extra_files=extra_files,
     )

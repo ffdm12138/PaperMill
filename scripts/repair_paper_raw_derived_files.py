@@ -10,7 +10,7 @@ This script is LAYERED to respect what each file type is allowed to change:
 
 * ``asset_manifest.json``  — fully rebuilt from actual files (derived/regenerable).
 * ``catalog.json``         — only asset_refs / provenance.markdown_path /
-                             paper_number / paper_id via
+                             paper_number / paper_name via
                              ``canonicalize_catalog_asset_refs``; content fields
                              (content_identity, methods, findings, ...) untouched.
 * ``conversion.json``      — replace stale 16-digit tokens (paper_number + paths)
@@ -135,19 +135,19 @@ def _repair_workspace(folder: Path, *, apply: bool) -> dict[str, Any]:
     try:
         old_manifest = read_asset_manifest(folder, prefix)
         new_manifest = build_asset_manifest(
-            folder, prefix=prefix, paper_number=correct_number, paper_id=pid, stage=stage
+            folder, prefix=prefix, paper_number=correct_number, paper_name=pid, stage=stage
         )
         if new_manifest != old_manifest:
             if apply:
                 write_asset_manifest(
-                    folder, prefix=prefix, paper_number=correct_number, paper_id=pid, stage=stage
+                    folder, prefix=prefix, paper_number=correct_number, paper_name=pid, stage=stage
                 )
             result["changes"].append("asset_manifest: rebuilt")
     except Exception as exc:
         result["warnings"].append(f"asset_manifest rebuild failed: {exc}")
 
     # 2. catalog.json — canonicalize library_locator.asset_refs /
-    #    library_locator.paper_number / library_locator.paper_id /
+    #    library_locator.paper_number / library_locator.paper_name /
     #    provenance.markdown_path only.
     #    Also clear a stale ``provenance.original_markdown_path`` left over from a
     #    prior copy/renumber (canonicalize preserves it as history, but if it

@@ -103,7 +103,7 @@ def _revalidate_staging_is_safe_to_clean(
     staging: Path,
     *,
     papers_root: Path,
-    paper_id: str,
+    paper_name: str,
     transaction_id: str,
 ) -> None:
     """Assert *staging* can be safely removed and recreated.
@@ -111,14 +111,14 @@ def _revalidate_staging_is_safe_to_clean(
     Checks:
     - Under ``papers_root``.
     - Not a symlink.
-    - Named exactly ``.<paper_id>.staging_<transaction_id>``.
+    - Named exactly ``.<paper_name>.staging_<transaction_id>``.
     - Is not the papers_root itself.
     - Is not the final formal path.
     """
     check_destructive_path(
         papers_root, staging,
         field="staging_path",
-        expected_name=f".{paper_id}.staging_{transaction_id}",
+        expected_name=f".{paper_name}.staging_{transaction_id}",
     )
 
 
@@ -131,7 +131,7 @@ def _prepare_staging(
     staging: Path,
     *,
     papers_root: Path,
-    paper_id: str,
+    paper_name: str,
     transaction_id: str,
 ) -> None:
     """Prepare the hidden staging directory with formalized assets.
@@ -143,7 +143,7 @@ def _prepare_staging(
     _revalidate_staging_is_safe_to_clean(
         staging,
         papers_root=papers_root,
-        paper_id=paper_id,
+        paper_name=paper_name,
         transaction_id=transaction_id,
     )
 
@@ -152,15 +152,15 @@ def _prepare_staging(
     staging.mkdir(parents=False)
 
     copies: list[tuple[Path, Path]] = [
-        (workspace.metadata, staging / f"{paper_id}.metadata.json"),
-        (workspace.catalog, staging / f"{paper_id}.catalog.json"),
-        (workspace.markdown, staging / f"{paper_id}.md"),
-        (workspace.pdf, staging / f"{paper_id}.pdf"),
-        (workspace.metadata_match, staging / f"{paper_id}.metadata_match.json"),
-        (workspace.metadata_freeze, staging / f"{paper_id}.metadata_freeze.json"),
-        (workspace.catalog_task, staging / f"{paper_id}.catalog_task.json"),
-        (workspace.catalog_freeze, staging / f"{paper_id}.catalog_freeze.json"),
-        (workspace.conversion, staging / f"{paper_id}.conversion.json"),
+        (workspace.metadata, staging / f"{paper_name}.metadata.json"),
+        (workspace.catalog, staging / f"{paper_name}.catalog.json"),
+        (workspace.markdown, staging / f"{paper_name}.md"),
+        (workspace.pdf, staging / f"{paper_name}.pdf"),
+        (workspace.metadata_match, staging / f"{paper_name}.metadata_match.json"),
+        (workspace.metadata_freeze, staging / f"{paper_name}.metadata_freeze.json"),
+        (workspace.catalog_task, staging / f"{paper_name}.catalog_task.json"),
+        (workspace.catalog_freeze, staging / f"{paper_name}.catalog_freeze.json"),
+        (workspace.conversion, staging / f"{paper_name}.conversion.json"),
     ]
     copy_kinds: list[str] = [
         "metadata", "catalog", "markdown", "pdf", "metadata_match",
@@ -186,15 +186,15 @@ def _prepare_staging(
     if hashes["metadata"] != compute_sha256(workspace.metadata) or hashes["catalog"] != compute_sha256(workspace.catalog):
         raise RuntimeError("staging changed frozen metadata/catalog bytes")
     files = {
-        "pdf": f"{paper_id}.pdf",
-        "markdown": f"{paper_id}.md",
-        "metadata": f"{paper_id}.metadata.json",
-        "catalog": f"{paper_id}.catalog.json",
-        "metadata_match": f"{paper_id}.metadata_match.json",
-        "metadata_freeze": f"{paper_id}.metadata_freeze.json",
-        "catalog_task": f"{paper_id}.catalog_task.json",
-        "catalog_freeze": f"{paper_id}.catalog_freeze.json",
-        "conversion_manifest": f"{paper_id}.conversion.json",
+        "pdf": f"{paper_name}.pdf",
+        "markdown": f"{paper_name}.md",
+        "metadata": f"{paper_name}.metadata.json",
+        "catalog": f"{paper_name}.catalog.json",
+        "metadata_match": f"{paper_name}.metadata_match.json",
+        "metadata_freeze": f"{paper_name}.metadata_freeze.json",
+        "catalog_task": f"{paper_name}.catalog_task.json",
+        "catalog_freeze": f"{paper_name}.catalog_freeze.json",
+        "conversion_manifest": f"{paper_name}.conversion.json",
         "paper_number_marker": workspace.marker.name,
         "images_dir": "images/",
         "source_records_dir": "source_records/",
@@ -205,12 +205,12 @@ def _prepare_staging(
         staging / workspace.marker.name
     )
     atomic_write_json(
-        staging / f"{paper_id}.asset_manifest.json",
+        staging / f"{paper_name}.asset_manifest.json",
         {
             "schema_version": "2.0",
             "stage": "papers",
             "paper_number": workspace.paper_number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "files": files,
             "asset_hashes": hashes,
             "image_hashes": plan["image_hashes"],
@@ -218,7 +218,7 @@ def _prepare_staging(
         },
         indent=2,
     )
-    validate_formal_paper(staging, expected_paper_id=paper_id)
+    validate_formal_paper(staging, expected_paper_name=paper_name)
 
 
 def _ledger_state(
@@ -274,17 +274,17 @@ def validate_committed_state(
 ) -> None:
     """Re-verify every durable fact required before source deletion."""
     number = str(journal["paper_number"])
-    paper_id = str(journal["paper_id"])
+    paper_name = str(journal["paper_name"])
     final = Path(journal["final_path"])
     try:
-        info = validate_formal_paper(final, expected_paper_id=paper_id)
+        info = validate_formal_paper(final, expected_paper_name=paper_name)
         if str(info.get("paper_number") or "") != number:
             raise ValueError("formal paper_number mismatch")
         item = (ledger.load().get("items") or {}).get(number)
         if not isinstance(item, dict) or item.get("state") != "active":
             raise ValueError("ledger entry is not active")
-        if str(item.get("paper_id") or "") != paper_id:
-            raise ValueError("ledger paper_id mismatch")
+        if str(item.get("paper_name") or "") != paper_name:
+            raise ValueError("ledger paper_name mismatch")
         from src.path_utils import resolve_stored_path
         if resolve_stored_path(str(item.get("folder_path") or "")).resolve() != final.resolve():
             raise ValueError("ledger folder_path mismatch")
@@ -309,7 +309,7 @@ def resume_commit(
     fault_injector=None,
 ) -> dict:
     number = journal["paper_number"]
-    paper_id = journal["paper_id"]
+    paper_name = journal["paper_name"]
     staging = Path(journal["staging_path"])
     final = Path(journal["final_path"])
     ledger = PaperNumberLedger(ledger_path)
@@ -363,7 +363,7 @@ def resume_commit(
                     plan,
                     staging,
                     papers_root=papers_dir,
-                    paper_id=paper_id,
+                    paper_name=paper_name,
                     transaction_id=journal["transaction_id"],
                 )
             journal = store.update(journal, "staging_complete")
@@ -392,7 +392,7 @@ def resume_commit(
                     if state == "reserved":
                         # Crash recovery: final exists but ledger not yet active
                         ledger.activate_reserved_locked(
-                            number, final, paper_id=paper_id
+                            number, final, paper_name=paper_name
                         )
                 else:
                     if workspace is None:
@@ -413,19 +413,19 @@ def resume_commit(
                     _revalidate_before_rmtree(
                         papers_dir, final,
                         field="final_path",
-                        expected_name=paper_id,
+                        expected_name=paper_name,
                     )
                     validate_formal_paper(
-                        staging, expected_paper_id=paper_id
+                        staging, expected_paper_name=paper_name
                     )
                     if final.exists():
                         raise FileExistsError(
-                            f"final paper_id already exists: {paper_id}"
+                            f"final paper_name already exists: {paper_name}"
                         )
                     os.replace(staging, final)
                     # Activate ledger within the same lock scope
                     ledger.activate_reserved_locked(
-                        number, final, paper_id=paper_id
+                        number, final, paper_name=paper_name
                     )
             journal = store.update(journal, "final_installed")
             _fault(fault_injector, "final_installed")
@@ -445,7 +445,7 @@ def resume_commit(
                     state = _ledger_state(ledger, number)
                     if state == "reserved":
                         ledger.activate_reserved_locked(
-                            number, final, paper_id=paper_id
+                            number, final, paper_name=paper_name
                         )
                     elif state != "active":
                         raise RuntimeError(
@@ -462,7 +462,7 @@ def resume_commit(
                 from src.catalog_folders.reconcile import reconcile_catalog_folders
                 from src.catalog_folders.task_planner import plan_tasks
                 registry = FormalPaperRegistry(papers_dir=papers_dir, ledger=ledger)
-                reconcile_catalog_folders(root=catalog_root, formal_registry=registry, apply=True)
+                reconcile_catalog_folders(root=catalog_root, formal_registry=registry, apply=True, allow_empty_categories=True)
                 plan_tasks(root=catalog_root, formal_registry=registry, paper_number=number, apply=True)
                 journal["category_state"] = "classification_pending"
             except Exception as exc:
@@ -540,15 +540,15 @@ def commit_paper_raw(
                 papers_dir=papers_dir,
                 ledger_path=ledger_path,
             )
-            paper_id = plan["paper_id"]
+            paper_name = plan["paper_name"]
             # Generate transaction_id first so the staging path suffix matches
             # the journal's transaction_id.
             transaction_id = str(uuid.uuid4())
-            staging = papers_dir / f".{paper_id}.staging_{transaction_id}"
-            final = papers_dir / paper_id
+            staging = papers_dir / f".{paper_name}.staging_{transaction_id}"
+            final = papers_dir / paper_name
             journal = store._create_unlocked(
                 paper_number=workspace.paper_number,
-                paper_id=paper_id,
+                paper_name=paper_name,
                 source=workspace.root,
                 staging=staging,
                 final=final,
@@ -572,7 +572,7 @@ def commit_paper_raw(
             "success": True,
             "status": "imported",
             "paper_number": result["paper_number"],
-            "paper_id": result["paper_id"],
+            "paper_name": result["paper_name"],
             "transaction_id": result["transaction_id"],
             "phase": result["phase"],
             "folder": result["final_path"],

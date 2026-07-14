@@ -19,7 +19,7 @@ def load_assignment(path: Path) -> dict | None:
 def valid_decisions(assignment: dict | None, paper: FormalPaper, categories: list[Category]) -> dict[str, dict]:
     if not assignment or assignment.get("schema_version") != "1.0":
         return {}
-    if assignment.get("paper_number") != paper.paper_number or assignment.get("paper_id") != paper.paper_id:
+    if assignment.get("paper_number") != paper.paper_number or assignment.get("paper_name") != paper.paper_name:
         return {}
     if assignment.get("catalog_sha256") != compute_sha256(paper.catalog_path):
         return {}

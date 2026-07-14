@@ -3,7 +3,7 @@
 Shared service used by both ``scripts/stage_network_metadata_to_paper_raw.py``
 (the CLI that ingests a JSONL/JSON file of discovery records) and
 ``scripts/discover_papers.py --stage-to-paper-raw`` (which stages a
-``CandidateBatch`` directly after search).
+the coordinator's journal and report outputs.
 
 Contract:
 - Only records carrying a valid DOI are staged into paper_raw. No DOI → failed.
@@ -236,7 +236,7 @@ def stage_network_metadata_records(
                 duplicate_refs.append({
                     "scope": "batch",
                     "paper_number": "",
-                    "paper_id": "",
+                    "paper_name": "",
                     "folder": f"input[{seen_batch_dois[doi]}]",
                     "source": "input_record",
                     "doi": doi,
@@ -289,7 +289,7 @@ def stage_network_metadata_records(
                 doi_index.add_doi_ref(DuplicateRef(
                     scope="paper_raw",
                     paper_number=item["paper_number"],
-                    paper_id="",
+                    paper_name="",
                     folder=str(result.get("folder") or ""),
                     source="metadata",
                     doi=doi,

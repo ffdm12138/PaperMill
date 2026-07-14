@@ -19,7 +19,7 @@ from typing import Any
 from loguru import logger
 
 from src.discovery.models import normalize_doi
-from src.naming import sanitize_paper_id, validate_paper_id
+from src.naming import sanitize_paper_name, validate_paper_name
 
 # ── DOI regex ──────────────────────────────────────────────────────────
 # Matches: 10.xxxx/xxxxx, https://doi.org/10.xxxx/xxxxx, doi:10.xxxx/xxxxx, DOI 10.xxxx/xxxxx
@@ -631,7 +631,7 @@ def enrich_from_pdf(
     return result
 
 
-# ── Bad paper_id detection ─────────────────────────────────────────────
+# ── Bad paper_name detection ─────────────────────────────────────────────
 
 _BAD_FILENAME_PATTERNS = [
     re.compile(p, re.IGNORECASE) for p in [
@@ -647,29 +647,29 @@ _BAD_FILENAME_PATTERNS = [
 ]
 
 
-def looks_like_bad_paper_id(paper_id: str) -> tuple[bool, str]:
-    """Check if a paper_id looks like it was derived from a raw PDF filename.
+def looks_like_bad_paper_name(paper_name: str) -> tuple[bool, str]:
+    """Check if a paper_name looks like it was derived from a raw PDF filename.
 
     Returns (is_bad, reason).
     """
-    if not paper_id or len(paper_id) < 3:
+    if not paper_name or len(paper_name) < 3:
         return True, "too_short"
 
     for pat in _BAD_FILENAME_PATTERNS:
-        if pat.search(paper_id):
+        if pat.search(paper_name):
             return True, f"matches_bad_pattern:{pat.pattern}"
 
     # Check for year_author_title pattern
-    has_year = bool(re.match(r"^\d{4}_", paper_id))
+    has_year = bool(re.match(r"^\d{4}_", paper_name))
     if not has_year:
         return True, "missing_year_prefix"
 
-    parts = paper_id.split("_")
+    parts = paper_name.split("_")
     if len(parts) < 3:
         return True, "too_few_parts"
 
-    # Check for excessively long paper_id
-    if len(paper_id) > 120:
+    # Check for excessively long paper_name
+    if len(paper_name) > 120:
         return True, "too_long"
 
     return False, ""

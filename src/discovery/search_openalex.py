@@ -120,7 +120,9 @@ def _page_params(
 def search_openalex_page(
     query: str,
     *,
-    original_keyword: str,
+    keyword_zh: str,
+    query_id: str = "",
+    query_language: str = "",
     lane: Literal["refresh", "backfill"],
     page_size: int,
     cursor: str = "*",
@@ -174,8 +176,10 @@ def search_openalex_page(
         _error_type, failure_class, http_status, retry_after = classify_http_error(exc)
         return failed_page(
             provider=OPENALEX_PROVIDER,
-            original_keyword=original_keyword,
-            expanded_query=query,
+            keyword_zh=keyword_zh,
+            query_id=query_id,
+            query=query,
+            query_language=query_language,
             lane=lane,
             request_cursor=cursor,
             page_size=page_size,
@@ -193,8 +197,10 @@ def search_openalex_page(
     if next_cursor and str(next_cursor) == str(cursor):
         return failed_page(
             provider=OPENALEX_PROVIDER,
-            original_keyword=original_keyword,
-            expanded_query=query,
+            keyword_zh=keyword_zh,
+            query_id=query_id,
+            query=query,
+            query_language=query_language,
             lane=lane,
             request_cursor=cursor,
             page_size=page_size,
@@ -209,8 +215,10 @@ def search_openalex_page(
     exhausted = (not results) or (not next_cursor)
     return DiscoveryPage(
         provider=OPENALEX_PROVIDER,
-        original_keyword=original_keyword,
-        expanded_query=query,
+        keyword_zh=keyword_zh,
+        query_id=query_id,
+        query=query,
+        query_language=query_language,
         lane=lane,
         candidates=candidates,
         request_cursor=cursor,

@@ -13,15 +13,15 @@ from src.metadata.schema import validate_metadata_schema
 
 MANIFEST_SCHEMA_VERSION = "2.0"
 FORMAL_FILE_KEYS = {
-    "pdf": "{paper_id}.pdf",
-    "markdown": "{paper_id}.md",
-    "metadata": "{paper_id}.metadata.json",
-    "catalog": "{paper_id}.catalog.json",
-    "metadata_match": "{paper_id}.metadata_match.json",
-    "metadata_freeze": "{paper_id}.metadata_freeze.json",
-    "catalog_task": "{paper_id}.catalog_task.json",
-    "catalog_freeze": "{paper_id}.catalog_freeze.json",
-    "conversion_manifest": "{paper_id}.conversion.json",
+    "pdf": "{paper_name}.pdf",
+    "markdown": "{paper_name}.md",
+    "metadata": "{paper_name}.metadata.json",
+    "catalog": "{paper_name}.catalog.json",
+    "metadata_match": "{paper_name}.metadata_match.json",
+    "metadata_freeze": "{paper_name}.metadata_freeze.json",
+    "catalog_task": "{paper_name}.catalog_task.json",
+    "catalog_freeze": "{paper_name}.catalog_freeze.json",
+    "conversion_manifest": "{paper_name}.conversion.json",
     "paper_number_marker": "{paper_number}.paper.number",
     "images_dir": "images/",
     "source_records_dir": "source_records/",
@@ -49,14 +49,14 @@ def _tree_hashes(folder: Path, relative_dir: str) -> dict[str, str]:
     }
 
 
-def validate_formal_paper(folder: Path, *, expected_paper_id: str | None = None) -> dict:
-    paper_id = expected_paper_id or folder.name
+def validate_formal_paper(folder: Path, *, expected_paper_name: str | None = None) -> dict:
+    paper_name = expected_paper_name or folder.name
     errors: list[str] = []
     markers = sorted(folder.glob("*.paper.number"))
     manifests = sorted(folder.glob("*.asset_manifest.json"))
     if len(markers) != 1:
         errors.append("formal paper requires exactly one paper-number marker")
-    if len(manifests) != 1 or (manifests and manifests[0].name != f"{paper_id}.asset_manifest.json"):
+    if len(manifests) != 1 or (manifests and manifests[0].name != f"{paper_name}.asset_manifest.json"):
         errors.append("formal paper requires exactly one canonical asset manifest")
 
     marker: dict = {}
@@ -68,8 +68,8 @@ def validate_formal_paper(folder: Path, *, expected_paper_id: str | None = None)
             marker = _read_json(markers[0], "paper-number marker")
         if manifests:
             manifest = _read_json(manifests[0], "asset manifest")
-        metadata = _read_json(folder / f"{paper_id}.metadata.json", "metadata")
-        catalog = _read_json(folder / f"{paper_id}.catalog.json", "catalog")
+        metadata = _read_json(folder / f"{paper_name}.metadata.json", "metadata")
+        catalog = _read_json(folder / f"{paper_name}.catalog.json", "catalog")
     except ValueError as exc:
         errors.append(str(exc))
 
@@ -79,12 +79,12 @@ def validate_formal_paper(folder: Path, *, expected_paper_id: str | None = None)
     if marker.get("state") != "active":
         errors.append("formal marker state must be active")
     identities = (
-        marker.get("folder_name"), marker.get("planned_paper_id"),
-        catalog.get("paper_id"), manifest.get("paper_id"),
+        marker.get("folder_name"), marker.get("planned_paper_name"),
+        catalog.get("paper_name"), manifest.get("paper_name"),
     )
-    if any(value != paper_id for value in identities):
-        errors.append("formal paper_id/marker/catalog/manifest mismatch")
-    if expected_paper_id is None and folder.name != paper_id:
+    if any(value != paper_name for value in identities):
+        errors.append("formal paper_name/marker/catalog/manifest mismatch")
+    if expected_paper_name is None and folder.name != paper_name:
         errors.append("formal directory name mismatch")
     if metadata.get("paper_number") != paper_number or catalog.get("paper_number") != paper_number:
         errors.append("formal metadata/catalog paper_number mismatch")
@@ -97,7 +97,7 @@ def validate_formal_paper(folder: Path, *, expected_paper_id: str | None = None)
 
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
     expected_files = {
-        key: template.format(paper_id=paper_id, paper_number=paper_number)
+        key: template.format(paper_name=paper_name, paper_number=paper_number)
         for key, template in FORMAL_FILE_KEYS.items()
     }
     for key, relative in expected_files.items():
@@ -126,20 +126,20 @@ def validate_formal_paper(folder: Path, *, expected_paper_id: str | None = None)
 
     errors.extend(validate_metadata_schema(metadata))
     if paper_number:
-        errors.extend(validate_catalog_v32(catalog, folder, paper_number, asset_prefix=paper_id))
+        errors.extend(validate_catalog_v32(catalog, folder, paper_number, asset_prefix=paper_name))
         try:
-            assert_metadata_frozen(folder, paper_number, asset_prefix=paper_id)
+            assert_metadata_frozen(folder, paper_number, asset_prefix=paper_name)
         except Exception as exc:
             errors.append(f"formal metadata freeze closure invalid: {exc}")
         try:
-            assert_formal_catalog_frozen(folder, paper_number, paper_id)
+            assert_formal_catalog_frozen(folder, paper_number, paper_name)
         except Exception as exc:
             errors.append(f"formal catalog freeze closure invalid: {exc}")
     if errors:
         raise ValueError("; ".join(dict.fromkeys(errors)))
     return {
         "paper_number": paper_number,
-        "paper_id": paper_id,
+        "paper_name": paper_name,
         "marker": marker,
         "manifest": manifest,
         "metadata": metadata,

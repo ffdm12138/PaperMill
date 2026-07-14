@@ -33,7 +33,7 @@ def main()->int:
             if write:
                 if not workspace.catalog_task.exists(): write_task_envelope(workspace.root,workspace.paper_number)
                 if args.catalog and args.catalog.resolve()!=workspace.catalog.resolve(): atomic_write_json(workspace.catalog,json.loads(args.catalog.read_text(encoding="utf-8")),indent=2)
-                receipt=freeze_catalog(workspace.root,workspace.paper_number,papers_dir=args.papers_dir,paper_raw_root=args.paper_raw_dir); update_status(workspace,"catalog","frozen",paper_id=receipt["paper_id"],catalog_sha256=receipt["catalog_sha256"]); item.update({"status":"catalog_frozen","paper_id":receipt["paper_id"]})
+                receipt=freeze_catalog(workspace.root,workspace.paper_number,papers_dir=args.papers_dir,paper_raw_root=args.paper_raw_dir); update_status(workspace,"catalog","frozen",paper_name=receipt["paper_name"],catalog_sha256=receipt["catalog_sha256"]); item.update({"status":"catalog_frozen","paper_name":receipt["paper_name"]})
             else: item.update({"status":"planned","task":str(workspace.catalog_task),"task_exists":workspace.catalog_task.exists()})
         except Exception as exc: item.update({"status":"failed","error":str(exc)})
         report.append(item)

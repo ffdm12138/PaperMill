@@ -350,7 +350,7 @@ def _split_name(name: str) -> tuple[str, str]:
 
 def patch_from_enrichment(source_id: str, result: EnrichmentResult) -> dict:
     """Flat EnrichmentResult → nested empty_metadata subset (promoted copy of
-    scripts/match_paper_raw_metadata.py::_patch_from_enrichment)."""
+    scripts/resolve_paper_raw_metadata.py metadata enrichment)."""
     patch = empty_metadata(source_id, source_type="metadata_resolution")
     if getattr(result, "title", ""):
         patch["title"]["original"] = result.title
@@ -610,7 +610,7 @@ def _duplicate_candidate_reasons(
     )
     for ref in dup.refs:
         if ref.scope == "papers":
-            reasons.append(f"duplicate_formal_doi: {doi} ({ref.paper_number or ref.paper_id})")
+            reasons.append(f"duplicate_formal_doi: {doi} ({ref.paper_number or ref.paper_name})")
         else:
             reasons.append(f"duplicate_paper_raw_doi: {doi} ({ref.paper_number})")
     return list(dict.fromkeys(reasons))
@@ -637,9 +637,9 @@ def _duplicate_pdf_reasons(
     reasons: list[str] = []
     for ref in dup.refs:
         if ref.pdf_sha256 == dup.pdf_sha256:
-            reasons.append(f"duplicate_pdf_sha256: {ref.scope}/{ref.paper_number or ref.paper_id}")
+            reasons.append(f"duplicate_pdf_sha256: {ref.scope}/{ref.paper_number or ref.paper_name}")
         if ref.pdf_md5 == dup.pdf_md5:
-            reasons.append(f"duplicate_pdf_md5: {ref.scope}/{ref.paper_number or ref.paper_id}")
+            reasons.append(f"duplicate_pdf_md5: {ref.scope}/{ref.paper_number or ref.paper_name}")
     if "pdf_md5_collision_or_inconsistent_hash" in dup.reasons:
         reasons.append("pdf_md5_collision_or_inconsistent_hash")
     return list(dict.fromkeys(reasons))
@@ -788,7 +788,7 @@ def _local_evidence(metadata: dict, md_path: Path | None, pdf_path: Path | None 
             if first_line and prefer_front_author:
                 local_first_author_family = _surname(first_line[0])
                 author_source = "markdown_front_matter"
-        ext = extract_metadata_from_markdown(md_path, paper_id="", max_scan_chars=MD_HEADER_SCAN_CHARS)
+        ext = extract_metadata_from_markdown(md_path, paper_name="", max_scan_chars=MD_HEADER_SCAN_CHARS)
         if local_year is None and ext.year_candidates:
             local_year = ext.year_candidates[0]
         if not abstract:

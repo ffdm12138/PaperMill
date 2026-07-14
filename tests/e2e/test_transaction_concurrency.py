@@ -236,7 +236,7 @@ class TestCommitJournalDuplicateProtection:
     def _create_journal_worker(
         transactions_dir: str,
         paper_number: str,
-        paper_id: str,
+        paper_name: str,
         queue,
     ) -> None:
         from src.ingest.transactions import CommitJournalStore
@@ -248,10 +248,10 @@ class TestCommitJournalDuplicateProtection:
             tx_id = str(uuid4())
             journal = store.create(
                 paper_number=paper_number,
-                paper_id=paper_id,
+                paper_name=paper_name,
                 source=source,
-                staging=root / "papers" / f".{paper_id}.staging_{tx_id}",
-                final=root / "papers" / paper_id,
+                staging=root / "papers" / f".{paper_name}.staging_{tx_id}",
+                final=root / "papers" / paper_name,
                 formalization=source / f"{paper_number}.formalization.json",
                 transaction_id=tx_id,
             )
@@ -268,7 +268,7 @@ class TestCommitJournalDuplicateProtection:
         q2 = ctx.Queue()
 
         paper_number = "1234567890123456"
-        paper_id = "2024_Smith_test"
+        paper_name = "2024_Smith_test"
         source = tmp_path / "paper_raw" / paper_number
         source.mkdir(parents=True)
         (source / f"{paper_number}.metadata.json").write_text("{}", encoding="utf-8")
@@ -277,11 +277,11 @@ class TestCommitJournalDuplicateProtection:
 
         p1 = ctx.Process(
             target=self._create_journal_worker,
-            args=(str(tdir.parent), paper_number, paper_id, q1),
+            args=(str(tdir.parent), paper_number, paper_name, q1),
         )
         p2 = ctx.Process(
             target=self._create_journal_worker,
-            args=(str(tdir.parent), paper_number, paper_id, q2),
+            args=(str(tdir.parent), paper_number, paper_name, q2),
         )
 
         p1.start(); p2.start()
@@ -373,7 +373,7 @@ class TestCrashRecoveryStress:
         ledger_path = tmp_path / "ledger.json"
         ledger = PaperNumberLedger(ledger_path)
         number = ledger.reserve_for_paper_raw(
-            source, planned_paper_id="2024_Smith_test"
+            source, planned_paper_name="2024_Smith_test"
         )
         assert len(number) == 16, f"expected 16-digit number, got {number}"
         ledger.activate_reserved(number, source)
@@ -386,7 +386,7 @@ class TestCrashRecoveryStress:
             encoding="utf-8",
         )
         (source / f"{number}.catalog.json").write_text(
-            json.dumps({"paper_id": "2024_Smith_test"}), encoding="utf-8"
+            json.dumps({"paper_name": "2024_Smith_test"}), encoding="utf-8"
         )
         (source / f"{number}.metadata_freeze.jsonc").write_text(
             "{}", encoding="utf-8"
@@ -409,7 +409,7 @@ class TestCrashRecoveryStress:
 
             journal = store.create(
                 paper_number=number,
-                paper_id="2024_Smith_test",
+                paper_name="2024_Smith_test",
                 source=source,
                 staging=staging,
                 final=final,

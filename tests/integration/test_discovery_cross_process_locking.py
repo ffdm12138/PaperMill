@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
 from src.services.network_metadata_staging import stage_network_metadata_records
@@ -48,10 +49,11 @@ def test_candidate_claim_uses_real_os_filelock_across_processes(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     page = store.make_page(
         page_id="p1",
-        keyword_id="kw",
-        keyword="kw",
-        expansion_id="exp",
-        expanded_query="kw",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="refresh",
         request_signature_value=request_signature(page_size=10),
@@ -151,3 +153,6 @@ def test_allocator_new_allocation_and_reuse_do_not_deadlock_across_processes(tmp
         "0000000000000001",
         "0000000000000002",
     ]
+KEYWORD_ZH = "测试关键词"
+KEYWORD_ID = keyword_id(KEYWORD_ZH)
+QUERY_ID = query_identity("zh", KEYWORD_ZH)

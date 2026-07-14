@@ -47,7 +47,7 @@ def test_input_length_constraints(monkeypatch):
     assert client.post("/prompt/plan-reading", json={"question": "x" * 4001}).status_code == 422
     assert client.post(
         "/prompt/read-fulltext",
-        json={"question": "ok", "paper_ids": [f"id{i}" for i in range(101)]},
+        json={"question": "ok", "paper_names": [f"id{i}" for i in range(101)]},
     ).status_code == 422
     assert client.post("/write/jobs", json={"topic": "x" * 1001}).status_code == 422
 

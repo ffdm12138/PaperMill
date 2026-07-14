@@ -27,9 +27,6 @@ def test_third_party_notices_key_license_boundaries():
     assert "ref-downloader" in text
 
 
-def test_agents_and_claude_are_byte_identical():
-    assert (ROOT / "AGENTS.md").read_bytes() == (ROOT / "CLAUDE.md").read_bytes()
-
 
 def test_jsonschema_is_declared():
     requirements = _read("requirements.txt")

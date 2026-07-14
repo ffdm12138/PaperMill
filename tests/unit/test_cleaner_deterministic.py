@@ -82,10 +82,10 @@ def test_no_method_candidates_returns_none():
         assert found is None
 
 
-def test_extract_rejects_malicious_paper_id():
-    """extract 拒绝路径穿越 paper_id"""
+def test_extract_rejects_malicious_paper_name():
+    """extract 拒绝路径穿越 paper_name"""
     with tempfile.TemporaryDirectory() as td:
         c = MinerUOutputCleaner()
         res = c.extract(td, "../../etc", overwrite=False)
         assert res["success"] is False
-        assert "Invalid paper_id" in res["error"]
+        assert "Invalid paper_name" in res["error"]

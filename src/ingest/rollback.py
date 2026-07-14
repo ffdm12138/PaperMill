@@ -108,13 +108,13 @@ def _stage_raw(
 ) -> None:
     """Build a numeric raw workspace from the quarantined formal closure."""
     number = info["paper_number"]
-    paper_id = info["paper_id"]
+    paper_name = info["paper_name"]
     check_destructive_path(paper_raw_root, staging, field="staging_path")
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
     for suffix in _COPY_SUFFIXES:
-        shutil.copyfile(quarantine / f"{paper_id}.{suffix}", staging / f"{number}.{suffix}")
+        shutil.copyfile(quarantine / f"{paper_name}.{suffix}", staging / f"{number}.{suffix}")
     shutil.copytree(quarantine / "images", staging / "images")
     shutil.copytree(quarantine / "source_records", staging / "source_records")
     atomic_write_json(staging / f"{number}.paper.number", {
@@ -122,7 +122,7 @@ def _stage_raw(
         "paper_number": number,
         "folder_name": number,
         "state": "reserved",
-        "planned_paper_id": paper_id,
+        "planned_paper_name": paper_name,
     }, indent=2)
     status = initial_status(number)
     status.update({
@@ -132,7 +132,7 @@ def _stage_raw(
         "catalog": {"state": "frozen"},
         "formalization": {"state": "stale"},
         "commit": {"state": "pending"},
-        "rollback": {"from_paper_id": paper_id, "restored_at": _now()},
+        "rollback": {"from_paper_name": paper_name, "restored_at": _now()},
     })
     initialize_status(staging, number, status)
     validate_workspace_contents(
@@ -175,7 +175,7 @@ def resume_rollback(
         transaction_root=transaction_root,
     )
     number = validated["paper_number"]
-    paper_id = validated["paper_id"]
+    paper_name = validated["paper_name"]
     formal = validated["formal_path"]
     target = validated["raw_path"]
     staging = validated["staging_path"]
@@ -187,7 +187,7 @@ def resume_rollback(
             _validate_quarantine_state(formal, quarantine)
             if formal.exists():
                 info = validate_formal_paper(formal)
-                if info["paper_number"] != number or info["paper_id"] != paper_id:
+                if info["paper_number"] != number or info["paper_name"] != paper_name:
                     raise RuntimeError("transaction_repair_required: formal identity mismatch")
                 item = (ledger.load().get("items") or {}).get(number) or {}
                 if item.get("state") != "active":
@@ -205,8 +205,8 @@ def resume_rollback(
             _validate_quarantine_state(formal, quarantine)
             if formal.exists():
                 raise RuntimeError("transaction_repair_required: quarantine phase still has formal paper")
-            info = validate_formal_paper(quarantine, expected_paper_id=paper_id)
-            if info["paper_number"] != number or info["paper_id"] != paper_id:
+            info = validate_formal_paper(quarantine, expected_paper_name=paper_name)
+            if info["paper_number"] != number or info["paper_name"] != paper_name:
                 raise RuntimeError("transaction_repair_required: quarantine identity mismatch")
             with acquire_locks(
                 LockRequest.path_lock(PAPER_RAW_GLOBAL_RANK, paper_raw_root / ".paper_raw_write.lock"),
@@ -228,9 +228,9 @@ def resume_rollback(
                 item = (ledger.load().get("items") or {}).get(number) or {}
                 state = item.get("state")
                 if state == "active":
-                    ledger.rollback_active_to_reserved_locked(number, target, planned_paper_id=paper_id)
+                    ledger.rollback_active_to_reserved_locked(number, target, planned_paper_name=paper_name)
                 elif state == "reserved":
-                    if item.get("planned_paper_id") != paper_id or Path(str(item.get("folder_path") or "")).name != number:
+                    if item.get("planned_paper_name") != paper_name or Path(str(item.get("folder_path") or "")).name != number:
                         raise RuntimeError("transaction_repair_required: reserved ledger identity mismatch")
                 else:
                     raise RuntimeError(f"transaction_repair_required: rollback ledger state {state!r}")
@@ -247,6 +247,7 @@ def resume_rollback(
                 root=catalog_root,
                 formal_registry=FormalPaperRegistry(papers_dir=papers_dir, ledger=ledger),
                 apply=True,
+                allow_empty_categories=True,
             )
             assignment = Path(catalog_root) / ".state" / "assignments" / f"{number}.json"
             assignment.unlink(missing_ok=True)
@@ -275,29 +276,29 @@ def resume_rollback(
     return journal
 
 
-def _resolve_paper_number_from_paper_id(
+def _resolve_paper_number_from_paper_name(
     *,
-    paper_id: str,
+    paper_name: str,
     papers_dir: Path,
     paper_raw_root: Path,
     transaction_root: Path,
     ledger: PaperNumberLedger,
 ) -> str:
-    """Resolve a paper_id to a unique paper_number for rollback.
+    """Resolve a paper_name to a unique paper_number for rollback.
 
     Resolution order:
 
     1. **Active rollback journals** — search ``transaction_root/rollback/``
-       for journals that contain this paper_id and are still active (not
+       for journals that contain this paper_name and are still active (not
        completed).  If exactly one matches, return its ``paper_number`` so
        rollback resumes from where it stopped.
 
     2. **Active ledger entries** — search ledger items where
-       ``state == "active"`` and ``entry.paper_id == paper_id``.  Requires
+       ``state == "active"`` and ``entry.paper_name == paper_name``.  Requires
        exactly one match.
 
     Raises ``ValueError`` with a descriptive code for each failure mode:
-    ``paper_id_not_found``, ``ambiguous_paper_id``,
+    ``paper_name_not_found``, ``ambiguous_paper_name``,
     ``repair_required``.
     """
 
@@ -320,7 +321,7 @@ def _resolve_paper_number_from_paper_id(
                 )
             except Exception:
                 continue
-            if validated["paper_id"] != paper_id:
+            if validated["paper_name"] != paper_name:
                 continue
             # Active = any phase except "completed"
             if validated["phase"] not in ROLLBACK_PHASES[:-1]:
@@ -329,15 +330,15 @@ def _resolve_paper_number_from_paper_id(
 
     if len(journal_matches) > 1:
         raise ValueError(
-            f"ambiguous_paper_id: {len(journal_matches)} active rollback "
-            f"journals found for paper_id={paper_id!r}"
+            f"ambiguous_paper_name: {len(journal_matches)} active rollback "
+            f"journals found for paper_name={paper_name!r}"
         )
     if len(journal_matches) == 1:
         pn = str(journal_matches[0].get("paper_number") or "").strip()
         if not pn:
             raise RuntimeError(
                 f"transaction_repair_required: rollback journal for "
-                f"paper_id={paper_id!r} missing paper_number"
+                f"paper_name={paper_name!r} missing paper_number"
             )
         return pn
 
@@ -349,31 +350,31 @@ def _resolve_paper_number_from_paper_id(
             continue
         if (item.get("state") or "") != "active":
             continue
-        if str(item.get("paper_id") or "") == paper_id:
+        if str(item.get("paper_name") or "") == paper_name:
             active_matches.append((number, item))
 
     if len(active_matches) > 1:
         raise ValueError(
-            f"ambiguous_paper_id: {len(active_matches)} active ledger "
-            f"entries for paper_id={paper_id!r}"
+            f"ambiguous_paper_name: {len(active_matches)} active ledger "
+            f"entries for paper_name={paper_name!r}"
         )
     if not active_matches:
         raise ValueError(
-            f"paper_id_not_found: no active ledger entry or rollback "
-            f"journal for paper_id={paper_id!r}"
+            f"paper_name_not_found: no active ledger entry or rollback "
+            f"journal for paper_name={paper_name!r}"
         )
     return active_matches[0][0]
 
 
-def resolve_paper_number_by_paper_id(
+def resolve_paper_number_by_paper_name(
     *,
-    paper_id: str,
+    paper_name: str,
     papers_dir: Path,
     paper_raw_root: Path,
     transaction_root: Path,
     ledger: PaperNumberLedger,
 ) -> str:
-    """Resolve paper_id → paper_number with journal-first lookup.
+    """Resolve paper_name → paper_number with journal-first lookup.
 
     Resolution order:
 
@@ -381,20 +382,20 @@ def resolve_paper_number_by_paper_id(
        matching incomplete journal so rollback resumes from crash point.
 
     2. **Active ledger entries** — `state == "active"` and
-       `paper_id == paper_id`.  Requires exactly one match.
+       `paper_name == paper_name`.  Requires exactly one match.
 
-    Raises ``ValueError`` for ``paper_id_not_found``,
-    ``ambiguous_paper_id``, or ``repair_required``.
+    Raises ``ValueError`` for ``paper_name_not_found``,
+    ``ambiguous_paper_name``, or ``repair_required``.
 
-    The *paper_id* string is validated via
-    :func:`~src.services.transaction_paths.validate_paper_id` before
+    The *paper_name* string is validated via
+    :func:`~src.services.transaction_paths.validate_paper_name` before
     resolution.
     """
-    from src.services.transaction_paths import validate_paper_id as _validate_pid
+    from src.services.transaction_paths import validate_paper_name as _validate_pid
 
-    pid = _validate_pid(str(paper_id))
-    return _resolve_paper_number_from_paper_id(
-        paper_id=pid,
+    pid = _validate_pid(str(paper_name))
+    return _resolve_paper_number_from_paper_name(
+        paper_name=pid,
         papers_dir=papers_dir,
         paper_raw_root=paper_raw_root,
         transaction_root=transaction_root,
@@ -410,7 +411,7 @@ def rollback_formal_papers(
     ledger_path: Path,
     catalog_root: Path,
     paper_number: str | None = None,
-    paper_id: str | None = None,
+    paper_name: str | None = None,
     interactive: bool = False,
     fault_injector=None,
     lock_timeout: float = 30.0,
@@ -426,16 +427,16 @@ def rollback_formal_papers(
     )
     if paper_number:
         number = str(paper_number)
-    elif paper_id:
-        number = resolve_paper_number_by_paper_id(
-            paper_id=str(paper_id),
+    elif paper_name:
+        number = resolve_paper_number_by_paper_name(
+            paper_name=str(paper_name),
             papers_dir=papers_dir,
             paper_raw_root=paper_raw_root,
             transaction_root=transaction_root,
             ledger=ledger,
         )
     else:
-        raise ValueError("either paper_number or paper_id is required")
+        raise ValueError("either paper_number or paper_name is required")
 
     with _transaction_lock(store, number, lock_timeout):
         active = find_active_transaction_for_paper(
@@ -452,23 +453,23 @@ def rollback_formal_papers(
             item = (ledger.load().get("items") or {}).get(number) or {}
             if item.get("state") != "active":
                 raise ValueError(f"paper_number {number} is not active (state={item.get('state') or ''})")
-            resolved_paper_id = str(item.get("paper_id") or "")
+            resolved_paper_name = str(item.get("paper_name") or "")
             formal = papers_dir / (item.get("folder_name") or number)
-            if not resolved_paper_id or not formal.is_dir():
+            if not resolved_paper_name or not formal.is_dir():
                 raise RuntimeError("transaction_repair_required: active formal identity missing")
             info = validate_formal_paper(formal)
-            if info["paper_number"] != number or info["paper_id"] != resolved_paper_id:
+            if info["paper_number"] != number or info["paper_name"] != resolved_paper_name:
                 raise RuntimeError("transaction_repair_required: initial formal identity mismatch")
             tx_id = str(uuid.uuid4())
             journal = {
                 "schema_version": "1.0",
                 "transaction_id": tx_id,
                 "paper_number": number,
-                "paper_id": resolved_paper_id,
+                "paper_name": resolved_paper_name,
                 "formal_path": str(formal.resolve()),
                 "raw_path": str((paper_raw_root / number).resolve()),
                 "staging_path": str(rollback_staging_path(paper_raw_root, number, tx_id)),
-                "formal_quarantine": str(rollback_quarantine_path(papers_dir, resolved_paper_id, tx_id)),
+                "formal_quarantine": str(rollback_quarantine_path(papers_dir, resolved_paper_name, tx_id)),
                 "phase": "prepared",
                 "created_at": _now(),
                 "updated_at": _now(),

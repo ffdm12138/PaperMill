@@ -160,12 +160,12 @@ def audit_metadata_library(papers_dir: str | Path) -> dict:
 
     if root.exists():
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
-            paper_id = folder.name
-            metadata_path = folder / f"{paper_id}.metadata.json"
+            paper_name = folder.name
+            metadata_path = folder / f"{paper_name}.metadata.json"
             if not metadata_path.exists():
                 item = {
                     "paper_number": _paper_number_from_folder(folder),
-                    "paper_id": paper_id,
+                    "paper_name": paper_name,
                     "doi": "",
                     "hard_status": "error",
                     "errors": [f"missing metadata file: {metadata_path.name}"],
@@ -174,13 +174,13 @@ def audit_metadata_library(papers_dir: str | Path) -> dict:
                 papers.append(item)
                 continue
             metadata = _read_json(metadata_path)
-            receipt_path = folder / f"{paper_id}.metadata_match.json"
+            receipt_path = folder / f"{paper_name}.metadata_match.json"
             match_receipt = _read_json(receipt_path) if receipt_path.is_file() else None
             doi = normalized_metadata_doi(metadata)
             item_errors = metadata_quality_hard_errors(metadata, match_receipt)
             item = {
                 "paper_number": _paper_number_from_folder(folder),
-                "paper_id": paper_id,
+                "paper_name": paper_name,
                 "doi": doi,
                 "hard_status": "ok",
                 "errors": item_errors,
@@ -188,15 +188,15 @@ def audit_metadata_library(papers_dir: str | Path) -> dict:
             }
             papers.append(item)
             if doi and is_valid_normalized_doi(doi):
-                doi_to_papers.setdefault(doi, []).append(paper_id)
+                doi_to_papers.setdefault(doi, []).append(paper_name)
 
-    for doi, paper_ids in sorted(doi_to_papers.items()):
-        if len(paper_ids) < 2:
+    for doi, paper_names in sorted(doi_to_papers.items()):
+        if len(paper_names) < 2:
             continue
         message = f"duplicate metadata.identifiers.doi: {doi}"
-        duplicate_set = set(paper_ids)
+        duplicate_set = set(paper_names)
         for item in papers:
-            if item["paper_id"] in duplicate_set and message not in item["errors"]:
+            if item["paper_name"] in duplicate_set and message not in item["errors"]:
                 item["errors"].append(message)
 
     for item in papers:
@@ -205,12 +205,12 @@ def audit_metadata_library(papers_dir: str | Path) -> dict:
         item["hard_status"] = "error" if item["errors"] else "ok"
 
     errors = [
-        f"{item['paper_id']}: {error}"
+        f"{item['paper_name']}: {error}"
         for item in papers
         for error in item["errors"]
     ]
     warnings = [
-        f"{item['paper_id']}: {warning}"
+        f"{item['paper_name']}: {warning}"
         for item in papers
         for warning in item["warnings"]
     ]

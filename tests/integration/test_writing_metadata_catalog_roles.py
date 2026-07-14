@@ -31,9 +31,9 @@ def test_writer_selection_is_decision_then_paper_number_and_needs_no_year():
 def test_writer_resolves_content_and_citation_by_paper_number(tmp_path: Path):
     workspace,papers,ledger,catalog_root=_workspace(tmp_path); write_formalization_plan(workspace,papers_dir=papers); commit_paper_raw(workspace,paper_raw_root=tmp_path/"paper_raw",papers_dir=papers,ledger_path=ledger,catalog_root=catalog_root,transactions_dir=tmp_path/"transactions")
     library=PaperLibrary(ledger_path=ledger,papers_dir=papers); metadata=library.load_metadata(NUMBER); catalog=library.load_catalog(NUMBER)
-    assert metadata and catalog and catalog["paper_number"]==NUMBER; bib=bibtex_from_metadata(metadata); assert "10.1234/example" in bib and catalog["paper_id"] not in bib
+    assert metadata and catalog and catalog["paper_number"]==NUMBER; bib=bibtex_from_metadata(metadata); assert "10.1234/example" in bib and catalog["paper_name"] not in bib
 
-def test_citation_key_is_independent_of_paper_id():
+def test_citation_key_is_independent_of_paper_name():
     metadata = empty_metadata(NUMBER)
     metadata.update({"entry_type": "article", "year": 2024})
     metadata["title"]["original"] = "Stable citation identity"
@@ -42,7 +42,7 @@ def test_citation_key_is_independent_of_paper_id():
     metadata["container"]["journal"] = "Journal"
     metadata["identifiers"]["doi"] = "10.1234/stable"
     first = citation_key_from_metadata(metadata)
-    metadata["paper_id"] = "forbidden_name_that_must_not_be_read"
+    metadata["paper_name"] = "forbidden_name_that_must_not_be_read"
     assert citation_key_from_metadata(metadata) == first
 
 

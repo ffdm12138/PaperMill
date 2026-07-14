@@ -131,8 +131,8 @@ def test_normalize_receipt_identity_rejects_short_legacy_id():
         })
 
 
-def test_normalize_receipt_identity_rejects_paper_id():
-    """A paper_id (UUID-like) is not a valid paper_number."""
+def test_normalize_receipt_identity_rejects_paper_name():
+    """A paper_name (UUID-like) is not a valid paper_number."""
     with pytest.raises(ValueError, match="paper_number"):
         normalize_receipt_identity({
             "candidate_id": "c1", "page_id": "p1",

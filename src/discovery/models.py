@@ -1,6 +1,5 @@
 """Serializable models for DOI discovery."""
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 import re
 from typing import Any
 
@@ -65,33 +64,3 @@ class PaperCandidate:
     def from_dict(cls, data: dict[str, Any]) -> "PaperCandidate":
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
-
-@dataclass
-class CandidateBatch:
-    original_query: str
-    expanded_queries: list[str]
-    candidates: list[PaperCandidate]
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    sources: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "original_query": self.original_query,
-            "expanded_queries": self.expanded_queries,
-            "created_at": self.created_at,
-            "sources": self.sources,
-            "candidates": [candidate.to_dict() for candidate in self.candidates],
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CandidateBatch":
-        return cls(
-            original_query=data.get("original_query", ""),
-            expanded_queries=list(data.get("expanded_queries") or []),
-            created_at=data.get("created_at") or datetime.now(timezone.utc).isoformat(),
-            sources=list(data.get("sources") or []),
-            candidates=[
-                PaperCandidate.from_dict(item)
-                for item in data.get("candidates", [])
-            ],
-        )

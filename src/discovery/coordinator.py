@@ -10,6 +10,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -28,24 +29,24 @@ from src.discovery.backfill_transaction import (
     StateLockTimeout,
     run_backfill_page_transaction,
 )
+from src.discovery.constants import INITIAL_CURSOR
 from src.discovery.keyword_notebook import (
-    INITIAL_CURSOR,
     PROVIDERS,
     KeywordNotebookStore,
-    LegacyNotebookError,
-    composite_backfill_signature,
-    expansion_key,
+    LegacyNotebookSchemaError,
+    NotebookCorruptError,
+    UnsupportedNotebookSchemaError,
+    _active_queries,
     keyword_id as make_keyword_id,
+    validate_discovery_readiness,
 )
-from src.discovery.models import CandidateBatch, PaperCandidate
 from src.discovery.page_journal import (
     PageJournalStore,
     refresh_page_id,
     request_signature,
 )
 from src.discovery.pending_queue import DrainReport, drain_pending_candidates
-from src.discovery.provider_models import failed_page
-from src.discovery.query_expand import expand_query
+from src.discovery.provider_models import DiscoveryPage, failed_page
 from src.discovery.resolve_crossref import search_crossref_page
 from src.discovery.search_openalex import search_openalex_page
 from src.services.rate_limit import ProviderRateLimiter, default_config
@@ -135,7 +136,7 @@ class LaneReport:
 
 @dataclass
 class KeywordDiscoveryReport:
-    keyword: str
+    keyword_zh: str
     keyword_id: str
     status: str
     refresh: LaneReport
@@ -145,16 +146,24 @@ class KeywordDiscoveryReport:
     candidates: dict[str, int]
     budget: dict[str, Any]
     mode: str
+    queries_total: int = 0
+    queries_zh: int = 0
+    queries_en: int = 0
+    queries_executed: list[dict[str, str]] = field(default_factory=list)
     backpressure: bool = False
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": "3.0",
-            "keyword": self.keyword,
+            "keyword_zh": self.keyword_zh,
             "keyword_id": self.keyword_id,
             "status": self.status,
             "mode": self.mode,
+            "queries_total": self.queries_total,
+            "queries_zh": self.queries_zh,
+            "queries_en": self.queries_en,
+            "queries_executed": [dict(item) for item in self.queries_executed],
             "refresh": self.refresh.to_dict(),
             "backfill": self.backfill.to_dict(),
             "pending": self.pending.to_dict(),
@@ -193,7 +202,9 @@ def _default_fetch_page(
     provider: str,
     query: str,
     *,
-    original_keyword: str,
+    keyword_zh: str,
+    query_id: str = "",
+    query_language: str = "",
     lane: str,
     page_size: int,
     cursor: str,
@@ -205,7 +216,9 @@ def _default_fetch_page(
     if provider == "openalex":
         return search_openalex_page(
             query,
-            original_keyword=original_keyword,
+            keyword_zh=keyword_zh,
+            query_id=query_id,
+            query_language=query_language,
             lane=lane,
             page_size=page_size,
             cursor=cursor,
@@ -217,7 +230,9 @@ def _default_fetch_page(
     if provider == "crossref":
         return search_crossref_page(
             query,
-            original_keyword=original_keyword,
+            keyword_zh=keyword_zh,
+            query_id=query_id,
+            query_language=query_language,
             lane=lane,
             page_size=page_size,
             cursor=cursor,
@@ -372,37 +387,60 @@ def run_discovery_batch(
     limiter_locks = {provider: threading.Lock() for provider in PROVIDERS}
     worker_id = f"worker-{uuid.uuid4().hex[:12]}"
     keyword_reports: dict[str, KeywordDiscoveryReport] = {}
+    executed_queries: dict[str, set[tuple[str, str]]] = {}
+    executed_queries_lock = threading.Lock()
 
     def fetch_with_budget(provider: str, query: str, **kwargs: Any) -> Any:
+        query_id_value = str(kwargs.pop("query_id", ""))
+        query_language = str(kwargs.pop("query_language", ""))
+        keyword_zh = str(kwargs.get("keyword_zh", ""))
+        if query_language:
+            with executed_queries_lock:
+                executed_queries.setdefault(keyword_zh, set()).add(
+                    (query, query_language)
+                )
         if not budget.try_acquire():
             return failed_page(
                 provider=provider,
-                original_keyword=kwargs.get("original_keyword", ""),
-                expanded_query=query,
+                keyword_zh=kwargs.get("keyword_zh", ""),
+                query=query,
                 lane=kwargs.get("lane", "backfill"),
                 request_cursor=kwargs.get("cursor"),
                 page_size=int(kwargs.get("page_size") or options.page_size),
                 error_type="page_budget_exhausted",
                 safe_error="global page budget exhausted",
+                query_id=query_id_value,
+                query_language=query_language,
             )
-        return fetch_page(
-            provider,
-            query,
-            **kwargs,
+        call_kwargs = dict(
+            kwargs,
             domain_id=options.domain_id,
             rate_limiter=limiters.get(provider),
             limiter_lock=limiter_locks.setdefault(provider, threading.Lock()),
         )
+        page = fetch_page(
+            provider,
+            query,
+            **call_kwargs,
+        )
+        if isinstance(page, DiscoveryPage):
+            page = replace(
+                page,
+                query_id=page.query_id or query_id_value,
+                query_language=page.query_language or query_language,
+            )
+        return page
 
     def run_refresh(keyword: str, nb: dict[str, Any], refresh_run_id: str, backpressure: bool) -> LaneReport:
         report = LaneReport(status="skipped" if backpressure else "success")
         if backpressure or options.mode not in {"refresh", "hybrid"}:
             return report
         kid = nb["keyword_id"]
-        for ekey, exp in nb.get("expansions", {}).items():
-            if not exp.get("active"):
-                continue
-            query = exp.get("query") or ""
+        active_qs = _active_queries(nb)
+        for aq in active_qs:
+            query = aq["query"]
+            query_id_value = aq["query_id"]
+            query_language = aq["language"]
             for provider in PROVIDERS:
                 sort = _provider_sort(provider, "refresh", options)
                 sig = request_signature(sort=sort, page_size=options.page_size)
@@ -411,11 +449,13 @@ def run_discovery_batch(
                     page = fetch_with_budget(
                         provider,
                         query,
-                        original_keyword=keyword,
+                        keyword_zh=keyword,
                         lane="refresh",
                         page_size=options.page_size,
                         cursor=cursor,
                         sort=sort,
+                        query_id=query_id_value,
+                        query_language=query_language,
                     )
                     if page.status == "failed":
                         if page.error_type == "page_budget_exhausted":
@@ -426,7 +466,7 @@ def run_discovery_batch(
                         break
                     pid = refresh_page_id(
                         keyword_id=kid,
-                        expansion_id=ekey,
+                        query_id=query_id_value,
                         provider=provider,
                         request_signature_hash=sig["hash"],
                         refresh_run_id=refresh_run_id,
@@ -435,11 +475,19 @@ def run_discovery_batch(
                     page_data = journal.make_page(
                         page_id=pid,
                         keyword_id=kid,
-                        keyword=keyword,
-                        expansion_id=ekey,
-                        expanded_query=query,
+                        keyword_zh=keyword,
+                        query_id=query_id_value,
+                        query=query,
+                        query_language=query_language,
                         provider=provider,
                         lane="refresh",
+                        generation=max(
+                            1,
+                            int(
+                                nb["search_queries"][query_id_value]["providers"]
+                                [provider]["backfill"].get("generation") or 1
+                            ),
+                        ),
                         request_signature_value=sig,
                         request_cursor=cursor,
                         next_cursor=page.next_cursor,
@@ -467,10 +515,11 @@ def run_discovery_batch(
         if backpressure or options.mode not in {"backfill", "hybrid"}:
             return report
         kid = nb["keyword_id"]
-        for ekey, exp in nb.get("expansions", {}).items():
-            if not exp.get("active"):
-                continue
-            query = exp.get("query") or ""
+        active_qs = _active_queries(nb)
+        for aq in active_qs:
+            query = aq["query"]
+            query_id_value = aq["query_id"]
+            query_language = aq["language"]
             for provider in PROVIDERS:
                 sort = _provider_sort(provider, "backfill", options)
                 sig = request_signature(sort=sort, page_size=options.page_size)
@@ -479,17 +528,20 @@ def run_discovery_batch(
                 while pages_done < pages_left:
                     try:
                         result: BackfillTransactionResult = run_backfill_page_transaction(
-                            keyword=keyword,
+                            keyword_zh=keyword,
                             keyword_id=kid,
-                            expansion_id=ekey,
-                            expanded_query=query,
+                            query_id=query_id_value,
+                            query=query,
+                            query_language=query_language,
                             provider=provider,
                             notebook_store=notebook,
                             journal_store=journal,
                             locks_dir=options.locks_dir,
                             request_signature=sig,
                             page_size=options.page_size,
-                            fetch_page=lambda p, q, **kw: fetch_with_budget(p, q, sort=sort, **kw),
+                            fetch_page=lambda p, q, **kw: fetch_with_budget(
+                                p, q, query_id=query_id_value, sort=sort, **kw,
+                            ),
                         )
                     except StateLockTimeout as exc:
                         report.provider_failures += 1
@@ -527,16 +579,64 @@ def run_discovery_batch(
         report.status = _status_from_failures(True, report.provider_failures, report.items_returned)
         return report
 
-    def prepare_keyword(keyword: str) -> tuple[str, dict[str, Any], DrainReport, bool, str]:
-        expanded = expand_query(keyword, domain_id=options.domain_id)
-        backfill_generation_sig = composite_backfill_signature(
-            page_size=options.page_size,
-            openalex_backfill_sort=options.openalex_backfill_sort,
-            crossref_backfill_sort=options.crossref_backfill_sort,
+    def terminal_keyword_report(
+        keyword: str,
+        *,
+        status: str,
+        error: str = "",
+        keyword_id: str | None = None,
+    ) -> None:
+        empty_drain = DrainReport()
+        lane_errors = [error] if error else []
+        keyword_reports[keyword] = KeywordDiscoveryReport(
+            keyword_zh=keyword,
+            keyword_id=keyword_id or make_keyword_id(keyword),
+            status=status,
+            refresh=LaneReport(status=status, errors=lane_errors),
+            backfill=LaneReport(status=status, errors=lane_errors),
+            pending=empty_drain,
+            final_pending=empty_drain,
+            candidates={},
+            budget={"page_limit": budget.limit, "pages_used": budget.used},
+            mode=options.mode,
+            errors=lane_errors,
         )
-        nb = notebook.ensure_keyword(keyword, expanded["expanded_queries"], backfill_generation_sig)
-        if not nb.get("enabled", True):
-            return keyword, nb, DrainReport(), False, "skipped"
+
+    def prepare_keyword(
+        keyword: str,
+    ) -> tuple[str, dict[str, Any], DrainReport, bool] | None:
+        # Notebook must already have bilingual queries configured.
+        # Discovery never auto-seeds queries; it only reads from search_queries.
+        try:
+            nb = notebook.require_v3(keyword)
+        except (
+            FileNotFoundError,
+            NotebookCorruptError,
+            LegacyNotebookSchemaError,
+            UnsupportedNotebookSchemaError,
+        ) as exc:
+            terminal_keyword_report(keyword, status="failed", error=str(exc))
+            return None
+        if nb["enabled"] is False:
+            terminal_keyword_report(
+                keyword,
+                status="skipped",
+                keyword_id=nb["keyword_id"],
+            )
+            return None
+        readiness = validate_discovery_readiness(nb)
+        if not readiness:
+            error = (
+                f"notebook {keyword!r} is not discovery-ready:\n  "
+                + "\n  ".join(readiness.errors)
+            )
+            terminal_keyword_report(
+                keyword,
+                status="failed",
+                error=error,
+                keyword_id=nb["keyword_id"],
+            )
+            return None
         kid = nb["keyword_id"]
         initial_drain = drain_pending_candidates(
             journal=journal,
@@ -563,35 +663,18 @@ def run_discovery_batch(
         backpressure = bool(bp_state.get("active"))
         if backpressure:
             initial_drain.backpressure = True
-        return keyword, nb, initial_drain, backpressure, ""
+        return keyword, nb, initial_drain, backpressure
 
-    prepared: list[tuple[str, dict[str, Any], DrainReport, bool, str]] = []
+    prepared: list[tuple[str, dict[str, Any], DrainReport, bool]] = []
     for keyword in keywords:
-        try:
-            prepared.append(prepare_keyword(keyword))
-        except LegacyNotebookError as exc:
-            kid = make_keyword_id(keyword)
-            empty = DrainReport()
-            keyword_reports[keyword] = KeywordDiscoveryReport(
-                keyword=keyword,
-                keyword_id=kid,
-                status="failed",
-                refresh=LaneReport(status="failed", errors=[str(exc)]),
-                backfill=LaneReport(status="failed", errors=[str(exc)]),
-                pending=empty,
-                final_pending=empty,
-                candidates={},
-                budget={"page_limit": budget.limit, "pages_used": budget.used},
-                mode=options.mode,
-                errors=[str(exc)],
-            )
+        prepared_item = prepare_keyword(keyword)
+        if prepared_item is not None:
+            prepared.append(prepared_item)
 
     refresh_run_id = uuid.uuid4().hex
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {}
-        for keyword, nb, _initial, backpressure, skipped in prepared:
-            if skipped:
-                continue
+        for keyword, nb, _initial, backpressure in prepared:
             futures[pool.submit(run_refresh, keyword, nb, refresh_run_id, backpressure)] = (keyword, "refresh")
             futures[pool.submit(run_backfill, keyword, nb, backpressure)] = (keyword, "backfill")
         lane_results: dict[tuple[str, str], LaneReport] = {}
@@ -602,24 +685,8 @@ def run_discovery_batch(
             except Exception as exc:
                 lane_results[key] = LaneReport(status="failed", provider_failures=1, errors=[str(exc)])
 
-    for keyword, nb, initial_drain, backpressure, skipped in prepared:
+    for keyword, nb, initial_drain, backpressure in prepared:
         kid = nb["keyword_id"]
-        if skipped:
-            final_drain = DrainReport(remaining=journal.count_pending_candidates([kid]))
-            report = KeywordDiscoveryReport(
-                keyword=keyword,
-                keyword_id=kid,
-                status="skipped",
-                refresh=LaneReport(status="skipped"),
-                backfill=LaneReport(status="skipped"),
-                pending=initial_drain,
-                final_pending=final_drain,
-                candidates={},
-                budget={"page_limit": budget.limit, "pages_used": budget.used, "page_budget_exhausted": budget.exhausted},
-                mode=options.mode,
-            )
-            keyword_reports[keyword] = report
-            continue
         final_drain = drain_pending_candidates(
             journal=journal,
             keyword_ids=[kid],
@@ -654,7 +721,7 @@ def run_discovery_batch(
         else:
             status = "success"
         report = KeywordDiscoveryReport(
-            keyword=keyword,
+            keyword_zh=keyword,
             keyword_id=kid,
             status=status,
             refresh=refresh,
@@ -672,6 +739,15 @@ def run_discovery_batch(
             },
             budget={"page_limit": budget.limit, "pages_used": budget.used, "page_budget_exhausted": budget.exhausted},
             mode=options.mode,
+            queries_total=len(_active_queries(nb)),
+            queries_zh=sum(1 for item in _active_queries(nb) if item["language"] == "zh"),
+            queries_en=sum(1 for item in _active_queries(nb) if item["language"] == "en"),
+            queries_executed=[
+                {"query": item["query"], "query_language": item["language"]}
+                for item in _active_queries(nb)
+                if (item["query"], item["language"])
+                in executed_queries.get(keyword, set())
+            ],
             backpressure=backpressure,
             errors=errors,
         )
@@ -686,20 +762,3 @@ def run_discovery_batch(
     status, exit_code = _batch_status(ordered)
     aggregate = _aggregate(ordered, budget)
     return BatchDiscoveryReport(status=status, keywords=ordered, aggregate=aggregate, exit_code=exit_code)
-
-
-def batch_to_candidate_batch(report: KeywordDiscoveryReport) -> CandidateBatch:
-    """Compatibility helper returning candidates emitted/staged in journals."""
-    candidates: list[PaperCandidate] = []
-    journal = PageJournalStore(DISCOVERY_PENDING_PAGES_DIR)
-    for ref in journal.list_pages([report.keyword_id]):
-        data = journal.read(ref.path)
-        for item in data.get("candidates", []):
-            if item.get("status") in {"staged", "emitted"} and isinstance(item.get("candidate"), dict):
-                candidates.append(PaperCandidate.from_dict(item["candidate"]))
-    return CandidateBatch(
-        original_query=report.keyword,
-        expanded_queries=[],
-        candidates=candidates,
-        sources=["openalex", "crossref"],
-    )

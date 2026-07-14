@@ -4,11 +4,13 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 import scripts.convert_paper_raw_batch as batch
 from scripts.preflight_paper_raw_import import preflight_one
 from src.ingest.paper_raw import PaperRawConverter
-from src.ingest.conversion import write_conversion_manifest_for_existing_assets
 from src.metadata.schema import empty_metadata
+from tests.factories import write_conversion_manifest_for_existing_assets
 
 
 PN1 = "0000000000000001"
@@ -18,11 +20,11 @@ class FakeMinerUConverter:
     def __init__(self):
         self.calls: list[str] = []
 
-    def convert(self, pdf, output_root, backend, method, lang, effort, paper_id=""):
-        self.calls.append(paper_id)
-        out = Path(output_root) / paper_id / "hybrid_auto"
+    def convert(self, pdf, output_root, backend, method, lang, effort, paper_name=""):
+        self.calls.append(paper_name)
+        out = Path(output_root) / paper_name / "hybrid_auto"
         out.mkdir(parents=True, exist_ok=True)
-        (out / f"{paper_id}.md").write_text(f"# Converted {paper_id}", encoding="utf-8")
+        (out / f"{paper_name}.md").write_text(f"# Converted {paper_name}", encoding="utf-8")
         images = out / "images"
         images.mkdir()
         (images / "new.png").write_bytes(b"new")

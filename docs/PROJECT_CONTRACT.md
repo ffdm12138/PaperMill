@@ -1,6 +1,6 @@
 # Project contract
 
-1. Metadata v2.0 contains no `paper_id`, LLM content, or match state. It must
+1. Metadata v2.0 contains no `paper_name`, LLM content, or match state. It must
    independently generate CSL-JSON, BibTeX, and styled references.
 2. Journal articles require valid DOI; conference/chapter/thesis/report records
    require their type-specific stable identifier or URL.
@@ -11,8 +11,8 @@
    any frozen closure asset.
 5. Catalog v3.2 is the only active Catalog. It stores complete content
    understanding, trusted abstract provenance, logical evidence references, and
-   `paper_id`, but no authoritative bibliographic record.
-6. `paper_id` equals the frozen Metadata year/author prefix plus the LLM Chinese
+   `paper_name`, but no authoritative bibliographic record.
+6. `paper_name` equals the frozen Metadata year/author prefix plus the LLM Chinese
    content title. Conflicts or path-budget failures require Catalog repair; no
    suffix, hash, number, truncation, or Python translation is allowed.
 7. Every active raw workspace and main asset uses the 16-digit `paper_number`.
@@ -57,3 +57,92 @@ Refresh starts a new first-page scan; Backfill resumes the durable notebook
 cursor. Provider pages are journaled before cursor CAS. Pending candidates use
 leases and DOI/title-resolution locks, and the allocator's final duplicate gate
 remains authoritative.
+
+The production migration scope is the five enabled Chinese schema-v3 notebooks.
+Inventory and a fixed reviewed source mapping must precede any authorized
+apply; the applied transaction must preserve every query, provider generation,
+request signature, cursor, generation history, and page journal. Mapping and
+plan evidence is operator/runtime state, never active source or snapshot data.
+The concurrent discovery `--dry-run` is read-only and must expose those lane
+identities together with refresh pages, backfill pages, worker count, and page
+budget without provider I/O or cursor/page-journal mutation.
+
+## 未绑定 Backfill 的严格 Pristine 契约
+
+An unbound backfill generation (``request_signature`` is empty) is valid only
+when every progress, failure, retry, terminal, and history field is in its
+pristine default state.  Any non-pristine unbound state is **corruption** and
+must fail closed in every consumer:
+
+- **Schema validator** — ``_validate_backfill_state()`` rejects the notebook
+  with ``NotebookCorruptError``.
+- **KeywordNotebookStore** — ``ensure_backfill_generation()`` rejects the bind
+  and leaves the file untouched (SHA verified).
+- **Audit** — reports a ``generation`` error (durable progress, terminal, or
+  history) or warning (transient failure/retry only); never counts a
+  non-pristine lane as ``pristine_unbound_lanes``.
+- **Migration** — ``_is_pristine_backfill()`` returns ``False``, blocking
+  merge.
+- **Recovery** — inspect-only; reports errors for non-pristine states, never
+  suggests a blind signature bind.
+
+The authoritative definition lives in **``src/discovery/backfill_state.py``**
+as ``is_strictly_pristine_unbound_backfill()`` and
+``describe_nonpristine_unbound_backfill()``.  All consumers import and reuse
+these helpers; no module may inline its own partial pristine check.
+
+The system must never repair an unbound non-pristine state by silently binding
+a new request signature, resetting the cursor, clearing history, or deleting
+page journals.
+
+## Catalog 分类生命周期契约
+
+18. `paper_number` 是 16 位永久机器身份，用于 ledger、assignment、task、result、
+    receipt、transaction。
+19. `paper_name` 是正式论文目录名 (`data/papers/<paper_name>`)，也是 Catalog
+    分类目录中的链接名。内部架构不存在 `paper_id`。
+20. DOI keyword notebook 的 `keyword_zh` 是 Catalog 分类目录和 `keyword_id`
+    的唯一来源。`search_queries` 同时包含中文和英文搜索 query，全部参与
+    OpenAlex/Crossref DOI 搜索；英文 query 永远不创建 Catalog 类别或目录。
+    添加或删除英文搜索词不改变 `keyword_id` 或已有分类决定。
+21. `assignment` 是分类事实源；Catalog 文件夹链接是 assignment 的可恢复投影。
+22. Notebook `enabled=true` 进入 active Registry；`enabled=false` 不进入
+    active Registry、不创建目录、不生成 task。缺少 `enabled` 字段 fail closed。
+23. 删除 active notebook 时，对应 Category 必须退休、目录受控清理、不再生成
+    task、Writer 不再读取。不得出现幽灵分类。
+24. Notebook 的 `classification.guidance_zh`、`classification.aliases_zh`、
+    `classification.exclusions_zh`、`enabled` 以 notebook 为准；旧 Registry
+    不得覆盖 notebook 新值。
+25. `definition_hash` 包含 `category_id`、`keyword_zh`、`guidance_zh`、
+    `aliases_zh`、`exclusions_zh`、classifier contract version。不包含
+    search_queries、provider cursor、updated_at、source path、statistics。
+    添加或修改搜索 query 不改变 `definition_hash`，不触发重新分类。
+    修改中文分类定义（guidance_zh/aliases_zh/exclusions_zh）才会使对
+    应分类决定失效。
+26. Classification apply 必须经过事务 journal (`apply_journal/<paper_number>/
+    <task_id>.json`)，状态：planned → assignment_written → links_reconciled →
+    validated → receipt_written → committed。任一阶段崩溃可恢复。
+27. Catalog 迁移必须经过事务 journal (`catalog_keyword_index/<tx_id>.json`)，
+    状态：planned → inputs_validated → backup_complete → registry_written →
+    directories_reconciled → assignments_migrated → tasks_planned → validated →
+    committed。所有校验先于删除，任一阶段失败可恢复或回滚。
+28. Doctor 对所有 drift 和未完成事务 fail closed。`errors` 非空时，
+    `folder_integrity_safe`、`classification_complete`、`writer_category_safe`
+    必须全部为 false。
+29. Writer 在非 `all` 分类读取前必须调用 `assert_writer_safe()`，要求
+    `writer_category_safe=true` 且 `errors=[]`，否则拒绝执行。
+30. 零分类论文（所有 category 均为 `matched=false`）可以完成：存在于 `all/`、
+    不在任何分类目录、不在 `_pending/`。
+31. 纯 `paper_name` rename 不改变 `paper_number`，assignment 仍归属原
+    paper_number。分类 semantic decision 不因纯 rename 自动失效。
+32. 禁止 fake classifier 写真实分类；禁止根据候选目录猜测并生成 notebook；
+    禁止重置真实 provider cursor。
+33. Active discovery notebook 只接受 schema v3；`keyword_zh` 是唯一中文分类
+    identity，`search_queries` 同时保存中文和英文 provider query。
+34. `enabled=true` 必须同时拥有 active zh/en query；disabled draft 可以暂时
+    not-ready。任何 enabled 定义修改若不能保持 ready，必须整笔失败且不写入。
+35. Discovery audit 只读并校验 notebook、provider generation/signature、page
+    journal、provenance 与 registry 的 identity closure；不能修复或移动运行时文件。
+36. Discovery recovery v3 当前只支持 inspect；输出必须绑定
+    `keyword_id/query_id/provider/generation/request_signature` 与 page-chain 证明，
+    cursor 分叉、signature/generation 冲突或无证明状态必须 fail closed。

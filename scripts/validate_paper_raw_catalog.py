@@ -14,7 +14,7 @@ def main()->int:
  except Exception as exc: errors=[str(exc)]
  if not errors:
   try:
-   receipt=freeze_catalog(f,args.paper_number,paper_raw_root=args.paper_raw_dir); update_status(PaperRawWorkspace.from_path(f),"catalog","frozen",catalog_sha256=receipt["catalog_sha256"],paper_id=receipt["paper_id"])
+   receipt=freeze_catalog(f,args.paper_number,paper_raw_root=args.paper_raw_dir); update_status(PaperRawWorkspace.from_path(f),"catalog","frozen",catalog_sha256=receipt["catalog_sha256"],paper_name=receipt["paper_name"])
   except Exception as exc: errors.append(f"catalog freeze: {exc}")
  print(json.dumps({"paper_number":args.paper_number,"valid":not errors,"errors":errors},ensure_ascii=False,indent=2)); return 0 if not errors else 1
 if __name__=="__main__": raise SystemExit(main())

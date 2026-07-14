@@ -49,7 +49,7 @@ def main() -> int:
                 "paper_number": paper_number,
                 "folder_name": folder_name,
                 "state": item.get("state", "reserved"),
-                "planned_paper_id": item.get("planned_paper_id", ""),
+                "planned_paper_name": item.get("planned_paper_name", ""),
             }
             if args.apply:
                 marker_path.write_text(
@@ -73,7 +73,7 @@ def main() -> int:
                 "paper_number": raw if raw.isdigit() and len(raw) == 16 else paper_number,
                 "folder_name": folder_name,
                 "state": item.get("state", "reserved"),
-                "planned_paper_id": item.get("planned_paper_id", ""),
+                "planned_paper_name": item.get("planned_paper_name", ""),
             }
             if args.apply:
                 mp.write_text(

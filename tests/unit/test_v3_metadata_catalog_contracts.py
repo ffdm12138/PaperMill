@@ -29,8 +29,8 @@ def test_projection_truncation_is_deterministic():
     text="甲。"*400; out=truncate_summary(text); assert len(out)<=600 and out.endswith("…")
 def test_journal_is_external_and_single_active(tmp_path: Path):
     source=tmp_path/"raw"; source.mkdir(); (source/"0000000000000001.metadata.json").write_text("{}",encoding="utf-8"); (source/"0000000000000001.catalog.json").write_text("{}",encoding="utf-8"); formal=source/"plan.json"; formal.write_text("{}",encoding="utf-8")
-    store=CommitJournalStore(tmp_path/"transactions"); one=store.create(paper_number="0000000000000001",paper_id="2024_Wang_测试",source=source,staging=tmp_path/"stg",final=tmp_path/"final",formalization=formal)
+    store=CommitJournalStore(tmp_path/"transactions"); one=store.create(paper_number="0000000000000001",paper_name="2024_Wang_测试",source=source,staging=tmp_path/"stg",final=tmp_path/"final",formalization=formal)
     assert "/raw/" not in str(store.active); assert store.find_active("0000000000000001")
-    try: store.create(paper_number="0000000000000001",paper_id="2024_Wang_测试",source=source,staging=tmp_path/"x",final=tmp_path/"y",formalization=formal)
+    try: store.create(paper_number="0000000000000001",paper_name="2024_Wang_测试",source=source,staging=tmp_path/"x",final=tmp_path/"y",formalization=formal)
     except RuntimeError: pass
     else: raise AssertionError("duplicate active transaction accepted")

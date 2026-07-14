@@ -1,7 +1,7 @@
 """MinerU 输出清理器
 
 定位 MinerU 原始输出中的正文 Markdown 与 images 目录（供 PaperRawConverter 使用）。
-``extract()`` 是历史辅助入口，按 v2 语义把正文写成 ``<paper_id>.md``。
+``extract()`` 是历史辅助入口，按 v2 语义把正文写成 ``<paper_name>.md``。
 不复制 PDF，不保留 json sidecars。
 """
 import shutil
@@ -15,7 +15,7 @@ from config.settings import PAPERS_DIR
 
 
 class MinerUOutputCleaner:
-    """定位 MinerU 输出正文 Markdown 与 images/，并按 v2 语义提取为 <paper_id>.md。"""
+    """定位 MinerU 输出正文 Markdown 与 images/，并按 v2 语义提取为 <paper_name>.md。"""
 
     IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
@@ -258,12 +258,12 @@ class MinerUOutputCleaner:
             logger.warning(f"多个 images 目录，跳过图片复制: {[str(c) for c in candidates]}")
         return None
 
-    def extract(self, source_dir: str | Path, paper_id: str,
+    def extract(self, source_dir: str | Path, paper_name: str,
                 overwrite: bool = False,
                 method: str | None = None,
                 stem: str | None = None,
                 backend: str | None = None) -> dict:
-        """从 MinerU 原始输出目录提取 <paper_id>.md + images 到 data/papers/<paper_id>/
+        """从 MinerU 原始输出目录提取 <paper_name>.md + images 到 data/papers/<paper_name>/
 
         覆盖保护：默认 overwrite=False，目标已存在则报错；overwrite=True 先备份再重建。
 
@@ -275,7 +275,7 @@ class MinerUOutputCleaner:
         Returns:
             {
                 "success": bool,
-                "paper_id": str,
+                "paper_name": str,
                 "markdown_path": str,
                 "images_dir": str,
                 "images_count": int,
@@ -284,29 +284,29 @@ class MinerUOutputCleaner:
             }
         """
         source_dir = Path(source_dir)
-        # 防御性校验 paper_id，防路径穿越（调用方已校验，此处二次确认）
-        from src.naming import validate_paper_id, safe_child
+        # 防御性校验 paper_name，防路径穿越（调用方已校验，此处二次确认）
+        from src.naming import validate_paper_name, safe_child
         try:
-            validate_paper_id(paper_id)
+            validate_paper_name(paper_name)
         except ValueError as e:
-            return {"success": False, "paper_id": paper_id,
-                    "error": f"Invalid paper_id: {e}"}
+            return {"success": False, "paper_name": paper_name,
+                    "error": f"Invalid paper_name: {e}"}
 
         md_path = self.locate_markdown(source_dir, method=method, stem=stem,
                                        backend=backend)
         if md_path is None:
             msg = f"未在 {source_dir} 找到正文 Markdown"
             logger.error(msg)
-            return {"success": False, "paper_id": paper_id, "error": msg}
+            return {"success": False, "paper_name": paper_name, "error": msg}
 
-        dest_dir = safe_child(self.papers_dir, paper_id)
+        dest_dir = safe_child(self.papers_dir, paper_name)
         # 覆盖保护：已存在则备份或报错，不无条件 rmtree
         if dest_dir.exists():
             if not overwrite:
                 msg = (f"目标目录已存在，拒绝覆盖: {dest_dir} "
                        f"(传 overwrite=True 以备份后重建)")
                 logger.error(msg)
-                return {"success": False, "paper_id": paper_id, "error": msg}
+                return {"success": False, "paper_name": paper_name, "error": msg}
             # 备份旧目录为 .bak_<timestamp>
             from datetime import datetime
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -315,9 +315,9 @@ class MinerUOutputCleaner:
             logger.info(f"已备份旧目录: {dest_dir.name} -> {bak.name}")
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_images = dest_dir / "images"
-        dest_md = dest_dir / f"{paper_id}.md"
+        dest_md = dest_dir / f"{paper_name}.md"
 
-        # 1. 写入 <paper_id>.md，统一图片相对路径为 images/...
+        # 1. 写入 <paper_name>.md，统一图片相对路径为 images/...
         md_content = md_path.read_text(encoding="utf-8")
         # MinerU 已用 ![](images/xxx) 形式，无需改写；若出现 ./images/ 也归一化
         md_content = md_content.replace("](./images/", "](images/")
@@ -333,10 +333,10 @@ class MinerUOutputCleaner:
                     shutil.copy2(img, dest_images / img.name)
                     images_count += 1
 
-        logger.info(f"清理完成: {paper_id} -> {dest_md} ({len(md_content)} 字符, {images_count} 图)")
+        logger.info(f"清理完成: {paper_name} -> {dest_md} ({len(md_content)} 字符, {images_count} 图)")
         return {
             "success": True,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "markdown_path": str(dest_md),
             "images_dir": str(dest_images) if images_count else "",
             "images_count": images_count,

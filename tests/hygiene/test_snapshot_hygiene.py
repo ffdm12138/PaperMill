@@ -13,6 +13,7 @@ from src.services.repository_hygiene import is_forbidden_snapshot_member, runtim
 
 
 pytestmark = [pytest.mark.hygiene, pytest.mark.security]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _make_zip(names: list[str], tmp_path: Path) -> Path:
@@ -262,10 +263,6 @@ def test_agent_acceptance_runs_pack_after_pytest():
     )
 
 
-def test_agent_acceptance_exists():
-    root = Path(__file__).resolve().parents[2]
-    assert (root / "scripts" / "agent_acceptance.py").exists()
-
 
 def test_gitignore_matches_pack_repo_runtime_dirs():
     root = Path(__file__).resolve().parents[2]
@@ -280,3 +277,21 @@ def test_gitignore_matches_pack_repo_runtime_dirs():
         "*._deleted",
     ]:
         assert pattern in text, f".gitignore missing: {pattern}"
+
+
+
+def test_active_docs_do_not_reference_legacy_scripts():
+    paths = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CLAUDE.md"]
+    for directory in (ROOT / "docs", ROOT / "skills"):
+        for path in directory.rglob("*.md"):
+            rel = path.relative_to(ROOT).as_posix()
+            if rel.startswith("docs/archive/") or rel.startswith("docs/audits/"):
+                continue
+            paths.append(path)
+    forbidden = ("scripts/legacy/", "repair_catalog_asset_refs.py")
+    offenders = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        if any(token in text for token in forbidden):
+            offenders.append(path.relative_to(ROOT).as_posix())
+    assert not offenders, "active docs reference retired scripts: " + ", ".join(offenders)

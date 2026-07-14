@@ -12,7 +12,7 @@ from pathlib import Path
 
 from src.writer.job_manager import JobManager
 from src.writer.bib_manager import export_job_bib, validate_job_citations, load_workset_manifest, job_local_bib_keys
-from src.writer.catalog_matcher import load_selected, selected_paper_ids
+from src.writer.catalog_matcher import load_selected, selected_paper_names
 from src.writer.story_builder import extract_note_sections
 from src.writer.safe_write import write_text_safely
 
@@ -277,7 +277,7 @@ def _selected_bib_keys(job_id: str, jdir: Path,
     bib_map = job_local_bib_keys(pid_to_work_dir)
     keys = []
     for it in sel.get("selected_papers", []):
-        bk = bib_map.get(it.get("paper_id", ""), "")
+        bk = bib_map.get(it.get("paper_name", ""), "")
         if bk:
             keys.append(bk)
     return keys

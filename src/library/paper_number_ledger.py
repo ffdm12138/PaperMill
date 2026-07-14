@@ -53,9 +53,9 @@ class PaperNumberLedger:
         number: str,
         *,
         state: str,
-        planned_paper_id: str = "",
+        planned_paper_name: str = "",
     ) -> None:
-        write_paper_number_marker(folder, number, state=state, planned_paper_id=planned_paper_id)
+        write_paper_number_marker(folder, number, state=state, planned_paper_name=planned_paper_name)
 
     @staticmethod
     def assert_papers_empty(papers_dir: str | Path) -> None:
@@ -227,7 +227,7 @@ class PaperNumberLedger:
             base = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
-                "planned_paper_id": item.get("planned_paper_id") or "",
+                "planned_paper_name": item.get("planned_paper_name") or "",
                 "created_at": created_at,
                 "recovered_at": now_iso(),
                 "recovery_classification": info["classification"],
@@ -248,7 +248,7 @@ class PaperNumberLedger:
         self,
         paper_raw_dir: str | Path,
         *,
-        planned_paper_id: str = "",
+        planned_paper_name: str = "",
     ) -> tuple[str, Path]:
         """Reserve the next paper_number and create ``paper_raw/<number>``.
 
@@ -268,7 +268,7 @@ class PaperNumberLedger:
             data.setdefault("items", {})[number] = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
-                "planned_paper_id": planned_paper_id,
+                "planned_paper_name": planned_paper_name,
                 "state": LEDGER_ALLOCATING,
                 "created_at": now_iso(),
             }
@@ -276,7 +276,7 @@ class PaperNumberLedger:
 
         try:
             folder.mkdir(parents=False, exist_ok=False)
-            self.write_marker(folder, number, state=LEDGER_RESERVED, planned_paper_id=planned_paper_id)
+            self.write_marker(folder, number, state=LEDGER_RESERVED, planned_paper_name=planned_paper_name)
         except Exception as exc:
             self.mark_abandoned(number, str(exc), folder=folder)
             raise
@@ -288,7 +288,7 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
-                "planned_paper_id": planned_paper_id or existing.get("planned_paper_id") or "",
+                "planned_paper_name": planned_paper_name or existing.get("planned_paper_name") or "",
                 "state": LEDGER_RESERVED,
                 "created_at": existing.get("created_at") or now_iso(),
                 "reserved_at": now_iso(),
@@ -304,7 +304,7 @@ class PaperNumberLedger:
         start = int(data.get("max_number") or "0") + 1
         return [f"{start + i:016d}" for i in range(count)]
 
-    def reserve_for_paper_raw(self, source_folder: str | Path, planned_paper_id: str = "") -> str:
+    def reserve_for_paper_raw(self, source_folder: str | Path, planned_paper_name: str = "") -> str:
         """Reserve the next 16-digit paper_number for a paper_raw workspace.
 
         Idempotent: if ``source_folder`` already has a ``*.paper.number`` marker,
@@ -330,12 +330,12 @@ class PaperNumberLedger:
             data.setdefault("items", {})[number] = {
                 "folder_name": source_folder.name,
                 "folder_path": normalize_repo_path(source_folder),
-                "planned_paper_id": planned_paper_id,
+                "planned_paper_name": planned_paper_name,
                 "state": "reserved",
                 "created_at": now_iso(),
             }
             self._save_unlocked(data)
-            self.write_marker(source_folder, number, state="reserved", planned_paper_id=planned_paper_id)
+            self.write_marker(source_folder, number, state="reserved", planned_paper_name=planned_paper_name)
             return number
 
     def reserve_specific_for_paper_raw(
@@ -343,7 +343,7 @@ class PaperNumberLedger:
         number: str,
         folder: str | Path,
         *,
-        planned_paper_id: str = "",
+        planned_paper_name: str = "",
     ) -> str:
         """Reserve a specific 16-digit number for a paper_raw workspace.
 
@@ -378,16 +378,16 @@ class PaperNumberLedger:
                 if int(number) > int(str(data.get("max_number") or "0000000000000000")):
                     data["max_number"] = number
                 created_at = now_iso()
-            planned = planned_paper_id or (existing or {}).get("planned_paper_id") or ""
+            planned = planned_paper_name or (existing or {}).get("planned_paper_name") or ""
             items[number] = {
                 "folder_name": folder.name,
                 "folder_path": folder_norm,
-                "planned_paper_id": planned,
+                "planned_paper_name": planned,
                 "state": "reserved",
                 "created_at": created_at,
             }
             self._save_unlocked(data)
-            self.write_marker(folder, number, state="reserved", planned_paper_id=planned)
+            self.write_marker(folder, number, state="reserved", planned_paper_name=planned)
             return number
 
     def move_reserved_workspace_for_migration(
@@ -395,17 +395,17 @@ class PaperNumberLedger:
         number: str,
         folder: str | Path,
         *,
-        planned_paper_id: str = "",
+        planned_paper_name: str = "",
     ) -> str:
         """Removed legacy hook; active callers must never rename raw workspaces.
 
-        Used by ``formalize`` after renaming ``000001`` → ``<paper_id>``: the
+        Used by ``formalize`` after renaming ``000001`` → ``<paper_name>``: the
         number was reserved against the 6-digit source folder, and this updates
-        the ledger entry + marker to point at the renamed ``<paper_id>`` folder
+        the ledger entry + marker to point at the renamed ``<paper_name>`` folder
         while keeping ``state="reserved"``. Requires the number to already exist
         in the ledger (raises otherwise, to avoid hiding reservation errors).
         Unlike ``repoint()``, this writes the full marker
-        (paper_number/folder_name/state/planned_paper_id).
+        (paper_number/folder_name/state/planned_paper_name).
         """
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
@@ -419,7 +419,7 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
-                "planned_paper_id": planned_paper_id or existing.get("planned_paper_id") or "",
+                "planned_paper_name": planned_paper_name or existing.get("planned_paper_name") or "",
                 "state": "reserved",
                 "created_at": existing.get("created_at") or now_iso(),
                 "repointed_at": now_iso(),
@@ -429,7 +429,7 @@ class PaperNumberLedger:
                 folder,
                 number,
                 state="reserved",
-                planned_paper_id=planned_paper_id or existing.get("planned_paper_id") or "",
+                planned_paper_name=planned_paper_name or existing.get("planned_paper_name") or "",
             )
             return number
 
@@ -455,7 +455,7 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
-                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "planned_paper_name": existing.get("planned_paper_name") or "",
                 "state": LEDGER_ABANDONED,
                 "created_at": existing.get("created_at") or now_iso(),
                 "quarantined_at": now_iso(),
@@ -467,7 +467,7 @@ class PaperNumberLedger:
                 folder,
                 number,
                 state=LEDGER_ABANDONED,
-                planned_paper_id=existing.get("planned_paper_id") or "",
+                planned_paper_name=existing.get("planned_paper_name") or "",
             )
             return number
 
@@ -492,7 +492,7 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
-                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "planned_paper_name": existing.get("planned_paper_name") or "",
                 "state": LEDGER_RESERVED,
                 "created_at": existing.get("created_at") or now_iso(),
                 "stage_failed_at": now_iso(),
@@ -504,7 +504,7 @@ class PaperNumberLedger:
                     folder,
                     number,
                     state=LEDGER_RESERVED,
-                    planned_paper_id=existing.get("planned_paper_id") or "",
+                    planned_paper_name=existing.get("planned_paper_name") or "",
                 )
             return number
 
@@ -531,7 +531,7 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": target_folder.name if str(target_folder) else existing.get("folder_name") or number,
                 "folder_path": normalize_repo_path(target_folder) if str(target_folder) else existing.get("folder_path") or "",
-                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "planned_paper_name": existing.get("planned_paper_name") or "",
                 "state": LEDGER_ABANDONED,
                 "created_at": existing.get("created_at") or now_iso(),
                 "abandoned_at": now_iso(),
@@ -544,7 +544,7 @@ class PaperNumberLedger:
                         target_folder,
                         number,
                         state=LEDGER_ABANDONED,
-                        planned_paper_id=existing.get("planned_paper_id") or "",
+                        planned_paper_name=existing.get("planned_paper_name") or "",
                     )
                 except Exception:
                     pass
@@ -580,7 +580,7 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": folder.name,
                 "folder_path": normalize_repo_path(folder),
-                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "planned_paper_name": existing.get("planned_paper_name") or "",
                 "state": LEDGER_RESERVED,
                 "created_at": existing.get("created_at") or now_iso(),
                 "metadata_staged_at": now_iso(),
@@ -591,7 +591,7 @@ class PaperNumberLedger:
                     folder,
                     number,
                     state=LEDGER_RESERVED,
-                    planned_paper_id=existing.get("planned_paper_id") or "",
+                    planned_paper_name=existing.get("planned_paper_name") or "",
                 )
             return number
 
@@ -599,7 +599,7 @@ class PaperNumberLedger:
         self,
         number: str,
         final_folder: str | Path,
-        paper_id: str = "",
+        paper_name: str = "",
     ) -> str:
         """Flip a reserved number to ``active`` and repoint it at the formal library folder.
 
@@ -627,8 +627,8 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": final_folder.name,
                 "folder_path": normalize_repo_path(final_folder),
-                "planned_paper_id": existing.get("planned_paper_id") or paper_id,
-                "paper_id": paper_id,
+                "planned_paper_name": existing.get("planned_paper_name") or paper_name,
+                "paper_name": paper_name,
                 "state": "active",
                 "created_at": existing.get("created_at") or now_iso(),
                 "activated_at": now_iso(),
@@ -638,7 +638,7 @@ class PaperNumberLedger:
                 final_folder,
                 number,
                 state="active",
-                planned_paper_id=paper_id or existing.get("planned_paper_id") or "",
+                planned_paper_name=paper_name or existing.get("planned_paper_name") or "",
             )
             return number
 
@@ -646,7 +646,7 @@ class PaperNumberLedger:
         self,
         number: str,
         final_folder: str | Path,
-        paper_id: str = "",
+        paper_name: str = "",
     ) -> str:
         """Same as ``activate_reserved`` but caller must hold the ledger lock.
 
@@ -671,8 +671,8 @@ class PaperNumberLedger:
         items[number] = {
             "folder_name": final_folder.name,
             "folder_path": normalize_repo_path(final_folder),
-            "planned_paper_id": existing.get("planned_paper_id") or paper_id,
-            "paper_id": paper_id,
+            "planned_paper_name": existing.get("planned_paper_name") or paper_name,
+            "paper_name": paper_name,
             "state": "active",
             "created_at": existing.get("created_at") or now_iso(),
             "activated_at": now_iso(),
@@ -682,7 +682,7 @@ class PaperNumberLedger:
             final_folder,
             number,
             state="active",
-            planned_paper_id=paper_id or existing.get("planned_paper_id") or "",
+            planned_paper_name=paper_name or existing.get("planned_paper_name") or "",
         )
         return number
 
@@ -703,7 +703,7 @@ class PaperNumberLedger:
             items[number] = {
                 "folder_name": source_folder.name,
                 "folder_path": normalize_repo_path(source_folder),
-                "planned_paper_id": existing.get("planned_paper_id") or "",
+                "planned_paper_name": existing.get("planned_paper_name") or "",
                 "state": "reserved",
                 "created_at": existing.get("created_at") or now_iso(),
                 "activated_at": existing.get("activated_at") or "",
@@ -717,7 +717,7 @@ class PaperNumberLedger:
         number: str,
         raw_folder: str | Path,
         *,
-        planned_paper_id: str = "",
+        planned_paper_name: str = "",
     ) -> str:
         """Rollback a formal-library active number to a paper_raw reservation.
 
@@ -737,18 +737,18 @@ class PaperNumberLedger:
             state = existing.get("state") or "active"
             if state != "active":
                 raise ValueError(f"cannot rollback number {number} in state {state}")
-            planned = planned_paper_id or existing.get("planned_paper_id") or existing.get("paper_id") or ""
+            planned = planned_paper_name or existing.get("planned_paper_name") or existing.get("paper_name") or ""
             items[number] = {
                 "folder_name": raw_folder.name,
                 "folder_path": normalize_repo_path(raw_folder),
-                "planned_paper_id": planned,
+                "planned_paper_name": planned,
                 "state": "reserved",
                 "created_at": existing.get("created_at") or now_iso(),
                 "activated_at": existing.get("activated_at") or "",
                 "rolled_back_at": now_iso(),
             }
             self._save_unlocked(data)
-            self.write_marker(raw_folder, number, state="reserved", planned_paper_id=planned)
+            self.write_marker(raw_folder, number, state="reserved", planned_paper_name=planned)
             return number
 
     def rollback_active_to_reserved_locked(
@@ -756,7 +756,7 @@ class PaperNumberLedger:
         number: str,
         raw_folder: str | Path,
         *,
-        planned_paper_id: str = "",
+        planned_paper_name: str = "",
     ) -> str:
         """Same as ``rollback_active_to_reserved`` but caller must hold the ledger lock.
 
@@ -775,18 +775,18 @@ class PaperNumberLedger:
         state = existing.get("state") or "active"
         if state != "active":
             raise ValueError(f"cannot rollback number {number} in state {state}")
-        planned = planned_paper_id or existing.get("planned_paper_id") or existing.get("paper_id") or ""
+        planned = planned_paper_name or existing.get("planned_paper_name") or existing.get("paper_name") or ""
         items[number] = {
             "folder_name": raw_folder.name,
             "folder_path": normalize_repo_path(raw_folder),
-            "planned_paper_id": planned,
+            "planned_paper_name": planned,
             "state": "reserved",
             "created_at": existing.get("created_at") or now_iso(),
             "activated_at": existing.get("activated_at") or "",
             "rolled_back_at": now_iso(),
         }
         self._save_unlocked(data)
-        self.write_marker(raw_folder, number, state="reserved", planned_paper_id=planned)
+        self.write_marker(raw_folder, number, state="reserved", planned_paper_name=planned)
         return number
 
     def validate(self, papers_dir: str | Path = PAPERS_DIR) -> tuple[list[str], list[str]]:

@@ -3,7 +3,7 @@
   "title": "paper_raw Catalog v3.2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "paper_number", "paper_id", "content_identity", "abstract", "research_context", "methods", "data_and_study_design", "key_findings", "mechanisms", "limitations", "figures_and_tables", "terminology", "writing_value", "screening", "provenance"],
+  "required": ["schema_version", "paper_number", "paper_name", "content_identity", "abstract", "research_context", "methods", "data_and_study_design", "key_findings", "mechanisms", "limitations", "figures_and_tables", "terminology", "writing_value", "screening", "provenance"],
   "definitions": {
     "nonEmptyString": {"type": "string", "minLength": 1},
     "stringArray": {"type": "array", "items": {"$ref": "#/definitions/nonEmptyString"}},
@@ -33,7 +33,7 @@
   "properties": {
     "schema_version": {"const": "3.2"},
     "paper_number": {"type": "string", "pattern": "^[0-9]{16}$"},
-    "paper_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "paper_name": {"type": "string", "minLength": 1, "maxLength": 96},
     "content_identity": {
       "type": "object", "additionalProperties": false,
       "required": ["content_title_zh", "research_domains", "document_language"],

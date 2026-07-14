@@ -150,7 +150,7 @@ DOI: 10.1007/s11433-008-0106-6
 Wind-blown sand movement is a complex process.
 """, encoding="utf-8")
 
-    result = extract_metadata_from_markdown(md, paper_id="test")
+    result = extract_metadata_from_markdown(md, paper_name="test")
     assert result.doi_candidates
     assert any("s11433" in d for d in result.doi_candidates)
     assert result.title_candidates

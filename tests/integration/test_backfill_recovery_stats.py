@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from src.discovery.backfill_transaction import run_backfill_page_transaction
-from src.discovery.keyword_notebook import KeywordNotebookStore, expansion_key
+from src.discovery.keyword_notebook import KeywordNotebookStore, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import (
     INITIAL_CURSOR,
@@ -24,6 +24,20 @@ from src.discovery.page_journal import (
 
 
 pytestmark = pytest.mark.integration
+
+KEYWORD_ZH = "风吹雪"
+QUERY = "blowing snow"
+QUERY_ID = query_identity("en", QUERY)
+
+
+def _seed(notebook: KeywordNotebookStore, signature_hash: str) -> dict:
+    notebook.ensure_notebook(KEYWORD_ZH)
+    notebook.sync_search_queries(
+        KEYWORD_ZH,
+        add=[{"query": QUERY, "language": "en"}],
+        pag_sig=signature_hash,
+    )
+    return notebook.require_v3(KEYWORD_ZH)
 
 
 @dataclass
@@ -49,19 +63,19 @@ def _setup_recovery(tmp_path: Path, *, exhausted: bool = False, next_cursor="NEX
     notebook = KeywordNotebookStore(tmp_path / "notebooks")
     journal = PageJournalStore(tmp_path / "pages")
     sig = request_signature(page_size=10)
-    notebook.ensure_keyword("kw", ["kw"], sig["hash"])
-    nb = notebook.require("kw")
-    ekey = expansion_key("kw", sig["hash"])
+    nb = _seed(notebook, sig["hash"])
+    query_id_value = QUERY_ID
     pid = backfill_page_id(
-        keyword_id=nb["keyword_id"], expansion_id=ekey, provider="openalex",
+        keyword_id=nb["keyword_id"], query_id=query_id_value, provider="openalex",
         request_signature_hash=sig["hash"], request_cursor=INITIAL_CURSOR,
     )
     page_path = journal.write_page(journal.make_page(
         page_id=pid,
         keyword_id=nb["keyword_id"],
-        keyword="kw",
-        expansion_id=ekey,
-        expanded_query="kw",
+        keyword_zh=KEYWORD_ZH,
+        query_id=query_id_value,
+        query=QUERY,
+        query_language="en",
         provider="openalex",
         lane="backfill",
         request_signature_value=sig,
@@ -72,18 +86,18 @@ def _setup_recovery(tmp_path: Path, *, exhausted: bool = False, next_cursor="NEX
         state="fetched",
     ))
     notebook.commit_backfill_cursor(
-        "kw", ekey, "openalex",
+        KEYWORD_ZH, query_id_value, "openalex",
         expected_cursor=INITIAL_CURSOR,
         next_cursor=next_cursor,
         committed_page_id=pid,
         exhausted=exhausted,
         items_this_page=1,
     )
-    return notebook, journal, sig, nb, ekey, pid, page_path
+    return notebook, journal, sig, nb, query_id_value, pid, page_path
 
 
-def _bf_state(notebook, ekey):
-    return notebook.get_backfill_state("kw", ekey, "openalex")
+def _bf_state(notebook, query_id_value):
+    return notebook.get_backfill_state(KEYWORD_ZH, query_id_value, "openalex")
 
 
 def test_recover_then_fetch_next_page_carries_recovery_stats(tmp_path: Path):
@@ -95,8 +109,8 @@ def test_recover_then_fetch_next_page_carries_recovery_stats(tmp_path: Path):
         return _Page([PaperCandidate(title="T2", doi="10.1234/next")], next_cursor="NEXT2")
 
     result = run_backfill_page_transaction(
-        keyword="kw", keyword_id=nb["keyword_id"], expansion_id=ekey,
-        expanded_query="kw", provider="openalex",
+        keyword_zh=KEYWORD_ZH, keyword_id=nb["keyword_id"], query_id=ekey,
+        query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
         fetch_page=fetch,
@@ -123,8 +137,8 @@ def test_recover_then_exhausted_carries_recovery_stats(tmp_path: Path):
         pytest.fail("should not fetch — provider is exhausted after recovery")
 
     result = run_backfill_page_transaction(
-        keyword="kw", keyword_id=nb["keyword_id"], expansion_id=ekey,
-        expanded_query="kw", provider="openalex",
+        keyword_zh=KEYWORD_ZH, keyword_id=nb["keyword_id"], query_id=ekey,
+        query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
         fetch_page=fetch,
@@ -144,8 +158,8 @@ def test_recover_then_page_budget_stop_carries_recovery_stats(tmp_path: Path):
         return page
 
     result = run_backfill_page_transaction(
-        keyword="kw", keyword_id=nb["keyword_id"], expansion_id=ekey,
-        expanded_query="kw", provider="openalex",
+        keyword_zh=KEYWORD_ZH, keyword_id=nb["keyword_id"], query_id=ekey,
+        query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
         fetch_page=fetch,
@@ -166,8 +180,8 @@ def test_recover_then_provider_failure_carries_recovery_stats(tmp_path: Path):
         return page
 
     result = run_backfill_page_transaction(
-        keyword="kw", keyword_id=nb["keyword_id"], expansion_id=ekey,
-        expanded_query="kw", provider="openalex",
+        keyword_zh=KEYWORD_ZH, keyword_id=nb["keyword_id"], query_id=ekey,
+        query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
         fetch_page=fetch,
@@ -183,16 +197,15 @@ def test_no_recovery_when_clean_has_zero_recovery_stats(tmp_path: Path):
     notebook = KeywordNotebookStore(tmp_path / "notebooks")
     journal = PageJournalStore(tmp_path / "pages")
     sig = request_signature(page_size=10)
-    notebook.ensure_keyword("kw", ["kw"], sig["hash"])
-    nb = notebook.require("kw")
-    ekey = expansion_key("kw", sig["hash"])
+    nb = _seed(notebook, sig["hash"])
+    query_id_value = QUERY_ID
 
     def fetch(*a, **k):
         return _Page([PaperCandidate(title="T", doi="10.1/x")], next_cursor="NEXT")
 
     result = run_backfill_page_transaction(
-        keyword="kw", keyword_id=nb["keyword_id"], expansion_id=ekey,
-        expanded_query="kw", provider="openalex",
+        keyword_zh=KEYWORD_ZH, keyword_id=nb["keyword_id"], query_id=query_id_value,
+        query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
         fetch_page=fetch,

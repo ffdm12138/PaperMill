@@ -30,21 +30,21 @@ def test_metadata_quality_checks_bibliographic_facts():
 
 
 def test_audit_report_reads_formal_receipt(tmp_path):
-    paper_id = "2024_Doe_测试"
-    folder = tmp_path / "papers" / paper_id
+    paper_name = "2024_Doe_测试"
+    folder = tmp_path / "papers" / paper_name
     folder.mkdir(parents=True)
-    (folder / f"{paper_id}.metadata.json").write_text(json.dumps(make_minimal_metadata(), ensure_ascii=False), encoding="utf-8")
-    (folder / f"{paper_id}.metadata_match.json").write_text(json.dumps(_receipt()), encoding="utf-8")
+    (folder / f"{paper_name}.metadata.json").write_text(json.dumps(make_minimal_metadata(), ensure_ascii=False), encoding="utf-8")
+    (folder / f"{paper_name}.metadata_match.json").write_text(json.dumps(_receipt()), encoding="utf-8")
     report = audit_metadata_library(tmp_path / "papers")
     assert report["errors"] == []
 
 
 def test_audit_report_writes_stable_json(tmp_path):
-    paper_id = "2024_Doe_测试"
-    folder = tmp_path / "papers" / paper_id
+    paper_name = "2024_Doe_测试"
+    folder = tmp_path / "papers" / paper_name
     folder.mkdir(parents=True)
-    (folder / f"{paper_id}.metadata.json").write_text(json.dumps(make_minimal_metadata(), ensure_ascii=False), encoding="utf-8")
-    (folder / f"{paper_id}.metadata_match.json").write_text(json.dumps(_receipt()), encoding="utf-8")
+    (folder / f"{paper_name}.metadata.json").write_text(json.dumps(make_minimal_metadata(), ensure_ascii=False), encoding="utf-8")
+    (folder / f"{paper_name}.metadata_match.json").write_text(json.dumps(_receipt()), encoding="utf-8")
     report_path = tmp_path / "metadata_quality_report.json"
     assert audit_main(["--papers-dir", str(tmp_path / "papers"), "--report", "--report-path", str(report_path)]) == 0
     assert json.loads(report_path.read_text(encoding="utf-8"))["errors"] == []

@@ -1,6 +1,6 @@
 ---
 name: paper_raw_catalog_curator
-description: Read one frozen numeric paper_raw workspace and produce a complete Catalog v3.2 content archive and semantic paper_id.
+description: Read one frozen numeric paper_raw workspace and produce a complete Catalog v3.2 content archive and semantic paper_name.
 ---
 
 # Paper Raw Catalog Curator v3.2
@@ -9,7 +9,7 @@ Use this skill only for `data/paper_raw/<16-digit paper_number>/` after both str
 
 ## Read-only inputs
 
-- frozen `<paper_number>.metadata.json` for bibliographic context and the fixed `paper_id_prefix` only;
+- frozen `<paper_number>.metadata.json` for bibliographic context and the fixed `paper_name_prefix` only;
 - `<paper_number>.md`, `images/`, conversion manifest;
 - trusted abstract candidates and hashes listed by the task envelope;
 - `catalog_schema.json`.
@@ -20,7 +20,7 @@ Never write Metadata, match/freeze receipts, status, ledger, formalization, tran
 
 Write exactly `<paper_number>.catalog.json`, schema `3.2`. It is a complete content-understanding archive, not a label set. It must contain:
 
-- top-level `paper_number` and `paper_id`;
+- top-level `paper_number` and `paper_name`;
 - Chinese content title, research domains, document language;
 - trusted original abstract source when present, a Chinese synthesis, and a one-sentence summary;
 - background, knowledge gap, research question and objectives;
@@ -30,7 +30,7 @@ Write exactly `<paper_number>.catalog.json`, schema `3.2`. It is a complete cont
 - writing value and initial screening with `read_decision="pending"`;
 - the exact task hashes and skill version in provenance.
 
-`paper_id` must equal the task’s fixed `<year>_<first_author>_` prefix plus the model-written `content_title_zh`. Do not change the prefix, truncate the Chinese title, or add `_2`, paper numbers, or hashes.
+`paper_name` must equal the task’s fixed `<year>_<first_author>_` prefix plus the model-written `content_title_zh`. Do not change the prefix, truncate the Chinese title, or add `_2`, paper numbers, or hashes.
 
 ## Abstract integrity
 

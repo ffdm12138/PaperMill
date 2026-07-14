@@ -35,6 +35,7 @@ Exit 0 on success, non-zero on failure.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import fnmatch
 import json
 import os
@@ -46,22 +47,23 @@ import time
 import zipfile
 from pathlib import Path
 
+# Prevent the acceptance process AND all child subprocesses from writing
+# .pyc / __pycache__ into the repository during project-module imports.
+# sys.dont_write_bytecode covers the current process; PYTHONDONTWRITEBYTECODE
+# in the environment covers child processes (pack_repo, compileall, etc.).
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from scripts.test_runtime_workspace import (
+    TestRuntimeWorkspace,
+    WorkspaceStatus,
+    _system_temp_dir,
+    inspect_workspace,
+)
 
-def _pytest_env() -> dict[str, str]:
-    """Isolated environment for pytest subprocesses.
-
-    Disables entry-point plugin auto-loading so third-party plugins installed
-    in the environment cannot change warning/asyncio/coverage/tracing behavior
-    or cause the pytest process to hang after tests pass. conftest.py files,
-    ``-p`` options, and ``PYTEST_PLUGINS`` are unaffected.
-    """
-    env = os.environ.copy()
-    env.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
-    return env
 
 # Layered fast acceptance tests — directories only, no individual files.
 FAST_ACCEPTANCE_TESTS = [
@@ -73,9 +75,65 @@ FAST_ACCEPTANCE_TESTS = [
     "tests/unit/test_v3_metadata_catalog_contracts.py",
     "tests/unit/test_reference_generation.py",
     "tests/unit/test_discovery_models.py",
+    "tests/unit/test_keyword_notebook.py",
+    "tests/unit/test_discovery_dual_lane_scheduler.py",
+    "tests/unit/test_discovery_global_coordinator.py",
     "tests/unit/discovery",
+    "tests/unit/test_catalog_folders.py",
+    "tests/unit/test_catalog_registry_lifecycle.py",
+    "tests/unit/test_formal_registry_errors.py",
+    "tests/unit/test_app_catalog_title.py",
     "tests/integration/test_frozen_v32_transaction_pipeline.py",
     "tests/integration/test_writing_metadata_catalog_roles.py",
+    "tests/integration/test_rollback_cli.py",
+    "tests/integration/test_server_security.py",
+    "tests/integration/test_catalog_folder_classification_lifecycle.py",
+    "tests/integration/test_catalog_doctor_fail_closed.py",
+    "tests/integration/test_writer_catalog_safety_gate.py",
+    "tests/integration/test_catalog_apply_recovery.py",
+    "tests/integration/test_keyword_notebook_v3_migration_transaction.py",
+    "tests/integration/test_validate_v2_library.py",
+]
+# Logical groups for fast acceptance — each group runs as its own pytest
+# invocation with a per-group timeout so a single hung test file doesn't
+# silently consume the entire fast-gate timeout budget.
+FAST_GROUPS: list[tuple[str, list[str]]] = [
+    ("contract", ["tests/contract"]),
+    ("security", ["tests/security"]),
+    ("hygiene", ["tests/hygiene"]),
+    ("catalog", [
+        "tests/unit/test_catalog_folders.py",
+        "tests/unit/test_catalog_registry_lifecycle.py",
+        "tests/unit/test_formal_registry_errors.py",
+        "tests/integration/test_catalog_folder_classification_lifecycle.py",
+        "tests/integration/test_catalog_doctor_fail_closed.py",
+        "tests/integration/test_catalog_apply_recovery.py",
+        "tests/integration/test_keyword_notebook_v3_migration_transaction.py",
+    ]),
+    ("discovery", [
+        "tests/unit/test_discovery_models.py",
+        "tests/unit/test_keyword_notebook.py",
+        "tests/unit/test_discovery_dual_lane_scheduler.py",
+        "tests/unit/test_discovery_global_coordinator.py",
+        "tests/unit/discovery",
+    ]),
+    ("ingest", [
+        "tests/unit/test_v3_metadata_catalog_contracts.py",
+        "tests/unit/test_reference_generation.py",
+        "tests/integration/test_frozen_v32_transaction_pipeline.py",
+        "tests/integration/test_writing_metadata_catalog_roles.py",
+        "tests/integration/test_validate_v2_library.py",
+        "tests/integration/test_writer_catalog_safety_gate.py",
+    ]),
+    ("rollback-cli", ["tests/integration/test_rollback_cli.py"]),
+    ("app-server", [
+        "tests/unit/test_app_catalog_title.py",
+        "tests/integration/test_server_security.py",
+    ]),
+    ("packaging", [
+        "tests/unit/test_repository_hygiene_policy.py",
+        "tests/unit/test_pack_repo_rules.py",
+    ]),
 ]
 FAST_MARKERS = "not process and not slow and not stress and not external"
 FULL_MARKERS = "not stress and not external"
@@ -165,7 +223,13 @@ def run_command_with_timeout(
     output = log.read()
     log.close()
     if output:
-        print(output, end="" if output.endswith("\n") else "\n", flush=True)
+        try:
+            print(output, end="" if output.endswith("\n") else "\n", flush=True)
+        except UnicodeEncodeError:
+            safe = output.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(
+                sys.stdout.encoding or "utf-8", errors="replace"
+            )
+            print(safe, end="" if safe.endswith("\n") else "\n", flush=True)
     if interrupted is not None:
         raise interrupted
 
@@ -489,6 +553,79 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
         pass
 
 
+def _run_fast_groups(*, stop_on_first_failure: bool = False,
+                     group_timeout: int | None = None) -> int:
+    """Run fast acceptance tests in diagnostic groups.
+
+    Each group is a separate pytest invocation with its own timeout so a
+    single hung test file never consumes the full fast-gate budget.  The
+    currently-executing group is printed before pytest starts, and on timeout
+    the last file attempted is included in diagnostics.
+    """
+    flattened = [path for _, paths in FAST_GROUPS for path in paths]
+    expected = set(FAST_ACCEPTANCE_TESTS)
+    if set(flattened) != expected or len(flattened) != len(expected):
+        raise RuntimeError(
+            "FAST_GROUPS does not cover exactly FAST_ACCEPTANCE_TESTS. "
+            f"Missing: {expected - set(flattened)}, "
+            f"Extra: {set(flattened) - expected}"
+        )
+
+    all_ok = True
+    for gname, gpaths in FAST_GROUPS:
+        print(f"\n{'─'*60}", flush=True)
+        print(f"  fast group: {gname}", flush=True)
+        print(f"  paths: {len(gpaths)}", flush=True)
+        for p in gpaths:
+            print(f"    - {p}", flush=True)
+        cmd = [sys.executable, "-m", "pytest", "-q", "-m", FAST_MARKERS] + gpaths \
+              + ["--durations=20"]
+        cmd_display = ' '.join(cmd)
+        print(f"  cmd: {cmd_display}", flush=True)
+        if group_timeout:
+            print(f"  timeout: {group_timeout}s", flush=True)
+        print(f"{'─'*60}", flush=True)
+
+        try:
+            with TestRuntimeWorkspace(group=f"fast_{gname}") as ws:
+                full_cmd = cmd + ["--basetemp", str(ws.pytest_dir)]
+                group_env = ws.child_env()
+                rc = run_command_with_timeout(
+                    full_cmd,
+                    timeout_seconds=group_timeout,
+                    env=group_env,
+                    check=False,
+                )
+        except KeyboardInterrupt:
+            print(f"\n[FAIL] fast group {gname} interrupted", flush=True)
+            return 1
+
+        if rc == 124:
+            print(f"\n[FAIL] fast group {gname} timed out after {group_timeout}s", flush=True)
+            print(f"  last file: {gpaths[-1]}", flush=True)
+            print(f"  reproduce: {cmd_display}", flush=True)
+            all_ok = False
+            if stop_on_first_failure:
+                print("\n  [STOP] --stop-on-first-failure set, halting", flush=True)
+                return 1
+            continue
+
+        if rc != 0:
+            print(f"\n[FAIL] fast group {gname} exited {rc}", flush=True)
+            print(f"  reproduce: {cmd_display}", flush=True)
+            all_ok = False
+            if stop_on_first_failure:
+                print("\n  [STOP] --stop-on-first-failure set, halting", flush=True)
+                return 1
+
+    if all_ok:
+        print("\n  [OK] all fast groups passed", flush=True)
+        return 0
+
+    print("\n  [WARN] some fast groups failed", flush=True)
+    return 1
+
+
 def _run_full_groups(*, stop_on_first_failure: bool = False,
                      group_timeout: int | None = None) -> int:
     """Run pytest in diagnostic groups, max 10 files each.
@@ -524,42 +661,32 @@ def _run_full_groups(*, stop_on_first_failure: bool = False,
         print(f"  files: {len(gpaths)}", flush=True)
         for p in gpaths:
             print(f"    - {p}", flush=True)
-        group_tmp = tempfile.TemporaryDirectory(prefix=f"mineru_{gname}_")
-        temp_root = Path(group_tmp.name)
         cmd = [sys.executable, "-m", "pytest", "-q", "-m", FULL_MARKERS] + gpaths \
-              + ["--durations=30", "--durations-min=0.5", "--basetemp", str(temp_root / "pytest")]
-        print(f"  cmd: {' '.join(cmd)}", flush=True)
+              + ["--durations=30", "--durations-min=0.5"]
+        cmd_display = ' '.join(cmd)
+        print(f"  cmd: {cmd_display}", flush=True)
         if group_timeout:
             print(f"  timeout: {group_timeout}s", flush=True)
         print(f"{'─'*60}", flush=True)
 
-        # Use the same process-tree-safe runner as fast/full mode so a timeout
-        # kills the whole pytest process tree (pytest + any subprocesses
-        # spawned by tests). check=False so a failing group does not sys.exit
-        # the whole acceptance run; we report and continue to the next group.
         try:
-            group_env = _pytest_env()
-            group_env.update({
-                "TMP": str(temp_root),
-                "TEMP": str(temp_root),
-                "PYTEST_ADDOPTS": f"-o cache_dir={temp_root / 'cache'}",
-            })
-            rc = run_command_with_timeout(
-                cmd,
-                timeout_seconds=group_timeout,
-                env=group_env,
-                check=False,
-            )
+            with TestRuntimeWorkspace(group=f"full_{gname}") as ws:
+                full_cmd = cmd + ["--basetemp", str(ws.pytest_dir)]
+                group_env = ws.child_env()
+                rc = run_command_with_timeout(
+                    full_cmd,
+                    timeout_seconds=group_timeout,
+                    env=group_env,
+                    check=False,
+                )
         except KeyboardInterrupt:
             print(f"\n[FAIL] group {gname} interrupted", flush=True)
             return 1
-        finally:
-            group_tmp.cleanup()
 
         if rc == 124:
             print(f"\n[FAIL] group {gname} timed out after {group_timeout}s", flush=True)
-            print(f"  cmd: {' '.join(cmd)}", flush=True)
-            print(f"  reproduce: {' '.join(cmd)}", flush=True)
+            print(f"  cmd: {cmd_display}", flush=True)
+            print(f"  reproduce: {cmd_display}", flush=True)
             all_ok = False
             if stop_on_first_failure:
                 print("\n  [STOP] --stop-on-first-failure set, halting", flush=True)
@@ -568,7 +695,7 @@ def _run_full_groups(*, stop_on_first_failure: bool = False,
 
         if rc != 0:
             print(f"\n[FAIL] group {gname} exited {rc}", flush=True)
-            print(f"  cmd: {' '.join(cmd)}", flush=True)
+            print(f"  cmd: {cmd_display}", flush=True)
             all_ok = False
             if stop_on_first_failure:
                 print("\n  [STOP] --stop-on-first-failure set, halting", flush=True)
@@ -580,6 +707,233 @@ def _run_full_groups(*, stop_on_first_failure: bool = False,
 
     print("\n  [WARN] some groups failed", flush=True)
     return 1
+
+# Module-level counter set by _check_python_syntax
+_syntax_file_count: int = 0
+
+
+def _check_python_syntax() -> list[str]:
+    """Read-only syntax check for every .py file under scripts/, src/, tests/.
+
+    Uses ``compile(source, filename, 'exec')`` which **never** writes a .pyc
+    file or ``__pycache__`` directory.  Returns a list of error messages
+    (empty = clean).
+    """
+    global _syntax_file_count
+    errors: list[str] = []
+    count = 0
+    for top in ("scripts", "src", "tests"):
+        top_path = ROOT / top
+        if not top_path.is_dir():
+            continue
+        for py_file in sorted(top_path.rglob("*.py")):
+            # Skip runtime dirs that happen to contain .py files
+            rel = py_file.relative_to(ROOT)
+            if rel.parts and rel.parts[0] in ("data", "output", "reports", "write"):
+                continue
+            # Skip __pycache__ (leftover from previous runs)
+            if "__pycache__" in rel.parts:
+                continue
+            try:
+                source = py_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                try:
+                    source = py_file.read_text(encoding="utf-8", errors="ignore")
+                except Exception as exc:
+                    errors.append(f"{rel}: cannot read: {exc}")
+                    continue
+            try:
+                compile(source, str(py_file), "exec")
+            except SyntaxError as exc:
+                errors.append(f"{rel}:{exc.lineno}: {exc.msg}")
+            count += 1
+    _syntax_file_count = count
+    return errors
+
+
+@dataclass(frozen=True)
+class PollutionSnapshot:
+    """Immutable snapshot of cache pollution on disk.
+
+    All paths are relative to the repository root (for repo items) or
+    absolute (for drive-root items).
+    """
+    repo_pycache: frozenset[str]   # relative paths like "scripts/__pycache__"
+    repo_pyc: frozenset[str]       # relative paths like "scripts/foo.pyc"
+    root_pollution: frozenset[str] # absolute paths on drive root
+    workspace_issues: frozenset[str] = frozenset()  # invalid/stale temp workspaces
+
+    @property
+    def is_clean(self) -> bool:
+        return not (
+            self.repo_pycache or self.repo_pyc or self.root_pollution
+            or self.workspace_issues
+        )
+
+
+def _collect_temp_workspace_issues(temp_dir: Path | None = None) -> frozenset[str]:
+    """Report stale or untrusted ``mineru_*`` temp entries without mutation."""
+    root = temp_dir or _system_temp_dir()
+    issues: list[str] = []
+    try:
+        entries = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        return frozenset({f"{root} [scan_error] {exc}"})
+    for entry in entries:
+        if not entry.name.startswith("mineru_") or entry.name == "mineru_cleanup_reports":
+            continue
+        inspection = inspect_workspace(entry, repo_root=ROOT)
+        if inspection.status in {
+            WorkspaceStatus.STALE,
+            WorkspaceStatus.INVALID,
+            WorkspaceStatus.UNRECOGNIZED,
+        }:
+            issues.append(
+                f"{entry} [{inspection.status.value}] {inspection.reason}"
+            )
+    return frozenset(issues)
+
+
+def _collect_pollution_snapshot() -> PollutionSnapshot:
+    """Return a :class:`PollutionSnapshot` of the current on-disk state.
+
+    Read-only — never mutates, never deletes.
+    """
+    repo = ROOT
+    pycache: list[str] = []
+    pyc: list[str] = []
+    skip_tops = {"data", "output", "reports", "write"}
+    for d in repo.rglob("__pycache__"):
+        if not d.is_dir():
+            continue
+        rel = str(d.relative_to(repo)).replace("\\", "/")
+        if rel.split("/", 1)[0] in skip_tops:
+            continue
+        pycache.append(rel)
+    for f in repo.rglob("*.pyc"):
+        rel = str(f.relative_to(repo)).replace("\\", "/")
+        if rel.split("/", 1)[0] in skip_tops:
+            continue
+        pyc.append(rel)
+    root_pol: list[str] = []
+    try:
+        from scripts.test_runtime_workspace import _system_temp_dir, _flatten_path
+        temp_dir = _system_temp_dir()
+        flattened_prefix = _flatten_path(temp_dir)
+        drive_root = Path(temp_dir.anchor) if temp_dir.anchor else None
+        if drive_root is not None and drive_root.exists():
+            pattern = f"{flattened_prefix}mineru_"
+            cache_suffix = "cache"
+            for entry in drive_root.iterdir():
+                if entry.is_dir() and entry.name.startswith(pattern) and entry.name.endswith(cache_suffix):
+                    root_pol.append(str(entry))
+    except Exception:
+        pass
+    return PollutionSnapshot(
+        repo_pycache=frozenset(pycache),
+        repo_pyc=frozenset(pyc),
+        root_pollution=frozenset(root_pol),
+        workspace_issues=_collect_temp_workspace_issues(),
+    )
+
+
+# Pre-flight snapshot (populated in main before any test step runs).
+_pollution_before: PollutionSnapshot | None = None
+
+
+def _pollution_pre_check() -> list[str]:
+    """Check for pre-existing cache pollution before running tests.
+
+    Fails closed on ANY existing pollution.  The repository must be clean
+    before acceptance begins.  Returns a list of error messages (empty = clean).
+    """
+    global _pollution_before
+    snap = _collect_pollution_snapshot()
+    _pollution_before = snap
+
+    errors: list[str] = []
+
+    if snap.root_pollution:
+        errors.append(
+            f"{len(snap.root_pollution)} legacy flattened cache directories on "
+            f"drive root.  Run: python scripts/cleanup_test_caches.py "
+            f"--legacy-flattened-root  (add --apply to delete)\n"
+            f"    Paths: {', '.join(sorted(snap.root_pollution)[:20])}"
+        )
+
+    if snap.workspace_issues:
+        paths = "    " + "\n    ".join(sorted(snap.workspace_issues)[:20])
+        errors.append(
+            f"{len(snap.workspace_issues)} stale or untrusted mineru test "
+            "workspace entries under system temp. Run the cleanup command "
+            "without --apply to classify them; only valid stale markers are "
+            "eligible for automatic deletion. Invalid/unrecognized entries "
+            f"require manual ownership review:\n{paths}"
+        )
+
+    if snap.repo_pycache:
+        paths = "    " + "\n    ".join(sorted(snap.repo_pycache)[:30])
+        errors.append(
+            f"{len(snap.repo_pycache)} __pycache__ dir(s) in repo — "
+            f"remove before acceptance:\n{paths}"
+        )
+
+    if snap.repo_pyc:
+        paths = "    " + "\n    ".join(sorted(snap.repo_pyc)[:30])
+        errors.append(
+            f"{len(snap.repo_pyc)} .pyc file(s) in repo — "
+            f"remove before acceptance:\n{paths}"
+        )
+
+    return errors
+
+
+def _pollution_post_check(*, label: str = "post") -> list[str]:
+    """Check for cache pollution created DURING this acceptance run.
+
+    Uses path-set diffs against the pre-flight snapshot so only items
+    created since pre-flight are reported.  Returns a list of error
+    messages (empty = clean).
+    """
+    errors: list[str] = []
+    now = _collect_pollution_snapshot()
+    before = _pollution_before
+    if before is None:
+        errors.append(f"[{label}] no pre-flight snapshot — cannot diff")
+        return errors
+
+    new_pycache = now.repo_pycache - before.repo_pycache
+    new_pyc = now.repo_pyc - before.repo_pyc
+    new_root = now.root_pollution - before.root_pollution
+    new_workspace_issues = now.workspace_issues - before.workspace_issues
+
+    if new_root:
+        errors.append(
+            f"[{label}] {len(new_root)} new legacy flattened cache "
+            f"directories: {', '.join(sorted(new_root)[:10])}"
+        )
+
+    if new_workspace_issues:
+        errors.append(
+            f"[{label}] {len(new_workspace_issues)} new stale or untrusted "
+            "mineru temp workspace entries: "
+            f"{', '.join(sorted(new_workspace_issues)[:10])}"
+        )
+
+    if new_pycache:
+        errors.append(
+            f"[{label}] {len(new_pycache)} __pycache__ dir(s) created: "
+            f"{', '.join(sorted(new_pycache)[:15])}"
+        )
+
+    if new_pyc:
+        errors.append(
+            f"[{label}] {len(new_pyc)} .pyc file(s) created: "
+            f"{', '.join(sorted(new_pyc)[:15])}"
+        )
+
+    return errors
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agent acceptance")
@@ -610,54 +964,94 @@ def main() -> int:
     if selected_modes > 1:
         parser.error("choose only one of --full, --process, --stress, --area, --full-groups")
 
-    # 1. Compile check
-    step("1/5 compileall")
-    run([sys.executable, "-m", "compileall", "-q", "scripts", "src", "tests"])
+    # 0. Pre-flight pollution check (fail closed on any pollution).
+    step("0/6 pre-flight pollution check")
+    if not sys.dont_write_bytecode:
+        print("\n[FAIL] sys.dont_write_bytecode is not set — acceptance "
+              "process would pollute the repository", flush=True)
+        return 1
+    pre_errors = _pollution_pre_check()
+    if pre_errors:
+        print("\n[FAIL] Pre-existing cache pollution detected:", flush=True)
+        for e in pre_errors:
+            print(f"  - {e}", flush=True)
+        return 1
+    print("  [OK] pre-flight clean", flush=True)
+
+    # 1. Syntax gate — verify every .py file compiles without writing bytecode.
+    # Uses compile(source, filename, 'exec') which never touches disk.
+    step("1/6 syntax gate")
+    syntax_errors = _check_python_syntax()
+    if syntax_errors:
+        print("\n[FAIL] Python syntax errors detected:", flush=True)
+        for e in syntax_errors[:20]:
+            print(f"  - {e}", flush=True)
+        if len(syntax_errors) > 20:
+            print(f"  ... {len(syntax_errors) - 20} more", flush=True)
+        return 1
+    print(f"  [OK] {_syntax_file_count} files passed", flush=True)
 
     # 2. Test suite
     if args.process:
-        step("2/5 pytest --process")
-        run([sys.executable, "-m", "pytest", "-q", "-m", "process and not stress and not external", "--durations=20"],
-            env=_pytest_env(), timeout=args.full_timeout_seconds)
+        step("2/6 pytest --process")
+        with TestRuntimeWorkspace(group="process") as ws:
+            run([sys.executable, "-m", "pytest", "-q", "-m",
+                 "process and not stress and not external", "--durations=20",
+                 "--basetemp", str(ws.pytest_dir)],
+                env=ws.child_env(), timeout=args.full_timeout_seconds)
     elif args.stress:
-        step("2/5 pytest --stress")
+        step("2/6 pytest --stress")
         seed = os.environ.get("MINERU_STRESS_SEED", "20260711")
         print(f"  stress seed: {seed}", flush=True)
-        env = _pytest_env(); env["MINERU_STRESS_SEED"] = seed
-        run([sys.executable, "-m", "pytest", "-q", "-m", "stress", "--durations=20"],
-            env=env, timeout=args.full_timeout_seconds)
+        with TestRuntimeWorkspace(group="stress") as ws:
+            env = ws.child_env(extra={"MINERU_STRESS_SEED": seed})
+            run([sys.executable, "-m", "pytest", "-q", "-m", "stress",
+                 "--durations=20", "--basetemp", str(ws.pytest_dir)],
+                env=env, timeout=args.full_timeout_seconds)
     elif args.area:
-        step(f"2/5 pytest --area {args.area}")
+        step(f"2/6 pytest --area {args.area}")
         area_tests = {
             "packaging": ["tests/unit/test_pack_repo_rules.py", "tests/hygiene/test_snapshot_hygiene.py", "tests/unit/test_repository_hygiene_policy.py"],
             "ingest": ["tests/contract/test_ingest_locking_contract.py", "tests/integration/test_frozen_v32_transaction_pipeline.py"],
             "discovery": ["tests/unit/discovery", "tests/contract/test_discovery_reconciliation.py"],
             "security": ["tests/security", "tests/hygiene/test_snapshot_hygiene.py"],
         }
-        run([sys.executable, "-m", "pytest", "-q", "-m", FAST_MARKERS] + area_tests[args.area],
-            env=_pytest_env(), timeout=args.full_timeout_seconds)
+        with TestRuntimeWorkspace(group=f"area_{args.area}") as ws:
+            run([sys.executable, "-m", "pytest", "-q", "-m", FAST_MARKERS] + area_tests[args.area]
+                + ["--basetemp", str(ws.pytest_dir)],
+                env=ws.child_env(), timeout=args.full_timeout_seconds)
     elif args.full_groups:
-        step("2/5 pytest --full-groups")
+        step("2/6 pytest --full-groups")
         rc = _run_full_groups(stop_on_first_failure=args.stop_on_first_failure,
                               group_timeout=args.group_timeout_seconds)
         if rc != 0:
             return rc
     elif args.full:
-        step("2/5 pytest --full")
-        run([sys.executable, "-m", "pytest", "-q", "-m", FULL_MARKERS,
-             "--durations=30", "--durations-min=0.5"],
-            env=_pytest_env(), timeout=args.full_timeout_seconds)
+        step("2/6 pytest --full")
+        with TestRuntimeWorkspace(group="full") as ws:
+            run([sys.executable, "-m", "pytest", "-q", "-m", FULL_MARKERS,
+                 "--durations=30", "--durations-min=0.5",
+                 "--basetemp", str(ws.pytest_dir)],
+                env=ws.child_env(), timeout=args.full_timeout_seconds)
     else:
-        step("2/5 pytest (fast acceptance)")
-        run([sys.executable, "-m", "pytest", "-q", "-m", FAST_MARKERS] + FAST_ACCEPTANCE_TESTS,
-            env=_pytest_env(), timeout=args.full_timeout_seconds)
+        step("2/6 pytest (fast acceptance — groups)")
+        rc = _run_fast_groups(stop_on_first_failure=args.stop_on_first_failure,
+                              group_timeout=args.group_timeout_seconds)
+        if rc != 0:
+            return rc
 
     if args.no_pack:
+        post_errors = _pollution_post_check(label="post-tests")
+        if post_errors:
+            print("\n[FAIL] Cache pollution detected after test run:")
+            for error in post_errors:
+                print(f"  - {error}")
+            return 1
         print("\n  [OK] tests passed (--no-pack, skipping pack)")
         return 0
 
     # 3. Git/root hygiene check
-    step("3/5 hygiene")
+    step("3/6 hygiene")
     bad_hygiene = []
     # Auto-detect snapshot mode when .git is absent (e.g. unpacked ZIP)
     snapshot_mode = args.snapshot_mode or not (ROOT / ".git").exists()
@@ -674,17 +1068,27 @@ def main() -> int:
     print("  [OK] hygiene clean")
 
     # 4. Pack repo
-    step("4/5 pack_repo")
+    step("4/6 pack_repo")
     run([sys.executable, "scripts/pack_repo.py", "--profile", args.profile])
 
     # 5. Verify snapshot
-    step("5/5 verify snapshot")
+    step("5/6 verify snapshot")
     bad = verify_snapshot()
     if bad:
         print("\n[FAIL] Snapshot contains forbidden content:")
         for b in bad:
             print(f"  - {b}")
         return 1
+
+    # 6. Post-test pollution check
+    step("6/6 post-test pollution check")
+    post_errors = _pollution_post_check()
+    if post_errors:
+        print("\n[FAIL] Cache pollution detected after test run:")
+        for e in post_errors:
+            print(f"  - {e}")
+        return 1
+    print("  [OK] no pollution detected")
 
     print("\n" + "=" * 60)
     if args.full:

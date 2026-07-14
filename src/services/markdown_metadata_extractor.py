@@ -70,7 +70,7 @@ _GARBLED_DOI_RE = re.compile(r"10[.?\s]+\d{4,}[.?\s]+[^\s]{3,}")
 @dataclass
 class ExtractedMetadata:
     """Candidates extracted from a MinerU markdown file."""
-    paper_id: str = ""
+    paper_name: str = ""
     doi_candidates: list[str] = field(default_factory=list)
     title_candidates: list[str] = field(default_factory=list)
     author_candidates: list[list[str]] = field(default_factory=list)
@@ -84,7 +84,7 @@ class ExtractedMetadata:
 
     def to_dict(self) -> dict:
         return {
-            "paper_id": self.paper_id,
+            "paper_name": self.paper_name,
             "doi_candidates": self.doi_candidates,
             "title_candidates": self.title_candidates,
             "author_candidates": self.author_candidates,
@@ -386,14 +386,14 @@ def _extract_abstract(text: str) -> str:
 
 def extract_metadata_from_markdown(
     markdown_path: str | Path,
-    paper_id: str = "",
+    paper_name: str = "",
     max_scan_chars: int = 10000,
 ) -> ExtractedMetadata:
     """Extract bibliographic metadata candidates from a MinerU markdown file.
 
     Args:
         markdown_path: Path to the MinerU markdown file.
-        paper_id: The paper_id for reference.
+        paper_name: The paper_name for reference.
         max_scan_chars: Maximum characters to scan for structured extraction
                         (DOI scan always covers full text).
 
@@ -401,7 +401,7 @@ def extract_metadata_from_markdown(
         ExtractedMetadata with all candidates found.
     """
     path = Path(markdown_path)
-    result = ExtractedMetadata(paper_id=paper_id)
+    result = ExtractedMetadata(paper_name=paper_name)
 
     if not path.exists():
         result.warnings.append(f"markdown file not found: {path}")
@@ -457,7 +457,7 @@ def extract_front_matter_candidates_from_markdown(
     used before any PDF text fallback.
     """
     path = Path(markdown_path)
-    result = ExtractedMetadata(paper_id=path.stem)
+    result = ExtractedMetadata(paper_name=path.stem)
 
     if not path.exists():
         result.warnings.append(f"markdown file not found: {path}")

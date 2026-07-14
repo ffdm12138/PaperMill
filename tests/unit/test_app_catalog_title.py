@@ -14,7 +14,7 @@ class FakeCatalog:
 def test_list_papers_reads_content_title_zh(monkeypatch):
     monkeypatch.setattr(app, "catalog", FakeCatalog([{
         "paper_number": "0000000000000001",
-        "paper_id": "2024_wang_测试",
+        "paper_name": "2024_wang_测试",
         "content_identity": {"content_title_zh": "内容标题示例"},
     }]))
     out = app.list_papers()
@@ -26,7 +26,7 @@ def test_list_papers_reads_content_title_zh(monkeypatch):
 def test_list_papers_does_not_assume_metadata_field(monkeypatch):
     monkeypatch.setattr(app, "catalog", FakeCatalog([{
         "paper_number": "0000000000000002",
-        "paper_id": "2024_li_另一篇",
+        "paper_name": "2024_li_另一篇",
         "content_identity": {"content_title_zh": "另一篇标题"},
     }]))
     out = app.list_papers()

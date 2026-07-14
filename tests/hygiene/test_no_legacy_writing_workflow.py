@@ -97,12 +97,12 @@ def test_deep_read_requires_prepared_workset(tmp_path):
     info = jm.create(topic="missing workset")
     job_id = info["job_id"]
     (jm.job_dir(job_id) / "planning" / "selected_papers.json").write_text(json.dumps({
-        "selected_papers": [{"paper_id": "2024_wang_test"}],
+        "selected_papers": [{"paper_name": "2024_wang_test"}],
         "selection_status": "confirmed",
     }), encoding="utf-8")
     jm.set_step(job_id, "catalog_selection_confirmed", True)
 
-    with pytest.raises(RuntimeError, match="prepare-workset"):
+    with pytest.raises(RuntimeError, match="create_write_job"):
         deep_read(job_id, jm=jm)
 
 
@@ -120,7 +120,7 @@ def test_api_exposes_prepare_workset_and_no_old_copy_endpoint(monkeypatch, tmp_p
         manifest = {
             "job_id": job_id,
             "dry_run": False,
-            "copied": [{"paper_id": "2024_wang_test", "paper_number": "0000000000000001", "work_dir": str(article)}],
+            "copied": [{"paper_name": "2024_wang_test", "paper_number": "0000000000000001", "work_dir": str(article)}],
             "skipped": [],
             "work_root": "write/jobs/<job_id>/article/",
         }

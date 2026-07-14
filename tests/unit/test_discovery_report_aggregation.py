@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 def test_batch_report_serializes_schema_v3_without_rereading_files():
     drain = DrainReport(processed=1, emitted=1)
     keyword = KeywordDiscoveryReport(
-        keyword="kw",
+        keyword_zh="kw",
         keyword_id="kid",
         status="success",
         refresh=LaneReport(status="success", pages_requested=1, items_returned=1),

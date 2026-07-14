@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
 from src.discovery.pending_queue import drain_pending_candidates, export_candidate_once, write_discovery_receipt
@@ -11,15 +12,19 @@ from src.utils.atomic_io import atomic_write_json
 
 
 pytestmark = pytest.mark.integration
+KEYWORD_ZH = "测试关键词"
+KEYWORD_ID = keyword_id(KEYWORD_ZH)
+QUERY_ID = query_identity("zh", KEYWORD_ZH)
 
 
 def _page(store: PageJournalStore, tmp_path: Path, doi: str = "10.1234/resume") -> Path:
     page = store.make_page(
         page_id="p1",
-        keyword_id="kw",
-        keyword="kw",
-        expansion_id="exp",
-        expanded_query="kw",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="refresh",
         request_signature_value=request_signature(page_size=10),
@@ -55,7 +60,7 @@ def test_staging_receipt_only_does_not_restore_staged(tmp_path: Path):
     )
     report = drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=1,
         stage_to_paper_raw=True,
         apply=True,
@@ -118,10 +123,11 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
     # Reset the journal candidate so the drain loop re-processes it.
     store.write_page(store.make_page(
         page_id="p1",
-        keyword_id="kw",
-        keyword="kw",
-        expansion_id="exp",
-        expanded_query="kw",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="refresh",
         request_signature_value=request_signature(page_size=10),
@@ -134,7 +140,7 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
 
     report = drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=1,
         stage_to_paper_raw=True,
         apply=True,
@@ -189,7 +195,7 @@ def test_source_record_only_not_marked_staged(tmp_path: Path):
 
     report = drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=1,
         stage_to_paper_raw=True,
         apply=True,
@@ -227,7 +233,7 @@ def test_export_manifest_reconciliation_is_idempotent(tmp_path: Path):
 
     report = drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=1,
         stage_to_paper_raw=False,
         apply=False,

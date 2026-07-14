@@ -204,7 +204,7 @@ def main() -> int:
             pdf_path, temp_dir,
             backend=args.backend, method=args.method,
             lang=args.lang, effort=args.effort,
-            paper_id=f"bench_{pdf_path.stem}",
+            paper_name=f"bench_{pdf_path.stem}",
             api_url=args.api_url,
         )
         elapsed = time.time() - t_start

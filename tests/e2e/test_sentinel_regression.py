@@ -41,7 +41,7 @@ def _make_rollback_journal(tmp: Path, tx_id: str, data: dict) -> Path:
 def _common(tx_id: str, pnum: str = "0000000000000001") -> dict:
     return {
         "paper_number": pnum,
-        "paper_id": "2024_Smith_test",
+        "paper_name": "2024_Smith_test",
         "transaction_id": tx_id,
         "created_at": "2025-01-01T00:00:00",
     }

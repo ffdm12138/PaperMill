@@ -43,7 +43,7 @@ class TestCrossrefPage:
         with patch("src.discovery.resolve_crossref.requests.get", return_value=mock_resp):
             page = search_crossref_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=50,
                 cursor="CR1",
@@ -63,7 +63,7 @@ class TestCrossrefPage:
         with patch("src.discovery.resolve_crossref.requests.get", return_value=mock_resp):
             page = search_crossref_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=50,
                 cursor="CR1",
@@ -81,7 +81,7 @@ class TestCrossrefPage:
         with patch("src.discovery.resolve_crossref.requests.get", return_value=mock_resp):
             page = search_crossref_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=50,
                 cursor="CR1",
@@ -96,7 +96,7 @@ class TestCrossrefPage:
         with patch("src.discovery.resolve_crossref.requests.get", return_value=mock_resp):
             page = search_crossref_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=50,
                 cursor="CR1",
@@ -113,7 +113,7 @@ class TestCrossrefPage:
         ):
             page = search_crossref_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=50,
                 cursor="CR1",

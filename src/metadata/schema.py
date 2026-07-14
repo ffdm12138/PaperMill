@@ -14,7 +14,7 @@ METADATA_SCHEMA_VERSION = "2.0"
 PAPER_NUMBER_RE = re.compile(r"^[0-9]{16}$")
 FORBIDDEN_METADATA_TOP_LEVEL_KEYS = {
     "abstract", "keywords", "pdf", "content", "notes", "bibtex",
-    "citation_key", "paper_id", "metadata_match",
+    "citation_key", "paper_name", "paper_id", "metadata_match",
 }
 FORBIDDEN_METADATA_TITLE_KEYS = {"short_zh", "translated_zh", "content_title_zh"}
 FORBIDDEN_METADATA_SOURCE_KEYS = {"raw_record", "providers"}

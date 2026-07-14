@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 
 
 PAPER_NUMBER = "0000000000000001"
-PAPER_ID = "2024_doe_discovery"
+paper_name = "2024_doe_discovery"
 DOI = "10.1234/formal"
 
 
@@ -35,7 +35,7 @@ def _metadata() -> dict:
 
 def _incomplete_formal_workspace(tmp_path: Path) -> Path:
     papers = tmp_path / "papers"
-    workspace = papers / PAPER_ID
+    workspace = papers / paper_name
     (workspace / "source_records").mkdir(parents=True)
     atomic_write_json(
         workspace / "source_records" / "metadata_source.openalex.json",
@@ -52,12 +52,12 @@ def _incomplete_formal_workspace(tmp_path: Path) -> Path:
         },
         indent=2,
     )
-    atomic_write_json(workspace / f"{PAPER_ID}.metadata.json", _metadata(), indent=2)
+    atomic_write_json(workspace / f"{paper_name}.metadata.json", _metadata(), indent=2)
     PaperNumberLedger.write_marker(workspace, PAPER_NUMBER, state="active")
     ledger_data = PaperNumberLedger.empty_data()
     ledger_data["max_number"] = PAPER_NUMBER
     ledger_data["items"][PAPER_NUMBER] = {
-        "folder_name": PAPER_ID,
+        "folder_name": paper_name,
         "folder_path": workspace.as_posix(),
         "state": "active",
     }

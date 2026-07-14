@@ -4,9 +4,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR
-from src.catalog_folders.reader import CatalogFolderReader
-from src.naming import validate_paper_id
+from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
+from src.naming import validate_paper_name
 from src.utils.atomic_io import atomic_write_json
 from src.writer.job_manager import JobManager
 
@@ -28,11 +27,11 @@ def load_selected(job_id: str, jm: JobManager | None = None) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def selected_paper_ids(job_id: str, jm: JobManager | None = None) -> list[str]:
+def selected_paper_names(job_id: str, jm: JobManager | None = None) -> list[str]:
     data = load_selected(job_id, jm)
     if data.get("selection_status") != "confirmed":
         return []
-    return [p.get("paper_id") for p in data.get("selected_papers", []) if p.get("paper_id")]
+    return [p.get("paper_name") for p in data.get("selected_papers", []) if p.get("paper_name")]
 
 
 def build_compact_catalog_text(papers: list[dict]) -> str:
@@ -49,7 +48,7 @@ def match_catalog(
 ) -> dict:
     """Generate a catalog matching prompt and empty selected list."""
     jm = jm or JobManager()
-    catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
+    catalog = catalog or create_safe_catalog_reader()
     jdir = jm.job_dir(job_id)
     norm = (jdir / "input" / "normalized_task.md").read_text(encoding="utf-8")
 
@@ -60,7 +59,7 @@ def match_catalog(
     for item in papers:
         candidates.append({
             "paper_number": item.get("paper_number"),
-            "paper_id": item.get("paper_id"),
+            "paper_name": item.get("paper_name"),
             "title": item.get("content_title_zh") or "",
             "catalog_priority": item.get("read_decision"),
             "candidate_reason": "",
@@ -136,27 +135,27 @@ def confirm_selected_papers(
     catalog: CatalogFolderReader | None = None,
 ) -> dict:
     jm = jm or JobManager()
-    catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
+    catalog = catalog or create_safe_catalog_reader()
     if not selected:
         raise ValueError("selected cannot be empty")
 
-    by_id = {p["paper_id"]: p for p in catalog.list_papers()}
+    by_id = {p["paper_name"]: p for p in catalog.list_papers()}
     enriched = []
-    paper_ids = []
+    paper_names = []
     for item in selected:
-        pid = item.get("paper_id")
+        pid = item.get("paper_name")
         if not pid:
-            raise ValueError("selected item missing paper_id")
-        validate_paper_id(pid)
+            raise ValueError("selected item missing paper_name")
+        validate_paper_name(pid)
         entry = by_id.get(pid, {})
         enriched.append({
             "paper_number": entry.get("paper_number") or item.get("paper_number", ""),
-            "paper_id": pid,
+            "paper_name": pid,
             "reason": item.get("reason", ""),
             "expected_use": item.get("expected_use", ""),
             "priority": item.get("priority", 3),
         })
-        paper_ids.append(pid)
+        paper_names.append(pid)
 
     sel_path = jm.job_dir(job_id) / "planning" / "selected_papers.json"
     atomic_write_json(sel_path, {
@@ -166,11 +165,11 @@ def confirm_selected_papers(
         "confirmed_by": confirmed_by,
         "notes": "",
     }, indent=2)
-    jm.set_step(job_id, "catalog_selection_confirmed", True, extra={"selected_papers": paper_ids})
-    jm.append_note(job_id, f"确认精读文献 {len(paper_ids)} 篇 by {confirmed_by}")
+    jm.set_step(job_id, "catalog_selection_confirmed", True, extra={"selected_papers": paper_names})
+    jm.append_note(job_id, f"确认精读文献 {len(paper_names)} 篇 by {confirmed_by}")
     return {
         "selected_path": str(sel_path),
         "selected_papers": enriched,
-        "paper_ids": paper_ids,
+        "paper_names": paper_names,
         "selection_confirmed": True,
     }

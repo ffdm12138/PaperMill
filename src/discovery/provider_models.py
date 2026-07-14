@@ -25,6 +25,20 @@ from src.discovery.models import PaperCandidate
 Lane = Literal["refresh", "backfill"]
 PageStatus = Literal["success", "failed"]
 FailureClass = Literal["retryable", "terminal", "transient"]
+QueryLanguage = Literal["zh", "en", "mixed"]
+
+
+@dataclass(frozen=True)
+class ProviderSearchRequest:
+    """Canonical identity passed to a provider lane."""
+
+    keyword_id: str
+    keyword_zh: str
+    query_id: str
+    query: str
+    query_language: QueryLanguage
+    provider: str
+    lane: Lane
 
 
 @dataclass(frozen=True)
@@ -32,9 +46,11 @@ class DiscoveryPage:
     """One page of results from a single provider request."""
 
     provider: str
-    original_keyword: str
-    expanded_query: str
+    keyword_zh: str
+    query: str
     lane: Lane
+    query_id: str = ""
+    query_language: QueryLanguage | str = ""
     candidates: list[PaperCandidate] = field(default_factory=list)
     request_cursor: str | None = None
     next_cursor: str | None = None
@@ -53,8 +69,10 @@ class DiscoveryPage:
     def to_dict(self) -> dict:
         return {
             "provider": self.provider,
-            "original_keyword": self.original_keyword,
-            "expanded_query": self.expanded_query,
+            "keyword_zh": self.keyword_zh,
+            "query_id": self.query_id,
+            "query": self.query,
+            "query_language": self.query_language,
             "lane": self.lane,
             "candidates": [c.to_dict() for c in self.candidates],
             "request_cursor": self.request_cursor,
@@ -128,13 +146,15 @@ def classify_http_error(
 def failed_page(
     *,
     provider: str,
-    original_keyword: str,
-    expanded_query: str,
+    keyword_zh: str,
+    query: str,
     lane: Lane,
     request_cursor: str | None,
     page_size: int,
     error_type: str,
     safe_error: str,
+    query_id: str = "",
+    query_language: QueryLanguage | str = "",
     failure_class: FailureClass | None = None,
     http_status: int | None = None,
     retry_after_seconds: float | None = None,
@@ -142,8 +162,10 @@ def failed_page(
     """Build a failed page that does NOT advance the cursor."""
     return DiscoveryPage(
         provider=provider,
-        original_keyword=original_keyword,
-        expanded_query=expanded_query,
+        keyword_zh=keyword_zh,
+        query_id=query_id,
+        query=query,
+        query_language=query_language,
         lane=lane,
         candidates=[],
         request_cursor=request_cursor,

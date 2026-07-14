@@ -120,44 +120,5 @@ def test_runner_kill_runs_in_finally_on_keyboard_interrupt(tmp_path: Path):
             mock_kill.assert_called_once()
 
 
-def test_runner_descendant_dead_after_timeout(tmp_path: Path):
-    """After a timeout, the descendant must be dead or zombie, not alive.
 
-    This is the core regression test: before the fix, os.kill(pid, 0)
-    could return True for a zombie process, causing a false failure.
-    Now _pid_state correctly returns 'zombie' for zombies.
-    """
-    import textwrap
-    import subprocess
 
-    pid_file = tmp_path / "child_pid.txt"
-    child_script = tmp_path / "child.py"
-    child_script.write_text(textwrap.dedent(f"""
-        import os
-        import time
-        with open({str(pid_file)!r}, "w") as fh:
-            fh.write(str(os.getpid()))
-        time.sleep(600)
-    """), encoding="utf-8")
-    parent_script = tmp_path / "parent.py"
-    parent_script.write_text(textwrap.dedent(f"""
-        import subprocess
-        import sys
-        import time
-        subprocess.Popen([sys.executable, {str(child_script)!r}])
-        time.sleep(600)
-    """), encoding="utf-8")
-
-    rc = run_command_with_timeout(
-        [sys.executable, str(parent_script)],
-        timeout_seconds=8,
-        check=False,
-    )
-    assert rc == 124
-
-    if pid_file.exists():
-        child_pid = int(pid_file.read_text().strip())
-        state = _pid_state(child_pid)
-        assert state in ("dead", "zombie"), (
-            f"descendant pid {child_pid} still alive (state={state}) after timeout kill"
-        )

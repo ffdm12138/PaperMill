@@ -1,9 +1,9 @@
-"""Guard against reintroducing legacy metadata/catalog schema terms.
+"""Guard against reintroducing legacy metadata/catalog/index schema terms.
 
 Active code/docs/skills must speak only metadata v2.0 / Catalog v3.2 /
-all.catalog v3.2 / paper_index v2.0 terminology.  Legacy field names such
-as ``short_zh`` (in metadata), bare ``content_title`` (in catalog), version
-string ``v1.1`` (on paper_index schema) are forbidden.
+Catalog-folder terminology.  Legacy field names such as ``short_zh``
+(in metadata), bare ``content_title`` (in catalog), and retired index
+references (``all.catalog``, ``paper_index``) are forbidden.
 
 Negative-lookahead assertions (e.g. ``content_title`` vs ``content_title_zh``)
 avoid false-positives on legitimate new fields.
@@ -14,6 +14,12 @@ import re
 from pathlib import Path
 
 import pytest
+
+from tests.hygiene._scanner import (
+    assert_allowlist_paths_exist,
+    iter_text_files,
+    scan_regex,
+)
 
 
 pytestmark = pytest.mark.contract
@@ -67,84 +73,54 @@ EXEMPT_FILES: set[str] = {
     "src/metadata/schema.py",
     # Filter code strips short_zh/translated_zh from compact patches.
     "src/services/metadata_resolver.py",
-    # Repair/validate scripts reference legacy terms to detect and remove them.
-    "scripts/repair_metadata_only_assets.py",
     # Patch-schema description explicitly lists the forbidden legacy
     # fields (it is telling the LLM not to generate them).
     "skills/paper_raw_metadata_resolver/metadata_patch_schema.json",
-    # One-shot migration that processes legacy keys on purpose.
-    # NOTE: migrate_metadata_catalog_to_current.py was moved to scripts/legacy/
-    # (deprecated; its catalog part KeyErrors on v3.1). scripts/legacy/ is
-    # covered by EXEMPT_DIR_PREFIXES, so no explicit entry is needed here.
     # Tex-writer example uses "schema_version": "1.0" for the write-job
     # wrapper schema (not catalog/metadata).  This is the live constant.
     "skills/catalog_tex_writer/examples/example_selected_catalog.json",
-    # paper_number_ledger is its own schema (different from catalog/metadata).
-    # Its current version "1.0" matches the live code constant at
-    # src/services/v2_library.py:1840 — not a legacy residual.
-    "data/catalog/paper_number_ledger.template.json",
 }
 
 # Test files that legitimately use retired fields in validator-rejection tests.
 EXEMPT_TEST_FILES: set[str] = {
-    "tests/legacy/test_legacy_repair_bad_formal_imports.py",
-    "tests/legacy/test_legacy_paper_raw_formal_import_audit.py",
-    "tests/integration/test_v2_library.py",
-    "tests/contract/test_catalog_metadata_separation.py",
-    "tests/contract/test_safe_delete_and_paper_id.py",
     # This file itself may contain the terms in its docstring.
     "tests/contract/test_schema_contract_no_legacy_terms.py",
 }
 
-EXEMPT_SUFFIXES = {".pyc", ".png", ".jpg", ".jpeg", ".pdf", ".zip", ".gif", ".svg"}
+
+def _should_scan(rel: str) -> bool:
+    rel_posix = rel.replace("\\", "/")
+    if any(rel_posix.startswith(prefix) for prefix in EXEMPT_DIR_PREFIXES):
+        return False
+    if rel_posix in EXEMPT_FILES:
+        return False
+    if rel_posix.startswith("tests/") and rel_posix in EXEMPT_TEST_FILES:
+        return False
+    return True
 
 
-def _scan_files() -> list[Path]:
-    out: list[Path] = []
-    for top in ("AGENTS.md", "README.md", "CLAUDE.md", "docs", "src", "scripts", "skills"):
-        p = REPO / top
-        if not p.exists():
-            continue
-        if p.is_file():
-            if p.suffix in EXEMPT_SUFFIXES:
-                continue
-            out.append(p)
-            continue
-        for child in p.rglob("*"):
-            rel = str(child.relative_to(REPO)).replace("\\", "/")
-            if not child.is_file():
-                continue
-            if any(rel.startswith(prefix) for prefix in EXEMPT_DIR_PREFIXES):
-                continue
-            if child.suffix in EXEMPT_SUFFIXES:
-                continue
-            out.append(child)
-    # data/: only check template files, not real generated data
-    data_template_root = REPO / "data"
-    if data_template_root.exists():
-        for child in data_template_root.rglob("*.template.json"):
-            out.append(child)
-        for child in data_template_root.rglob("*.template.yaml"):
-            out.append(child)
-    return out
+SCAN_ROOTS = ["AGENTS.md", "README.md", "CLAUDE.md", "docs", "src", "scripts", "skills"]
 
 
 def test_no_legacy_schema_terms():
+    assert_allowlist_paths_exist(
+        EXEMPT_FILES | EXEMPT_TEST_FILES,
+        message="schema-contract allowlist paths missing",
+    )
+    files = [
+        (path, rel)
+        for path, rel in iter_text_files(SCAN_ROOTS, excluded_suffixes={".pyc"})
+        if _should_scan(rel)
+    ]
+    labels = [label for label, _ in FORBIDDEN_PATTERNS]
+    patterns = [pattern for _, pattern in FORBIDDEN_PATTERNS]
+    matches = scan_regex(files, patterns)
     offenders: list[str] = []
-    for path in _scan_files():
-        rel = str(path.relative_to(REPO)).replace("\\", "/")
-        if rel in EXEMPT_FILES:
-            continue
-        if rel.startswith("tests/") and rel in EXEMPT_TEST_FILES:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        for label, pattern in FORBIDDEN_PATTERNS:
-            matches = re.findall(pattern, text)
-            if matches:
-                offenders.append(f"{rel}: {label} (found: {matches[0]})")
+    for rel, pattern, snippet in matches:
+        for label, pat in FORBIDDEN_PATTERNS:
+            if pat == pattern:
+                offenders.append(f"{rel}: {label} (found: {snippet[:40]!r})")
+                break
     assert not offenders, (
         "Legacy schema terms found in active code/docs/skills. "
         "Remove them or move to scripts/legacy/:\n" +

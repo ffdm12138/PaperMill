@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from src.writer.job_manager import JobManager
-from src.writer.catalog_matcher import load_selected, selected_paper_ids
+from src.writer.catalog_matcher import load_selected, selected_paper_names
 from src.writer.safe_write import write_text_safely
 from src.writer.bib_manager import load_workset_manifest, job_local_bib_keys
 

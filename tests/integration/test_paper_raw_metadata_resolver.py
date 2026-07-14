@@ -121,10 +121,12 @@ def _enrich_from_message(doi, message):
 
 
 def _empty_catalog(tmp_path: Path) -> Path:
-    cat = tmp_path / "catalog" / "all.catalog.json"
-    cat.parent.mkdir(parents=True)
-    cat.write_text(json.dumps({"schema_version": "1.0", "papers": []}), encoding="utf-8")
-    return cat
+    """Create minimal catalog folder structure for tests that need a catalog root."""
+    cat_dir = tmp_path / "catalog"
+    (cat_dir / "all").mkdir(parents=True, exist_ok=True)
+    (cat_dir / ".state").mkdir(parents=True, exist_ok=True)
+    (cat_dir / ".gitkeep").write_text("", encoding="utf-8")
+    return cat_dir
 
 
 def _seed_formal_paper(tmp_path: Path, pid: str, *, doi: str = "", pdf_sha: str = "") -> Path:
@@ -141,7 +143,7 @@ def _seed_formal_paper(tmp_path: Path, pid: str, *, doi: str = "", pdf_sha: str 
             folder,
             prefix=pid,
             paper_number="",
-            paper_id=pid,
+            paper_name=pid,
             stage="papers",
             extra_files={"pdf": {"path": f"{pid}.pdf", "sha256": pdf_sha, "file_size": 4}},
         )

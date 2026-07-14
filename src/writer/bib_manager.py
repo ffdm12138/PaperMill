@@ -13,8 +13,7 @@ import re
 from pathlib import Path
 
 from src import bib as bibmod
-from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR
-from src.catalog_folders.reader import CatalogFolderReader
+from src.catalog_folders.reader import create_safe_catalog_reader
 from src.services.paper_library import PaperLibrary
 from src.writer.catalog_matcher import load_selected
 from src.writer.job_manager import JobManager
@@ -34,7 +33,7 @@ def resolve_work_dir(jdir: Path, work_dir: str) -> Path:
 
 
 def load_workset_manifest(job_id: str, jm: JobManager | None = None) -> dict[str, Path]:
-    """Read ``planning/workset_manifest.json`` and return ``{paper_id: work_dir}``.
+    """Read ``planning/workset_manifest.json`` and return ``{paper_name: work_dir}``.
 
     Raises ``RuntimeError`` if the manifest is missing — i.e. ``prepare-workset
     --apply`` has not been run. Job-level BibTeX/cite-key generation is strictly
@@ -47,11 +46,11 @@ def load_workset_manifest(job_id: str, jm: JobManager | None = None) -> dict[str
     if not manifest_path.exists():
         raise RuntimeError(
             "workset_manifest.json not found. "
-            "Run `write_review.py prepare-workset --job ... --apply` first.")
+            "Run `scripts/create_write_job.py --paper-nums ... --apply` first.")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     mapping: dict[str, Path] = {}
     for entry in manifest.get("copied", []):
-        pid = entry.get("paper_id", "")
+        pid = entry.get("paper_name", "")
         wd = entry.get("work_dir", "")
         if pid and wd:
             mapping[pid] = resolve_work_dir(jdir, wd)
@@ -70,10 +69,10 @@ def _read_article_metadata(work_dir: Path) -> dict | None:
 
 
 def job_local_bib_keys(pid_to_work_dir: dict[str, Path]) -> dict[str, str]:
-    """Map ``paper_id -> bib_key`` derived from job-local article metadata.
+    """Map ``paper_name -> bib_key`` derived from job-local article metadata.
 
     No global ``Catalog`` / ``PaperLibrary`` access. Falls back to
-    ``sanitize_paper_id(pid)`` when the copied article has no metadata, matching
+    ``sanitize_paper_name(pid)`` when the copied article has no metadata, matching
     the metadata-empty branch of ``bib_key_for_entry``. This is the single source
     of truth shared by ``export_job_bib`` / ``validate_job_bib`` /
     ``deep_read`` / ``copy_figures`` so every cite key agrees.
@@ -82,15 +81,15 @@ def job_local_bib_keys(pid_to_work_dir: dict[str, Path]) -> dict[str, str]:
     for pid, wd in pid_to_work_dir.items():
         meta = _read_article_metadata(Path(wd))
         if not meta:
-            raise RuntimeError(f"job-local article metadata missing for paper_id={pid}")
-        keys[pid] = bibmod.sanitize_paper_id(citation_key_from_metadata(meta))
+            raise RuntimeError(f"job-local article metadata missing for paper_name={pid}")
+        keys[pid] = bibmod.sanitize_paper_name(citation_key_from_metadata(meta))
     return keys
 
 
 def _metadata_for_entry(entry: dict, library: PaperLibrary) -> dict:
     number = str(entry.get("paper_number") or "")
     if not number:
-        raise RuntimeError("catalog entry lacks paper_number; citation lookup cannot fall back to paper_id")
+        raise RuntimeError("catalog entry lacks paper_number; citation lookup cannot fall back to paper_name")
     metadata = library.load_metadata(number)
     if not metadata:
         raise RuntimeError(f"metadata missing for paper_number={number}; Catalog cannot substitute for citation data")
@@ -99,20 +98,20 @@ def _metadata_for_entry(entry: dict, library: PaperLibrary) -> dict:
 
 def validate_catalog_citations(catalog_data: dict | None = None) -> list[str]:
     """Validate that catalog entries can produce complete BibTeX records."""
-    cat = catalog_data or {"papers": CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR).list_papers(["all"])}
+    cat = catalog_data or {"papers": create_safe_catalog_reader().list_papers(["all"])}
     library = PaperLibrary()
     errors: list[str] = []
     seen: set[str] = set()
 
     for entry in cat.get("papers", []):
-        ctx = f"paper_id={entry.get('paper_id', '?')}"
+        ctx = f"paper_name={entry.get('paper_name', '?')}"
         try:
             metadata = _metadata_for_entry(entry, library)
         except RuntimeError as exc:
             errors.append(f"{ctx} {exc}")
             continue
         try:
-            bib_key = bibmod.sanitize_paper_id(citation_key_from_metadata(metadata))
+            bib_key = bibmod.sanitize_paper_name(citation_key_from_metadata(metadata))
         except ValueError as exc:
             errors.append(f"{ctx} {exc}")
             continue
@@ -165,7 +164,7 @@ def export_job_bib(
         selected = load_selected(job_id, jm)
         if selected.get("selection_status") != "confirmed":
             raise RuntimeError("selected_papers.json is not confirmed; refusing to export references.bib")
-        pids = [item.get("paper_id", "") for item in selected.get("selected_papers", [])]
+        pids = [item.get("paper_name", "") for item in selected.get("selected_papers", [])]
     else:
         pids = [key_to_pid[k] for k in bib_keys if k in key_to_pid]
 
@@ -173,15 +172,15 @@ def export_job_bib(
     for pid in pids:
         if pid not in pid_to_work_dir:
             raise RuntimeError(
-                f"paper_id={pid} not in workset_manifest; run prepare-workset --apply.")
+                f"paper_name={pid} not in workset_manifest; run prepare-workset --apply.")
         meta = _read_article_metadata(pid_to_work_dir[pid])
         if not meta:
             raise RuntimeError(
-                f"job-local article metadata missing for paper_id={pid}; "
+                f"job-local article metadata missing for paper_name={pid}; "
                 "run prepare-workset --apply to copy it.")
         readiness = validate_citation_ready(meta)
         if not readiness.ready:
-            raise RuntimeError(f"paper_id={pid} metadata is not citation-ready: {'; '.join(readiness.errors)}")
+            raise RuntimeError(f"paper_name={pid} metadata is not citation-ready: {'; '.join(readiness.errors)}")
         key = job_local_bib_keys({pid: pid_to_work_dir[pid]})[pid]
         blocks.append(bibmod.bibtex_from_metadata(meta, key=key))
 
@@ -217,7 +216,7 @@ def validate_job_bib(job_id: str, jm: JobManager | None = None) -> list[str]:
         bib_map = job_local_bib_keys(pid_to_work_dir)
         selected_keys: set[str] = set()
         for item in selected.get("selected_papers", []):
-            pid = item.get("paper_id", "")
+            pid = item.get("paper_name", "")
             if pid in bib_map:
                 selected_keys.add(bib_map[pid])
         extra = set(blocks.keys()) - selected_keys

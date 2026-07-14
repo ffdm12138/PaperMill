@@ -127,7 +127,7 @@ def preflight_one(
             if dup_doi.blocking:
                 errors.append("doi_duplicate")
                 for ref in dup_doi.refs:
-                    details.append(f"DOI duplicate in {ref.scope}/{ref.paper_number or ref.paper_id}: {doi}")
+                    details.append(f"DOI duplicate in {ref.scope}/{ref.paper_number or ref.paper_name}: {doi}")
 
     if not pdf_path.exists():
         errors.append("pdf_missing")
@@ -153,7 +153,7 @@ def preflight_one(
             if "pdf_md5_collision_or_inconsistent_hash" in dup_pdf.reasons:
                 errors.append("pdf_md5_collision_or_inconsistent_hash")
             for ref in dup_pdf.refs:
-                details.append(f"PDF duplicate in {ref.scope}/{ref.paper_number or ref.paper_id}")
+                details.append(f"PDF duplicate in {ref.scope}/{ref.paper_number or ref.paper_name}")
 
     errors = sorted(set(errors), key=errors.index)
     # Layered-semantics hint: conversion is allowed without metadata, but

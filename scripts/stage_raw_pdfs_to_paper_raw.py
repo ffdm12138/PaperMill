@@ -113,7 +113,7 @@ def main() -> int:
             batch_refs.append({
                 "scope": "batch",
                 "paper_number": "",
-                "paper_id": "",
+                "paper_name": "",
                 "folder": str(seen_batch_sha[hashes["sha256"]]),
                 "source": "input_pdf",
                 "doi": "",
@@ -126,7 +126,7 @@ def main() -> int:
             batch_refs.append({
                 "scope": "batch",
                 "paper_number": "",
-                "paper_id": "",
+                "paper_name": "",
                 "folder": str(seen_batch_md5[hashes["md5"]]),
                 "source": "input_pdf",
                 "doi": "",

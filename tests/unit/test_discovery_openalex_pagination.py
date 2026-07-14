@@ -43,7 +43,7 @@ class TestOpenAlexPage:
         with patch("src.discovery.search_openalex.requests.get", return_value=mock_resp):
             page = search_openalex_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=25,
                 cursor="CURSOR1",
@@ -64,7 +64,7 @@ class TestOpenAlexPage:
         with patch("src.discovery.search_openalex.requests.get", return_value=mock_resp):
             page = search_openalex_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="refresh",
                 page_size=25,
                 cursor="*",
@@ -81,7 +81,7 @@ class TestOpenAlexPage:
         with patch("src.discovery.search_openalex.requests.get", return_value=mock_resp):
             page = search_openalex_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=25,
                 cursor="CURSOR1",
@@ -96,7 +96,7 @@ class TestOpenAlexPage:
         with patch("src.discovery.search_openalex.requests.get", side_effect=ConnectionError("refused")):
             page = search_openalex_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="backfill",
                 page_size=25,
                 cursor="CURSOR1",
@@ -114,7 +114,7 @@ class TestOpenAlexPage:
         with patch("src.discovery.search_openalex.requests.get", return_value=mock_resp) as mock_get:
             search_openalex_page(
                 "boundary layer",
-                original_keyword="boundary layer",
+                keyword_zh="边界层",
                 lane="refresh",
                 page_size=25,
                 cursor="*",

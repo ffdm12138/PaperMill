@@ -23,11 +23,11 @@ class FakeMinerUConverter:
     def __init__(self):
         self.calls: list[str] = []
 
-    def convert(self, pdf, output_root, backend, method, lang, effort, paper_id=""):
-        self.calls.append(paper_id)
-        out = Path(output_root) / paper_id / "hybrid_auto"
+    def convert(self, pdf, output_root, backend, method, lang, effort, paper_name=""):
+        self.calls.append(paper_name)
+        out = Path(output_root) / paper_name / "hybrid_auto"
         out.mkdir(parents=True, exist_ok=True)
-        (out / f"{paper_id}.md").write_text(f"# Converted {paper_id}", encoding="utf-8")
+        (out / f"{paper_name}.md").write_text(f"# Converted {paper_name}", encoding="utf-8")
         images = out / "images"
         images.mkdir()
         (images / "new.png").write_bytes(b"new")

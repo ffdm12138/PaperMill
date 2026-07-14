@@ -140,8 +140,8 @@ legacy/migration only and must be migrated or repaired before normal conversion/
 数据语义边界：
 
 - 每篇正式论文的 Catalog 是 **content-only** 内容档案，不是书目库。
-- `metadata`（`<paper_id>.metadata.json`）是 BibTeX / DOI / authors / year / journal 的
-  事实源；catalog 与 metadata 仅通过 `paper_number` / `paper_id` 关联。
+- `metadata`（`<paper_name>.metadata.json`）是 BibTeX / DOI / authors / year / journal 的
+  事实源；catalog 与 metadata 仅通过 `paper_number` / `paper_name` 关联。
 
 ## 7. Environment rule
 

@@ -381,3 +381,44 @@ def test_access_policy_oa_resolvers_include_sciengine_direct():
     from src.fetch.access_policy import AccessPolicy
     names = AccessPolicy().enabled_resolver_names()
     assert "sciengine_direct" in names, "AccessPolicy OA resolvers missing sciengine_direct"
+
+
+# ── Project status document contracts ───────────────────────────────
+
+
+def test_project_status_no_pending_contradiction():
+    """PROJECT_STATUS must not simultaneously claim writer-safe and pending."""
+    text = _read("docs/PROJECT_STATUS.md")
+    has_writer_safe = "writer category safe" in text.lower() or "writer-safe" in text.lower()
+    stale_phrases = [
+        "awaiting classification",
+        "awaiting llm",
+        "papers pending classification",
+        "papers remain pending",
+        "four papers pending",
+        "four papers await",
+    ]
+    if has_writer_safe:
+        for phrase in stale_phrases:
+            if phrase in text.lower():
+                pytest.fail(f"Found stale phrase '{phrase}' contradicting writer-safe")
+
+
+def test_migration_summary_no_inspect_plan_hash():
+    """Migration summary must not use recovery inspect hash as migration plan hash."""
+    text = _read("docs/verification/discovery_notebook_v3_migration_summary.md")
+    assert "inspect-only plan" not in text
+
+
+def test_migration_summary_no_rewritten():
+    """Migration summary must not claim page journals were 'rewritten' without evidence."""
+    text = _read("docs/verification/discovery_notebook_v3_migration_summary.md")
+    assert "Page journals rewritten" not in text
+
+
+def test_repair_readme_no_stale_phrases():
+    """Repair README must not contain obsolete pending language."""
+    text = _read("docs/archive/repair/README.md")
+    assert "doc/doctor_catalog_folders.py" not in text
+    assert "four papers remain pending" not in text
+    assert "writer category readiness is not yet complete" not in text

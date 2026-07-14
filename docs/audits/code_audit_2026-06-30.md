@@ -96,14 +96,14 @@ tests, and SWIG/PyMuPDF imports; they did not fail validation.
   paper_number; it only validates metadata/catalog and writes `.import_status.json
   status=catalog_ready`.
 - New `scripts/formalize_paper_raw.py` + `src/services/paper_raw_formalizer.py`:
-  in `data/paper_raw` it derives canonical `paper_id`, renames folder/assets,
+  in `data/paper_raw` it derives canonical `paper_name`, renames folder/assets,
   reserves a 16-digit `paper_number` (ledger `state=reserved`), backfills catalog
-  links, writes `<paper_id>.formalization.json` + `<16-digit>.paper.number`, and
+  links, writes `<paper_name>.formalization.json` + `<16-digit>.paper.number`, and
   sets `status=ready_for_commit`.
 - `commit_paper_raw_to_papers.py` is now a transactional install: gate on
   `ready_for_commit` + formalization.json + marker → staging copytree → self-check
   → `os.replace` → `activate_reserved` → postcheck → delete
-  source. Any post-install failure rolls back (removes `data/papers/<paper_id>`,
+  source. Any post-install failure rolls back (removes `data/papers/<paper_name>`,
   deactivates the ledger number back to reserved). Fixes the v2.1 bug where a
   postcheck failure left a half-installed formal folder.
 - `PaperNumberLedger` gained `reserve_for_paper_raw` / `activate_reserved` /
@@ -111,7 +111,7 @@ tests, and SWIG/PyMuPDF imports; they did not fail validation.
   field (no schema_version bump; legacy entries backfill `state=active`).
 - `scripts/legacy/audit_paper_raw_formal_imports.py` folds in formal-state checks (marker,
   paper_number consistency, metadata completeness/match, catalog content-only,
-  transient files, suspicious paper_id) and a `--quarantine --apply` mode.
+  transient files, suspicious paper_name) and a `--quarantine --apply` mode.
 
 ## 2026-07-02 ingest-v2.3 paper_raw paper_number workspaces
 

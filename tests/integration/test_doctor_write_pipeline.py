@@ -28,9 +28,9 @@ def test_doctor_without_catalog_is_source_valid_but_runtime_not_ready(tmp_path):
 
 
 def test_doctor_identifies_missing_job(tmp_path):
-    catalog = tmp_path / "data" / "catalog" / "all.catalog.json"
-    catalog.parent.mkdir(parents=True)
-    catalog.write_text(json.dumps({"papers": []}), encoding="utf-8")
+    # Create catalog folder structure (not old all.catalog.json)
+    catalog_all = tmp_path / "data" / "catalog" / "all"
+    catalog_all.mkdir(parents=True)
 
     report = doctor.doctor_write_pipeline(_args(tmp_path, job_id="missing_job"))
 
@@ -41,9 +41,9 @@ def test_doctor_identifies_missing_job(tmp_path):
 
 
 def test_doctor_identifies_prepared_job_without_tex(tmp_path):
-    catalog = tmp_path / "data" / "catalog" / "all.catalog.json"
-    catalog.parent.mkdir(parents=True)
-    catalog.write_text(json.dumps({"papers": []}), encoding="utf-8")
+    # Create catalog folder structure (not old all.catalog.json)
+    catalog_all = tmp_path / "data" / "catalog" / "all"
+    catalog_all.mkdir(parents=True)
     job_dir = tmp_path / "write" / "jobs" / "prepared_job"
     (job_dir / "article" / "0000000000000001").mkdir(parents=True)
     (job_dir / "reports").mkdir()

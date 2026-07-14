@@ -48,13 +48,13 @@ def test_commit_rollback_roundtrip_preserves_frozen_bytes_and_indexes(tmp_path: 
     raw = tmp_path / "paper_raw" / NUMBER
     assert compute_sha256(raw / f"{NUMBER}.metadata.json") == metadata_hash
     assert compute_sha256(raw / f"{NUMBER}.catalog.json") == catalog_hash
-    assert not (papers / result["paper_id"]).exists()
+    assert not (papers / result["paper_name"]).exists()
     assert not list((catalog_root / "all").iterdir())
 
 
-def test_rollback_requires_paper_number_or_paper_id(tmp_path: Path):
-    """Without paper_number or paper_id, ``rollback_formal_papers`` raises."""
-    with pytest.raises(ValueError, match="paper_number.*paper_id"):
+def test_rollback_requires_paper_number_or_paper_name(tmp_path: Path):
+    """Without paper_number or paper_name, ``rollback_formal_papers`` raises."""
+    with pytest.raises(ValueError, match="paper_number.*paper_name"):
         rollback_formal_papers(
             papers_dir=tmp_path / "papers",
             paper_raw_root=tmp_path / "paper_raw",
@@ -113,7 +113,7 @@ def test_public_rollback_recovers_every_crash_boundary(tmp_path: Path, crash_pha
     assert not list((transaction_root / "rollback").glob("*.json"))
     journal = __import__("json").loads(completed[0].read_text(encoding="utf-8"))
     assert journal["phase"] == "completed"
-    assert not (papers / result["paper_id"]).exists()
+    assert not (papers / result["paper_name"]).exists()
     assert (paper_raw_root / NUMBER).is_dir()
     assert not list(papers.glob(".*.rollback_quarantine_*"))
     assert not list(paper_raw_root.glob(".rollback_*"))
@@ -176,7 +176,7 @@ def test_rollback_rejects_ambiguous_active_journals(tmp_path: Path):
         (tmp_path / "paper_raw" / f".rollback_{NUMBER}_{second_id}").resolve()
     )
     duplicate["formal_quarantine"] = str(
-        (papers / f".{result['paper_id']}.rollback_quarantine_{second_id}").resolve()
+        (papers / f".{result['paper_name']}.rollback_quarantine_{second_id}").resolve()
     )
     (transaction_root / "rollback" / f"{second_id}.json").write_text(
         json.dumps(duplicate), encoding="utf-8"

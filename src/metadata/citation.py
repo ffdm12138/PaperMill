@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from src.metadata.schema import first_author_family
-from src.naming import sanitize_paper_id
+from src.naming import sanitize_paper_name
 
 
 def _field(metadata: dict, path: tuple[str, ...], default: Any = "") -> Any:
@@ -54,7 +54,7 @@ def bibtex_from_metadata(metadata: dict, *, key: str | None = None) -> str:
         ("article-number", article_number), ("doi", doi), ("url", url),
         ("publisher", publisher), ("institution", institution), ("isbn", isbn),
     ])
-    lines = [f"@{bib_type}{{{sanitize_paper_id(str(key))},"]
+    lines = [f"@{bib_type}{{{sanitize_paper_name(str(key))},"]
     lines.extend(f"  {name} = {{{value}}}," for name, value in fields if value)
     lines.append("}")
     return "\n".join(lines)

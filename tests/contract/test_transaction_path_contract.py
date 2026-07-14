@@ -35,7 +35,7 @@ from src.services.transaction_paths import (
     rollback_quarantine_path,
     rollback_staging_path,
     validate_commit_journal,
-    validate_paper_id,
+    validate_paper_name,
     validate_paper_number,
     validate_rollback_journal,
     validate_transaction_id,
@@ -66,7 +66,7 @@ def _make_journal(
     *,
     transaction_id: str | None = None,
     paper_number: str = "1234567890123456",
-    paper_id: str = "2024_Author_test_paper",
+    paper_name: str = "2024_Author_test_paper",
     source_workspace: str | None = None,
     staging_path: str | None = None,
     final_path: str | None = None,
@@ -75,7 +75,7 @@ def _make_journal(
     return {
         "transaction_id": transaction_id or str(_uuid.uuid4()),
         "paper_number": paper_number,
-        "paper_id": paper_id,
+        "paper_name": paper_name,
         "phase": phase,
         "source_workspace": source_workspace or "/tmp/paper_raw/1234567890123456",
         "staging_path": staging_path or "/tmp/papers/.2024_Author_test_paper.staging_abc123",
@@ -160,22 +160,22 @@ class TestValidatePaperNumber:
 
 class TestValidatePaperId:
     def test_valid(self) -> None:
-        assert validate_paper_id("2024_Author_test") == "2024_Author_test"
+        assert validate_paper_name("2024_Author_test") == "2024_Author_test"
 
     def test_valid_chinese(self) -> None:
-        assert validate_paper_id("2024_作者_论文") == "2024_作者_论文"
+        assert validate_paper_name("2024_作者_论文") == "2024_作者_论文"
 
     def test_path_separator(self) -> None:
         with pytest.raises(TransactionIdentityError):
-            validate_paper_id("../evil")
+            validate_paper_name("../evil")
 
     def test_drive_prefix(self) -> None:
         with pytest.raises(TransactionIdentityError):
-            validate_paper_id("C:malicious")
+            validate_paper_name("C:malicious")
 
     def test_nul(self) -> None:
         with pytest.raises(TransactionIdentityError):
-            validate_paper_id("bad\0name")
+            validate_paper_name("bad\0name")
 
 
 # ── Path containment ──────────────────────────────────────────────────
@@ -285,17 +285,17 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        staging = pr / f".{paper_id}.staging_{tx_id}"
-        final = pr / paper_id
+        staging = pr / f".{paper_name}.staging_{tx_id}"
+        final = pr / paper_name
 
         journal = _make_journal(
             transaction_id=tx_id,
             paper_number=number,
-            paper_id=paper_id,
+            paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(final),
@@ -308,7 +308,7 @@ class TestValidateCommitJournal:
         )
         assert result["transaction_id"] == tx_id
         assert result["paper_number"] == number
-        assert result["paper_id"] == paper_id
+        assert result["paper_name"] == paper_name
 
     def test_staging_outside_papers_root(self, roots: dict) -> None:
         prr = roots["paper_raw_root"]
@@ -316,16 +316,16 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
         # Staging points OUTSIDE papers_root
         outside = roots["tmp_path"] / "outside"
-        final = pr / paper_id
+        final = pr / paper_name
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(outside),
             final_path=str(final),
@@ -347,14 +347,14 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        staging = pr / f".{paper_id}.staging_{tx_id}"
-        final = pr / paper_id
+        staging = pr / f".{paper_name}.staging_{tx_id}"
+        final = pr / paper_name
         outside_source = roots["tmp_path"] / "unrelated"
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(outside_source),
             staging_path=str(staging),
             final_path=str(final),
@@ -373,14 +373,14 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        final = pr / paper_id
+        final = pr / paper_name
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(pr),  # papers root itself!
             final_path=str(final),
@@ -399,14 +399,14 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        staging = pr / f".{paper_id}.staging_{tx_id}"
+        staging = pr / f".{paper_name}.staging_{tx_id}"
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(pr),  # papers root itself!
@@ -425,21 +425,21 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        staging = pr / f".{paper_id}.staging_{tx_id}"
+        staging = pr / f".{paper_name}.staging_{tx_id}"
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(staging),  # final == staging — caught by expected_name check
         )
         jpath = _write_journal(tr / "commit" / f"{tx_id}.json", journal)
 
-        # The exact-path check on final_path expects basename == paper_id,
+        # The exact-path check on final_path expects basename == paper_name,
         # but staging's basename is '.staging_{tx_id}' — caught as identity error
         with pytest.raises(TransactionIdentityError):
             validate_commit_journal(
@@ -453,19 +453,19 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
         # Create a symlink staging target
-        real_staging = pr / f".{paper_id}.real_staging"
+        real_staging = pr / f".{paper_name}.real_staging"
         real_staging.mkdir()
-        staging_link = pr / f".{paper_id}.staging_{tx_id}"
+        staging_link = pr / f".{paper_name}.staging_{tx_id}"
         staging_link.symlink_to(real_staging, target_is_directory=True)
-        final = pr / paper_id
+        final = pr / paper_name
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging_link),
             final_path=str(final),
@@ -486,15 +486,15 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        staging = pr / f".{paper_id}.staging_{tx_id}"
-        final = pr / paper_id
+        staging = pr / f".{paper_name}.staging_{tx_id}"
+        final = pr / paper_name
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(final),
@@ -514,15 +514,15 @@ class TestValidateCommitJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        staging = pr / f".{paper_id}.staging_{tx_id}"
-        final = pr / paper_id
+        staging = pr / f".{paper_name}.staging_{tx_id}"
+        final = pr / paper_name
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(final),
@@ -542,14 +542,14 @@ class TestValidateCommitJournal:
         pr = roots["papers_root"]
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
         source = prr / "12345"
         source.mkdir()
-        staging = pr / f".{paper_id}.staging_{tx_id}"
-        final = pr / paper_id
+        staging = pr / f".{paper_name}.staging_{tx_id}"
+        final = pr / paper_name
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number="12345", paper_id=paper_id,
+            transaction_id=tx_id, paper_number="12345", paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(final),
@@ -562,13 +562,13 @@ class TestValidateCommitJournal:
                 paper_raw_root=prr, papers_root=pr, transaction_root=tr,
             )
 
-    def test_paper_id_with_separator(self, roots: dict) -> None:
+    def test_paper_name_with_separator(self, roots: dict) -> None:
         prr = roots["paper_raw_root"]
         pr = roots["papers_root"]
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024/Author/../evil"
+        paper_name = "2024/Author/../evil"
         source = prr / number
         source.mkdir()
         staging = pr / f".safe.staging_{_uuid.uuid4().hex}"
@@ -576,7 +576,7 @@ class TestValidateCommitJournal:
         final.mkdir()
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(final),
@@ -600,17 +600,17 @@ class TestValidateRollbackJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        formal = pr / paper_id
+        formal = pr / paper_name
         raw_path = prr / number
         staging = prr / f".rollback_{number}_{tx_id}"
-        quarantine = pr / f".{paper_id}.rollback_quarantine_{tx_id}"
+        quarantine = pr / f".{paper_name}.rollback_quarantine_{tx_id}"
 
         journal = {
             "transaction_id": tx_id,
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),
@@ -632,9 +632,9 @@ class TestValidateRollbackJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        formal = pr / paper_id
+        formal = pr / paper_name
         raw_path = prr / number
         staging = prr / f".rollback_{number}_{tx_id}"
         # Quarantine points outside papers_root
@@ -643,7 +643,7 @@ class TestValidateRollbackJournal:
         journal = {
             "transaction_id": tx_id,
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),
@@ -667,16 +667,16 @@ class TestValidateRollbackJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        formal = pr / paper_id
+        formal = pr / paper_name
         raw_path = prr / number
         staging = prr / f".rollback_{number}_{tx_id}"
 
         journal = {
             "transaction_id": tx_id,
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),
@@ -697,21 +697,21 @@ class TestValidateRollbackJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        formal = pr / paper_id
+        formal = pr / paper_name
         raw_path = prr / number
         staging = prr / f".rollback_{number}_{tx_id}"
         # Symlink quarantine
         real_dir = pr / "real_quarantine"
         real_dir.mkdir()
-        quarantine_link = pr / f".{paper_id}.rollback_quarantine_{tx_id}"
+        quarantine_link = pr / f".{paper_name}.rollback_quarantine_{tx_id}"
         quarantine_link.symlink_to(real_dir, target_is_directory=True)
 
         journal = {
             "transaction_id": tx_id,
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),
@@ -734,18 +734,18 @@ class TestValidateRollbackJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        # formal_path points to different paper_id
-        formal = pr / "different_paper_id"
+        # formal_path points to different paper_name
+        formal = pr / "different_paper_name"
         raw_path = prr / number
         staging = prr / f".rollback_{number}_{tx_id}"
-        quarantine = pr / f".{paper_id}.rollback_quarantine_{tx_id}"
+        quarantine = pr / f".{paper_name}.rollback_quarantine_{tx_id}"
 
         journal = {
             "transaction_id": tx_id,
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),
@@ -766,17 +766,17 @@ class TestValidateRollbackJournal:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        formal = pr / paper_id
+        formal = pr / paper_name
         raw_path = prr / number
         staging = prr / "not_rollback_prefix"  # wrong prefix
-        quarantine = pr / f".{paper_id}.rollback_quarantine_{tx_id}"
+        quarantine = pr / f".{paper_name}.rollback_quarantine_{tx_id}"
 
         journal = {
             "transaction_id": tx_id,
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),
@@ -805,9 +805,9 @@ class TestSentinelRegression:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        formal = pr / paper_id
+        formal = pr / paper_name
         raw_path = prr / number
         staging = prr / f".rollback_{number}_{tx_id}"
         # Quarantine pointing at user data outside papers_root
@@ -817,7 +817,7 @@ class TestSentinelRegression:
         journal = {
             "transaction_id": tx_id,
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),
@@ -842,20 +842,20 @@ class TestSentinelRegression:
         tr = roots["transaction_root"]
         tx_id = str(_uuid.uuid4())
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        final = pr / paper_id
+        final = pr / paper_name
 
         # Create a symlink staging that points outside papers_root
         real_target = roots["tmp_path"] / "unrelated_data"
         sentinel = _sentinel(real_target, "keep.txt")
-        staging_link = pr / f".{paper_id}.staging_{tx_id}"
+        staging_link = pr / f".{paper_name}.staging_{tx_id}"
         staging_link.symlink_to(real_target, target_is_directory=True)
 
         journal = _make_journal(
-            transaction_id=tx_id, paper_number=number, paper_id=paper_id,
+            transaction_id=tx_id, paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging_link),
             final_path=str(final),
@@ -876,16 +876,16 @@ class TestSentinelRegression:
         pr = roots["papers_root"]
         tr = roots["transaction_root"]
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
         source = prr / number
         source.mkdir()
-        staging = pr / f".{paper_id}.staging_placeholder"
-        final = pr / paper_id
+        staging = pr / f".{paper_name}.staging_placeholder"
+        final = pr / paper_name
 
         journal = _make_journal(
             transaction_id="../../../etc/passwd",
-            paper_number=number, paper_id=paper_id,
+            paper_number=number, paper_name=paper_name,
             source_workspace=str(source),
             staging_path=str(staging),
             final_path=str(final),
@@ -904,17 +904,17 @@ class TestSentinelRegression:
         pr = roots["papers_root"]
         tr = roots["transaction_root"]
         number = "1234567890123456"
-        paper_id = "2024_Author_test"
+        paper_name = "2024_Author_test"
 
-        formal = pr / paper_id
+        formal = pr / paper_name
         raw_path = prr / number
         staging = prr / f".rollback_{number}_abc"
-        quarantine = pr / f".{paper_id}.rollback_quarantine_abc"
+        quarantine = pr / f".{paper_name}.rollback_quarantine_abc"
 
         journal = {
             "transaction_id": "../escaped",
             "paper_number": number,
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "phase": "prepared",
             "formal_path": str(formal),
             "raw_path": str(raw_path),

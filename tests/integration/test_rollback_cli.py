@@ -20,11 +20,29 @@ SCRIPT = str(_ROOT / "scripts" / "rollback_formal_papers_to_paper_raw.py")
 
 def _run(*args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    return subprocess.run(
-        [sys.executable, SCRIPT, *args],
-        capture_output=True, text=True, encoding="utf-8", cwd=str(_ROOT),
-        timeout=60, env=env,
-    )
+    popen_kwargs: dict = {
+        "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+        "text": True, "encoding": "utf-8", "cwd": str(_ROOT),
+        "env": env,
+    }
+    # Isolate the subprocess in its own process group so a timeout can kill
+    # the whole tree (script + any child processes).  Without this, POSIX
+    # subprocess.run(timeout=...) only kills the direct child, leaving
+    # orphaned grandchildren that keep inherited pipe endpoints open — the
+    # parent hangs forever on communicate().
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    try:
+        return subprocess.run(
+            [sys.executable, SCRIPT, *args],
+            timeout=60, **popen_kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        # Best-effort cleanup of orphaned process tree on timeout.
+        # The caller will see the TimeoutExpired and can report the hang.
+        raise
 
 
 def _committed(tmp_path: Path) -> dict:
@@ -61,7 +79,7 @@ class TestCliEntry:
         cp = _run("--help")
         assert cp.returncode == 0
         assert "--paper-number" in cp.stdout
-        assert "--paper-id" in cp.stdout
+        assert "--paper-name" in cp.stdout
         assert "--all-papers" in cp.stdout
 
     def test_no_target(self) -> None:
@@ -70,7 +88,7 @@ class TestCliEntry:
         assert "one of" in cp.stderr.lower()
 
     def test_mutually_exclusive(self) -> None:
-        cp = _run("--paper-number", "0000000000000001", "--paper-id", "x")
+        cp = _run("--paper-number", "0000000000000001", "--paper-name", "x")
         assert cp.returncode != 0
 
     def test_invalid_paper_number(self) -> None:
@@ -84,7 +102,7 @@ class TestPaperNumberDryRun:
     def test_dry_run_no_mutation(self, tmp_path: Path) -> None:
         result = _committed(tmp_path)
         pn = result["paper_number"]
-        pid = result["paper_id"]
+        pid = result["paper_name"]
 
         cp = _run("--paper-number", pn, *_paths(result))
         assert cp.returncode == 0, f"stdout={cp.stdout}"
@@ -106,7 +124,7 @@ class TestPaperNumberApply:
     def test_apply_completes(self, tmp_path: Path) -> None:
         result = _committed(tmp_path)
         pn = result["paper_number"]
-        pid = result["paper_id"]
+        pid = result["paper_name"]
         papers_dir = Path(result["_papers_dir"])
         paper_raw = Path(result["_paper_raw_root"])
 
@@ -147,27 +165,27 @@ class TestPaperNumberApply:
         assert report["summary"]["failed"] == 0
 
 
-# ── Test: --paper-id ─────────────────────────────────────────────
+# ── Test: --paper-name ────────────────────────────────────────────
 
-class TestPaperId:
+class TestPaperName:
     def test_resolves_active(self, tmp_path: Path) -> None:
         result = _committed(tmp_path)
-        pid = result["paper_id"]
-        cp = _run("--paper-id", pid, *_paths(result))
+        pid = result["paper_name"]
+        cp = _run("--paper-name", pid, *_paths(result))
         assert cp.returncode == 0, f"stdout={cp.stdout} stderr={cp.stderr}"
         assert "DRY-RUN" in cp.stdout
 
     def test_not_found(self, tmp_path: Path) -> None:
         r = _committed(tmp_path)
-        cp = _run("--paper-id", "nonexistent_12345", *_paths(r))
+        cp = _run("--paper-name", "nonexistent_12345", *_paths(r))
         assert cp.returncode != 0
         assert ("not_found" in (cp.stdout + cp.stderr).lower()
-                or "paper_id" in (cp.stdout + cp.stderr).lower())
+                or "paper_name" in (cp.stdout + cp.stderr).lower())
 
     def test_recovers_interrupted_journal(self, tmp_path: Path) -> None:
         result = _committed(tmp_path)
         pn = result["paper_number"]
-        pid = result["paper_id"]
+        pid = result["paper_name"]
         papers_dir = Path(result["_papers_dir"])
         trans_root = Path(result["_transaction_root"])
 
@@ -190,22 +208,22 @@ class TestPaperId:
                 fault_injector=crash_once,
             )
 
-        cp = _run("--paper-id", pid, "--apply", *_paths(result))
+        cp = _run("--paper-name", pid, "--apply", *_paths(result))
         assert cp.returncode == 0, f"stdout={cp.stdout} stderr={cp.stderr}"
         assert not (papers_dir / pid).exists()
 
     def test_rejects_path_separators(self) -> None:
-        cp = _run("--paper-id", "../escape")
+        cp = _run("--paper-name", "../escape")
         assert cp.returncode != 0
 
     def test_dry_run_resolves(self, tmp_path: Path) -> None:
         result = _committed(tmp_path)
-        pid = result["paper_id"]
+        pid = result["paper_name"]
         rp = tmp_path / "report.json"
-        cp = _run("--paper-id", pid, *_paths(result), "--report", str(rp))
+        cp = _run("--paper-name", pid, *_paths(result), "--report", str(rp))
         assert cp.returncode == 0
         report = json.loads(rp.read_text(encoding="utf-8"))
-        assert report["requested_target"]["paper_id"] == pid
+        assert report["requested_target"]["paper_name"] == pid
 
 
 # ── Test: --all-papers ───────────────────────────────────────────
@@ -222,7 +240,7 @@ class TestAllPapers:
 
     def test_dry_run_no_mutation(self, tmp_path: Path) -> None:
         result = _committed(tmp_path)
-        pid = result["paper_id"]
+        pid = result["paper_name"]
         papers_dir = Path(result["_papers_dir"])
         cp = _run("--all-papers", *_paths(result))
         assert cp.returncode == 0
@@ -230,7 +248,7 @@ class TestAllPapers:
 
     def test_apply_completes_all(self, tmp_path: Path) -> None:
         result = _committed(tmp_path)
-        pid = result["paper_id"]
+        pid = result["paper_name"]
         papers_dir = Path(result["_papers_dir"])
         rp = tmp_path / "report.json"
         cp = _run("--all-papers", "--apply", *_paths(result),

@@ -34,7 +34,7 @@ def _closure(folder: Path,paper_number: str,*,papers_dir: Path|None=None,paper_r
         asset_prefix=prefix,
     ))
     hashes=task.get("input_hashes") or {}
-    closure={"catalog_sha256":compute_sha256(catalog_path),"catalog_task_sha256":compute_sha256(task_path),"metadata_sha256":hashes.get("metadata_sha256"),"metadata_freeze_sha256":hashes.get("metadata_freeze_sha256"),"markdown_sha256":hashes.get("markdown_sha256"),"conversion_manifest_sha256":hashes.get("conversion_manifest_sha256"),"image_hashes":hashes.get("image_hashes") or {},"source_record_hashes":hashes.get("source_record_hashes") or {},"paper_id":catalog.get("paper_id"),"skill_version":task.get("skill_version"),"catalog_schema_version":task.get("catalog_schema_version")}
+    closure={"catalog_sha256":compute_sha256(catalog_path),"catalog_task_sha256":compute_sha256(task_path),"metadata_sha256":hashes.get("metadata_sha256"),"metadata_freeze_sha256":hashes.get("metadata_freeze_sha256"),"markdown_sha256":hashes.get("markdown_sha256"),"conversion_manifest_sha256":hashes.get("conversion_manifest_sha256"),"image_hashes":hashes.get("image_hashes") or {},"source_record_hashes":hashes.get("source_record_hashes") or {},"paper_name":catalog.get("paper_name"),"skill_version":task.get("skill_version"),"catalog_schema_version":task.get("catalog_schema_version")}
     if metadata_freeze and closure["metadata_sha256"]!=metadata_freeze.get("metadata_sha256"): errors.append("catalog closure metadata hash mismatch")
     return closure,list(dict.fromkeys(errors))
 
@@ -55,32 +55,32 @@ def assert_catalog_frozen(folder: Path,paper_number: str,*,papers_dir: Path|None
     return receipt
 
 
-def assert_formal_catalog_frozen(folder: Path, paper_number: str, paper_id: str) -> dict:
+def assert_formal_catalog_frozen(folder: Path, paper_number: str, paper_name: str) -> dict:
     """Validate the installed Catalog closure without the deleted raw workspace.
 
     The immutable receipt keeps the generation-time task/input hashes.  Formal
     validation rechecks every input that remains authoritative after commit:
     catalog, metadata, Markdown, conversion manifest, images and source records.
     """
-    receipt = _load(folder / f"{paper_id}.catalog_freeze.json", "catalog freeze receipt")
-    catalog = _load(folder / f"{paper_id}.catalog.json", "catalog")
-    task = _load(folder / f"{paper_id}.catalog_task.json", "catalog task")
+    receipt = _load(folder / f"{paper_name}.catalog_freeze.json", "catalog freeze receipt")
+    catalog = _load(folder / f"{paper_name}.catalog.json", "catalog")
+    task = _load(folder / f"{paper_name}.catalog_task.json", "catalog task")
     errors: list[str] = []
     if receipt.get("schema_version") != CATALOG_FREEZE_SCHEMA_VERSION:
         errors.append("catalog freeze schema mismatch")
     if receipt.get("paper_number") != paper_number:
         errors.append("catalog freeze paper_number mismatch")
-    if receipt.get("paper_id") != paper_id:
-        errors.append("catalog freeze paper_id mismatch")
-    if receipt.get("catalog_sha256") != compute_sha256(folder / f"{paper_id}.catalog.json"):
+    if receipt.get("paper_name") != paper_name:
+        errors.append("catalog freeze paper_name mismatch")
+    if receipt.get("catalog_sha256") != compute_sha256(folder / f"{paper_name}.catalog.json"):
         errors.append("catalog freeze catalog hash mismatch")
-    if receipt.get("catalog_task_sha256") != compute_sha256(folder / f"{paper_id}.catalog_task.json"):
+    if receipt.get("catalog_task_sha256") != compute_sha256(folder / f"{paper_name}.catalog_task.json"):
         errors.append("catalog freeze task hash mismatch")
-    if receipt.get("metadata_sha256") != compute_sha256(folder / f"{paper_id}.metadata.json"):
+    if receipt.get("metadata_sha256") != compute_sha256(folder / f"{paper_name}.metadata.json"):
         errors.append("catalog freeze metadata hash mismatch")
-    if receipt.get("markdown_sha256") != compute_sha256(folder / f"{paper_id}.md"):
+    if receipt.get("markdown_sha256") != compute_sha256(folder / f"{paper_name}.md"):
         errors.append("catalog freeze Markdown hash mismatch")
-    if receipt.get("conversion_manifest_sha256") != compute_sha256(folder / f"{paper_id}.conversion.json"):
+    if receipt.get("conversion_manifest_sha256") != compute_sha256(folder / f"{paper_name}.conversion.json"):
         errors.append("catalog freeze conversion hash mismatch")
     image_hashes = {
         path.relative_to(folder).as_posix(): compute_sha256(path)
@@ -96,7 +96,7 @@ def assert_formal_catalog_frozen(folder: Path, paper_number: str, paper_id: str)
     }
     if receipt.get("source_record_hashes") != source_hashes:
         errors.append("catalog freeze source-record hashes mismatch")
-    errors.extend(validate_catalog_v32(catalog, folder, paper_number, asset_prefix=paper_id))
+    errors.extend(validate_catalog_v32(catalog, folder, paper_number, asset_prefix=paper_name))
     if task.get("paper_number") != paper_number:
         errors.append("catalog task paper_number mismatch")
     if errors:

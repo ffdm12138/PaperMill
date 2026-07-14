@@ -2,7 +2,7 @@
 
 Pure v2 paper_raw workflow only.
 
-Use `data/raw/` or network metadata as input, stage into `data/paper_raw/`, then match, fetch or attach PDF, convert, curate, formalize, commit, rebuild all catalog and validate.
+Use `data/raw/` or network metadata as input, stage into `data/paper_raw/`, then match, fetch or attach PDF, convert, curate, formalize, commit, reconcile catalog folders and validate.
 
 Metadata-only PDF fetch scans existing 16-digit `paper_raw` workspaces and reads
 DOI only from `<paper_number>.metadata.json`; it never reads `doi.csv` or

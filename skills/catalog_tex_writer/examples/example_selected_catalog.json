@@ -5,7 +5,7 @@
   "papers": [
     {
       "paper_number": "0000000000000001",
-      "paper_id": "2024_author_示例论文一",
+      "paper_name": "2024_author_示例论文一",
       "content_identity": {
         "content_title_zh": "示例论文一",
         "research_domains": ["example_domain"],

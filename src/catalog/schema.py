@@ -10,11 +10,11 @@ import jsonschema
 
 from src.catalog.task import SKILL_VERSION, validate_task_envelope
 from src.file_fingerprint import compute_sha256
-from src.naming import validate_paper_id
+from src.naming import validate_paper_name
 
 FORBIDDEN_BIBLIOGRAPHIC_KEYS={"doi","authors","publication_year","journal","volume","issue","pages","publisher","bibtex","csl","citation_key"}
 SCHEMA_PATH=Path(__file__).resolve().parents[2]/"skills"/"paper_raw_catalog_curator"/"catalog_schema.json"
-MAX_PAPER_ID_CHARS=96
+MAX_paper_name_CHARS=96
 DEFAULT_WINDOWS_PATH_BUDGET=240
 
 def truncate_summary(value: str, max_chars: int = 600) -> str:
@@ -94,25 +94,25 @@ def validate_catalog_v32(catalog: dict, folder: Path, paper_number: str, *, pape
     except Exception as exc: return [f"catalog task required before validation: {exc}"]
     errors.extend(validate_task_envelope(folder,paper_number,task,asset_prefix=asset_prefix))
     if catalog.get("paper_number")!=paper_number: errors.append("catalog.paper_number mismatch")
-    pid=str(catalog.get("paper_id") or ""); title=str((catalog.get("content_identity") or {}).get("content_title_zh") or "")
-    if pid!=unicodedata.normalize("NFC",pid) or title!=unicodedata.normalize("NFC",title): errors.append("paper_id/content_title_zh must use Unicode NFC")
-    if pid!=str(task.get("paper_id_prefix") or "")+title: errors.append("paper_id must equal task prefix + content_title_zh")
-    try: validate_paper_id(pid)
+    pid=str(catalog.get("paper_name") or ""); title=str((catalog.get("content_identity") or {}).get("content_title_zh") or "")
+    if pid!=unicodedata.normalize("NFC",pid) or title!=unicodedata.normalize("NFC",title): errors.append("paper_name/content_title_zh must use Unicode NFC")
+    if pid!=str(task.get("paper_name_prefix") or "")+title: errors.append("paper_name must equal task prefix + content_title_zh")
+    try: validate_paper_name(pid)
     except ValueError as exc: errors.append(str(exc))
-    if len(pid)>MAX_PAPER_ID_CHARS: errors.append("paper_id exceeds 96 characters")
-    if "__" in pid or pid!=pid.strip(" ."): errors.append("paper_id contains repeated underscore or trailing/leading space/dot")
+    if len(pid)>MAX_paper_name_CHARS: errors.append("paper_name exceeds 96 characters")
+    if "__" in pid or pid!=pid.strip(" ."): errors.append("paper_name contains repeated underscore or trailing/leading space/dot")
     longest=(papers_dir/f"{pid}.staging"/f"{pid}.asset_manifest.json").resolve() if papers_dir else (folder/f"{pid}.asset_manifest.json").resolve()
-    if len(str(longest))>path_budget: errors.append("paper_id exceeds final Windows path budget")
+    if len(str(longest))>path_budget: errors.append("paper_name exceeds final Windows path budget")
     if papers_dir and (papers_dir/pid).exists():
         marker=list((papers_dir/pid).glob("*.paper.number")); existing=marker[0].name.removesuffix(".paper.number") if marker else ""
-        if existing!=paper_number: errors.append("paper_id_conflict: formal library contains another paper_number")
+        if existing!=paper_number: errors.append("paper_name_conflict: formal library contains another paper_number")
     if paper_raw_root:
         for other in (paper_raw_root.iterdir() if paper_raw_root.is_dir() else []):
             if other==folder or not other.is_dir(): continue
             for path in other.glob("*.catalog.json"):
                 try: candidate=json.loads(path.read_text(encoding="utf-8"))
                 except Exception: continue
-                if candidate.get("paper_id")==pid and candidate.get("paper_number")!=paper_number: errors.append("paper_id_conflict: another raw workspace uses this paper_id")
+                if candidate.get("paper_name")==pid and candidate.get("paper_number")!=paper_number: errors.append("paper_name_conflict: another raw workspace uses this paper_name")
     errors.extend(_recursive_forbidden(catalog))
     terminology=catalog["terminology"]
     if not terminology["items"] and not str(terminology.get("not_applicable_reason") or "").strip(): errors.append("terminology requires items or not_applicable_reason")

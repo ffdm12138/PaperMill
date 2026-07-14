@@ -66,15 +66,15 @@ def _is_forbidden_source(path: Path) -> bool:
 
 
 def _source_dir_for_entry(entry: dict) -> Path:
-    paper_id = str(entry.get("paper_id") or "").strip()
-    if not paper_id:
-        raise ValueError(f"{entry.get('paper_number')} missing paper_id")
+    paper_name = str(entry.get("paper_name") or "").strip()
+    if not paper_name:
+        raise ValueError(f"{entry.get('paper_number')} missing paper_name")
     source=Path(str(entry.get("formal_directory") or ""))
     if _is_forbidden_source(source):
         raise ValueError(f"write article source must be formal papers dir, got: {source}")
     if source.exists():
         return source.resolve()
-    raise FileNotFoundError(f"formal paper folder not found for {paper_id or entry.get('paper_number')}")
+    raise FileNotFoundError(f"formal paper folder not found for {paper_name or entry.get('paper_number')}")
 
 
 def _compact_selected_entry(entry: dict, source: Path) -> dict:
@@ -87,14 +87,14 @@ def _compact_selected_entry(entry: dict, source: Path) -> dict:
     ``reports/prepare_article_report.json``. Reads catalog.json (content) from
     the formal paper folder.
     """
-    paper_id = str(entry.get("paper_id") or source.name)
-    catalog_path = source / f"{paper_id}.catalog.json"
+    paper_name = str(entry.get("paper_name") or source.name)
+    catalog_path = source / f"{paper_name}.catalog.json"
     catalog = {}
     if catalog_path.exists():
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     return {
         "paper_number": str(entry.get("paper_number") or ""),
-        "paper_id": paper_id,
+        "paper_name": paper_name,
         # content (from catalog.json)
         "content_identity": catalog.get("content_identity") or {},
         "abstract": catalog.get("abstract") or {},
@@ -111,17 +111,17 @@ def _compact_selected_entry(entry: dict, source: Path) -> dict:
     }
 
 
-def _check_formal_folder(source: Path, paper_id: str) -> None:
+def _check_formal_folder(source: Path, paper_name: str) -> None:
     required = [
-        source / f"{paper_id}.metadata.json",
-        source / f"{paper_id}.catalog.json",
-        source / f"{paper_id}.md",
-        source / f"{paper_id}.pdf",
+        source / f"{paper_name}.metadata.json",
+        source / f"{paper_name}.catalog.json",
+        source / f"{paper_name}.md",
+        source / f"{paper_name}.pdf",
         source / "images",
     ]
     missing = [str(p) for p in required if not p.exists()]
     if missing:
-        raise FileNotFoundError(f"formal paper folder incomplete for {paper_id}: {missing}")
+        raise FileNotFoundError(f"formal paper folder incomplete for {paper_name}: {missing}")
 
 
 def _select_entries(catalog_data: dict, args: argparse.Namespace) -> list[dict]:
@@ -150,6 +150,8 @@ def prepare_workdir(args: argparse.Namespace) -> dict:
     article_dir = safe_child(job_dir, "article")
     reports_dir = safe_child(job_dir, "reports")
 
+    # NOTE: uses custom catalog_root / papers_dir from CLI args; cannot use
+    # create_safe_catalog_reader() which hard-codes the global defaults.
     catalog_data={"papers":CatalogFolderReader(root=catalog_root,papers_dir=papers_dir).list_papers(args.categories,mode=args.category_mode)}
     selected = _select_entries(catalog_data, args)
     if not selected:
@@ -160,11 +162,11 @@ def prepare_workdir(args: argparse.Namespace) -> dict:
     planned: list[dict] = []
     for entry in selected:
         paper_number = _validate_paper_number(str(entry.get("paper_number") or ""))
-        paper_id = str(entry.get("paper_id") or "").strip()
-        if not paper_id:
-            raise ValueError(f"{paper_number} missing paper_id")
+        paper_name = str(entry.get("paper_name") or "").strip()
+        if not paper_name:
+            raise ValueError(f"{paper_number} missing paper_name")
         source = _source_dir_for_entry(entry)
-        _check_formal_folder(source, paper_id)
+        _check_formal_folder(source, paper_name)
         target = article_dir / paper_number
         item = _compact_selected_entry(entry, source)
         # Path tracking is kept private here and exposed only in the report

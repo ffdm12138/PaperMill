@@ -16,8 +16,8 @@ from src.discovery.keyword_notebook import (
     CursorConflictError,
     INITIAL_CURSOR,
     KeywordNotebookStore,
-    expansion_key,
     pagination_signature,
+    query_identity,
 )
 
 
@@ -28,10 +28,15 @@ def _setup_store(tmp_path: Path) -> tuple[KeywordNotebookStore, str, str]:
     """Create a store with one keyword + expansion ready for backfill."""
     store = KeywordNotebookStore(tmp_path)
     sig = pagination_signature()
-    keyword = "test_keyword"
-    store.ensure_keyword(keyword, [keyword], sig)
-    ekey = expansion_key(keyword, sig)
-    return store, keyword, ekey
+    keyword = "测试关键词"
+    store.ensure_notebook(keyword)
+    store.sync_search_queries(
+        keyword,
+        add=[{"query": keyword, "language": "zh"}],
+        pag_sig=sig,
+    )
+    query_id_value = query_identity("zh", keyword)
+    return store, keyword, query_id_value
 
 
 def test_cursor_conflict_persists_counter(tmp_path: Path):
@@ -64,7 +69,8 @@ def test_cursor_conflict_persists_counter(tmp_path: Path):
     # Read the notebook DIRECTLY from disk (bypass store cache).
     nb_path = store._path_for(keyword)
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
-    bf = nb["expansions"][ekey]["providers"][provider]["backfill"]
+    queries = nb["search_queries"]
+    bf = queries[ekey]["providers"][provider]["backfill"]
 
     # The counter MUST have been persisted.
     assert bf["cursor_conflicts"] == 1, (
@@ -100,7 +106,8 @@ def test_cursor_conflict_does_not_change_committed_count(tmp_path: Path):
 
     nb_path = store._path_for(keyword)
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
-    bf = nb["expansions"][ekey]["providers"][provider]["backfill"]
+    queries = nb["search_queries"]
+    bf = queries[ekey]["providers"][provider]["backfill"]
 
     assert bf["pages_committed"] == 1, (
         f"pages_committed should be 1 (only the success), got {bf['pages_committed']}"
@@ -134,7 +141,8 @@ def test_cursor_conflict_does_not_change_last_committed_page(tmp_path: Path):
 
     nb_path = store._path_for(keyword)
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
-    bf = nb["expansions"][ekey]["providers"][provider]["backfill"]
+    queries = nb["search_queries"]
+    bf = queries[ekey]["providers"][provider]["backfill"]
 
     assert bf["last_committed_page_id"] == "page-success-001", (
         f"last_committed_page_id should be 'page-success-001', got {bf['last_committed_page_id']!r}"

@@ -37,7 +37,7 @@ def validate_formal_paper_workspace(
         errors.append(str(exc))
     if mode == "strict" and not errors:
         item = ((ledger.load().get("items") or {}).get(paper_number) or {})
-        if item.get("state") != "active" or item.get("paper_id") != folder.name or item.get("folder_name") != folder.name:
+        if item.get("state") != "active" or item.get("paper_name") != folder.name or item.get("folder_name") != folder.name:
             errors.append("active ledger entry missing formal identity")
     return FormalWorkspaceValidationResult(
         valid=not errors and not unverifiable, paper_number=paper_number or None,

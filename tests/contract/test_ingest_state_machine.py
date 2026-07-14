@@ -65,13 +65,13 @@ def test_write_import_status_writes_expected_fields(tmp_path: Path):
         READY_FOR_COMMIT,
         reason="formalized",
         warnings=["w1"],
-        extra={"paper_id": "2024_Wang_可信论文", "paper_number": "0000000000000001"},
+        extra={"paper_name": "2024_Wang_可信论文", "paper_number": "0000000000000001"},
     )
     assert payload["status"] == "ready_for_commit"
     assert payload["reason"] == "formalized"
     assert payload["errors"] == []
     assert payload["warnings"] == ["w1"]
-    assert payload["paper_id"] == "2024_Wang_可信论文"
+    assert payload["paper_name"] == "2024_Wang_可信论文"
     assert payload["paper_number"] == "0000000000000001"
     assert "created_at" in payload
 

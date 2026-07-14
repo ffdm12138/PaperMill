@@ -3,14 +3,14 @@
 核心约束：不调用任何 LLM，只返回可复制粘贴的 prompt 文本。
 每个 prompt 返回 chars / estimated_tokens / warning，便于长度控制。
 
-主键是 16 位 paper_number，paper_id 仅作辅助显示。
+主键是 16 位 paper_number，paper_name 仅作辅助显示。
 分类目录是唯一浏览索引；metadata/BibTeX 事实从正式论文目录读取。
 """
 import json
 from loguru import logger
 
-from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PAPER_MD_MAX_CHARS
-from src.catalog_folders.reader import CatalogFolderReader
+from config.settings import PAPER_MD_MAX_CHARS
+from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
 from src.services.paper_library import PaperLibrary
 
 # prompt 超过此估算 token 数时给 warning
@@ -37,11 +37,11 @@ class PromptBuilder:
     """v2 prompt 生成：单篇 curation、目录规划、全文精读写作。"""
 
     def __init__(self, catalog: CatalogFolderReader | None = None, library: PaperLibrary | None = None):
-        self.catalog = catalog or CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
+        self.catalog = catalog or create_safe_catalog_reader()
         self.library = library or PaperLibrary()
 
     # ---- 1. 单篇 catalog curation prompt ----
-    def build_catalog_entry_prompt(self, paper_id: str) -> dict:
+    def build_catalog_entry_prompt(self, paper_name: str) -> dict:
         """Formal Catalog recuration requires explicit rollback to numeric raw."""
         return {"success": False, "error": "Catalog v3.2 recuration requires rollback to numeric paper_raw and prepare_paper_raw_catalog_task.py"}
 
@@ -60,7 +60,7 @@ class PromptBuilder:
 2. 哪些可跳过；
 3. 建议的阅读顺序与故事线。
 
-以 16 位 paper_number 为主键推荐精读文献，paper_id 仅作辅助显示。
+以 16 位 paper_number 为主键推荐精读文献，paper_name 仅作辅助显示。
 只基于目录信息判断，不要编造目录里没有的文献。
 
 # 研究问题
@@ -74,23 +74,23 @@ class PromptBuilder:
 {compact}
 
 请输出：
-- 推荐全文阅读的 paper_number 列表（带 paper_id、理由、预期用途、是否必须全文阅读）
+- 推荐全文阅读的 paper_number 列表（带 paper_name、理由、预期用途、是否必须全文阅读）
 - 阅读顺序与初步故事线
 """
         return {"success": True, "question": question, "prompt": prompt,
                 "catalog_papers": len(papers), **prompt_meta(prompt)}
 
-    # ---- 3. 全文阅读写作 prompt（paper_number 或 paper_id）----
-    def build_fulltext_prompt(self, question: str, paper_ids: list[str]) -> dict:
-        """读取指定若干篇全文（paper_number 或 paper_id），组装写作 prompt。"""
-        if not paper_ids:
-            return {"success": False, "error": "未提供 paper_ids"}
-        # resolve each input to (lookup_key, paper_number, paper_id)
+    # ---- 3. 全文阅读写作 prompt（paper_number 或 paper_name）----
+    def build_fulltext_prompt(self, question: str, paper_names: list[str]) -> dict:
+        """读取指定若干篇全文（paper_number 或 paper_name），组装写作 prompt。"""
+        if not paper_names:
+            return {"success": False, "error": "未提供 paper_names"}
+        # resolve each input to (lookup_key, paper_number, paper_name)
         resolved: list[tuple[str, str, str]] = []
-        for key in paper_ids:
+        for key in paper_names:
             entry = self.catalog.get(key)
             if entry is not None:
-                resolved.append((key, entry.get("paper_number", ""), entry.get("paper_id", key)))
+                resolved.append((key, entry.get("paper_number", ""), entry.get("paper_name", key)))
             else:
                 resolved.append((key, "", key))
         fulltexts: dict[str, str] = {}
@@ -113,7 +113,7 @@ class PromptBuilder:
         prompt = f"""请基于以下若干篇文献的全文 Markdown，围绕用户的研究问题进行综述 / 写作。
 
 要求：
-- 引用具体证据时标注 [paper_id]
+- 引用具体证据时标注 [paper_name]
 - 区分各文献的方法、结论、局限
 - 不要编造文献中未出现的内容
 - 中文输出
@@ -132,7 +132,7 @@ class PromptBuilder:
 """
         missing = [pid for key, _, pid in resolved if key not in fulltexts]
         if missing:
-            logger.warning(f"以下 paper_id 全文缺失已跳过: {missing}")
+            logger.warning(f"以下 paper_name 全文缺失已跳过: {missing}")
         return {"success": True, "question": question, "prompt": prompt,
                 "included_papers": included, "missing_papers": missing,
                 **prompt_meta(prompt)}

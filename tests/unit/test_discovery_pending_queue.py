@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
 from src.discovery.pending_queue import drain_pending_candidates
@@ -11,15 +12,19 @@ from src.discovery.resolve_crossref import ResolvedDoiMatch
 
 
 pytestmark = pytest.mark.unit
+KEYWORD_ZH = "测试关键词"
+KEYWORD_ID = keyword_id(KEYWORD_ZH)
+QUERY_ID = query_identity("zh", KEYWORD_ZH)
 
 
 def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/item") -> Path:
     page = store.make_page(
         page_id=page_id,
-        keyword_id="kw",
-        keyword="keyword",
-        expansion_id="exp",
-        expanded_query="keyword",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="refresh",
         request_signature_value=request_signature(page_size=10),
@@ -35,10 +40,11 @@ def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/item"
 def _write_no_doi_page(store: PageJournalStore, page_id: str, title: str = "same unresolved title") -> Path:
     page = store.make_page(
         page_id=page_id,
-        keyword_id="kw",
-        keyword="keyword",
-        expansion_id="exp",
-        expanded_query="keyword",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="refresh",
         request_signature_value=request_signature(page_size=10),
@@ -84,7 +90,7 @@ def test_doi_duplicate_observation_across_pages(tmp_path: Path):
 
     report = drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=10,
         stage_to_paper_raw=False,
         apply=False,
@@ -97,7 +103,7 @@ def test_doi_duplicate_observation_across_pages(tmp_path: Path):
     )
     assert report.emitted == 1
     assert report.duplicate_observation == 1
-    statuses = [item["status"] for ref in store.list_pages(["kw"]) for item in store.read(ref.path)["candidates"]]
+    statuses = [item["status"] for ref in store.list_pages([KEYWORD_ID]) for item in store.read(ref.path)["candidates"]]
     assert sorted(statuses) == ["duplicate_observation", "emitted"]
 
 
@@ -118,7 +124,7 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
     monkeypatch.setattr("src.discovery.pending_queue.resolve_doi_match_by_title", fake_resolve)
     first = drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=1,
         stage_to_paper_raw=False,
         apply=False,
@@ -132,7 +138,7 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
     assert first.emitted == 1
     persisted = [
         item["candidate"]
-        for ref in store.list_pages(["kw"])
+        for ref in store.list_pages([KEYWORD_ID])
         for item in store.read(ref.path)["candidates"]
         if item["status"] == "emitted"
     ][0]
@@ -141,7 +147,7 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
 
     second = drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=10,
         stage_to_paper_raw=False,
         apply=False,
@@ -153,5 +159,5 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
         worker_id="worker",
     )
     assert second.duplicate_observation == 1
-    statuses = [item["status"] for ref in store.list_pages(["kw"]) for item in store.read(ref.path)["candidates"]]
+    statuses = [item["status"] for ref in store.list_pages([KEYWORD_ID]) for item in store.read(ref.path)["candidates"]]
     assert sorted(statuses) == ["duplicate_observation", "emitted"]

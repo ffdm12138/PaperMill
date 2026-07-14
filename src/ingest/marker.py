@@ -22,7 +22,7 @@ def write_paper_number_marker(
     paper_number: str,
     *,
     state: str,
-    planned_paper_id: str = "",
+    planned_paper_name: str = "",
 ) -> Path:
     if not PAPER_NUMBER_RE.fullmatch(str(paper_number)):
         raise ValueError(f"invalid paper_number: {paper_number}")
@@ -34,7 +34,7 @@ def write_paper_number_marker(
     atomic_write_json(path, {
         "schema_version": "1.0", "paper_number": paper_number,
         "folder_name": root.name, "state": state,
-        "planned_paper_id": planned_paper_id,
+        "planned_paper_name": planned_paper_name,
     }, indent=2)
     return path
 

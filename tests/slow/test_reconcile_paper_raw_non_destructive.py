@@ -242,9 +242,9 @@ def test_compact_preserves_metadata_fingerprint(tmp_path):
         "schema_version": "1.0", "max_number": "0000000000000102",
         "items": {
             "0000000000000100": {"folder_name": "0000000000000100", "folder_path": str(f1),
-                                 "planned_paper_id": "", "state": "reserved", "created_at": "2026-01-01"},
+                                 "planned_paper_name": "", "state": "reserved", "created_at": "2026-01-01"},
             "0000000000000102": {"folder_name": "0000000000000102", "folder_path": str(f2),
-                                 "planned_paper_id": "", "state": "reserved", "created_at": "2026-01-01"},
+                                 "planned_paper_name": "", "state": "reserved", "created_at": "2026-01-01"},
         }})
 
     fp_before = {
@@ -342,7 +342,7 @@ def test_repair_derived_files_fixes_stale_refs_and_preserves_metadata(tmp_path):
         "schema_version": "3.1",
         "library_locator": {
             "paper_number": "0000000000000018",
-            "paper_id": "",
+            "paper_name": "",
             "paper_dir": "",
             "asset_refs": {
                 "markdown": "0000000000000017.md",
@@ -357,7 +357,7 @@ def test_repair_derived_files_fixes_stale_refs_and_preserves_metadata(tmp_path):
     })
     # stale asset_manifest + conversion + import_status referencing 0017
     _write_json(folder / "0000000000000018.asset_manifest.json", {
-        "schema_version": "1.0", "paper_number": "0000000000000017", "paper_id": "",
+        "schema_version": "1.0", "paper_number": "0000000000000017", "paper_name": "",
         "stage": "paper_raw", "files": {"pdf": {"path": "0000000000000017.pdf"}},
     })
     _write_json(folder / "0000000000000018.conversion.json", {

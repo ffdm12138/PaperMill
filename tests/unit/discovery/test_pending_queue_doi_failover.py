@@ -2,21 +2,26 @@ from pathlib import Path
 
 import pytest
 
+from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
 from src.discovery.pending_queue import drain_pending_candidates
 
 
 pytestmark = pytest.mark.unit
+KEYWORD_ZH = "测试关键词"
+KEYWORD_ID = keyword_id(KEYWORD_ZH)
+QUERY_ID = query_identity("zh", KEYWORD_ZH)
 
 
 def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/same") -> Path:
     page = store.make_page(
         page_id=page_id,
-        keyword_id="kw",
-        keyword="kw",
-        expansion_id="exp",
-        expanded_query="kw",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="refresh",
         request_signature_value=request_signature(page_size=10),
@@ -32,7 +37,7 @@ def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/same"
 def _drain(tmp_path: Path, store: PageJournalStore):
     return drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=10,
         stage_to_paper_raw=False,
         apply=False,

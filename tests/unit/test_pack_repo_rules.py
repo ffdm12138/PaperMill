@@ -14,6 +14,38 @@ pytestmark = pytest.mark.unit
 WF = pr.PACK_PROFILE  # preserve original
 
 
+def _write_valid_snapshot(tmp_path: Path, member_path: str, payload: bytes) -> Path:
+    """Create a minimally valid snapshot with one test member."""
+    zip_path = tmp_path / "mineru_snapshot.zip"
+    contents = {name: b"# test\n" for name in pr.REQUIRED_ROOT_FILES}
+    contents[member_path] = payload
+    members: list[pr.SnapshotMember] = []
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for name in sorted(contents):
+            raw = contents[name]
+            zf.writestr(name, raw)
+            members.append(pr.SnapshotMember(name, len(raw), pr.hashlib.sha256(raw).hexdigest()))
+        digest = pr._member_digest(members)
+        manifest = {
+            "schema_version": "2.0",
+            "snapshot_type": "runtime_zero_source_audit",
+            "payload_file_count": len(members),
+            "runtime_files_included": 0,
+            "runtime_workspaces_included": {"paper_raw": 0, "papers": 0},
+            "selection": {"count": len(members), "sha256": digest},
+            "archive": {"count": len(members), "sha256": digest},
+            "omissions": [],
+            "members": [member.__dict__ for member in members],
+            "verification": {
+                "runtime_zero": True,
+                "secret_scan": "passed",
+                "archive_member_check": "passed",
+            },
+        }
+        zf.writestr("snapshot_manifest.json", json.dumps(manifest))
+    return zip_path
+
+
 def test_snapshot_plan_fails_when_selected_member_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(pr, "PROJECT_ROOT", tmp_path)
     with pytest.raises(RuntimeError, match="missing"):
@@ -115,6 +147,7 @@ def _set_profile(profile: str) -> None:
     # workbuddy (local tool state)
     ".workbuddy/memory/x.md",
     ".workbuddy/task/state.json",
+    ".local/discovery_keyword_v3/mapping.json",
     # runtime reports
     "data/cleanup_report.json",
     # test migration tombstones
@@ -123,6 +156,18 @@ def _set_profile(profile: str) -> None:
     "src/module.py._deleted",
     # import dir
     "import/data.pdf",
+    # repair runtime files
+    "docs/archive/repair/repair_final.json",
+    "docs/archive/repair/repair_mapping_after_enrich.json",
+    "docs/archive/repair/repair_mapping_full_dryrun.json",
+    "docs/archive/repair/repair_round2.json",
+    "docs/archive/repair/repair_round3.json",
+    "docs/archive/repair/repair_round4.json",
+    "docs/archive/repair/repair_round5.json",
+    "docs/archive/repair/temp_authors.json",
+    # local tool state
+    ".local/archive/repair/repair_final.json",
+    ".local/tool_state/mapping.json",
 ])
 def test_should_pack_universal_excludes(path):
     """These paths must be excluded in both audit and source profiles."""
@@ -275,6 +320,30 @@ def test_new_constants_exist():
     assert "transactions" in pr.DENIED_PATH_PARTS
 
 
+@pytest.mark.parametrize("path", [
+    "migrations/discovery_keyword_notebooks/mapping.json",
+    "migrations/discovery_keyword_notebooks/plan.json",
+    "migrations/discovery_keyword_notebooks/recovery-plan.json",
+    "migrations/discovery_keyword_notebooks/mapping.v3.real.json",
+    "migrations/discovery_keyword_notebooks/notebook.confirmed.json",
+    "migrations/discovery_keyword_notebooks/backup/source.json",
+    "data/discovery/page_journals/page.json",
+    "data/discovery/receipts/receipt.json",
+])
+def test_should_pack_excludes_operator_migration_state(path):
+    for profile in ("audit", "source"):
+        _set_profile(profile)
+        assert pr._should_pack(path) is False
+
+
+def test_should_pack_allows_example_mapping():
+    for profile in ("audit", "source"):
+        _set_profile(profile)
+        assert pr._should_pack(
+            "migrations/discovery_keyword_notebooks/mapping.v3.example.json"
+        ) is True
+
+
 def test_pack_repo_secret_scan_catches_generic_bearer_token():
     token = "Bearer " + "A" * 32
     findings = pr.scan_text_for_secrets(f"Authorization: {token}", "sample.txt")
@@ -409,6 +478,126 @@ class TestSnapshotManifest:
             zf.writestr("snapshot_manifest.json", "{}")
         errors = pr._verify_snapshot_self_check(zip_path)
         assert any("snapshot_manifest.json count is 2" in err for err in errors)
+
+    def test_snapshot_rejects_confirmed_mapping(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "migrations/discovery_keyword_notebooks/mapping.json",
+            json.dumps({
+                "source_notebook": "real.json",
+                "source_sha256": "a" * 64,
+                "status": "confirmed",
+            }).encode("utf-8"),
+        )
+        errors = pr._verify_snapshot_self_check(zip_path)
+        assert any("confirmed mapping" in error for error in errors), errors
+
+    def test_snapshot_rejects_real_mapping_filename(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "migrations/discovery_keyword_notebooks/mapping.v3.real.json",
+            b"{}",
+        )
+        errors = pr._verify_snapshot_self_check(zip_path)
+        assert any("real migration mapping" in error for error in errors), errors
+
+    def test_snapshot_rejects_transaction_plan(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "migrations/discovery_keyword_notebooks/plan.json",
+            b'{"transaction_id": "real-transaction"}',
+        )
+        errors = pr._verify_snapshot_self_check(zip_path)
+        assert any("migration plan" in error for error in errors), errors
+
+    def test_snapshot_allows_example_mapping(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "migrations/discovery_keyword_notebooks/mapping.v3.example.json",
+            json.dumps({
+                "source_notebook": "example.json",
+                "source_sha256": "0" * 64,
+                "status": "suggested",
+            }).encode("utf-8"),
+        )
+        assert pr._verify_snapshot_self_check(zip_path) == []
+
+    def test_snapshot_allows_legacy_test_fixture(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "tests/fixtures/synthetic_library/legacy_mapping.json",
+            json.dumps({
+                "source_notebook": "fixture.json",
+                "source_sha256": "b" * 64,
+                "status": "confirmed",
+            }).encode("utf-8"),
+        )
+        assert pr._verify_snapshot_self_check(zip_path) == []
+
+    def test_snapshot_rejects_catalog_repair_mapping(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "docs/archive/repair/repair_final.json",
+            json.dumps({
+                "migrations": [{"paper_name": "real_paper"}],
+                "old_paper_name": "old_name",
+                "new_paper_name": "new_name",
+                "apply": True,
+            }).encode("utf-8"),
+        )
+        errors = pr._verify_snapshot_self_check(zip_path)
+        assert any("catalog repair runtime data" in error for error in errors), errors
+
+    def test_snapshot_rejects_repair_round_report(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "docs/archive/repair/repair_round3.json",
+            json.dumps({"round": 3, "mappings": []}).encode("utf-8"),
+        )
+        errors = pr._verify_snapshot_self_check(zip_path)
+        assert any("catalog repair runtime data" in error for error in errors), errors
+
+    def test_snapshot_rejects_temp_authors_runtime_file(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "docs/archive/repair/temp_authors.json",
+            json.dumps({"authors": ["real author"]}).encode("utf-8"),
+        )
+        errors = pr._verify_snapshot_self_check(zip_path)
+        assert any("catalog repair runtime data" in error for error in errors), errors
+
+    def test_snapshot_rejects_local_repair_runtime(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            ".local/archive/repair/repair_final.json",
+            json.dumps({"migrations": []}).encode("utf-8"),
+        )
+        errors = pr._verify_snapshot_self_check(zip_path)
+        assert any("runtime" in error.lower() for error in errors), errors
+
+    def test_snapshot_allows_sanitized_repair_example(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "docs/examples/catalog_repair_mapping.example.json",
+            json.dumps({
+                "migrations": [{"paper_name": "example_paper"}],
+                "old_paper_name": "old_example",
+                "new_paper_name": "new_example",
+                "apply": False,
+            }).encode("utf-8"),
+        )
+        assert pr._verify_snapshot_self_check(zip_path) == []
+
+    def test_snapshot_allows_repair_schema_fixture(self, tmp_path):
+        zip_path = _write_valid_snapshot(
+            tmp_path,
+            "tests/fixtures/catalog_repair/schema_fixture.json",
+            json.dumps({
+                "source_notebook": "fixture.json",
+                "status": "confirmed",
+            }).encode("utf-8"),
+        )
+        assert pr._verify_snapshot_self_check(zip_path) == []
 
 
 class TestSecretScan:

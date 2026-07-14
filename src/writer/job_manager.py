@@ -164,8 +164,8 @@ class JobManager:
     def set_status(self, job_id: str, status: str) -> dict:
         return self._locked_meta(job_id, lambda m: m.update(status=status) or m)
 
-    def set_selected_papers(self, job_id: str, paper_ids: list[str]) -> dict:
-        return self._locked_meta(job_id, lambda m: m.update(selected_papers=list(paper_ids)) or m)
+    def set_selected_papers(self, job_id: str, paper_names: list[str]) -> dict:
+        return self._locked_meta(job_id, lambda m: m.update(selected_papers=list(paper_names)) or m)
 
     def append_note(self, job_id: str, note: str) -> dict:
         def _fn(meta):

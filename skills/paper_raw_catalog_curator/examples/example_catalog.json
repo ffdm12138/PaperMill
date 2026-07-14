@@ -1,7 +1,7 @@
 {
   "schema_version": "3.2",
   "paper_number": "0000000000000001",
-  "paper_id": "2024_Smith_复杂地形近地面风速降尺度",
+  "paper_name": "2024_Smith_复杂地形近地面风速降尺度",
   "content_identity": {"content_title_zh": "复杂地形近地面风速降尺度", "research_domains": ["复杂地形气象", "统计降尺度"], "document_language": "en"},
   "abstract": {
     "source": {"status": "present", "origin": "paper_explicit_abstract", "language": "en", "text": "Source abstract copied from the explicit Abstract section.", "source_ref": {"asset": "markdown", "locator_type": "section", "locator": "Abstract"}},

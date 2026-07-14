@@ -1,21 +1,18 @@
-"""Read-only and management operations for discovery keyword notebooks.
+#!/usr/bin/env python
+"""Manage strict schema-v3 bilingual discovery keyword notebooks.
 
-Operations:
-  --list                          List all keywords with progress summary.
-  --show "keyword"                Show detailed notebook state for one keyword.
-  --enable "keyword"              Enable a keyword for discovery.
-  --disable "keyword"             Disable a keyword (preserves notebook + history).
-  --reset-backfill "keyword"      Reset ONE keyword's backfill cursors.
-
-Reset is scoped to a single keyword: it does NOT delete paper_raw, does
-NOT delete DOIs, does NOT affect other keywords, and records an entry in
-the notebook's ``reset_history``. Batch reset of all keywords is
-intentionally not supported.
+``keyword_zh`` is the sole Chinese classification identity.  Chinese and
+English provider search strings are explicit ``search_queries`` owned by the
+notebook.  This command never infers queries or creates Catalog categories.
 """
+from __future__ import annotations
+
 import argparse
+from copy import deepcopy
 import json
-import sys
 from pathlib import Path
+import sys
+from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,112 +22,242 @@ from config.settings import DISCOVERY_KEYWORD_NOTEBOOK_DIR  # noqa: E402
 from src.discovery.keyword_notebook import (  # noqa: E402
     KeywordNotebookStore,
     NotebookCorruptError,
+    detect_query_language,
     pagination_signature,
+    validate_discovery_readiness,
 )
 
 
 def _print_keyword_summary(item: dict) -> None:
-    print(f"\n{item['keyword']}")
-    print(f"  enabled: {'yes' if item.get('enabled') else 'no'}")
-    print(f"  keyword_id: {item.get('keyword_id', '')}")
-    print(f"  active_expansions: {item.get('active_expansions', 0)}")
-    print(f"  updated_at: {item.get('updated_at', '')}")
-    stats = item.get("lifetime_statistics") or {}
-    print(f"  lifetime: refresh_runs={stats.get('refresh_runs', 0)} "
-          f"backfill_runs={stats.get('backfill_runs', 0)} "
-          f"unique_dois={stats.get('unique_dois_seen', 0)} "
-          f"new_staged={stats.get('new_dois_staged', 0)}")
-    for exp in item.get("expansions", []):
-        marker = "" if exp.get("active") else "  (inactive)"
-        print(f"  expansion: {exp.get('query', '')!r}{marker}")
-        for prov, ps in (exp.get("providers") or {}).items():
-            r = ps or {}
-            print(f"    {prov}: refresh={r.get('refresh_status')} "
-                  f"backfill_cursor={r.get('backfill_cursor')} "
-                  f"exhausted={r.get('backfill_exhausted')} "
-                  f"pages={r.get('backfill_pages')}")
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Manage discovery keyword notebooks (list/show/enable/disable/reset).",
-    )
-    parser.add_argument("--keyword-notebook-dir", type=Path,
-                        default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
-    parser.add_argument("--list", action="store_true", help="List all keywords.")
-    parser.add_argument("--show", metavar="KEYWORD", default=None,
-                        help="Show one keyword's notebook state.")
-    parser.add_argument("--enable", metavar="KEYWORD", default=None,
-                        help="Enable a keyword.")
-    parser.add_argument("--disable", metavar="KEYWORD", default=None,
-                        help="Disable a keyword.")
-    parser.add_argument("--reset-backfill", metavar="KEYWORD", default=None,
-                        help="Reset ONE keyword's backfill cursors.")
-    parser.add_argument("--reason", default="cli manage_discovery_keywords",
-                        help="Reason recorded in reset_history (with --reset-backfill).")
-    parser.add_argument("--sort", default=None,
-                        help="Pagination sort used by the run (for reset signature).")
-    args = parser.parse_args()
-
-    store = KeywordNotebookStore(args.keyword_notebook_dir)
-
-    if args.list:
-        items = store.list_keywords()
-        if not items:
-            print("(no keyword notebooks found)")
-            return 0
-        for item in items:
-            _print_keyword_summary(item)
-        return 0
-
-    if args.show:
-        try:
-            store.require(args.show)
-            item = store.show(args.show)
-        except (FileNotFoundError, NotebookCorruptError) as exc:
-            print(f"[ERROR] no notebook for keyword: {args.show!r}", file=sys.stderr)
-            return 1
-        print(json.dumps(item, ensure_ascii=False, indent=2))
-        return 0
-
-    if args.enable:
-        try:
-            nb = store.set_enabled(args.enable, True)
-        except (FileNotFoundError, NotebookCorruptError) as exc:
-            print(f"[ERROR] no notebook for keyword: {args.enable!r}", file=sys.stderr)
-            return 1
-        print(f"[OK] enabled: {args.enable!r}")
-        return 0
-
-    if args.disable:
-        try:
-            nb = store.set_enabled(args.disable, False)
-        except (FileNotFoundError, NotebookCorruptError) as exc:
-            print(f"[ERROR] no notebook for keyword: {args.disable!r}", file=sys.stderr)
-            return 1
-        print(f"[OK] disabled: {args.disable!r}")
-        return 0
-
-    if args.reset_backfill:
-        pag_sig = pagination_signature(sort=args.sort)
-        try:
-            nb = store.reset_backfill(
-                args.reset_backfill, reason=args.reason, pag_sig=pag_sig,
+    print(f"\n{item['keyword_zh']}")
+    print(f"  enabled: {'yes' if item['enabled'] else 'no'}")
+    print(f"  ready: {'yes' if item['ready'] else 'no'}")
+    print(f"  keyword_id: {item['keyword_id']}")
+    print(f"  active_queries: {item['active_queries']}")
+    for query in item["queries"]:
+        inactive = " (inactive)" if not query["active"] else ""
+        print(
+            f"  query[{query['language']}]: {query['query']!r}"
+            f" [{query['query_id']}]{inactive}"
+        )
+        for provider, state in query["providers"].items():
+            print(
+                f"    {provider}: refresh={state['refresh_status']} "
+                f"backfill_cursor={state['backfill_cursor']} "
+                f"exhausted={state['backfill_exhausted']} "
+                f"pages={state['backfill_pages']}"
             )
-        except FileNotFoundError:
-            print(f"[ERROR] no notebook for keyword: {args.reset_backfill!r}", file=sys.stderr)
-            return 1
-        except NotebookCorruptError as exc:
-            print(f"[ERROR] notebook corrupt: {exc}", file=sys.stderr)
-            return 1
-        if nb is None:
-            print(f"[ERROR] no notebook for keyword: {args.reset_backfill!r}", file=sys.stderr)
-            return 1
-        print(f"[OK] reset backfill for: {args.reset_backfill!r}")
-        print(f"     (paper_raw and existing DOIs are NOT affected)")
-        return 0
 
-    parser.print_help()
+
+def _query_rows(args: argparse.Namespace) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for language, values in (("zh", args.query_zh), ("en", args.query_en)):
+        for query in values:
+            detected = detect_query_language(query)
+            if detected != language:
+                raise ValueError(
+                    f"--query-{language} text {query!r} is {detected!r}, not {language!r}"
+                )
+            rows.append({"query": query, "language": language, "source": args.source})
+    return rows
+
+
+def _readiness_payload(notebook: dict) -> dict:
+    result = validate_discovery_readiness(notebook)
+    return {
+        "keyword_zh": result.keyword_zh,
+        "ready": result.ready,
+        "active_zh_queries": result.zh_count,
+        "active_en_queries": result.en_count,
+        "errors": result.errors,
+    }
+
+
+def _require_keyword(value: str | None, parser: argparse.ArgumentParser) -> str:
+    if not value:
+        parser.error("this operation requires --keyword-zh")
+    return value
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Manage strict v3 Chinese topics and bilingual search queries.",
+    )
+    parser.add_argument(
+        "--keyword-notebook-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR,
+    )
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument("--list", action="store_true", help="List all v3 notebooks.")
+    actions.add_argument("--show", action="store_true", help="Show one complete notebook.")
+    actions.add_argument("--create", action="store_true", help="Create one Chinese topic.")
+    actions.add_argument("--enable", action="store_true", help="Enable one ready topic.")
+    actions.add_argument("--disable", action="store_true", help="Disable one topic.")
+    actions.add_argument(
+        "--add-query-zh", action="store_true", help="Add explicit Chinese queries.",
+    )
+    actions.add_argument(
+        "--add-query-en", action="store_true", help="Add explicit English queries.",
+    )
+    actions.add_argument(
+        "--disable-query", metavar="QUERY", help="Disable one exact query string.",
+    )
+    actions.add_argument(
+        "--enable-query", metavar="QUERY", help="Enable one exact query string.",
+    )
+    actions.add_argument(
+        "--check-ready", action="store_true", help="Validate one or all notebooks.",
+    )
+    actions.add_argument(
+        "--reset-backfill", action="store_true", help="Reset one topic's backfill state.",
+    )
+    parser.add_argument("--keyword-zh", help="Exact Chinese topic identity.")
+    parser.add_argument("--query-zh", action="append", default=[], help="Chinese query; repeatable.")
+    parser.add_argument("--query-en", action="append", default=[], help="English query; repeatable.")
+    parser.add_argument("--source", default="curated_cli", help="Query provenance label.")
+    parser.add_argument("--reason", default="manage_discovery_keywords CLI")
+    parser.add_argument("--operator", default="cli")
+    parser.add_argument("--sort", default=None, help="Pagination sort for reset signature.")
+    parser.add_argument("--apply", action="store_true", help="Apply a planned write operation.")
+    parser.add_argument("--create-disabled", action="store_true", help="Create a disabled draft; permits incomplete queries.")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    store = KeywordNotebookStore(args.keyword_notebook_dir)
+    try:
+        if args.list:
+            items = store.list_keywords()
+            if not items:
+                print("(no keyword notebooks found)")
+            for item in items:
+                _print_keyword_summary(item)
+            return 0
+
+        if args.check_ready and not args.keyword_zh:
+            payloads = [
+                _readiness_payload(store.require_v3(item["keyword_zh"]))
+                for item in store.list_keywords()
+            ]
+            print(json.dumps(payloads, ensure_ascii=False, indent=2))
+            return 0 if all(item["ready"] for item in payloads) else 2
+
+        keyword_zh = _require_keyword(args.keyword_zh, parser)
+
+        if args.show:
+            print(json.dumps(store.require_v3(keyword_zh), ensure_ascii=False, indent=2))
+            return 0
+
+        if args.create:
+            rows = _query_rows(args)
+            if not args.create_disabled and {row["language"] for row in rows} != {"zh", "en"}:
+                raise ValueError("--create requires at least one --query-zh and --query-en")
+            if store.load(keyword_zh) is not None:
+                raise ValueError(f"notebook already exists: {keyword_zh!r}")
+            if not args.apply:
+                print(json.dumps({"would_create": keyword_zh, "enabled": not args.create_disabled,
+                                  "queries": rows}, ensure_ascii=False, indent=2))
+                return 0
+            notebook = store.create_notebook(
+                keyword_zh, search_queries=rows, enabled=not args.create_disabled,
+                reason=args.reason, operator=args.operator,
+            )
+            readiness = _readiness_payload(notebook)
+            if args.create_disabled:
+                print(json.dumps({
+                    "status": "created_disabled_draft",
+                    "keyword_zh": keyword_zh,
+                    "enabled": False,
+                    "ready": False,
+                    "errors": readiness["errors"],
+                }, ensure_ascii=False, indent=2))
+                return 0
+            if not readiness["ready"]:
+                raise RuntimeError(f"new notebook is not ready: {readiness['errors']}")
+            print(json.dumps({
+                "status": "created",
+                "keyword_zh": keyword_zh,
+                "enabled": True,
+                "ready": True,
+                "errors": readiness["errors"],
+            }, ensure_ascii=False, indent=2))
+            return 0
+
+        if args.add_query_zh or args.add_query_en:
+            rows = _query_rows(args)
+            selected_language = "zh" if args.add_query_zh else "en"
+            if not rows:
+                raise ValueError(f"--add-query-{selected_language} requires --query-{selected_language}")
+            if any(row["language"] != selected_language for row in rows):
+                raise ValueError(
+                    f"--add-query-{selected_language} accepts only --query-{selected_language}"
+                )
+            if not args.apply:
+                print(json.dumps({"would_add": rows}, ensure_ascii=False, indent=2))
+                return 0
+            notebook = store.sync_search_queries(
+                keyword_zh, add=rows, reason=args.reason, operator=args.operator,
+            )
+            print(json.dumps(_readiness_payload(notebook), ensure_ascii=False, indent=2))
+            return 0
+
+        if args.disable_query or args.enable_query:
+            query = args.disable_query or args.enable_query
+            if not args.apply:
+                print(json.dumps({"would_disable" if args.disable_query else "would_enable": query}, ensure_ascii=False, indent=2))
+                return 0
+            notebook = store.sync_search_queries(
+                keyword_zh,
+                disable=[query] if args.disable_query else None,
+                enable=[query] if args.enable_query else None,
+                reason=args.reason,
+                operator=args.operator,
+            )
+            print(json.dumps(_readiness_payload(notebook), ensure_ascii=False, indent=2))
+            return 0
+
+        if args.enable:
+            candidate = deepcopy(store.require_v3(keyword_zh))
+            candidate["enabled"] = True
+            readiness = validate_discovery_readiness(candidate)
+            if not readiness:
+                raise ValueError("cannot enable an unready notebook: " + "; ".join(readiness.errors))
+            if not args.apply:
+                print(json.dumps({"would_enable": keyword_zh}, ensure_ascii=False, indent=2))
+                return 0
+            store.set_enabled(keyword_zh, True)
+            print(f"[OK] enabled: {keyword_zh!r}")
+            return 0
+
+        if args.disable:
+            if not args.apply:
+                print(json.dumps({"would_disable": keyword_zh}, ensure_ascii=False, indent=2))
+                return 0
+            store.set_enabled(keyword_zh, False)
+            print(f"[OK] disabled: {keyword_zh!r}")
+            return 0
+
+        if args.check_ready:
+            payload = _readiness_payload(store.require_v3(keyword_zh))
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0 if payload["ready"] else 2
+
+        if args.reset_backfill:
+            if not args.apply:
+                print(json.dumps({"would_reset": keyword_zh}, ensure_ascii=False, indent=2))
+                return 0
+            store.reset_backfill(
+                keyword_zh,
+                reason=args.reason,
+                pag_sig=pagination_signature(sort=args.sort),
+            )
+            print(f"[OK] reset backfill for: {keyword_zh!r}")
+            print("     paper_raw and existing DOI candidates are not affected")
+            return 0
+    except (FileNotFoundError, NotebookCorruptError, RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

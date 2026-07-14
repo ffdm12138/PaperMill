@@ -250,7 +250,7 @@ def _resolve_workspace_paper_number(workspace: Path) -> str:
     3. Fallback: ``workspace.name`` if it is a valid 16-digit number.
 
     For formal workspaces (in ``data/papers/``), the folder name is a
-    ``paper_id`` (not a 16-digit number), so the marker is the only
+    ``paper_name`` (not a 16-digit number), so the marker is the only
     reliable source.  Returns ``""`` when unresolvable.
     """
     # 1. Marker
@@ -259,7 +259,7 @@ def _resolve_workspace_paper_number(workspace: Path) -> str:
         parsed = PaperNumberLedger.parse_marker_number(marker)
         if parsed and PAPER_NUMBER_RE.match(parsed):
             return parsed
-    # 2. Canonical metadata (try both paper_number and paper_id naming)
+    # 2. Canonical metadata (try both paper_number and paper_name naming)
     for candidate in sorted(workspace.glob("*.metadata.json")):
         # Skip non-canonical sidecars.
         name = candidate.name
@@ -284,7 +284,7 @@ def _resolve_metadata_path(workspace: Path, paper_number: str) -> Path | None:
     """Resolve the canonical metadata file path for a workspace.
 
     - paper_raw: ``{paper_number}.metadata.json``
-    - formal (papers/): ``{workspace.name}.metadata.json`` (workspace.name == paper_id)
+    - formal (papers/): ``{workspace.name}.metadata.json`` (workspace.name == paper_name)
 
     Excludes ``*.metadata.candidates.json``, ``*.metadata.patch.json``,
     ``*.metadata.resolve_report.json``, and other sidecars.
@@ -293,7 +293,7 @@ def _resolve_metadata_path(workspace: Path, paper_number: str) -> Path | None:
     candidate = workspace / f"{paper_number}.metadata.json"
     if candidate.is_file():
         return candidate
-    # Try workspace.name-named file (formal convention: paper_id).
+    # Try workspace.name-named file (formal convention: paper_name).
     candidate = workspace / f"{workspace.name}.metadata.json"
     if candidate.is_file():
         return candidate
@@ -350,7 +350,7 @@ def _build_reconciliation_state(
     function works correctly for both paper_raw and formal workspaces.
     """
     # Re-resolve paper_number from the workspace in case the caller
-    # passed workspace.name (which may be a paper_id for formal workspaces).
+    # passed workspace.name (which may be a paper_name for formal workspaces).
     resolved_number = _resolve_workspace_paper_number(workspace)
     if resolved_number:
         paper_number = resolved_number
@@ -489,7 +489,7 @@ def inspect_discovery_workspace(
                 continue
             workspace = path.parents[1]
             # Resolve paper_number from marker/metadata, NOT workspace.name
-            # (formal workspaces are named after paper_id, not paper_number).
+            # (formal workspaces are named after paper_name, not paper_number).
             paper_number = _resolve_workspace_paper_number(workspace)
             if not paper_number:
                 # Cannot safely reconcile a workspace with no resolvable number.

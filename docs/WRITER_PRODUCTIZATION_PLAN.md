@@ -17,9 +17,10 @@ items remain planned only.
 
 ## 1. Current Writer v0.1 Capability Boundary
 
-- `catalog-folder selection`: uses one or more Chinese category folders as a
-  content-only screening index. Job preparation can select by `paper_number` or
-  catalog filters.
+- `catalog-folder selection`: uses one or more Chinese category folders as the
+  browsing and screening index. Each member link points to a complete formal
+  paper directory. Job preparation can select by `paper_number` or
+  catalog category filters.
 - Initial generated catalog entries use `screening.read_decision = "pending"`.
   `must_read` / `maybe_read` / `skip` filters are for post-triage /
   writing-stage catalog annotations, not paper_raw catalog generation.
@@ -51,15 +52,11 @@ items remain planned only.
   preserving or sharing job acceptance summaries.
 - TeX must not read directly from `data/papers`; this is the correct boundary,
   but v0.2 needs clearer command guidance and error diagnostics.
-- The repository currently contains both the older multi-stage `write_review.py`
-  workflow and the newer catalog-to-TeX mini loop. v0.2 should first productize
-  the validated mini loop rather than trying to merge both paths. Both already
-  work under `write/jobs/<job_id>/` with job-local BibTeX/cite-key; the
-  **recommended main entry is the catalog-to-TeX mini loop**
+- The recommended main entry is the catalog-to-TeX mini loop
   (`scripts/create_write_job.py` → `write_catalog_tex_article.py` →
-  `check_write_tex_project.py`), while the multi-stage `write_review.py` is kept
-  as the lower-level / experimental entry. This is a product-boundary note, not
-  legacy cleanup.
+  `check_write_tex_project.py`).  Any legacy multi-stage review workflow has
+  been retired and removed from the active codebase; do not reference it as a
+  current entry point.
 
 ## 3. Writer v0.2 Candidate Features
 

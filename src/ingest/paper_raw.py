@@ -66,16 +66,16 @@ class PaperRawAllocator:
     def allocate_id(self) -> str:
         raise RuntimeError("legacy short-id allocation is legacy only; use allocate_workspace()")
 
-    def allocate_workspace(self, *, planned_paper_id: str = "") -> dict:
+    def allocate_workspace(self, *, planned_paper_name: str = "") -> dict:
         """Reserve a 16-digit paper_number and create its paper_raw workspace."""
         self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
         with FileLock(str(self._lock_path)):
-            return self._allocate_workspace_unlocked(planned_paper_id=planned_paper_id)
+            return self._allocate_workspace_unlocked(planned_paper_name=planned_paper_name)
 
-    def _allocate_workspace_unlocked(self, *, planned_paper_id: str = "") -> dict:
+    def _allocate_workspace_unlocked(self, *, planned_paper_name: str = "") -> dict:
         number, folder = self.ledger.reserve_next_for_paper_raw_workspace(
             self.paper_raw_dir,
-            planned_paper_id=planned_paper_id,
+            planned_paper_name=planned_paper_name,
         )
         return {
             "paper_number": number,
@@ -630,7 +630,7 @@ class PaperRawConverter:
         Unlike ``inspect_conversion``, this does NOT require a paper_number
         folder name — it inspects ``<file_prefix>.conversion.json`` /
         ``<file_prefix>.md`` / ``images/`` directly, so it works on an already
-        formalized ``<paper_id>`` workspace as well as a 6-digit source folder.
+        formalized ``<paper_name>`` workspace as well as a 6-digit source folder.
         """
         folder = Path(folder)
         pdf = folder / f"{file_prefix}.pdf"
@@ -833,7 +833,7 @@ class PaperRawConverter:
             method=MINERU_METHOD,
             lang=MINERU_LANG,
             effort=MINERU_EFFORT,
-            paper_id=source_id,
+            paper_name=source_id,
         )
         if not conv.get("success"):
             return {**conv, "paper_number": source_id, "paper_raw_id": source_id}

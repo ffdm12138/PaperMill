@@ -2,21 +2,26 @@ from pathlib import Path
 
 import pytest
 
+from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
 
 
 pytestmark = pytest.mark.unit
+KEYWORD_ZH = "测试关键词"
+KEYWORD_ID = keyword_id(KEYWORD_ZH)
+QUERY_ID = query_identity("zh", KEYWORD_ZH)
 
 
 def test_claim_candidate_rejects_uncommitted_page(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     path = store.write_page(store.make_page(
         page_id="p1",
-        keyword_id="kw",
-        keyword="kw",
-        expansion_id="exp",
-        expanded_query="kw",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="backfill",
         request_signature_value=request_signature(page_size=10),
@@ -40,10 +45,11 @@ def test_defer_candidate_releases_processing_claim(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     path = store.write_page(store.make_page(
         page_id="p1",
-        keyword_id="kw",
-        keyword="kw",
-        expansion_id="exp",
-        expanded_query="kw",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="backfill",
         request_signature_value=request_signature(page_size=10),

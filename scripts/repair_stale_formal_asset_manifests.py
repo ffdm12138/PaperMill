@@ -1,13 +1,13 @@
 """Repair stale paper_raw ``<paper_number>.asset_manifest.json`` in ``data/papers``.
 
 One-shot admin tool. The validator (``validate_v2_library.py``) requires each
-formal paper directory to contain exactly one ``<paper_id>.asset_manifest.json``.
+formal paper directory to contain exactly one ``<paper_name>.asset_manifest.json``.
 Papers installed before the commit-side stale-manifest cleanup landed may carry
 an extra ``<paper_number>.asset_manifest.json`` left over from the paper_raw
-readiness step. This repair scans ``data/papers/<paper_id>/`` for any
-``*.asset_manifest.json`` whose prefix is not ``<paper_id>`` and removes it.
+readiness step. This repair scans ``data/papers/<paper_name>/`` for any
+``*.asset_manifest.json`` whose prefix is not ``<paper_name>`` and removes it.
 
-The unique ``<paper_id>.asset_manifest.json`` is always preserved; if it is
+The unique ``<paper_name>.asset_manifest.json`` is always preserved; if it is
 missing the offending extra is left in place and the folder is reported as
 ``failed`` (run formalize/commit repair for that case instead).
 

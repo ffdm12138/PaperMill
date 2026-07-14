@@ -18,6 +18,7 @@ from src.discovery.discovery_receipt import (
     build_receipt_payload,
     write_or_validate_discovery_receipt,
 )
+from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
 from src.discovery.pending_queue import (
@@ -34,16 +35,20 @@ pytestmark = pytest.mark.contract
 
 PAPER_NUMBER = "0000000000000001"
 DOI = "10.1234/reconcile"
+KEYWORD_ZH = "测试关键词"
+KEYWORD_ID = keyword_id(KEYWORD_ZH)
+QUERY_ID = query_identity("zh", KEYWORD_ZH)
 
 
 def _journal(tmp_path: Path) -> PageJournalStore:
     store = PageJournalStore(tmp_path / "pages")
     store.write_page(store.make_page(
         page_id="p1",
-        keyword_id="kw",
-        keyword="kw",
-        expansion_id="exp",
-        expanded_query="kw",
+        keyword_id=KEYWORD_ID,
+        keyword_zh=KEYWORD_ZH,
+        query_id=QUERY_ID,
+        query=KEYWORD_ZH,
+        query_language="zh",
         provider="openalex",
         lane="refresh",
         request_signature_value=request_signature(page_size=10),
@@ -57,7 +62,7 @@ def _journal(tmp_path: Path) -> PageJournalStore:
 
 
 def _candidate_id(store: PageJournalStore, tmp_path: Path) -> str:
-    for ref in store.list_pages(["kw"]):
+    for ref in store.list_pages([KEYWORD_ID]):
         page = store.read(ref.path)
         for item in page.get("candidates", []):
             return item["candidate_id"]
@@ -73,7 +78,7 @@ def _stage_full_workspace(tmp_path: Path, cid: str) -> Path:
                 "discovery_context": {
                     "candidate_id": cid,
                     "page_id": "p1",
-                    "keyword_id": "kw",
+                    "keyword_id": KEYWORD_ID,
                     "provider": "openalex",
                     "normalized_doi": DOI,
                 },
@@ -89,7 +94,7 @@ def _stage_full_workspace(tmp_path: Path, cid: str) -> Path:
 def _drain(tmp_path: Path, store: PageJournalStore):
     return drain_pending_candidates(
         journal=store,
-        keyword_ids=["kw"],
+        keyword_ids=[KEYWORD_ID],
         candidate_budget=1,
         stage_to_paper_raw=True,
         apply=True,
@@ -114,7 +119,7 @@ def test_source_record_only_returns_retryable_incomplete(tmp_path: Path):
             "provider": "openalex",
             "record": {"doi": DOI, "title": "T"},
             "discovery_context": {
-                "candidate_id": cid, "page_id": "p1", "keyword_id": "kw",
+                "candidate_id": cid, "page_id": "p1", "keyword_id": KEYWORD_ID,
                 "provider": "openalex",
                 "normalized_doi": DOI,
             },
@@ -123,7 +128,7 @@ def test_source_record_only_returns_retryable_incomplete(tmp_path: Path):
     )
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id=KEYWORD_ID, provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "retryable_incomplete"
@@ -145,7 +150,7 @@ def test_case_c_drain_reuses_paper_number(tmp_path: Path):
             "provider": "openalex",
             "record": {"doi": DOI, "title": "T"},
                 "discovery_context": {
-                    "candidate_id": cid, "page_id": "p1", "keyword_id": "kw",
+                    "candidate_id": cid, "page_id": "p1", "keyword_id": KEYWORD_ID,
                     "provider": "openalex",
                     "normalized_doi": DOI,
                 },
@@ -171,7 +176,7 @@ def test_case_b_metadata_present_receipt_missing_backfills(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id=KEYWORD_ID, provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "retryable_incomplete"
@@ -187,7 +192,7 @@ def test_case_d_receipt_present_manifest_missing(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id=KEYWORD_ID, provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "retryable_incomplete"
@@ -211,7 +216,7 @@ def test_case_e_ledger_terminal_receipt_missing(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id=KEYWORD_ID, provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "retryable_incomplete"
@@ -235,7 +240,7 @@ def test_case_f_conflicting_receipt_not_overwritten(tmp_path: Path):
         build_receipt_payload(
             candidate_id="other-candidate",
             page_id="p1",
-            keyword_id="kw",
+            keyword_id=KEYWORD_ID,
             normalized_doi=DOI,
             paper_number=PAPER_NUMBER,
         ),
@@ -244,7 +249,7 @@ def test_case_f_conflicting_receipt_not_overwritten(tmp_path: Path):
 
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id=cid, page_id="p1", keyword_id="kw", provider="openalex", normalized_doi=DOI,
+        candidate_id=cid, page_id="p1", keyword_id=KEYWORD_ID, provider="openalex", normalized_doi=DOI,
         ledger_path=tmp_path / "ledger.json",
     )
     assert result.status == "receipt_conflict"
@@ -262,7 +267,7 @@ def test_not_found_when_no_matching_source_record(tmp_path: Path):
     """Case G: no matching workspace → not_found."""
     result = reconcile_discovery_workspace(
         [tmp_path / "paper_raw"],
-        candidate_id="nope", page_id="p1", keyword_id="kw",
+        candidate_id="nope", page_id="p1", keyword_id=KEYWORD_ID,
         normalized_doi="10.1/missing",
         ledger_path=tmp_path / "ledger.json",
     )

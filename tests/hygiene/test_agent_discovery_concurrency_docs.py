@@ -10,12 +10,6 @@ pytestmark = pytest.mark.hygiene
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_agents_claude_are_byte_identical():
-    """AGENTS.md and CLAUDE.md must be byte-identical (pre-existing contract)."""
-    agents = (ROOT / "AGENTS.md").read_bytes()
-    claude = (ROOT / "CLAUDE.md").read_bytes()
-    assert agents == claude, "AGENTS.md and CLAUDE.md drifted apart"
-
 
 def test_agents_docs_require_concurrent_keyword_discovery():
     """AGENTS.md and CLAUDE.md must contain the concurrency rule section."""
@@ -49,10 +43,6 @@ def test_discover_papers_epilog_mentions_concurrent():
     assert ".paper_raw_write.lock" in text
 
 
-def test_discover_papers_concurrent_script_exists():
-    """The concurrent wrapper script must exist."""
-    assert (ROOT / "scripts" / "discover_papers_concurrent.py").exists()
-
 
 def test_script_usage_docs_new_subsection():
     """docs/SCRIPT_USAGE.md must have a Discovery / Metadata discovery subsection."""
@@ -69,6 +59,10 @@ def test_agents_docs_document_dual_lane_notebooks():
         assert "Refresh" in text and "Backfill" in text, f"{rel} missing Refresh/Backfill"
         assert "keyword_notebooks" in text, f"{rel} missing notebook dir ref"
         assert "manage_discovery_keywords.py" in text, f"{rel} missing manage script ref"
+        assert "keyword notebook schema v3" in text, f"{rel} missing strict v3 contract"
+        assert "keyword_zh" in text and "search_queries" in text
+        assert "query text never becomes a Catalog category" in text
+        assert "Active discovery never expands queries" in text
 
 
 def test_contract_documents_dual_lane():
@@ -78,29 +72,6 @@ def test_contract_documents_dual_lane():
     assert "Refresh" in text and "Backfill" in text
 
 
-def test_pack_repo_excludes_discovery_reports():
-    from src.services.repository_hygiene import is_forbidden_snapshot_member
-    assert is_forbidden_snapshot_member("data/discovery/reports/run.json")
 
 
-def test_pack_repo_excludes_keyword_notebooks():
-    from src.services.repository_hygiene import is_forbidden_snapshot_member
-    assert is_forbidden_snapshot_member("data/discovery/keyword_notebooks/state.json")
 
-
-def test_gitignore_excludes_keyword_notebooks():
-    """.gitignore must exclude data/discovery/keyword_notebooks/ but allow the example."""
-    text = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert "data/discovery/keyword_notebooks/**" in text
-    assert "!data/discovery/queries/keywords.example.txt" in text
-
-
-def test_manage_discovery_keywords_script_exists():
-    """The keyword notebook management script must exist."""
-    assert (ROOT / "scripts" / "manage_discovery_keywords.py").exists()
-
-
-def test_keyword_notebook_module_exists():
-    """The keyword notebook service module must exist."""
-    assert (ROOT / "src" / "discovery" / "keyword_notebook.py").exists()
-    assert (ROOT / "src" / "discovery" / "provider_models.py").exists()

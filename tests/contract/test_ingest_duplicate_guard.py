@@ -27,7 +27,7 @@ def _write_metadata(folder: Path, name: str, *, doi: str = "", md5: str = "", sh
         (folder / f"{name}.asset_manifest.json").write_text(json.dumps({
             "schema_version": "1.0",
             "paper_number": paper_number or name,
-            "paper_id": name,
+            "paper_name": name,
             "stage": "paper_raw",
             "files": {"pdf": {"path": f"{name}.pdf", "md5": md5, "sha256": sha256, "file_size": 4}},
         }, ensure_ascii=False), encoding="utf-8")

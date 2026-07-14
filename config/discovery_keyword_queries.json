@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "source": "source-controlled curated bilingual discovery manifest",
+  "topics": [
+    {
+      "keyword_zh": "大气边界层",
+      "enabled": true,
+      "classification": {
+        "guidance_zh": "研究近地层与自由大气之间受地表摩擦、热力和湍流控制的边界层过程。",
+        "aliases_zh": ["行星边界层"],
+        "exclusions_zh": []
+      },
+      "search_queries": [
+        {"query": "大气边界层", "language": "zh", "active": true, "source": "canonical"},
+        {"query": "行星边界层", "language": "zh", "active": true, "source": "curated"},
+        {"query": "atmospheric boundary layer", "language": "en", "active": true, "source": "curated"},
+        {"query": "planetary boundary layer", "language": "en", "active": true, "source": "curated"}
+      ]
+    },
+    {
+      "keyword_zh": "风沙动力学",
+      "enabled": true,
+      "classification": {
+        "guidance_zh": "研究风力作用下沙粒起动、跃移、悬移、输运及其动力学反馈。",
+        "aliases_zh": ["风沙输运"],
+        "exclusions_zh": []
+      },
+      "search_queries": [
+        {"query": "风沙动力学", "language": "zh", "active": true, "source": "canonical"},
+        {"query": "风沙输运", "language": "zh", "active": true, "source": "curated"},
+        {"query": "aeolian sand transport", "language": "en", "active": true, "source": "curated"},
+        {"query": "wind blown sand dynamics", "language": "en", "active": true, "source": "curated"}
+      ]
+    },
+    {
+      "keyword_zh": "风沙物理学",
+      "enabled": true,
+      "classification": {
+        "guidance_zh": "研究风沙颗粒碰撞、尺度效应、统计规律及相关物理机制。",
+        "aliases_zh": ["风沙颗粒物理"],
+        "exclusions_zh": []
+      },
+      "search_queries": [
+        {"query": "风沙物理学", "language": "zh", "active": true, "source": "canonical"},
+        {"query": "风沙颗粒物理", "language": "zh", "active": true, "source": "curated"},
+        {"query": "physics of wind blown sand", "language": "en", "active": true, "source": "curated"},
+        {"query": "aeolian sediment transport physics", "language": "en", "active": true, "source": "curated"}
+      ]
+    },
+    {
+      "keyword_zh": "风雪动力学",
+      "enabled": true,
+      "classification": {
+        "guidance_zh": "研究风作用下雪粒起动、跃移、悬移、沉积和输运动力学。",
+        "aliases_zh": ["风吹雪输运"],
+        "exclusions_zh": []
+      },
+      "search_queries": [
+        {"query": "风雪动力学", "language": "zh", "active": true, "source": "canonical"},
+        {"query": "风吹雪输运", "language": "zh", "active": true, "source": "curated"},
+        {"query": "blowing snow dynamics", "language": "en", "active": true, "source": "curated"},
+        {"query": "wind driven snow transport", "language": "en", "active": true, "source": "curated"}
+      ]
+    },
+    {
+      "keyword_zh": "风雪物理学",
+      "enabled": true,
+      "classification": {
+        "guidance_zh": "研究风雪颗粒相互作用、雪粒碰撞破碎、升华和相变等物理过程。",
+        "aliases_zh": ["风吹雪物理"],
+        "exclusions_zh": []
+      },
+      "search_queries": [
+        {"query": "风雪物理学", "language": "zh", "active": true, "source": "canonical"},
+        {"query": "雪粒跃移", "language": "zh", "active": true, "source": "curated"},
+        {"query": "blowing snow physics", "language": "en", "active": true, "source": "curated"},
+        {"query": "snow particle saltation", "language": "en", "active": true, "source": "curated"}
+      ]
+    }
+  ]
+}

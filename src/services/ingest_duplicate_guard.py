@@ -23,7 +23,7 @@ from src.services.stage_manifest import staged_pdf_hashes
 class DuplicateRef:
     scope: str
     paper_number: str
-    paper_id: str
+    paper_name: str
     folder: str
     source: str
     workspace_kind: str = ""
@@ -145,7 +145,7 @@ def is_paper_raw_workspace(folder: Path) -> bool:
     in ingest duplicate detection.
 
     Accepts both strict 16-digit numbered workspaces and legacy / untitled /
-    formalized workspaces named by ``paper_id``. Excludes ``quarantine/``
+    formalized workspaces named by ``paper_name``. Excludes ``quarantine/``
     (handled via ``include_quarantine``), hidden/system dirs, and nested asset
     dirs (``output`` / ``images`` / ``__pycache__``). Requires at least one
     asset marker so empty ledger-reserved folders are not indexed.
@@ -250,7 +250,7 @@ def _paper_raw_ref(
     return DuplicateRef(
         scope="paper_raw",
         paper_number=paper_number,
-        paper_id=paper_raw_id,
+        paper_name=paper_raw_id,
         folder=normalize_repo_path(folder),
         source=source,
         workspace_kind="paper_raw",
@@ -264,7 +264,7 @@ def _papers_ref(folder: Path, metadata: dict, *, source: str, doi: str = "", md5
     return DuplicateRef(
         scope="papers",
         paper_number=str(metadata.get("paper_number") or metadata.get("paper_raw_id") or ""),
-        paper_id=folder.name,
+        paper_name=folder.name,
         folder=normalize_repo_path(folder),
         source=source,
         workspace_kind="formal",
@@ -411,7 +411,7 @@ def _unique_refs(refs: list[DuplicateRef]) -> list[DuplicateRef]:
     seen: set[tuple[str, str, str, str, str, str, str]] = set()
     out: list[DuplicateRef] = []
     for ref in refs:
-        key = (ref.scope, ref.paper_number, ref.paper_id, ref.folder, ref.source, ref.doi, ref.pdf_sha256 or ref.pdf_md5)
+        key = (ref.scope, ref.paper_number, ref.paper_name, ref.folder, ref.source, ref.doi, ref.pdf_sha256 or ref.pdf_md5)
         if key in seen:
             continue
         seen.add(key)

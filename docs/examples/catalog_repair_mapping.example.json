@@ -1,0 +1,21 @@
+{
+    "description": "Sanitized example of the old catalog-repair mapping format.",
+    "schema_version": "1.0",
+    "migrations": [
+        {
+            "paper_number": "0000000000000000",
+            "old_paper_name": "0000_example_old_title_zh",
+            "new_paper_name": "0000_example_new_title_zh",
+            "apply": false,
+            "reason": "Example only — no real papers involved"
+        }
+    ],
+    "statistics": {
+        "total_papers": 0,
+        "applied": 0,
+        "skipped": 0,
+        "errors": 0
+    },
+    "generated_at": null,
+    "note": "This file uses fictional data. Real catalog repair mappings are stored outside the source tree."
+}

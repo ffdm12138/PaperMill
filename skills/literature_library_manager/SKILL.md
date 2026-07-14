@@ -44,12 +44,12 @@ conda run -n mineru python scripts/pack_repo.py
 ```
 
 - Default mode is **dry-run**; ``--apply`` is required to mutate data.
-- ``--paper-number``, ``--paper-id``, and ``--all-papers`` are mutually exclusive.
-- ``--paper-id`` resolves via active rollback journals first (for crash recovery), then active ledger entries.  Interrupted rollbacks are recovered by repeating the same command.
+- ``--paper-number``, ``--paper-name``, and ``--all-papers`` are mutually exclusive.
+- ``--paper-name`` resolves via active rollback journals first (for crash recovery), then active ledger entries.  Interrupted rollbacks are recovered by repeating the same command.
 - ``--report PATH`` writes a structured JSON report; review ``summary.blocking_errors`` before applying.
 - Never manually delete rollback journals, quarantine directories, or lock files.
 - Never directly modify the paper_number ledger during rollback.
-- ``--keep-catalog`` does not exist; the SOP always regenerates content-only catalog files.
+- ``--keep-catalog`` does not exist; Catalog browsing uses category folders, not merged index files.
 
 ## Launching MinerU services
 
@@ -163,9 +163,9 @@ Facts:
 - Each paper Catalog is content-only.
 - Network OpenAlex/CrossRef metadata with a valid DOI is staged as
   Metadata remains resolved until independent PDF evidence writes the match/freeze receipts.
-- Formalize rewrites catalog asset refs and `provenance.markdown_path` to final
-  `<paper_id>` filenames. Use `scripts/repair_catalog_asset_refs.py --dry-run` before
-  applying repairs to existing stale catalogs.
+- Formalize/commit produce the final catalog asset references as part of the
+  active transaction.  Stale legacy catalogs must be regenerated or repaired
+  outside the active workflow; no retired repair script is supported here.
 - catalog natural-language values default to Chinese; JSON keys/schema enums stay English, and technical terms may remain English or mixed Chinese-English.
 - Initial generated catalog uses `screening.read_decision = "pending"`; final read decisions are post-triage / writing-stage annotations.
 - metadata remains original/canonical bibliographic facts and is not rewritten for catalog Chinese localization.

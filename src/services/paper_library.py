@@ -19,7 +19,7 @@ class PaperLibrary:
         paper = self.registry.resolve(identity)
         if paper is None:
             return None
-        return {"paper_number": paper.paper_number, "paper_id": paper.paper_id, "directory": str(paper.directory), "catalog_path": str(paper.catalog_path), "metadata_path": str(paper.metadata_path)}
+        return {"paper_number": paper.paper_number, "paper_name": paper.paper_name, "directory": str(paper.directory), "catalog_path": str(paper.catalog_path), "metadata_path": str(paper.metadata_path)}
 
     def _paper(self, identity: str):
         paper = self.registry.resolve(identity)
@@ -31,9 +31,9 @@ class PaperLibrary:
     def metadata_path(self, identity: str) -> Path: return self._paper(identity).metadata_path
     def catalog_path(self, identity: str) -> Path: return self._paper(identity).catalog_path
     def markdown_path(self, identity: str) -> Path:
-        paper=self._paper(identity); return paper.directory/f"{paper.paper_id}.md"
+        paper=self._paper(identity); return paper.directory/f"{paper.paper_name}.md"
     def pdf_path(self, identity: str) -> Path:
-        paper=self._paper(identity); return paper.directory/f"{paper.paper_id}.pdf"
+        paper=self._paper(identity); return paper.directory/f"{paper.paper_name}.pdf"
     def images_dir(self, identity: str) -> Path: return self._paper(identity).directory/"images"
     def load_metadata(self, identity: str) -> dict | None: return json.loads(self.metadata_path(identity).read_text(encoding="utf-8"))
     def load_catalog(self, identity: str) -> dict | None: return json.loads(self.catalog_path(identity).read_text(encoding="utf-8"))

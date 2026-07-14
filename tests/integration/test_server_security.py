@@ -11,7 +11,7 @@ from src.server import app
 client = TestClient(app)
 
 
-# ---- paper_id 路径穿越防护 ----
+# ---- paper_name 路径穿越防护 ----
 
 @pytest.mark.parametrize("bad_id", [
     "../etc/passwd",
@@ -19,15 +19,15 @@ client = TestClient(app)
     "a/b/c",
 ])
 def test_delete_rejects_path_traversal(bad_id):
-    """DELETE /papers/{paper_id} 拒绝路径穿越"""
+    """DELETE /papers/{paper_name} 拒绝路径穿越"""
     resp = client.delete(f"/papers/{bad_id}")
-    # 400 = validate_paper_id 拒绝；404/405 = FastAPI 路由层先拦截
+    # 400 = validate_paper_name 拒绝；404/405 = FastAPI 路由层先拦截
     assert resp.status_code in (400, 404, 405), \
         f"Unexpected {resp.status_code}: {resp.text}"
 
 
 def test_delete_valid_but_nonexistent():
-    """DELETE 合法但不存在 paper_id → 404"""
+    """DELETE 合法但不存在 paper_name → 404"""
     resp = client.delete("/papers/nonexistent_paper_99999")
     assert resp.status_code == 404
 
@@ -129,12 +129,41 @@ def test_status_runtime_ok(monkeypatch):
 
 # ---- 目录端点 ----
 
-def test_catalog_endpoints_fail_closed_without_generation():
+def test_catalog_endpoints_respond_when_clean(monkeypatch):
+    """Catalog /all endpoint always returns 200; /validate reports state.
+
+    Per the catalog contract, the "all" category is always readable
+    regardless of classification state.  Category-filtered reads require
+    writer_safe but /all and /validate are informational.
+
+    Uses an isolated mock catalog so the test never depends on real
+    ``data/catalog/`` contents.
+    """
+    from unittest.mock import MagicMock
+    fake_catalog = MagicMock()
+    fake_catalog.list_papers.return_value = []
+    fake_catalog.validate.return_value = []
+    fake_catalog.root = MagicMock()
+    fake_catalog.status.return_value = {
+        "folder_integrity_safe": True,
+        "classification_complete": True,
+        "writer_category_safe": True,
+        "catalog_errors": [],
+        "unfinished_transactions": [],
+    }
+    fake_catalog.get.return_value = None
+    import src.server as server_mod
+    monkeypatch.setattr(server_mod, "catalog", fake_catalog)
+
     resp = client.get("/catalog")
-    assert resp.status_code == 503
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "papers" in data
 
     resp2 = client.post("/catalog/validate")
-    assert resp2.status_code == 503
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert "valid" in data2
 
 
 # ---- Prompt 端点边界 ----
@@ -144,9 +173,9 @@ def test_plan_reading_empty_question():
     assert resp.status_code == 422
 
 
-def test_read_fulltext_empty_paper_ids():
+def test_read_fulltext_empty_paper_names():
     resp = client.post("/prompt/read-fulltext", json={
-        "question": "test", "paper_ids": []
+        "question": "test", "paper_names": []
     })
     assert resp.status_code == 400
 

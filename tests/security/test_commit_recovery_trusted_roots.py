@@ -34,7 +34,7 @@ def test_recovery_rejects_external_numeric_source_without_touching_sentinel(
         "schema_version": "1.0",
         "transaction_id": tx_id,
         "paper_number": number,
-        "paper_id": "2024_Smith_safe",
+        "paper_name": "2024_Smith_safe",
         "source_workspace": str(victim),
         "staging_path": str(papers / f".2024_Smith_safe.staging_{tx_id}"),
         "final_path": str(papers / "2024_Smith_safe"),

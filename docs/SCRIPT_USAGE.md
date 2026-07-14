@@ -14,26 +14,58 @@
 | `commit_paper_raw_to_papers.py` | recoverable hidden-staging install | `--apply` |
 | `sync_catalog_categories.py` | synchronize DOI-notebook Chinese categories | `--apply` |
 | `plan_catalog_classification.py` | plan missing per-paper LLM decisions | `--apply` |
+| `run_catalog_classification.py` | execute pending tasks via injectable backend | `--apply` |
 | `apply_catalog_classification_result.py` | validate and apply one LLM result | `--apply` |
+| `audit_discovery_keyword_index_sources.py` | read-only audit of DOI keyword identity and cursor state | no |
+| `migrate_keyword_notebooks_v3.py` | inventory and plan-bound transactional migration to strict notebook v3 | `--write-plan`; `--apply` requires transaction id and plan hash |
+| `claim_catalog_classification_tasks.py` | list next unapplied tasks for a worker | no |
 | `reconcile_catalog_folders.py` | rebuild folder links from authoritative state | `--apply` |
 | `doctor_catalog_folders.py` | audit writer safety and folder integrity | no |
-| `manage_catalog_categories.py` | list or explicitly retire categories | `--apply` |
-| `rebuild_catalog_folder_system.py` | one-time no-import replacement of retired indexes | `--apply` |
+| `recover_discovery_keyword_notebooks.py` | inspect strict-v3 recovery candidates and emit an identity-bound plan | inspect-only; no v3 apply entry point |
+| `show_catalog_classification_progress.py` | report classification completion status | no |
 | `rollback_formal_papers_to_paper_raw.py` | recoverable formal-to-numeric-raw rollback | `--apply` |
 | `revise_frozen_metadata.py` | admin-only raw Metadata revision | dry-run by default |
 | `validate_v2_library.py` | validate formal Catalog v3.2 library/index closure | no |
 | `agent_acceptance.py` | compile, tests, hygiene, pack, ZIP verification | creates snapshot |
+| `cleanup_test_caches.py` | safe cleanup of stale test workspaces and legacy caches | `--apply` |
+| `test_runtime_workspace.py` | isolated test workspace context manager (library) | no |
 | `pack_repo.py` | runtime-zero source audit snapshot | creates ZIP |
 
 Real migration apply requires explicit authorization after inventory, backup,
 dry-run reports, and fixture acceptance. Agent tests always use temporary roots.
+For the current five-notebook production migration, review the inventory and
+fixed mapping/plan first, then apply only that same plan-bound transaction.
+Operator mapping and transaction plans belong under local/runtime state and are
+not source snapshot artifacts. The migration inventory, strict audit, and
+`recover_discovery_keyword_notebooks.py --inspect` commands are read-only.
 
 ## Discovery / Metadata discovery
 
-`discover_papers.py`, `discover_papers_concurrent.py`,
-`manage_discovery_keywords.py`, and `migrate_discovery_notebooks_v2.py` manage
-the concurrent Refresh/Backfill discovery queue. The concurrent wrapper is the
-normal broad-search entry point.
+`discover_papers.py`, `discover_papers_concurrent.py`, and
+`manage_discovery_keywords.py` manage the schema-v3 concurrent Refresh/Backfill
+discovery queue. Each notebook has one Chinese `keyword_zh` identity and
+curated Chinese/English `search_queries`. An enabled notebook must be
+bilingual-ready; a disabled draft may be incomplete. The concurrent wrapper
+executes every active query in both providers while Catalog classification
+reads only `keyword_zh`. The strict audit is read-only, and v3 recovery is
+currently inspect-only because no unsafe legacy write path is retained. The
+retired v2 notebook migration script is not an active entry point.
+
+For a final no-network plan check, run:
+
+```text
+python scripts/discover_papers_concurrent.py --from-enabled-notebooks --dry-run
+```
+
+The output must list, per notebook and provider lane, the active Chinese and
+English queries, `query_id`, lane, generation, request signature, refresh pages,
+backfill pages, worker count, and page budget. Dry-run does not contact a
+provider, advance cursors, write page journals, allocate paper numbers, modify
+notebooks, or modify Catalog state.
+
+Use `manage_discovery_keywords.py --add-query-zh --query-zh ...` or
+`--add-query-en --query-en ...` for one-language query edits. The removed
+`--add-queries` and ambiguous discovery topic option are not accepted.
 
 ## Complete root script inventory
 
@@ -43,6 +75,9 @@ cannot silently omit an executable:
 ```text
 agent_acceptance.py
 attach_pdf_to_paper_raw.py
+audit_discovery_keyword_index_sources.py
+cleanup_test_caches.py
+test_runtime_workspace.py
 audit_ingest_duplicates.py
 audit_metadata_quality.py
 audit_paper_number_ledger.py
@@ -69,8 +104,7 @@ fetch_pdf_for_paper_raw.py
 formalize_paper_raw.py
 freeze_paper_raw_metadata.py
 manage_discovery_keywords.py
-match_paper_raw_metadata.py
-migrate_discovery_notebooks_v2.py
+migrate_keyword_notebooks_v3.py
 migrate_import_status_v2.py
 pack_repo.py
 preflight_paper_raw_import.py
@@ -78,14 +112,14 @@ prepare_paper_raw_catalog_task.py
 prepare_write_article_workdir.py
 quarantine_unreferenced_workspaces.py
 apply_catalog_classification_result.py
+claim_catalog_classification_tasks.py
 doctor_catalog_folders.py
-manage_catalog_categories.py
-plan_catalog_classification.py
-rebuild_catalog_folder_system.py
 reconcile_catalog_folders.py
+recover_discovery_keyword_notebooks.py
+run_catalog_classification.py
+show_catalog_classification_progress.py
 sync_catalog_categories.py
 reconcile_paper_raw_non_destructive.py
-repair_catalog_asset_refs.py
 repair_corrupted_markers.py
 repair_ledger_folder_names.py
 repair_paper_raw_derived_files.py
@@ -106,7 +140,6 @@ validate_rolled_back_paper_raw.py
 validate_v2_library.py
 validate_write_job.py
 write_catalog_tex_article.py
-write_review.py
 ```
 
 Audit/check/validate commands are read-only unless their own help explicitly

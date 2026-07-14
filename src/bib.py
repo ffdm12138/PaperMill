@@ -8,7 +8,7 @@ import re
 
 from src.metadata.citation_readiness import citation_key_from_metadata, validate_citation_ready
 from src.metadata.citation import bibtex_from_metadata
-from src.naming import sanitize_paper_id
+from src.naming import sanitize_paper_name
 
 
 def _entry_type_and_key(block: str) -> tuple[str, str]:
@@ -55,7 +55,7 @@ def _resolve_metadata(entry: dict) -> dict:
     if isinstance(meta, dict) and meta:
         return meta
     number = entry.get("paper_number")
-    pid = entry.get("paper_id")
+    pid = entry.get("paper_name")
     if number or pid:
         try:
             from src.services.paper_library import PaperLibrary
@@ -73,11 +73,11 @@ def _resolve_metadata(entry: dict) -> dict:
 
 
 def bib_key_for_entry(entry: dict) -> str:
-    """Derive a citation key from metadata only; paper_id is never a fallback."""
+    """Derive a citation key from metadata only; paper_name is never a fallback."""
     meta = _resolve_metadata(entry)
     if not meta:
         raise RuntimeError("metadata is required for citation-key generation")
-    return sanitize_paper_id(citation_key_from_metadata(meta))
+    return sanitize_paper_name(citation_key_from_metadata(meta))
 
 
 def bibtex_for_entry(entry: dict) -> str:

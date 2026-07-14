@@ -2,14 +2,14 @@ from __future__ import annotations
 
 
 def make_minimal_catalog(
-    *, paper_number: str = "0000000000000001", paper_id: str = "",
+    *, paper_number: str = "0000000000000001", paper_name: str = "",
     title_zh: str = "示例论文", markdown_name: str | None = None,
 ) -> dict:
     """Return a complete context-free Catalog v3.2 fixture."""
     del markdown_name
-    paper_id = paper_id or f"2024_Doe_{title_zh}"
+    paper_name = paper_name or f"2024_Doe_{title_zh}"
     return {
-        "schema_version": "3.2", "paper_number": paper_number, "paper_id": paper_id,
+        "schema_version": "3.2", "paper_number": paper_number, "paper_name": paper_name,
         "content_identity": {"content_title_zh": title_zh, "research_domains": ["测试领域"], "document_language": "en"},
         "abstract": {"source": {"status": "not_found", "origin": "not_found", "language": None, "text": None, "source_ref": None}, "summary_zh": "根据全文生成的测试摘要。", "summary_generation_basis": "full_text", "one_sentence_zh": "本文验证完整内容档案契约。"},
         "research_context": {"background_zh": "测试背景。", "knowledge_gap_zh": "测试缺口。", "research_question_zh": "测试问题？", "objectives_zh": ["验证契约"]},

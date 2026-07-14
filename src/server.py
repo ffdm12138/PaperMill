@@ -16,9 +16,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import API_CORS_ORIGINS, API_HOST, API_PORT, CATALOG_FOLDER_ROOT, MINERU_API_KEY, PAPERS_DIR
-from src.catalog_folders.reader import CatalogFolderReader
+from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
 from src.services.paper_library import PaperLibrary
-from src.naming import validate_job_id, validate_paper_id
+from src.naming import validate_job_id, validate_paper_name
 from src.prompt_builder import PromptBuilder
 from src.metadata.citation import bibtex_from_metadata
 from src.writer.bib_manager import portability_check, validate_catalog_citations, validate_job_citations
@@ -44,10 +44,25 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-API-Key"],
 )
 
-catalog = CatalogFolderReader(root=CATALOG_FOLDER_ROOT, papers_dir=PAPERS_DIR)
-library = PaperLibrary(papers_dir=PAPERS_DIR)
-prompt_builder = PromptBuilder(catalog=catalog, library=library)
-job_manager = JobManager()
+# Lazy-initialized services — set to None at import so tests can monkeypatch
+# and ``import src.server`` never accesses real catalog.
+catalog = None
+library = None
+prompt_builder = None
+job_manager = None
+
+
+def _ensure_services():
+    """Lazily initialize catalog, library, prompt_builder, and job_manager."""
+    global catalog, library, prompt_builder, job_manager
+    if catalog is None:
+        catalog = create_safe_catalog_reader()
+    if library is None:
+        library = PaperLibrary(papers_dir=PAPERS_DIR)
+    if prompt_builder is None:
+        prompt_builder = PromptBuilder(catalog=catalog, library=library)
+    if job_manager is None:
+        job_manager = JobManager()
 
 
 _PUBLIC_PATHS = {"/", "/docs", "/openapi.json", "/redoc", "/favicon.ico"}
@@ -59,6 +74,7 @@ PaperNumberList = Annotated[list[str], Field(max_length=100)]
 
 @app.middleware("http")
 async def security_headers_and_api_key(request: Request, call_next):
+    _ensure_services()
     if (
         MINERU_API_KEY
         and request.method != "OPTIONS"
@@ -80,11 +96,11 @@ class PlanRequest(BaseModel):
 
 class FulltextRequest(BaseModel):
     question: Annotated[str, Field(min_length=1, max_length=4000)]
-    paper_ids: PaperIdList
+    paper_names: PaperIdList
 
 
 class CatalogEntryRequest(BaseModel):
-    paper_id: ShortStr
+    paper_name: ShortStr
 
 
 class CreateJobRequest(BaseModel):
@@ -100,12 +116,12 @@ class MatchCatalogRequest(BaseModel):
 
 
 class ConfirmPapersRequest(BaseModel):
-    paper_ids: PaperIdList
+    paper_names: PaperIdList
     confirmed_by: Annotated[str, Field(max_length=100)] = "api"
 
 
 class DeepReadRequest(BaseModel):
-    paper_ids: Annotated[list[str] | None, Field(max_length=100)] = None
+    paper_names: Annotated[list[str] | None, Field(max_length=100)] = None
     force: bool = False
 
 
@@ -129,7 +145,7 @@ class CopyFiguresRequest(BaseModel):
 
 class BibtexRequest(BaseModel):
     paper_numbers: PaperNumberList | None = None
-    paper_ids: PaperIdList | None = None
+    paper_names: PaperIdList | None = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -141,15 +157,44 @@ async def index():
 
 
 @app.get("/catalog/all")
-async def get_all_catalog():
+async def get_catalog_all():
+    """List all formal papers via the 'all' category folder."""
     try:
         return {"papers": catalog.list_papers(["all"])}
-    except (RuntimeError, FileNotFoundError, ValueError) as exc: raise HTTPException(503,str(exc))
+    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(503, str(exc))
 
 
 @app.get("/catalog")
 async def get_catalog_alias():
-    return await get_all_catalog()
+    return await get_catalog_all()
+
+
+@app.get("/catalog/categories")
+async def list_catalog_categories():
+    """List available category folders (excluding all/_pending/system dirs)."""
+    from src.catalog_folders.reader import list_categories as _list_cats
+    cats = []
+    for path in _list_cats(catalog.root):
+        try:
+            data = json.loads((path / ".category.json").read_text(encoding="utf-8"))
+            cats.append({
+                "directory_name": path.name,
+                "category_id": data.get("category_id"),
+                "keyword_zh": data.get("keyword_zh"),
+            })
+        except Exception:
+            cats.append({"directory_name": path.name, "error": "unreadable"})
+    return {"categories": cats}
+
+
+@app.get("/catalog/category/{name}")
+async def get_catalog_category(name: str):
+    """List papers in a specific category folder."""
+    try:
+        return {"papers": catalog.list_papers([name])}
+    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(503, str(exc))
 
 
 @app.post("/upload")
@@ -189,9 +234,9 @@ async def get_image_by_number(paper_number: str, image_name: str):
 @app.post("/bibtex")
 async def generate_bibtex(req: BibtexRequest):
     wanted_numbers = set(req.paper_numbers or [])
-    wanted_ids = set(req.paper_ids or [])
+    wanted_ids = set(req.paper_names or [])
     if not wanted_numbers and not wanted_ids:
-        raise HTTPException(400, "paper_numbers or paper_ids required")
+        raise HTTPException(400, "paper_numbers or paper_names required")
     entries = []
     for key in sorted(wanted_numbers|wanted_ids):
         try: row=library.resolve(key)
@@ -224,10 +269,10 @@ async def validate_catalog_alias():
 @app.post("/prompt/catalog-entry")
 async def prompt_catalog_entry(req: CatalogEntryRequest):
     try:
-        validate_paper_id(req.paper_id)
+        validate_paper_name(req.paper_name)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    out = prompt_builder.build_catalog_entry_prompt(req.paper_id)
+    out = prompt_builder.build_catalog_entry_prompt(req.paper_name)
     if not out.get("success"):
         raise HTTPException(404, out.get("error", "failed"))
     return out
@@ -247,13 +292,13 @@ async def prompt_plan_reading(req: PlanRequest):
 async def prompt_read_fulltext(req: FulltextRequest):
     if not req.question.strip():
         raise HTTPException(400, "question is required")
-    # paper_ids may be 16-digit paper_number or paper_id; both pass validate_paper_id.
+    # paper_names may be 16-digit paper_number or paper_name; both pass validate_paper_name.
     try:
-        for pid in req.paper_ids:
-            validate_paper_id(pid)
+        for pid in req.paper_names:
+            validate_paper_name(pid)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    out = prompt_builder.build_fulltext_prompt(req.question.strip(), req.paper_ids)
+    out = prompt_builder.build_fulltext_prompt(req.question.strip(), req.paper_names)
     if not out.get("success"):
         raise HTTPException(400, out.get("error", "failed"))
     return out
@@ -309,9 +354,9 @@ async def write_match_catalog(job_id: str, req: MatchCatalogRequest = Body(defau
 @app.post("/write/jobs/{job_id}/confirm-papers")
 async def write_confirm_papers(job_id: str, req: ConfirmPapersRequest):
     _check_job_id(job_id)
-    if not req.paper_ids:
-        raise HTTPException(400, "paper_ids cannot be empty")
-    selected = [{"paper_id": pid, "reason": "", "expected_use": "", "priority": 3} for pid in req.paper_ids]
+    if not req.paper_names:
+        raise HTTPException(400, "paper_names cannot be empty")
+    selected = [{"paper_name": pid, "reason": "", "expected_use": "", "priority": 3} for pid in req.paper_names]
     return confirm_selected_papers(job_id, selected, confirmed_by=req.confirmed_by, jm=job_manager, catalog=catalog)
 
 
@@ -330,7 +375,7 @@ async def write_prepare_workset(job_id: str, req: PrepareWorksetRequest = Body(d
 async def write_deep_read(job_id: str, req: DeepReadRequest):
     _check_job_id(job_id)
     try:
-        return deep_read(job_id, req.paper_ids, force=req.force, jm=job_manager, catalog=catalog)
+        return deep_read(job_id, req.paper_names, force=req.force, jm=job_manager, catalog=catalog)
     except RuntimeError as exc:
         raise HTTPException(400, str(exc))
 
@@ -394,8 +439,17 @@ async def write_validate(job_id: str):
 
 @app.get("/status")
 async def status():
-    try: count=len(catalog.list_papers()); category_state="ready"
-    except (RuntimeError, FileNotFoundError, ValueError): count=0; category_state="dirty_or_invalid"
+    from src.catalog_folders.formal_registry import FormalPaperRegistry
+    from src.catalog_folders.validation import doctor
+    from src.library.paper_number_ledger import PaperNumberLedger
+    from config.settings import PAPER_NUMBER_LEDGER_PATH
+    try:
+        reg = FormalPaperRegistry(papers_dir=PAPERS_DIR, ledger=PaperNumberLedger(PAPER_NUMBER_LEDGER_PATH))
+        d = doctor(root=CATALOG_FOLDER_ROOT, formal_registry=reg)
+        count = d["active_formal_papers"]
+        category_state = "ready" if d["writer_category_safe"] else "dirty_or_invalid" if d["dirty"] else "incomplete"
+    except Exception:
+        count = 0; category_state = "error"
     return {
         "status": "running",
         "version": "4.0.0",

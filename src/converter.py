@@ -90,7 +90,7 @@ class MinerUConverter:
         lang: str = "ch",
         effort: str = "medium",
         api_url: str | None = None,
-        paper_id: str = "",
+        paper_name: str = "",
     ) -> dict:
         """统一转换入口。
 
@@ -106,7 +106,7 @@ class MinerUConverter:
                      - 留空且 MINERU_RUNNER=cli_api_proxy → CLI + --api-url
                      - 留空且 MINERU_RUNNER=api → HTTP adapter（未实现，报错）
                      - 显式传入 → 优先使用
-            paper_id: 可选 paper_id 用于性能日志标识
+            paper_name: 可选 paper_name 用于性能日志标识
 
         Returns:
             dict: {
@@ -137,7 +137,7 @@ class MinerUConverter:
                     "effort": effort, "runner": "cli",
                 }
             return self.convert_via_cli(input_path, output_dir, backend, method,
-                                        lang, effort, paper_id=paper_id)
+                                        lang, effort, paper_name=paper_name)
 
         # ── cli_api_proxy: CLI + --api-url ──
         if runner == MinerURunner.CLI_API_PROXY:
@@ -154,7 +154,7 @@ class MinerUConverter:
                 }
             return self.convert_via_cli(
                 input_path, output_dir, backend, method, lang, effort,
-                paper_id=paper_id, api_url=proxy_url,
+                paper_name=paper_name, api_url=proxy_url,
             )
 
         # ── api (HTTP adapter, not implemented) ──
@@ -166,7 +166,7 @@ class MinerUConverter:
     def _write_timing_log(
         self,
         *,
-        paper_id: str,
+        paper_name: str,
         input_path: Path,
         file_size: int,
         start_time: float,
@@ -196,7 +196,7 @@ class MinerUConverter:
         torch_health = preflight_torch_cuda()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_record = {
-            "paper_id": paper_id,
+            "paper_name": paper_name,
             "pdf_path": str(input_path),
             "file_size": file_size,
             "runner": runner,
@@ -243,8 +243,8 @@ class MinerUConverter:
         try:
             run_dir = self._log_dir / "mineru_runs"
             run_dir.mkdir(parents=True, exist_ok=True)
-            # 使用 paper_id + timestamp 作为文件名前缀
-            safe_pid = paper_id.replace("/", "_").replace("\\", "_")
+            # 使用 paper_name + timestamp 作为文件名前缀
+            safe_pid = paper_name.replace("/", "_").replace("\\", "_")
             out_path = run_dir / f"{safe_pid}_{timestamp}.json"
             # 原子写入
             tmp_path = out_path.with_suffix(".tmp")
@@ -254,7 +254,7 @@ class MinerUConverter:
             )
             tmp_path.replace(out_path)
         except Exception:
-            logger.warning(f"[converter] 无法写入性能日志 (paper_id={paper_id})", exc_info=True)
+            logger.warning(f"[converter] 无法写入性能日志 (paper_name={paper_name})", exc_info=True)
 
     def convert_via_cli(
         self,
@@ -264,7 +264,7 @@ class MinerUConverter:
         method: str = "auto",
         lang: str = "ch",
         effort: str = "medium",
-        paper_id: str = "",
+        paper_name: str = "",
         api_url: str | None = None,
     ) -> dict:
         """通过 mineru CLI 子进程转换。
@@ -274,14 +274,14 @@ class MinerUConverter:
         传入参数回填。
 
         Args:
-            paper_id: 可选 paper_id 用于性能日志标识；空时使用 input_path 文件名。
+            paper_name: 可选 paper_name 用于性能日志标识；空时使用 input_path 文件名。
             api_url: 非空时附加 --api-url <api_url>，启用 CLI API proxy 模式。
                      此时 runner 记为 "cli_api_proxy"。
         """
         input_path = Path(input_path)
         output_dir = Path(output_dir)
         file_size = input_path.stat().st_size if input_path.exists() else 0
-        pid = paper_id or input_path.stem
+        pid = paper_name or input_path.stem
         t0 = time.time()
         effective_runner = "cli_api_proxy" if api_url else "cli"
 
@@ -302,7 +302,7 @@ class MinerUConverter:
             return_code_log: int | None = None,
         ) -> dict:
             self._write_timing_log(
-                paper_id=pid,
+                paper_name=pid,
                 input_path=input_path,
                 file_size=file_size,
                 start_time=t0,
@@ -422,13 +422,13 @@ class MinerUConverter:
                     logger.warning(f"未找到Markdown输出 (method={method} backend={backend})")
 
                 logger.info(
-                    f"[MinerU] paper_id={pid} runner={effective_runner} backend={backend} "
+                    f"[MinerU] paper_name={pid} runner={effective_runner} backend={backend} "
                     f"method={method} effort={effort} elapsed={elapsed:.1f}s "
                     f"gpu_required={runtime_config_from_env().require_gpu}"
                 )
 
                 self._write_timing_log(
-                    paper_id=pid,
+                    paper_name=pid,
                     input_path=input_path,
                     file_size=file_size,
                     start_time=t0,
@@ -524,7 +524,7 @@ class MinerUConverter:
         total = len(input_paths)
         for i, path in enumerate(input_paths, 1):
             pid = Path(path).stem
-            result = self.convert(path, output_dir, backend, method, lang, effort, paper_id=pid)
+            result = self.convert(path, output_dir, backend, method, lang, effort, paper_name=pid)
             results.append(result)
             records.append((Path(path).name, result))
             elapsed = result.get("elapsed_seconds", "?")

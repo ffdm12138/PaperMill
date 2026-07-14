@@ -68,7 +68,7 @@ def main() -> int:
                     "success": True,
                     "status": READY_FOR_COMMIT,
                     "paper_number": workspace.paper_number,
-                    "paper_id": plan["paper_id"],
+                    "paper_name": plan["paper_name"],
                     "folder": str(workspace.root),
                     "formalization": str(workspace.formalization),
                 })
