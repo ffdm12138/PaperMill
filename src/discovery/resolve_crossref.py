@@ -75,6 +75,7 @@ def parse_crossref_item(item: dict, query: str = "", domain_id: str | None = Non
         authors=_authors(item),
         doi=item.get("DOI") or "",
         venue=container,
+        abstract=str(item.get("abstract") or ""),
         source="crossref",
         source_id=item.get("DOI") or "",
         url=item.get("URL") or "",
@@ -195,7 +196,6 @@ def search_crossref_page(
     cursor: str = "*",
     sort: str | None = None,
     order: str | None = None,
-    domain_id: str | None = None,
     rate_limiter: Any | None = None,
     limiter_lock: Any | None = None,
 ) -> DiscoveryPage:
@@ -215,8 +215,12 @@ def search_crossref_page(
         "cursor": cursor,
     }
     if sort:
+        if sort not in {"relevance", "published", "cited"}:
+            raise ValueError(f"invalid Crossref sort: {sort!r}")
         params["sort"] = sort
     if order:
+        if order not in {"asc", "desc"}:
+            raise ValueError(f"invalid Crossref order: {order!r}")
         params["order"] = order
 
     lock_ctx = limiter_lock if limiter_lock is not None else nullcontext()
@@ -280,10 +284,7 @@ def search_crossref_page(
             safe_error="Crossref next-cursor did not advance",
             failure_class="terminal",
         )
-    candidates = [
-        parse_crossref_item(item, query=query, domain_id=domain_id)
-        for item in items
-    ]
+    candidates = [parse_crossref_item(item, query=query) for item in items]
     # Crossref signals exhaustion by omitting next-cursor (or returning
     # an empty page). A short page with a next-cursor is NOT exhaustion —
     # Crossref can return fewer items than requested mid-stream.

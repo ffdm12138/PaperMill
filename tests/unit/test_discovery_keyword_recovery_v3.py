@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id, query_identity
 from src.discovery.models import PaperCandidate
@@ -341,6 +342,7 @@ def test_recovery_rejects_items_returned_without_signature(tmp_path: Path):
         {"query": "风吹雪", "language": "zh", "source": "pytest"},
         {"query": "blowing snow", "language": "en", "source": "pytest"},
     ])
+    bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
     # Corrupt notebook: set items_returned_total without signature
     from src.discovery.keyword_notebook import notebook_filename, query_identity
@@ -369,6 +371,7 @@ def test_recovery_rejects_invalid_generation(tmp_path: Path):
         {"query": "风吹雪", "language": "zh", "source": "pytest"},
         {"query": "blowing snow", "language": "en", "source": "pytest"},
     ])
+    bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
     from src.discovery.keyword_notebook import notebook_filename, query_identity
     qid = query_identity("en", "blowing snow")
@@ -394,6 +397,7 @@ def test_recovery_rejects_unknown_backfill_field(tmp_path: Path):
         {"query": "风吹雪", "language": "zh", "source": "pytest"},
         {"query": "blowing snow", "language": "en", "source": "pytest"},
     ])
+    bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
     from src.discovery.keyword_notebook import notebook_filename, query_identity
     qid = query_identity("en", "blowing snow")

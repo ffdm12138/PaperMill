@@ -8,6 +8,17 @@ refresh while exact matches remain live-validated. Retryable candidates remain
 scheduled in the same runtime, repair probes rotate through a durable cursor,
 and a consumer watchdog measures lack of progress rather than total drain time.
 
+Notebook-scoped relevance filtering is fail-closed. Legacy/profile-unbound
+sentinels cannot query providers or evaluate candidates. Profile replacement
+closes only pre-staging `pending/resolution_pending/ready` observations whose
+old relevance is `profile_unbound`, `passed`, or `verification_deferred`.
+`processing/failed_retryable` require Discovery recovery; completed terminal
+history and durable DOI projections are immutable. Unknown lifecycle values
+globally block planning. The transaction uses deterministic expected-after bytes,
+zero-write Phase A, crash-resumable page publication, and notebook-last commit.
+The drain index owns a batch-frozen active-profile mapping. The five-profile
+source is deliberately unresolved and requires an exact frozen-taxonomy plan.
+
 The active ingest architecture is the frozen Metadata / complete Catalog v3.2
 pipeline. There is one active implementation.
 
@@ -75,10 +86,9 @@ active source tree or runtime-zero snapshot.
 
 ## Test suite status
 
-- **Current test count: 1763** (reduced from 1869 in July 2026 cleanup)
-- **Full pytest:** 1752 passed, 8 skipped, 0 failed
-- **Acceptance:** pre-flight clean, syntax gate 393/393 passed, runtime-zero snapshot verified
-- **Snapshot:** 481 payload files, 0 runtime files, secret scan passed
+- **Full acceptance selection:** 1886 passed, 4 skipped, 3 deselected, 0 failed
+- **Acceptance:** pre-flight clean, syntax gate 454/454 passed, runtime-zero snapshot verified
+- **Snapshot:** 544 payload files, 0 runtime files, secret scan passed
 
 ### Cleanup principles
 

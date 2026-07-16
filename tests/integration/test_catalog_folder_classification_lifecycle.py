@@ -34,6 +34,7 @@ from src.catalog_folders.result_validator import apply_result
 from src.catalog_folders.task_planner import plan_tasks
 from src.catalog_folders.validation import doctor
 from src.library.paper_number_ledger import PaperNumberLedger
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -45,10 +46,12 @@ def _write_notebook(notebook_dir: Path, keyword: str, is_chinese: bool = True, *
     if not is_chinese or keyword_id != derive_keyword_id(keyword):
         raise ValueError("fixture requires canonical Chinese identity")
     store = KeywordNotebookStore(notebook_dir)
-    store.create_notebook(keyword, search_queries=[
+    store.create_notebook(keyword, enabled=False, search_queries=[
         {"query": keyword, "language": "zh", "source": "pytest"},
         {"query": f"english topic {keyword_id}", "language": "en", "source": "pytest"},
     ])
+    bind_test_relevance_profile(store, keyword)
+    store.set_enabled(keyword, True)
     return store._path_for(keyword)
 
 

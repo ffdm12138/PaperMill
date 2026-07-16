@@ -18,6 +18,7 @@ from src.catalog_folders.registry import load_categories, sync_registry
 from src.catalog_folders.task_planner import plan_tasks
 from src.catalog_folders.validation import doctor
 from src.discovery.keyword_notebook import KeywordNotebookStore, notebook_path
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -30,8 +31,11 @@ def _write_notebook(notebook_dir: Path, keyword: str, *,
         {"query": keyword, "language": "zh", "source": "pytest"},
         {"query": "blowing snow", "language": "en", "source": "pytest"},
     ]
-    store.create_notebook(keyword, search_queries=rows, enabled=enabled,
+    store.create_notebook(keyword, search_queries=rows, enabled=False,
                           reason="test_fixture", operator="pytest")
+    bind_test_relevance_profile(store, keyword)
+    if enabled:
+        store.set_enabled(keyword, True)
     return notebook_path(keyword, notebook_dir)
 
 

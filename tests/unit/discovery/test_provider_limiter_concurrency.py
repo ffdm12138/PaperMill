@@ -4,6 +4,7 @@ import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.models import PaperCandidate
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 from src.discovery.keyword_notebook import KeywordNotebookStore
 
 
@@ -47,10 +48,12 @@ def test_provider_limiters_use_provider_scoped_locks(tmp_path):
     )
     store = KeywordNotebookStore(options.notebook_dir)
     for keyword, english in (("主题甲", "alpha"), ("主题乙", "beta")):
-        store.create_notebook(keyword, search_queries=[
+        store.create_notebook(keyword, enabled=False, search_queries=[
             {"query": keyword, "language": "zh", "source": "pytest"},
             {"query": english, "language": "en", "source": "pytest"},
         ])
+        bind_test_relevance_profile(store, keyword)
+        store.set_enabled(keyword, True)
 
     run_discovery_batch(["主题甲", "主题乙"], options=options, max_workers=2, fetch_page=fetch)
 

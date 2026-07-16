@@ -175,3 +175,26 @@ page journals.
     保存多个 provider identity，freeze 不得丢失。Registry refresh 原子发布；
     Transaction 每 candidate 复用一次锁内 ledger load，新 staging 保留 reserved
     与 metadata_staged 两个 durable save，成功后直接 publish、无 post-refresh。
+40. Enabled discovery notebook 必须绑定非 sentinel、taxonomy-resolved relevance
+    profile；missing/legacy/profile-unbound 在 provider I/O 前 fail closed。Provider
+    lane generation 只属于 cursor/page，不得充当 relevance generation。
+41. Profile apply 以 `keyword_id`、request-signature profile hash、candidate
+    relevance profile hash 及 query/provider/lane identity 识别旧观察，关闭旧
+    `profile_unbound/passed/verification_deferred` 后才提交新 profile/generation。
+    Drain index 与 durable claim 都必须复核 active profile hash。
+42. Relevance-profile transaction root 同时只能存在一个 `state=applying` journal；
+    新 plan 必须拒绝并要求恢复旧事务。Discovery 与 profile apply 共享排他锁。
+43. Candidate lifecycle 分类只能由 page-journal classifier 提供。仅
+    `pending/resolution_pending/ready` 可由 profile transaction 关闭；
+    `processing/failed_retryable` 必须先按 Discovery recovery 对账；completed
+    terminal lifecycle、relevance、DOI evidence 与 receipts 永不改写。未知
+    lifecycle 使整个 plan 不可 apply。
+44. Profile apply 的 Phase A 除固定 lock 行为外零写入，并验证 exact
+    before/expected-after bytes。时间、transaction ID、typed reason 与 mutation ID
+    均在 plan 固定；apply/resume 不得重新生成。
+45. Durable DOI projection 只来自 `staged/emitted/existing_duplicate/
+    duplicate_observation`，与当前 profile 解耦。Batch runtime 持有不可变的完整
+    active-profile mapping，forced rebuild 必须显式复用同一 mapping。
+46. A/B/C 先冻结一次共享宽召回 corpus，再离线 replay；manifest 同时绑定
+    sampling/replay profiles 与文件 hash/size/count。Replay 不度量不同 provider
+    request filter/sort 的召回率，人工 Precision 不得推断。

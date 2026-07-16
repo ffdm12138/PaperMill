@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import src.discovery.pending_queue as pending_queue_module
-from src.discovery.batch_runtime import DiscoveryBatchRuntime
+from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import PageJournalStore, request_signature
@@ -14,6 +14,13 @@ from src.discovery.staging_metrics import CollectingStagingMetricsObserver
 from src.services.network_metadata_staging import stage_network_metadata_records
 
 pytestmark = pytest.mark.integration
+PROFILE_HASH = "test-active-profile"
+
+
+def _bind_page(page):
+    for candidate in page["candidates"]:
+        candidate["relevance"]["state"] = "passed"
+    return page
 
 
 def test_batch_staging_shares_context_lock_ledger_and_keeps_checkpoints(tmp_path: Path):
@@ -74,7 +81,7 @@ def test_pending_drain_stages_one_claim_batch_in_one_transaction_and_page_commit
 ):
     journal = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("关键词")
-    page = journal.make_page(
+    page = _bind_page(journal.make_page(
         page_id="stage-batch",
         keyword_id=kid,
         keyword_zh="关键词",
@@ -91,8 +98,8 @@ def test_pending_drain_stages_one_claim_batch_in_one_transaction_and_page_commit
             PaperCandidate(title=f"Paper {index}", year=2026, doi=f"10.9200/drain.{index}")
             for index in range(4)
         ],
-        state="cursor_committed",
-    )
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
+    ))
     page_path = journal.write_page(page)
     runtime = DiscoveryBatchRuntime.create(
         journal=journal,
@@ -100,6 +107,7 @@ def test_pending_drain_stages_one_claim_batch_in_one_transaction_and_page_commit
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
         needs_staging=True,
+        active_relevance_profiles=ActiveRelevanceProfiles.build({kid: PROFILE_HASH}),
     )
     metrics = runtime.metrics.staging
     ledger_loads_before = metrics.ledger_loads
@@ -161,7 +169,7 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
     journal = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("关键词")
     doi = "10.9200/same-batch"
-    page = journal.make_page(
+    page = _bind_page(journal.make_page(
         page_id="same-batch",
         keyword_id=kid,
         keyword_zh="关键词",
@@ -179,8 +187,8 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
                            source_id=f"crossref-record-{index}")
             for index in range(2)
         ],
-        state="cursor_committed",
-    )
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
+    ))
     page_path = journal.write_page(page)
     runtime = DiscoveryBatchRuntime.create(
         journal=journal,
@@ -188,6 +196,7 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
         needs_staging=True,
+        active_relevance_profiles=ActiveRelevanceProfiles.build({kid: PROFILE_HASH}),
     )
     # A stale in-memory processing hint must not override the DOI file lock and
     # authoritative Registry transaction.
@@ -242,7 +251,7 @@ def test_pending_drain_renews_only_after_half_lease_threshold(
 ):
     journal = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("关键词")
-    page = journal.make_page(
+    page = _bind_page(journal.make_page(
         page_id="slow-lease",
         keyword_id=kid,
         keyword_zh="关键词",
@@ -256,8 +265,8 @@ def test_pending_drain_renews_only_after_half_lease_threshold(
         next_cursor=None,
         provider_exhausted=True,
         candidates=[PaperCandidate(title="Slow", year=2026, doi="10.9200/slow-lease")],
-        state="cursor_committed",
-    )
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
+    ))
     page_path = journal.write_page(page)
     runtime = DiscoveryBatchRuntime.create(
         journal=journal,
@@ -265,6 +274,7 @@ def test_pending_drain_renews_only_after_half_lease_threshold(
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
         needs_staging=True,
+        active_relevance_profiles=ActiveRelevanceProfiles.build({kid: PROFILE_HASH}),
     )
     real_datetime = pending_queue_module.datetime
 

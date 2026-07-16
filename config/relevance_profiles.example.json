@@ -1,0 +1,96 @@
+{
+  "profiles": [
+    {
+      "keyword_zh": "大气边界层",
+      "profile": {
+        "schema_version": "1.0",
+        "matcher_schema_version": "1.0",
+        "openalex": {
+          "resolved": false,
+          "filter_level": "subfield",
+          "filter_ids": [],
+          "filter_labels": ["Atmospheric Science", "Fluid Flow and Transfer Processes"],
+          "refresh_sort": "publication_date:desc,relevance\u005fscore:desc",
+          "backfill_sort": "relevance\u005fscore:desc,cited_by_count:desc"
+        },
+        "crossref": {"scope_policy": "require_openalex_subfield", "refresh_sort": "published", "refresh_order": "desc", "backfill_sort": "relevance", "backfill_order": "desc"},
+        "anchors": {
+          "required_groups": [
+            {"name": "object", "terms": ["atmospheric boundary layer", "planetary boundary layer", "surface boundary layer", "near-surface layer", "marine boundary layer", "urban boundary layer", "ABL", "PBL"]},
+            {"name": "process", "terms": ["turbulence", "turbulent flux", "momentum flux", "heat flux", "surface flux", "stability", "roughness", "mixing", "entrainment", "Monin-Obukhov", "boundary-layer height", "mixing height", "boundary-layer flow", "low-level jet"]}
+          ],
+          "negative_any": ["semiconductor boundary layer", "electrochemical boundary layer", "vascular boundary layer", "financial boundary", "semiconductor transport", "charge transport", "electron transport", "electrochemical transport", "slurry pipeline", "pneumatic pipeline", "fluvial sediment transport", "submarine sediment transport", "medical aerosol", "drug delivery", "blood flow"],
+          "missing_abstract_policy": "require_all_groups_in_title"
+        }
+      }
+    },
+    {
+      "keyword_zh": "风沙动力学",
+      "profile": {
+        "schema_version": "1.0",
+        "matcher_schema_version": "1.0",
+        "openalex": {"resolved": false, "filter_level": "subfield", "filter_ids": [], "filter_labels": ["Earth-Surface Processes", "Fluid Flow and Transfer Processes"], "refresh_sort": "publication_date:desc,relevance\u005fscore:desc", "backfill_sort": "relevance\u005fscore:desc,cited_by_count:desc"},
+        "crossref": {"scope_policy": "require_openalex_subfield", "refresh_sort": "published", "refresh_order": "desc", "backfill_sort": "relevance", "backfill_order": "desc"},
+        "anchors": {
+          "required_groups": [
+            {"name": "object", "terms": ["aeolian sand", "wind-blown sand", "wind blown sand", "windblown sand", "sand drift", "sand particle", "aeolian sediment", "sand transport"]},
+            {"name": "process", "terms": ["transport", "saltation", "suspension", "entrainment", "erosion", "deposition", "flux", "redistribution", "creep", "particle trajectory", "sand transport rate", "transport dynamics", "impact splash"]}
+          ],
+          "negative_any": ["sand casting", "sand filter", "oil sand", "renal sand", "sand fly", "semiconductor transport", "charge transport", "electron transport", "electrochemical transport", "slurry pipeline", "pneumatic pipeline", "fluvial sediment transport", "submarine sediment transport", "medical aerosol", "drug delivery", "blood flow"],
+          "missing_abstract_policy": "require_all_groups_in_title"
+        }
+      }
+    },
+    {
+      "keyword_zh": "风沙物理学",
+      "profile": {
+        "schema_version": "1.0",
+        "matcher_schema_version": "1.0",
+        "openalex": {"resolved": false, "filter_level": "subfield", "filter_ids": [], "filter_labels": ["Earth-Surface Processes", "Fluid Flow and Transfer Processes"], "refresh_sort": "publication_date:desc,relevance\u005fscore:desc", "backfill_sort": "relevance\u005fscore:desc,cited_by_count:desc"},
+        "crossref": {"scope_policy": "require_openalex_subfield", "refresh_sort": "published", "refresh_order": "desc", "backfill_sort": "relevance", "backfill_order": "desc"},
+        "anchors": {
+          "required_groups": [
+            {"name": "object", "terms": ["aeolian sand", "wind-blown sand", "wind blown sand", "windblown sand", "sand particle", "granular bed", "sand grain", "sand bed"]},
+            {"name": "process", "terms": ["threshold", "threshold friction velocity", "splash", "rebound", "collision", "trajectory", "entrainment", "saltation", "turbulence", "mechanism", "aerodynamic entrainment", "drag force", "granular physics", "particle-fluid interaction"]}
+          ],
+          "negative_any": ["sand casting", "sand filter", "oil sand", "renal sand", "sand fly", "semiconductor transport", "charge transport", "electron transport", "electrochemical transport", "slurry pipeline", "pneumatic pipeline", "fluvial sediment transport", "submarine sediment transport", "medical aerosol", "drug delivery", "blood flow"],
+          "missing_abstract_policy": "require_all_groups_in_title"
+        }
+      }
+    },
+    {
+      "keyword_zh": "风雪动力学",
+      "profile": {
+        "schema_version": "1.0",
+        "matcher_schema_version": "1.0",
+        "openalex": {"resolved": false, "filter_level": "subfield", "filter_ids": [], "filter_labels": ["Atmospheric Science", "Earth-Surface Processes", "Fluid Flow and Transfer Processes"], "refresh_sort": "publication_date:desc,relevance\u005fscore:desc", "backfill_sort": "relevance\u005fscore:desc,cited_by_count:desc"},
+        "crossref": {"scope_policy": "require_openalex_subfield", "refresh_sort": "published", "refresh_order": "desc", "backfill_sort": "relevance", "backfill_order": "desc"},
+        "anchors": {
+          "required_groups": [
+            {"name": "object", "terms": ["blowing snow", "drifting snow", "wind-driven snow", "wind-blown snow", "snowdrift", "snow particle", "snow transport"]},
+            {"name": "process", "terms": ["transport", "saltation", "suspension", "erosion", "deposition", "redistribution", "sublimation", "flux", "snow transport", "particle trajectory", "drift evolution", "deposition dynamics"]}
+          ],
+          "negative_any": ["snow leopard", "snow crab", "snow cover classification", "snowball sampling", "semiconductor transport", "charge transport", "electron transport", "electrochemical transport", "slurry pipeline", "pneumatic pipeline", "fluvial sediment transport", "submarine sediment transport", "medical aerosol", "drug delivery", "blood flow"],
+          "missing_abstract_policy": "require_all_groups_in_title"
+        }
+      }
+    },
+    {
+      "keyword_zh": "风雪物理学",
+      "profile": {
+        "schema_version": "1.0",
+        "matcher_schema_version": "1.0",
+        "openalex": {"resolved": false, "filter_level": "subfield", "filter_ids": [], "filter_labels": ["Atmospheric Science", "Earth-Surface Processes", "Fluid Flow and Transfer Processes"], "refresh_sort": "publication_date:desc,relevance\u005fscore:desc", "backfill_sort": "relevance\u005fscore:desc,cited_by_count:desc"},
+        "crossref": {"scope_policy": "require_openalex_subfield", "refresh_sort": "published", "refresh_order": "desc", "backfill_sort": "relevance", "backfill_order": "desc"},
+        "anchors": {
+          "required_groups": [
+            {"name": "object", "terms": ["blowing snow", "drifting snow", "snow particle", "ice particle", "snow grain", "wind-blown snow", "snow surface"]},
+            {"name": "process", "terms": ["threshold", "threshold friction velocity", "splash", "rebound", "collision", "entrainment", "trajectory", "saltation", "turbulence", "mechanism", "aerodynamic entrainment", "sublimation", "cohesion", "particle-fluid interaction", "snow microphysics"]}
+          ],
+          "negative_any": ["snow leopard", "snow crab", "snow cover classification", "snowball sampling", "semiconductor transport", "charge transport", "electron transport", "electrochemical transport", "slurry pipeline", "pneumatic pipeline", "fluvial sediment transport", "submarine sediment transport", "medical aerosol", "drug delivery", "blood flow"],
+          "missing_abstract_policy": "require_all_groups_in_title"
+        }
+      }
+    }
+  ]
+}

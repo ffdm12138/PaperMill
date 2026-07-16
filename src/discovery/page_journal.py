@@ -14,6 +14,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping
 
@@ -27,6 +28,12 @@ from src.discovery.keyword_notebook import (
     query_identity,
 )
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.discovery.relevance import (
+    RELEVANCE_REASON_VALUES,
+    RELEVANCE_STATES,
+    RelevanceReason,
+)
+from src.utils.atomic_io import atomic_replace_bytes_unlocked
 
 
 from src.discovery.constants import INITIAL_CURSOR
@@ -69,6 +76,12 @@ CandidateState = Literal[
     "failed_terminal",
 ]
 
+RELEVANCE_TERMINAL_STATES = {"rejected", "candidate_invalid"}
+RELEVANCE_CLAIMABLE_STATES = {"passed"}
+RELEVANCE_PROFILE_CHANGE_CLOSEABLE_STATES = {
+    "profile_unbound", "passed", "verification_deferred",
+}
+
 TERMINAL_CANDIDATE_STATES = {
     "staged",
     "emitted",
@@ -85,6 +98,51 @@ NONTERMINAL_CANDIDATE_STATES = {
     "processing",
     "failed_retryable",
 }
+
+PROFILE_CLOSEABLE_CANDIDATE_STATES = frozenset({
+    "pending", "resolution_pending", "ready",
+})
+PROFILE_RECOVERY_REQUIRED_CANDIDATE_STATES = frozenset({
+    "processing", "failed_retryable",
+})
+DURABLE_DOI_CANDIDATE_STATES = frozenset({
+    "staged", "emitted", "existing_duplicate", "duplicate_observation",
+})
+
+
+class CandidateLifecycleClass(str, Enum):
+    PRE_STAGING_CLOSEABLE = "pre_staging_closeable"
+    RECOVERY_REQUIRED = "recovery_required"
+    COMPLETED_TERMINAL = "completed_terminal"
+    INVALID = "invalid"
+
+
+def classify_candidate_lifecycle(status: Any) -> CandidateLifecycleClass:
+    """Classify lifecycle facts once for profile transactions and indexes."""
+    value = str(status or "")
+    if value in PROFILE_CLOSEABLE_CANDIDATE_STATES:
+        return CandidateLifecycleClass.PRE_STAGING_CLOSEABLE
+    if value in PROFILE_RECOVERY_REQUIRED_CANDIDATE_STATES:
+        return CandidateLifecycleClass.RECOVERY_REQUIRED
+    if value in TERMINAL_CANDIDATE_STATES:
+        return CandidateLifecycleClass.COMPLETED_TERMINAL
+    return CandidateLifecycleClass.INVALID
+
+
+def is_profile_closeable_candidate(
+    candidate: Mapping[str, Any], *, target_profile_hash: str,
+) -> bool:
+    relevance = candidate.get("relevance")
+    old_hash = (
+        str(relevance.get("profile_hash") or "")
+        if isinstance(relevance, Mapping) else ""
+    )
+    return bool(
+        classify_candidate_lifecycle(candidate.get("status"))
+        is CandidateLifecycleClass.PRE_STAGING_CLOSEABLE
+        and _relevance_state(candidate) in RELEVANCE_PROFILE_CHANGE_CLOSEABLE_STATES
+        and old_hash != target_profile_hash
+    )
 
 _PAGE_TRANSITIONS = {
     "fetched": {"cursor_committed", "failed"},
@@ -263,10 +321,16 @@ def title_resolution_key(candidate: dict[str, Any] | PaperCandidate) -> str:
     return stable_hash("resolution", normalize_title(title), year or "", first_author.lower(), length=40)
 
 
-def _candidate_record(page_id_value: str, candidate: PaperCandidate, index: int) -> dict[str, Any]:
+def _candidate_record(
+    page_id_value: str,
+    candidate: PaperCandidate,
+    index: int,
+    *,
+    relevance_profile_hash: str | None = None,
+) -> dict[str, Any]:
     cid = candidate_id(page_id_value, candidate, index)
     payload = candidate.to_dict()
-    return {
+    record = {
         "candidate_id": cid,
         "candidate": payload,
         "status": "pending",
@@ -282,6 +346,21 @@ def _candidate_record(page_id_value: str, candidate: PaperCandidate, index: int)
         "emitted_at": None,
         "reconciled": False,
     }
+    if relevance_profile_hash is not None:
+        record["relevance"] = {
+            "state": "profile_unbound",
+            "profile_hash": relevance_profile_hash,
+            "matched_groups": {},
+            "negative_matches": [],
+            "reason": "",
+            "verification": {},
+            "attempt_count": 0,
+            "next_retry_at": None,
+            "last_attempt_at": None,
+            "last_error_class": None,
+            "last_http_status": None,
+        }
+    return record
 
 
 def _atomic_write_json_unlocked(path: Path, data: dict[str, Any]) -> None:
@@ -371,11 +450,33 @@ def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
     if not isinstance(data.get("candidates"), list):
         raise JournalCorruptError(f"journal candidates must be list: {path or ''}")
     for item in data["candidates"]:
-        if not isinstance(item, dict) or "candidate_id" not in item:
+        if not isinstance(item, dict) or not isinstance(item.get("candidate_id"), str) or not item.get("candidate_id"):
             raise JournalCorruptError(f"invalid candidate record: {path or ''}")
         status = item.get("status")
         if status not in _CANDIDATE_TRANSITIONS:
             raise JournalCorruptError(f"invalid candidate state {status}: {path or ''}")
+        relevance = item.get("relevance")
+        if relevance is not None:
+            if not isinstance(relevance, dict) or relevance.get("state") not in RELEVANCE_STATES:
+                raise JournalCorruptError(f"invalid candidate relevance state: {path or ''}")
+            required_relevance = {
+                "state", "profile_hash", "matched_groups", "negative_matches",
+                "reason", "verification", "attempt_count", "next_retry_at",
+                "last_attempt_at", "last_error_class", "last_http_status",
+            }
+            if not required_relevance.issubset(relevance):
+                raise JournalCorruptError(f"candidate relevance is incomplete: {path or ''}")
+            if not isinstance(relevance.get("profile_hash"), str):
+                raise JournalCorruptError(f"candidate relevance profile_hash is invalid: {path or ''}")
+            reason = relevance.get("reason")
+            if not isinstance(reason, str) or (reason and reason not in RELEVANCE_REASON_VALUES):
+                raise JournalCorruptError(
+                    f"candidate relevance reason is unknown_reason: {path or ''}"
+                )
+            if not isinstance(relevance.get("matched_groups"), dict) or not isinstance(relevance.get("negative_matches"), list):
+                raise JournalCorruptError(f"candidate relevance evidence is invalid: {path or ''}")
+            if isinstance(relevance.get("attempt_count"), bool) or not isinstance(relevance.get("attempt_count"), int) or relevance.get("attempt_count") < 0:
+                raise JournalCorruptError(f"candidate relevance attempt_count is invalid: {path or ''}")
     if not isinstance(data.get("statistics"), dict):
         raise JournalCorruptError(f"journal statistics must be object: {path or ''}")
     return data
@@ -449,11 +550,25 @@ class JournalDrainIndex:
     pages_read: int = 0
     lookups: int = 0
     delayed_candidate_ids: set[str] = field(default_factory=set)
+    active_profile_hashes: dict[str, str] = field(default_factory=dict)
+    relevance_updates: int = 0
+    binding_invariant_failures: int = 0
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     @classmethod
-    def build(cls, store: "PageJournalStore") -> "JournalDrainIndex":
-        index = cls({}, {}, {}, {}, {}, {}, set(), pages_read=0)
+    def build(
+        cls,
+        store: "PageJournalStore",
+        *,
+        active_profile_hashes: Mapping[str, str],
+    ) -> "JournalDrainIndex":
+        bindings = {str(key): str(value) for key, value in active_profile_hashes.items()}
+        if any(not key or not value for key, value in bindings.items()):
+            raise ValueError("active relevance profile bindings must be non-blank")
+        index = cls(
+            {}, {}, {}, {}, {}, {}, set(), pages_read=0,
+            active_profile_hashes=bindings,
+        )
         if not store.root_dir.exists():
             return index
         now_dt = datetime.now(timezone.utc)
@@ -462,6 +577,7 @@ class JournalDrainIndex:
             index.pages_read += 1
             index.page_cache[path] = page
             keyword_id = str(page["keyword_id"])
+            expected_profile_hash = bindings.get(keyword_id)
             queue = index.claimable_by_keyword.setdefault(keyword_id, deque())
             for item in page["candidates"]:
                 cid = str(item.get("candidate_id") or "")
@@ -475,17 +591,26 @@ class JournalDrainIndex:
                 claimable = (not next_attempt or next_attempt <= now_dt) and (
                     status in {"pending", "ready", "failed_retryable"}
                     or status == "processing" and (not expires or expires <= now_dt))
+                claimable = bool(expected_profile_hash) and claimable and _relevance_claimable(
+                    item, expected_profile_hash,
+                )
                 if claimable and page["state"] in {"cursor_committed", "draining"}:
                     queue.append(cid)
                 elif (next_attempt and next_attempt > now_dt
                       and status in {"pending", "ready", "failed_retryable"}
+                      and bool(expected_profile_hash)
+                      and _relevance_claimable(item, expected_profile_hash)
                       and page["state"] in {"cursor_committed", "draining"}):
                     index.delayed_candidate_ids.add(cid)
-                if status == "processing" and doi and expires and expires > now_dt:
+                if (
+                    status == "processing" and doi and expires and expires > now_dt
+                    and bool(expected_profile_hash)
+                    and _relevance_claimable(item, expected_profile_hash)
+                ):
                     index.processing_by_doi.setdefault(doi, cid)
                 elif status == "emitted" and doi:
                     index.emitted_by_doi.setdefault(doi, EmittedPrimaryRef(cid, path, dict(item)))
-                elif status in TERMINAL_CANDIDATE_STATES and doi:
+                if status in DURABLE_DOI_CANDIDATE_STATES and doi:
                     index.terminal_by_doi.setdefault(doi, []).append(cid)
         return index
 
@@ -494,8 +619,35 @@ class JournalDrainIndex:
             self._promote_due_candidates()
             self.lookups += 1
             wanted = set(keyword_ids or self.claimable_by_keyword)
-            return [self.candidate_by_id[cid] for keyword in sorted(wanted)
-                    for cid in self.claimable_by_keyword.get(keyword, ())]
+            return [
+                self.candidate_by_id[cid]
+                for keyword in sorted(wanted)
+                for cid in self.claimable_by_keyword.get(keyword, ())
+                if _relevance_claimable(
+                    self.candidate_by_id[cid].payload,
+                    self.active_profile_hashes.get(keyword),
+                )
+            ]
+
+    def bind_active_profile(self, keyword_id: str, profile_hash_value: str) -> None:
+        """Defensively remove stale candidates from transient projections only."""
+        with self._lock:
+            self.active_profile_hashes[keyword_id] = profile_hash_value
+            stale_ids = {
+                cid for cid, ref in self.candidate_by_id.items()
+                if ref.keyword_id == keyword_id
+                and not _relevance_claimable(ref.payload, profile_hash_value)
+            }
+            queue = self.claimable_by_keyword.setdefault(keyword_id, deque())
+            self.claimable_by_keyword[keyword_id] = deque(
+                cid for cid in queue if cid not in stale_ids
+            )
+            self.delayed_candidate_ids.difference_update(stale_ids)
+            for doi, cid in list(self.processing_by_doi.items()):
+                if cid in stale_ids:
+                    self.processing_by_doi.pop(doi, None)
+            # Emitted and other durable DOI facts are lifecycle projections;
+            # active relevance changes must never remove them.
 
     def add_page(self, path: Path, page: Mapping[str, Any]) -> None:
         """Publish a freshly persisted page without another full journal scan."""
@@ -503,6 +655,7 @@ class JournalDrainIndex:
             materialized = dict(page)
             self.page_cache[path] = materialized
             keyword_id = str(page["keyword_id"])
+            expected_profile_hash = self.active_profile_hashes.get(keyword_id)
             queue = self.claimable_by_keyword.setdefault(keyword_id, deque())
             now_dt = datetime.now(timezone.utc)
             for raw in page.get("candidates", []):
@@ -514,21 +667,43 @@ class JournalDrainIndex:
                 status = str(item.get("status") or "")
                 expires = parse_iso(item.get("lease_expires_at"))
                 next_attempt = parse_iso(item.get("next_attempt_at"))
-                if (not next_attempt or next_attempt <= now_dt) and (
-                    status in {"pending", "ready", "failed_retryable"}
-                    or status == "processing" and (not expires or expires <= now_dt)):
+                if (
+                    (not next_attempt or next_attempt <= now_dt)
+                    and (
+                        status in {"pending", "ready", "failed_retryable"}
+                        or status == "processing" and (not expires or expires <= now_dt)
+                    )
+                    and bool(expected_profile_hash)
+                    and _relevance_claimable(item, expected_profile_hash)
+                ):
                     queue.append(cid)
                 elif next_attempt and next_attempt > now_dt and status in {
                     "pending", "ready", "failed_retryable"
-                }:
+                } and bool(expected_profile_hash) and _relevance_claimable(
+                    item, expected_profile_hash,
+                ):
                     self.delayed_candidate_ids.add(cid)
+                doi = _candidate_doi(item)
+                if status == "emitted" and doi:
+                    self.emitted_by_doi.setdefault(
+                        doi, EmittedPrimaryRef(cid, path, dict(item)))
+                if status in DURABLE_DOI_CANDIDATE_STATES and doi:
+                    self.terminal_by_doi.setdefault(doi, []).append(cid)
 
     def pending_count(self, keyword_ids: Iterable[str] | None = None) -> int:
         with self._lock:
             self._promote_due_candidates()
             self.lookups += 1
             wanted = set(keyword_ids or self.claimable_by_keyword)
-            return sum(len(self.claimable_by_keyword.get(keyword, ())) for keyword in wanted)
+            return sum(
+                1
+                for keyword in wanted
+                for cid in self.claimable_by_keyword.get(keyword, ())
+                if _relevance_claimable(
+                    self.candidate_by_id[cid].payload,
+                    self.active_profile_hashes.get(keyword),
+                )
+            )
 
     def update_candidate(self, page_path: Path, item: Mapping[str, Any]) -> None:
         with self._lock:
@@ -563,15 +738,22 @@ class JournalDrainIndex:
             next_attempt = parse_iso(item.get("next_attempt_at"))
             now_dt = datetime.now(timezone.utc)
             page_state = str((self.page_cache.get(page_path) or {}).get("state") or "")
-            if status == "processing" and doi and expires and expires > now_dt:
+            expected_profile_hash = self.active_profile_hashes.get(keyword_id)
+            if (
+                status == "processing" and doi and expires and expires > now_dt
+                and bool(expected_profile_hash)
+                and _relevance_claimable(materialized, expected_profile_hash)
+            ):
                 self.processing_by_doi.setdefault(doi, cid)
             elif status == "emitted" and doi:
                 self.emitted_by_doi[doi] = EmittedPrimaryRef(cid, page_path, materialized)
-            elif status in TERMINAL_CANDIDATE_STATES and doi:
+            if status in DURABLE_DOI_CANDIDATE_STATES and doi:
                 self.terminal_by_doi.setdefault(doi, []).append(cid)
             if page_state in {"cursor_committed", "draining"} and (
                 status in {"pending", "ready", "failed_retryable"}
                 or status == "processing" and (not expires or expires <= now_dt)
+            ) and bool(expected_profile_hash) and _relevance_claimable(
+                materialized, expected_profile_hash,
             ):
                 if not next_attempt or next_attempt <= now_dt:
                     self.claimable_by_keyword.setdefault(keyword_id, deque()).append(cid)
@@ -591,14 +773,138 @@ class JournalDrainIndex:
                 "cursor_committed", "draining"
             }:
                 queue = self.claimable_by_keyword.setdefault(ref.keyword_id, deque())
-                if cid not in queue:
+                expected_profile_hash = self.active_profile_hashes.get(ref.keyword_id)
+                if (
+                    expected_profile_hash
+                    and _relevance_claimable(ref.payload, expected_profile_hash)
+                    and cid not in queue
+                ):
                     queue.append(cid)
                 self.delayed_candidate_ids.discard(cid)
+
+    def apply_relevance_updates(
+        self, page_path: Path, candidates: Iterable[Mapping[str, Any]],
+    ) -> None:
+        """Incrementally publish persisted deferred-relevance decisions."""
+        for candidate in candidates:
+            self.update_candidate(page_path, candidate)
+            self.relevance_updates += 1
+
+    def assert_active_bindings(self, expected: Mapping[str, str]) -> None:
+        materialized = {str(key): str(value) for key, value in expected.items()}
+        if self.active_profile_hashes != materialized:
+            self.binding_invariant_failures += 1
+            raise RuntimeError("journal index active relevance bindings drifted")
 
 
 def _candidate_doi(item: Mapping[str, Any]) -> str:
     payload = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
     return normalize_doi(payload.get("doi") or "")
+
+
+def _relevance_state(item: Mapping[str, Any]) -> str:
+    """Return the orthogonal relevance state for one candidate.
+
+    Journals written before relevance was introduced are interpreted as
+    already claimable legacy observations.  Active profile-bound pages always
+    carry an explicit ``profile_unbound`` record before cursor commit.
+    """
+    relevance = item.get("relevance")
+    if isinstance(relevance, Mapping):
+        return str(relevance.get("state") or "profile_unbound")
+    return "passed"
+
+
+def _relevance_claimable(
+    item: Mapping[str, Any], expected_profile_hash: str | None = None,
+) -> bool:
+    if _relevance_state(item) not in RELEVANCE_CLAIMABLE_STATES:
+        return False
+    if expected_profile_hash is None:
+        return True
+    relevance = item.get("relevance")
+    return bool(
+        isinstance(relevance, Mapping)
+        and relevance.get("profile_hash") == expected_profile_hash
+    )
+
+
+def _serialized_page_bytes(data: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        data, ensure_ascii=False, indent=2, sort_keys=False,
+    ).encode("utf-8")
+
+
+def transform_page_for_profile_closure(
+    page_bytes: bytes,
+    *,
+    planned_mutations: tuple[Mapping[str, Any], ...],
+    closure_timestamp: str,
+    transaction_id: str,
+    reason: RelevanceReason,
+    target_profile_hash: str,
+) -> bytes:
+    """Pure, byte-deterministic stale-profile page transformation."""
+    try:
+        raw = json.loads(page_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise JournalCorruptError("profile closure page bytes are invalid JSON") from exc
+    data = validate_page(raw)
+    by_id = {
+        str(item.get("candidate_id") or ""): item
+        for item in planned_mutations
+    }
+    if "" in by_id or len(by_id) != len(planned_mutations):
+        raise InvalidStateTransition("planned profile mutations need unique candidate IDs")
+    seen: set[str] = set()
+    for item in data["candidates"]:
+        cid = str(item.get("candidate_id") or "")
+        mutation = by_id.get(cid)
+        if mutation is None:
+            continue
+        if not is_profile_closeable_candidate(
+            item, target_profile_hash=target_profile_hash,
+        ):
+            raise InvalidStateTransition(
+                f"candidate {cid} is no longer profile-closeable"
+            )
+        relevance = item.get("relevance")
+        old_hash = (
+            str(relevance.get("profile_hash") or "")
+            if isinstance(relevance, Mapping) else ""
+        )
+        item["relevance"] = {
+            "state": "rejected",
+            "profile_hash": old_hash,
+            "matched_groups": {},
+            "negative_matches": [],
+            "reason": reason.value,
+            "verification": {
+                "status": "profile_superseded",
+                "superseded_by_profile_hash": target_profile_hash,
+                "profile_transaction_id": transaction_id,
+                "profile_mutation_id": str(mutation.get("mutation_id") or ""),
+            },
+            "attempt_count": int(
+                relevance.get("attempt_count") or 0
+            ) if isinstance(relevance, Mapping) else 0,
+            "next_retry_at": None,
+            "last_attempt_at": closure_timestamp,
+            "last_error_class": None,
+            "last_http_status": None,
+        }
+        seen.add(cid)
+    missing = sorted(set(by_id) - seen)
+    if missing:
+        raise KeyError("planned profile candidates missing: " + ",".join(missing))
+    if _all_terminal(data["candidates"]) and data["state"] in {
+        "cursor_committed", "draining",
+    }:
+        data["state"] = "drained"
+        data["drained_at"] = data.get("drained_at") or closure_timestamp
+    data["statistics"] = _statistics(data["candidates"])
+    validate_page(data)
+    return _serialized_page_bytes(data)
 
 
 class PageJournalStore:
@@ -672,9 +978,15 @@ class PageJournalStore:
         refresh_run_id: str | None = None,
         page_sequence: int | None = None,
         state: PageState = "fetched",
+        relevance_profile_hash: str | None = None,
     ) -> dict[str, Any]:
         now = now_iso()
-        records = [_candidate_record(page_id, cand, idx) for idx, cand in enumerate(candidates)]
+        records = [
+            _candidate_record(
+                page_id, cand, idx, relevance_profile_hash=relevance_profile_hash
+            )
+            for idx, cand in enumerate(candidates)
+        ]
         return {
             "schema_version": PAGE_SCHEMA_VERSION,
             "page_id": page_id,
@@ -724,7 +1036,168 @@ class PageJournalStore:
                 raise InvalidStateTransition(f"cannot mark cursor_committed from {data['state']}")
             data["state"] = "cursor_committed"
             data["cursor_committed_at"] = now_iso()
+            # A profile-bound page with only rejected/invalid relevance
+            # decisions has no candidate work left to drain.  Preserve the
+            # legacy cursor-commit state for pre-profile pages, but close
+            # explicit relevance pages immediately.
+            if (
+                data["candidates"]
+                and all(isinstance(item.get("relevance"), Mapping) for item in data["candidates"])
+                and _all_terminal(data["candidates"])
+            ):
+                data["state"] = "drained"
+                data["drained_at"] = data.get("drained_at") or now_iso()
             data["statistics"] = _statistics(data["candidates"])
+            _atomic_write_json_unlocked(path, data)
+            return data
+
+    def finalize_relevance(
+        self,
+        path: Path,
+        decisions: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Persist notebook-local relevance decisions before cursor CAS.
+
+        This mutation is intentionally valid only while a page is ``fetched``.
+        A second invocation is idempotent for already materialized decisions,
+        but it refuses to rewrite a page whose cursor has already advanced.
+        Candidate lifecycle fields are never changed here.
+        """
+        with self.lock_for(path):
+            data = self.read(path)
+            if data["state"] != "fetched":
+                if data["state"] in {"cursor_committed", "draining", "drained"}:
+                    return data
+                raise InvalidStateTransition(
+                    f"cannot finalize relevance for page state {data['state']}"
+                )
+            by_id = {str(key): value for key, value in decisions.items()}
+            seen: set[str] = set()
+            for item in data["candidates"]:
+                cid = str(item.get("candidate_id") or "")
+                decision = by_id.get(cid)
+                if decision is None:
+                    continue
+                if not isinstance(decision, Mapping):
+                    raise JournalCorruptError(f"relevance decision must be object: {path}")
+                new_state = str(decision.get("state") or "")
+                if new_state not in RELEVANCE_STATES or new_state == "profile_unbound":
+                    raise InvalidStateTransition(f"invalid relevance decision {new_state!r}")
+                old_state = (
+                    _relevance_state(item)
+                    if isinstance(item.get("relevance"), Mapping)
+                    else "profile_unbound"
+                )
+                allowed = {
+                    "profile_unbound": RELEVANCE_STATES - {"profile_unbound"},
+                    "verification_deferred": RELEVANCE_STATES - {"profile_unbound"},
+                    "passed": {"passed"},
+                    "rejected": {"rejected"},
+                    "candidate_invalid": {"candidate_invalid"},
+                }.get(old_state, set())
+                if new_state not in allowed:
+                    raise InvalidStateTransition(
+                        f"relevance {old_state} -> {new_state} is not allowed"
+                    )
+                materialized = dict(decision)
+                materialized.setdefault("profile_hash", "")
+                materialized.setdefault("matched_groups", {})
+                materialized.setdefault("negative_matches", [])
+                materialized.setdefault("reason", "")
+                materialized.setdefault("verification", {})
+                materialized.setdefault("attempt_count", 0)
+                materialized.setdefault("next_retry_at", None)
+                materialized.setdefault("last_attempt_at", None)
+                materialized.setdefault("last_error_class", None)
+                materialized.setdefault("last_http_status", None)
+                old_relevance = item.get("relevance")
+                old_profile_hash = (
+                    str(old_relevance.get("profile_hash") or "")
+                    if isinstance(old_relevance, Mapping) else ""
+                )
+                decision_profile_hash = str(materialized.get("profile_hash") or "")
+                if old_profile_hash and decision_profile_hash != old_profile_hash:
+                    raise InvalidStateTransition(
+                        f"relevance profile hash changed for candidate {cid}"
+                    )
+                item["relevance"] = materialized
+                seen.add(cid)
+            unknown = sorted(set(by_id) - seen)
+            if unknown:
+                raise KeyError(f"relevance decisions reference unknown candidates: {unknown}")
+            still_unbound = sorted(
+                str(item.get("candidate_id") or "")
+                for item in data["candidates"]
+                if _relevance_state(item) == "profile_unbound"
+            )
+            if still_unbound:
+                raise InvalidStateTransition(
+                    "relevance finalization left profile_unbound candidates: "
+                    + ",".join(still_unbound)
+                )
+            data["statistics"] = _statistics(data["candidates"])
+            _atomic_write_json_unlocked(path, data)
+            return data
+
+    def close_stale_profile_candidates(
+        self,
+        path: Path,
+        *,
+        new_profile_hash: str,
+        planned_mutations: tuple[Mapping[str, Any], ...],
+        closure_timestamp: str,
+        transaction_id: str,
+        reason: RelevanceReason = RelevanceReason.STALE_PROFILE_CLOSED_BY_PROFILE_APPLY,
+    ) -> dict[str, Any]:
+        """Reject every nonterminal relevance verdict from an older profile.
+
+        Page ``generation`` belongs to the provider lane and is deliberately
+        not consulted here.  Candidate receipts and the request signature are
+        the profile identity facts.
+        """
+        with self.lock_for(path):
+            transformed = transform_page_for_profile_closure(
+                path.read_bytes(),
+                planned_mutations=planned_mutations,
+                closure_timestamp=closure_timestamp,
+                transaction_id=transaction_id,
+                reason=reason,
+                target_profile_hash=new_profile_hash,
+            )
+            data = json.loads(transformed.decode("utf-8"))
+            atomic_replace_bytes_unlocked(path, transformed)
+            return data
+
+    def retry_deferred_relevance(
+        self,
+        path: Path,
+        decisions: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Update due deferred decisions without reopening a committed page."""
+        with self.lock_for(path):
+            data = self.read(path)
+            by_id = {str(key): value for key, value in decisions.items()}
+            for item in data["candidates"]:
+                cid = str(item.get("candidate_id") or "")
+                if cid not in by_id:
+                    continue
+                if _relevance_state(item) != "verification_deferred":
+                    continue
+                decision = by_id[cid]
+                state = str(decision.get("state") or "")
+                if state not in RELEVANCE_STATES - {"profile_unbound"}:
+                    raise InvalidStateTransition(f"invalid deferred relevance state {state!r}")
+                old_hash = str((item.get("relevance") or {}).get("profile_hash") or "")
+                new_hash = str(decision.get("profile_hash") or "")
+                if old_hash and old_hash != new_hash:
+                    raise InvalidStateTransition(
+                        f"deferred relevance profile hash changed for candidate {cid}"
+                    )
+                item["relevance"] = dict(decision)
+            data["statistics"] = _statistics(data["candidates"])
+            if _all_terminal(data["candidates"]) and data["state"] in {"cursor_committed", "draining"}:
+                data["state"] = "drained"
+                data["drained_at"] = data.get("drained_at") or now_iso()
             _atomic_write_json_unlocked(path, data)
             return data
 
@@ -763,7 +1236,7 @@ class PageJournalStore:
         for ref in self.list_pages(keyword_ids):
             data = self.read(ref.path)
             for item in data["candidates"]:
-                if item.get("status") in NONTERMINAL_CANDIDATE_STATES:
+                if _relevance_claimable(item) and item.get("status") in NONTERMINAL_CANDIDATE_STATES:
                     count += 1
         return count
 
@@ -799,6 +1272,8 @@ class PageJournalStore:
                     return ClaimResult(False, page_path, candidate_id_value, reason="deferred_until_next_attempt")
                 if status == "processing" and expires and expires > now_dt:
                     return ClaimResult(False, page_path, candidate_id_value, reason="lease_active")
+                if not _relevance_claimable(item):
+                    return ClaimResult(False, page_path, candidate_id_value, reason="relevance_not_passed")
                 if status not in {"pending", "ready", "failed_retryable", "processing"}:
                     return ClaimResult(False, page_path, candidate_id_value, reason=f"not_claimable:{status}")
                 _transition_candidate(item, "processing")
@@ -813,7 +1288,8 @@ class PageJournalStore:
 
     def claim_candidates_from_page(self, page_path: Path, *, worker_id: str,
                                    lease_seconds: int, limit: int = 16,
-                                   candidate_ids: Iterable[str] | None = None) -> list[CandidateClaim]:
+                                   candidate_ids: Iterable[str] | None = None,
+                                   expected_profile_hash: str | None = None) -> list[CandidateClaim]:
         """Claim up to ``limit`` candidates with one page read and one fsync."""
         if limit < 1:
             return []
@@ -835,6 +1311,8 @@ class PageJournalStore:
                 expires = parse_iso(item.get("lease_expires_at"))
                 next_attempt = parse_iso(item.get("next_attempt_at"))
                 status = item.get("status")
+                if not _relevance_claimable(item, expected_profile_hash):
+                    continue
                 if next_attempt and next_attempt > now_dt:
                     continue
                 if status == "processing" and expires and expires > now_dt:
@@ -1026,13 +1504,15 @@ class PageJournalStore:
             data = self.read(ref.path)
             for item in data["candidates"]:
                 status = item.get("status")
+                if not _relevance_claimable(item):
+                    continue
                 expires = parse_iso(item.get("lease_expires_at"))
                 next_attempt = parse_iso(item.get("next_attempt_at"))
                 if next_attempt and next_attempt > now_dt:
                     continue
-                if status in {"pending", "ready", "failed_retryable"}:
+                if _relevance_claimable(item) and status in {"pending", "ready", "failed_retryable"}:
                     out.append((ref.path, dict(item)))
-                elif status == "processing" and (not expires or expires <= now_dt):
+                elif _relevance_claimable(item) and status == "processing" and (not expires or expires <= now_dt):
                     out.append((ref.path, dict(item)))
         return out
 
@@ -1047,7 +1527,11 @@ def _transition_candidate(item: dict[str, Any], new_state: CandidateState) -> No
 
 
 def _all_terminal(candidates: list[dict[str, Any]]) -> bool:
-    return all(item.get("status") in TERMINAL_CANDIDATE_STATES for item in candidates)
+    return all(
+        item.get("status") in TERMINAL_CANDIDATE_STATES
+        or _relevance_state(item) in RELEVANCE_TERMINAL_STATES
+        for item in candidates
+    )
 
 
 def _statistics(candidates: list[dict[str, Any]]) -> dict[str, int]:
@@ -1063,13 +1547,23 @@ def _statistics(candidates: list[dict[str, Any]]) -> dict[str, int]:
         "unresolved": 0,
         "failed_retryable": 0,
         "failed_terminal": 0,
+        "relevance_profile_unbound": 0,
+        "relevance_passed": 0,
+        "relevance_rejected": 0,
+        "relevance_verification_deferred": 0,
+        "relevance_candidate_invalid": 0,
     }
     for item in candidates:
         status = str(item.get("status") or "")
-        if status in TERMINAL_CANDIDATE_STATES:
+        relevance_state = _relevance_state(item)
+        relevance_key = f"relevance_{relevance_state}"
+        if relevance_key in stats:
+            stats[relevance_key] += 1
+        if status in TERMINAL_CANDIDATE_STATES or relevance_state in RELEVANCE_TERMINAL_STATES:
             stats["terminal"] += 1
         else:
-            stats["pending"] += 1
+            if relevance_state == "passed":
+                stats["pending"] += 1
         if status in stats:
             stats[status] += 1
         if status == "invalid_doi":

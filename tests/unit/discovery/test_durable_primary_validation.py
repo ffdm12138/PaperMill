@@ -13,6 +13,7 @@ pytestmark = pytest.mark.unit
 KEYWORD_ZH = "测试关键词"
 KEYWORD_ID = keyword_id(KEYWORD_ZH)
 QUERY_ID = query_identity("zh", KEYWORD_ZH)
+PROFILE_HASH = "test-active-profile"
 
 
 def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/export") -> Path:
@@ -30,8 +31,9 @@ def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/expor
         next_cursor=None,
         provider_exhausted=True,
         candidates=[PaperCandidate(title=f"T {page_id}", doi=doi)],
-        state="cursor_committed",
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
     )
+    page["candidates"][0]["relevance"]["state"] = "passed"
     return store.write_page(page)
 
 
@@ -48,6 +50,7 @@ def _drain(tmp_path: Path, store: PageJournalStore):
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
 
 

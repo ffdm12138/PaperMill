@@ -10,6 +10,9 @@ import pytest
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.keyword_notebook import KeywordNotebookStore
 from src.discovery.models import PaperCandidate
+from tests.helpers.relevance_profiles import (
+    AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
+)
 
 
 pytestmark = pytest.mark.unit
@@ -22,6 +25,7 @@ def _seed_ready_notebook(store: KeywordNotebookStore, keyword_zh: str) -> None:
         {"query": keyword_zh, "language": "zh"},
         {"query": "blowing snow", "language": "en"},
     ])
+    bind_test_relevance_profile(store, keyword_zh)
     store.set_enabled(keyword_zh, True)
 
 
@@ -44,7 +48,7 @@ def test_global_page_budget_counts_network_requests(tmp_path: Path):
 
     def fetch(provider: str, query: str, **kwargs):
         calls.append(f"{provider}:{kwargs['lane']}:{kwargs['cursor']}")
-        return _Page([PaperCandidate(title="T", doi=f"10.1234/{len(calls)}")], next_cursor=f"C{len(calls)}", exhausted=False)
+        return _Page([relevance_candidate(doi=f"10.1234/{len(calls)}")], next_cursor=f"C{len(calls)}", exhausted=False)
 
     nb_dir = tmp_path / "notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
@@ -60,6 +64,7 @@ def test_global_page_budget_counts_network_requests(tmp_path: Path):
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
     report = run_discovery_batch(["风吹雪"], options=options, max_workers=4, fetch_page=fetch)
     assert len(calls) == 2
@@ -88,6 +93,7 @@ def test_report_aggregation_uses_in_memory_objects(tmp_path: Path):
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
     report = run_discovery_batch(["主题甲", "主题乙"], options=options, max_workers=2, fetch_page=lambda *a, **k: _Page([]))
     assert report.to_dict()["schema_version"] == "3.0"
@@ -126,6 +132,7 @@ def test_invalid_or_unready_notebook_fails_closed_without_provider_calls(tmp_pat
         locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
     report = run_discovery_batch(
         ["风吹雪"], options=options, max_workers=1,
@@ -156,6 +163,35 @@ def test_disabled_notebook_is_the_only_zero_exit_skip(tmp_path: Path):
     assert report.keywords[0].status == "skipped"
 
 
+def test_durable_applying_profile_journal_blocks_before_provider_io(tmp_path: Path):
+    nb_dir = tmp_path / "notebooks"
+    store = KeywordNotebookStore(nb_dir)
+    store.ensure_notebook("风吹雪")
+    store.set_enabled("风吹雪", False)
+    transaction_root = tmp_path / "transactions" / "relevance_profiles"
+    transaction_root.mkdir(parents=True)
+    transaction_path = transaction_root / "crashed.json"
+    transaction_path.write_text(json.dumps({
+        "schema_version": "2.0", "transaction_id": "crashed", "state": "applying",
+    }), encoding="utf-8")
+    calls = []
+    options = DiscoveryOptions(
+        mode="refresh", refresh_pages=1, backfill_pages=1, max_candidates=0,
+        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
+        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
+        relevance_profiles_transaction_root=transaction_root,
+    )
+    with pytest.raises(RuntimeError, match="durably applying") as caught:
+        run_discovery_batch(
+            ["风吹雪"], options=options, max_workers=1,
+            fetch_page=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+    assert str(transaction_path.resolve()) in str(caught.value)
+    assert calls == []
+
+
 def test_two_chinese_and_two_english_queries_schedule_both_providers(tmp_path: Path):
     nb_dir = tmp_path / "notebooks"
     store = KeywordNotebookStore(nb_dir)
@@ -166,6 +202,7 @@ def test_two_chinese_and_two_english_queries_schedule_both_providers(tmp_path: P
         {"query": "atmospheric boundary layer", "language": "en"},
         {"query": "boundary layer turbulence", "language": "en"},
     ])
+    bind_test_relevance_profile(store, "大气边界层")
     store.set_enabled("大气边界层", True)
     calls = []
     options = DiscoveryOptions(
@@ -209,7 +246,7 @@ def test_until_exhausted_drains_provider_journal_and_staging_queue(tmp_path: Pat
             start = counter
             counter += 3
         return _Page([
-            PaperCandidate(title=f"T {start + index}", doi=f"10.9900/{start + index}")
+            relevance_candidate(title=f"Test candidate {start + index}", doi=f"10.9900/{start + index}")
             for index in range(3)
         ], exhausted=True)
 
@@ -220,6 +257,7 @@ def test_until_exhausted_drains_provider_journal_and_staging_queue(tmp_path: Pat
         exports_dir=tmp_path / "exports", output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw", papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
 
     report = run_discovery_batch(
@@ -259,12 +297,13 @@ def test_consumer_exception_is_reported_without_queue_join_deadlock(
         locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
 
     report = run_discovery_batch(
         ["风吹雪"], options=options, max_workers=1,
         fetch_page=lambda *args, **kwargs: _Page([
-            PaperCandidate(title="T", doi="10.9901/consumer")]),
+            relevance_candidate(doi="10.9901/consumer")]),
     )
 
     assert report.status == "partial_success"
@@ -304,7 +343,7 @@ def test_candidate_weighted_queue_applies_dynamic_backpressure(
         fetch_calls += 1
         if fetch_calls == 1:
             return _Page([
-                PaperCandidate(title=f"T {index}", doi=f"10.9902/{index}")
+                relevance_candidate(title=f"Test candidate {index}", doi=f"10.9902/{index}")
                 for index in range(3)
             ])
         return _Page([])
@@ -315,6 +354,7 @@ def test_candidate_weighted_queue_applies_dynamic_backpressure(
         locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
     holder: dict[str, object] = {}
 

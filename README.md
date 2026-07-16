@@ -141,6 +141,17 @@ python scripts/sync_catalog_categories.py --apply
 python scripts/doctor_catalog_folders.py --json
 ```
 
+Discovery relevance is notebook-local and fail-closed. Enabled notebooks bind
+one taxonomy-resolved profile before provider I/O, and each batch freezes the
+complete active mapping once. Profile replacement closes only safe pre-staging
+old-profile observations. Recovery-required candidates and unknown lifecycle
+values block the plan; historical terminal candidates and durable DOI facts are
+never rewritten. Apply uses deterministic expected-after bytes, a zero-write
+global preflight, a durable crash-resumable journal, and notebook-last commit.
+The five-profile example is unresolved source material, not directly applicable.
+A/B/C evaluation fetches one shared frozen corpus and replays it offline; human
+Precision@50 is never fabricated.
+
 ## Rollback
 
 Rollback is an external-journal transaction that restores the exact frozen

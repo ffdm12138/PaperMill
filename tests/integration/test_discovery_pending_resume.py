@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ pytestmark = pytest.mark.integration
 KEYWORD_ZH = "测试关键词"
 KEYWORD_ID = keyword_id(KEYWORD_ZH)
 QUERY_ID = query_identity("zh", KEYWORD_ZH)
+PROFILE_HASH = "test-active-profile"
 
 
 def _page(store: PageJournalStore, tmp_path: Path, doi: str = "10.1234/resume") -> Path:
@@ -32,8 +34,9 @@ def _page(store: PageJournalStore, tmp_path: Path, doi: str = "10.1234/resume") 
         next_cursor=None,
         provider_exhausted=True,
         candidates=[PaperCandidate(title="T", doi=doi)],
-        state="cursor_committed",
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
     )
+    page["candidates"][0]["relevance"]["state"] = "passed"
     return store.write_page(page)
 
 
@@ -70,6 +73,7 @@ def test_staging_receipt_only_does_not_restore_staged(tmp_path: Path):
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
     # Untracked receipt-only workspaces make Registry fail closed.
     assert report.retryable_failures == 1
@@ -117,7 +121,7 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
     assert receipt.exists()
     receipt.unlink()
     # Reset the journal candidate so the drain loop re-processes it.
-    store.write_page(store.make_page(
+    path = store.write_page(store.make_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -131,8 +135,11 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
         next_cursor=None,
         provider_exhausted=True,
         candidates=[PaperCandidate(title="T", doi="10.1234/source-record")],
-        state="cursor_committed",
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
     ))
+    reset = store.read(path)
+    reset["candidates"][0]["relevance"]["state"] = "passed"
+    path.write_text(json.dumps(reset, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report = drain_pending_candidates(
         journal=store,
@@ -146,6 +153,7 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
 
     assert report.staged == 0
@@ -200,6 +208,7 @@ def test_source_record_only_not_marked_staged(tmp_path: Path):
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
 
     # An untracked source-record-only folder is corruption, so no allocation.
@@ -234,6 +243,7 @@ def test_export_manifest_reconciliation_is_idempotent(tmp_path: Path):
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
     assert report.emitted == 1
     item = store.read(path)["candidates"][0]

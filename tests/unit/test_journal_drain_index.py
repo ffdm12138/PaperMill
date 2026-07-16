@@ -5,6 +5,8 @@ from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import JournalDrainIndex, PageJournalStore, request_signature
 from src.discovery.keyword_notebook import keyword_id, query_identity
 
+PROFILE_HASH = "test-active-profile"
+
 
 def _page(store: PageJournalStore, page_id: str, count: int = 4) -> Path:
     page = store.make_page(
@@ -14,14 +16,17 @@ def _page(store: PageJournalStore, page_id: str, count: int = 4) -> Path:
         request_signature_value=request_signature(page_size=10), request_cursor=INITIAL_CURSOR,
         next_cursor=None, provider_exhausted=True,
         candidates=[PaperCandidate(title=f"P{i}", doi=f"10.9000/{page_id}-{i}") for i in range(count)],
-        state="cursor_committed")
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH)
+    for candidate in page["candidates"]:
+        candidate["relevance"]["state"] = "passed"
     return store.write_page(page)
 
 
 def test_journal_drain_index_reads_pages_once_and_updates_in_memory(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     paths = [_page(store, f"p{i}") for i in range(3)]
-    index = JournalDrainIndex.build(store)
+    index = JournalDrainIndex.build(
+        store, active_profile_hashes={keyword_id("关键词"): PROFILE_HASH})
     assert index.full_scans == 1
     assert index.pages_read == 3
     kid = keyword_id("关键词")
@@ -52,7 +57,8 @@ def test_page_batch_claim_and_commit_use_one_mutation_each(tmp_path: Path):
 def test_failed_retryable_returns_to_current_runtime_claimable_queue(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     path = _page(store, "retry", count=1)
-    index = JournalDrainIndex.build(store)
+    index = JournalDrainIndex.build(
+        store, active_profile_hashes={keyword_id("关键词"): PROFILE_HASH})
     kid = keyword_id("关键词")
     ref = index.claimable([kid])[0]
     claim = store.claim_candidates_from_page(

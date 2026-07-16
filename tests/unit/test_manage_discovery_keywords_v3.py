@@ -36,7 +36,7 @@ def test_create_enabled_not_ready_writes_nothing(tmp_path: Path, capsys: pytest.
     assert "requires at least one" in capsys.readouterr().err
 
 
-def test_create_enabled_ready_is_one_atomic_write(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+def test_create_bilingual_writes_disabled_profile_draft_atomically(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     rc = manage.main([
         "--create", "--apply", "--keyword-notebook-dir", str(tmp_path),
         "--keyword-zh", "风吹雪", "--query-zh", "风吹雪",
@@ -44,10 +44,12 @@ def test_create_enabled_ready_is_one_atomic_write(tmp_path: Path, capsys: pytest
     ])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "created"
-    assert payload["enabled"] is True
-    assert payload["ready"] is True
-    assert KeywordNotebookStore(tmp_path).require_v3_ready("风吹雪")["enabled"] is True
+    assert payload["status"] == "created_disabled_profile_draft"
+    assert payload["enabled"] is False
+    assert payload["ready"] is False
+    notebook = KeywordNotebookStore(tmp_path).require_v3("风吹雪")
+    assert notebook["enabled"] is False
+    assert payload["requires_relevance_profile"] is True
 
 
 def test_create_failure_leaves_no_partial_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

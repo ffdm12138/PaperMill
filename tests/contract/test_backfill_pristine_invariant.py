@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 from src.discovery.backfill_state import (
     BackfillBindError,
@@ -38,6 +39,7 @@ def _make_store(tmp_path: Path) -> tuple[KeywordNotebookStore, dict]:
         {"query": KEYWORD, "language": "zh", "source": "pytest"},
         {"query": "test paper", "language": "en", "source": "pytest"},
     ])
+    bind_test_relevance_profile(store, KEYWORD)
     store.set_enabled(KEYWORD, True)
     return store, store.require_v3(KEYWORD)
 
@@ -89,6 +91,7 @@ def test_strict_pristine_consistency(tmp_path):
         {"query": "测试恢复", "language": "zh", "source": "pytest"},
         {"query": "recovery test", "language": "en", "source": "pytest"},
     ])
+    bind_test_relevance_profile(recover_store, "测试恢复")
     recover_store.set_enabled("测试恢复", True)
     report = recover_notebooks(
         notebook_dir=tmp_path / "nb_recover",
@@ -202,7 +205,7 @@ def test_audit_strict_pristine_is_summary_only(tmp_path):
     store.ensure_notebook("测试审计"); store.sync_search_queries("测试审计", add=[
         {"query": "测试审计", "language": "zh", "source": "pytest"},
         {"query": "audit test", "language": "en", "source": "pytest"},
-    ]); store.set_enabled("测试审计", True)
+    ]); bind_test_relevance_profile(store, "测试审计"); store.set_enabled("测试审计", True)
     nb = store.require_v3("测试审计")
     row = {"category_id": nb["keyword_id"], "keyword_zh": nb["keyword_zh"],
            "normalized_keyword_zh": nb["keyword_zh"], "directory_name": nb["keyword_zh"],
@@ -238,7 +241,7 @@ def test_audit_page_journal_without_sig_state_only(tmp_path):
     store.ensure_notebook("测试审计"); store.sync_search_queries("测试审计", add=[
         {"query": "测试审计", "language": "zh", "source": "pytest"},
         {"query": "audit test", "language": "en", "source": "pytest"},
-    ]); store.set_enabled("测试审计", True)
+    ]); bind_test_relevance_profile(store, "测试审计"); store.set_enabled("测试审计", True)
     nb = store.require_v3("测试审计")
     row = {"category_id": nb["keyword_id"], "keyword_zh": nb["keyword_zh"],
            "normalized_keyword_zh": nb["keyword_zh"], "directory_name": nb["keyword_zh"],
@@ -280,7 +283,7 @@ def test_v3_source_not_passed_to_legacy_normalizer(tmp_path):
     store.ensure_notebook("测试迁移"); store.sync_search_queries("测试迁移", add=[
         {"query": "测试迁移", "language": "zh", "source": "pytest"},
         {"query": "migrate test", "language": "en", "source": "pytest"},
-    ]); store.set_enabled("测试迁移", True)
+    ]); bind_test_relevance_profile(store, "测试迁移"); store.set_enabled("测试迁移", True)
     nb = store.require_v3("测试迁移")
     with mock.patch.object(mig, "_translate_legacy_provider_state", wraps=legacy_fn) as spy:
         queries = _legacy_queries(nb, filename="test_v3.json", migration_at="2026-01-01T00:00:00Z")
@@ -295,7 +298,7 @@ def test_migration_blocked_exception(tmp_path):
     store.ensure_notebook("测试迁移"); store.sync_search_queries("测试迁移", add=[
         {"query": "测试迁移", "language": "zh", "source": "pytest"},
         {"query": "migrate test", "language": "en", "source": "pytest"},
-    ]); store.set_enabled("测试迁移", True)
+    ]); bind_test_relevance_profile(store, "测试迁移"); store.set_enabled("测试迁移", True)
     nb = store.require_v3("测试迁移")
     qid = query_identity("en", "migrate test")
     nb["search_queries"][qid]["providers"]["openalex"]["backfill"]["items_returned_total"] = 1

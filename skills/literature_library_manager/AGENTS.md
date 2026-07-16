@@ -109,3 +109,10 @@ Use one shared staging context and journal index per batch. DOI/identity lookup
 must include both raw and generation-valid formal papers; formal/raw collisions
 fail closed. Do not scan repair backlog per candidate or use pure TTL correctness
 caches. Stage at most 16 candidates per lock epoch and retain both ledger saves.
+
+Relevance profile replacement closes only page-journal pre-staging states;
+processing/retryable recovery states and unknown lifecycles globally block it.
+Historical terminal facts and durable DOI projections are immutable. Phase A is
+zero-write except for fixed lock behavior and binds exact after bytes; resume
+accepts exact before/after only. Runtime owns one immutable complete active
+profile mapping. A/B/C fetches one shared frozen corpus and replays offline.

@@ -9,7 +9,7 @@ import pytest
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
-from src.discovery.batch_runtime import DiscoveryBatchRuntime
+from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.pending_queue import drain_pending_candidates
 from src.discovery.staging_context import DiscoveryStagingContext
 from src.library.paper_number_ledger import PaperNumberLedger
@@ -19,6 +19,7 @@ from tests.factories.paper_raw_factory import create_metadata_staged_network_wor
 
 
 pytestmark = pytest.mark.integration
+PROFILE_HASH = "test-active-profile"
 
 
 def _artifact(folder: Path, kind: str) -> Path:
@@ -91,22 +92,27 @@ def test_hide_existing_defers_candidate_when_primary_is_damaged(
     (folder / f"{folder.name}.metadata.json").unlink()
     keyword_zh = "损坏主记录"
     store = PageJournalStore(tmp_path / "pages")
-    page_path = store.write_page(store.make_page(
+    page = store.make_page(
         page_id="page-stale", keyword_id=keyword_id(keyword_zh),
         keyword_zh=keyword_zh, query_id=query_identity("zh", keyword_zh),
         query=keyword_zh, query_language="zh", provider="openalex",
         lane="refresh", request_signature_value=request_signature(page_size=10),
         request_cursor=INITIAL_CURSOR, next_cursor=None, provider_exhausted=True,
         candidates=[PaperCandidate(title="Stale primary", doi=doi)],
-        state="cursor_committed",
-    ))
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
+    )
+    page["candidates"][0]["relevance"]["state"] = "passed"
+    page_path = store.write_page(page)
 
     from src.discovery.batch_runtime import (
         DiscoveryBatchRuntime, DiscoveryPipelineMetrics, RepairBacklog)
     from src.discovery.page_journal import JournalDrainIndex
     runtime = DiscoveryBatchRuntime(
-        context, JournalDrainIndex.build(store), DiscoveryPipelineMetrics(),
-        RepairBacklog(set(context.registry.repair_backlog_numbers)))
+        context, JournalDrainIndex.build(
+            store, active_profile_hashes={keyword_id(keyword_zh): PROFILE_HASH}),
+        DiscoveryPipelineMetrics(),
+        RepairBacklog(set(context.registry.repair_backlog_numbers)),
+        ActiveRelevanceProfiles.build({keyword_id(keyword_zh): PROFILE_HASH}))
     report = drain_pending_candidates(
         journal=store, keyword_ids=[keyword_id(keyword_zh)], candidate_budget=1,
         stage_to_paper_raw=False, apply=False, hide_existing=True,
@@ -135,6 +141,7 @@ def test_batch_boundary_repair_probe_is_capped_and_does_not_clear_broken_members
         paper_raw_dir=tmp_path / "paper_raw", papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json", needs_staging=True,
         repair_probe_budget_per_batch=20,
+        active_relevance_profiles=ActiveRelevanceProfiles.build({}),
     )
 
     assert runtime.metrics.staging.repair_backlog_probes == 20
@@ -151,6 +158,7 @@ def test_persisted_repair_probe_cursor_rotates_past_first_twenty(tmp_path: Path)
         paper_raw_dir=tmp_path / "paper_raw", papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json", needs_staging=True,
         repair_probe_budget_per_batch=20, persist_repair_cursor=True,
+        active_relevance_profiles=ActiveRelevanceProfiles.build({}),
     )
     DiscoveryBatchRuntime.create(**kwargs)
     cursor_path = tmp_path / "paper_raw" / ".repair_probe_cursor.json"

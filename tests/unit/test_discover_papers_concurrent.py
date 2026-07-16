@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 import scripts.discover_papers_concurrent as mod
 from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id
@@ -25,6 +26,7 @@ def _seed_ready(root: Path, keyword_zh: str) -> None:
         ],
         operator="test",
     )
+    bind_test_relevance_profile(store, keyword_zh)
     store.set_enabled(keyword_zh, True)
 
 

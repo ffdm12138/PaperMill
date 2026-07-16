@@ -16,6 +16,7 @@ from src.catalog_folders.reader import CatalogFolderReader
 from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id as derive_keyword_id
 from src.catalog_folders.registry import sync_registry
 from src.catalog_folders.reconcile import reconcile_catalog_folders
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -28,10 +29,13 @@ def _write_notebook(notebook_dir: Path, keyword: str, *,
     if keyword_id != derive_keyword_id(keyword):
         raise ValueError("test helper accepts only canonical keyword identity")
     store = KeywordNotebookStore(notebook_dir)
-    store.create_notebook(keyword, enabled=enabled, search_queries=[
+    store.create_notebook(keyword, enabled=False, search_queries=[
         {"query": keyword, "language": "zh", "source": "pytest"},
         {"query": "blowing snow", "language": "en", "source": "pytest"},
     ])
+    bind_test_relevance_profile(store, keyword)
+    if enabled:
+        store.set_enabled(keyword, True)
     return store._path_for(keyword)
 
 

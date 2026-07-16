@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 import scripts.audit_discovery_keyword_index_sources as audit
 from src.catalog_folders.registry import definition_hash
@@ -39,6 +40,7 @@ def test_audit_cli_emits_machine_report_and_explicit_report_pair(
         {"query": "风吹雪", "language": "zh"},
         {"query": "blowing snow", "language": "en"},
     ])
+    bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
     notebook = store.require_v3("风吹雪")
     row = {
@@ -81,6 +83,7 @@ def test_pristine_unbound_lanes_in_cli_output(
         {"query": "风吹雪", "language": "zh"},
         {"query": "blowing snow", "language": "en"},
     ])
+    bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
     notebook = store.require_v3("风吹雪")
     row = {

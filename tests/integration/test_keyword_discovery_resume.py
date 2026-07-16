@@ -19,11 +19,15 @@ from src.discovery.keyword_notebook import (
     KeywordNotebookStore,
     query_identity,
 )
-from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
+from src.discovery.coordinator import (
+    DiscoveryOptions, _profile_filters, _profile_order, _profile_sort,
+    run_discovery_batch,
+)
 from src.discovery.models import PaperCandidate
 from src.discovery.provider_models import DiscoveryPage
 from src.discovery.page_journal import PageJournalStore, request_signature
 from src.metadata.schema import empty_metadata
+from tests.helpers.relevance_profiles import bind_test_relevance_profile, relevance_candidate
 
 
 def _queries(nb: dict) -> dict:
@@ -48,14 +52,30 @@ def _seed_ready(
         ],
         pag_sig=signature_hash,
     )
+    bind_test_relevance_profile(store, keyword_zh)
     store.set_enabled(keyword_zh, True)
+    notebook = store.require_v3(keyword_zh)
+    options = DiscoveryOptions(page_size=10)
+    for entry in notebook["search_queries"].values():
+        for provider in ("openalex", "crossref"):
+            sort = _profile_sort(notebook, provider, "backfill", options)
+            order = _profile_order(notebook, "backfill") if provider == "crossref" else None
+            signature = request_signature(
+                sort=sort,
+                filters=_profile_filters(notebook, provider, "backfill", sort, order),
+                page_size=10,
+            )
+            store.ensure_backfill_generation(
+                keyword_zh, entry["query_id"], provider,
+                request_signature_hash=signature["hash"],
+            )
     return query_identity("zh", keyword_zh)
 
 
 def _page(works, next_cursor, exhausted=None):
     """Build a real DiscoveryPage from (doi, title) pairs."""
     cands = [
-        PaperCandidate(title=title, doi=doi, source="openalex")
+        relevance_candidate(title=f"Test candidate {title}", doi=doi, source="openalex")
         for doi, title in works
     ]
     if exhausted is None:

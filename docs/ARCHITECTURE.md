@@ -99,6 +99,19 @@ DOI/identity refs after rollback. Reporting distinguishes a new allocation
 (`actual_allocated`) from an existing-workspace reuse (`reused_existing`).
 # Discovery batch runtime
 
+Relevance is a notebook-local gate orthogonal to candidate lifecycle. Enabled
+notebooks require a taxonomy-resolved non-sentinel profile before provider I/O.
+Profile transactions identify stale page observations by keyword, request and
+candidate profile hashes plus query/provider/lane identity; provider cursor
+generation is not a relevance identity. A single lifecycle classifier permits
+closure only before staging, blocks recovery-required states, and never rewrites
+completed terminal history. Phase A validates exact transformed bytes without
+creating a journal; Phase B publishes pages and Phase C commits notebooks last.
+Discovery scans the durable transaction root after taking the shared lock, so a
+crash-left `applying` journal remains a provider-I/O barrier. The drain projection
+is built with one immutable full active-profile mapping, and the locked claim
+independently checks that mapping.
+
 Discovery uses one context/full Registry build and one journal scan per batch.
 The Registry indexes `metadata_staged` raw workspaces and valid active formal
 papers, reloads the formal view on publication-generation change, refreshes only

@@ -191,6 +191,15 @@ command after the read-only checks.
 Successful final acceptance must include the literal output lines
 `[OK] agent acceptance passed` and `[OK] Packed: mineru_snapshot.zip`.
 
+Enabled notebooks must also bind a non-sentinel, taxonomy-resolved relevance
+profile. Missing and legacy/profile-unbound profiles fail before provider I/O.
+Profile replacement closes every old-profile nonterminal relevance verdict
+(`profile_unbound`, `passed`, and `verification_deferred`) using durable
+keyword/request/candidate profile identity; it never equates provider lane
+generation with relevance generation. The drain index and durable claim both
+require the active profile hash. Only one relevance-profile transaction may be
+`applying`, and discovery shares its exclusion lock.
+
 Recovery treats every journal as untrusted input. Commit reconciliation must
 receive trusted transaction, `paper_raw`, and `papers` roots explicitly and
 must finish path, identity, symlink, alias, filesystem, and index preflight

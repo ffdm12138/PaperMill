@@ -11,9 +11,15 @@ from src.discovery.keyword_notebook import (
     KeywordNotebookStore,
     query_identity,
 )
-from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
+from src.discovery.coordinator import (
+    DiscoveryOptions, _profile_filters, _profile_order, _profile_sort,
+    run_discovery_batch,
+)
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import PageJournalStore, request_signature
+from tests.helpers.relevance_profiles import (
+    AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
+)
 
 
 pytestmark = pytest.mark.unit
@@ -34,12 +40,28 @@ def _seed_ready(root: Path, *, page_size: int) -> KeywordNotebookStore:
         ],
         pag_sig=signature_hash,
     )
+    bind_test_relevance_profile(store, KEYWORD_ZH)
     store.set_enabled(KEYWORD_ZH, True)
+    notebook = store.require_v3(KEYWORD_ZH)
+    options = DiscoveryOptions(page_size=page_size)
+    for entry in notebook["search_queries"].values():
+        for provider in ("openalex", "crossref"):
+            sort = _profile_sort(notebook, provider, "backfill", options)
+            order = _profile_order(notebook, "backfill") if provider == "crossref" else None
+            signature = request_signature(
+                sort=sort,
+                filters=_profile_filters(notebook, provider, "backfill", sort, order),
+                page_size=page_size,
+            )
+            store.ensure_backfill_generation(
+                KEYWORD_ZH, entry["query_id"], provider,
+                request_signature_hash=signature["hash"],
+            )
     return store
 
 
-def _cand(doi, title="T", source="openalex"):
-    return PaperCandidate(title=title, doi=doi, source=source)
+def _cand(doi, title="Test candidate", source="openalex"):
+    return relevance_candidate(title=title, doi=doi, source=source)
 
 
 class _FakePage:
@@ -112,6 +134,7 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
         paper_raw_dir=paper_raw_dir or (runtime_base / "paper_raw"),
         papers_dir=papers_dir or (runtime_base / "papers"),
         ledger_path=(paper_raw_dir.parent / "ledger.json") if paper_raw_dir else (runtime_base / "ledger.json"),
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
     batch_report = run_discovery_batch([keyword], options=options, max_workers=2)
     report_obj = batch_report.keywords[0]

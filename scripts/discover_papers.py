@@ -55,11 +55,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pending-pages-dir", type=Path, default=DISCOVERY_PENDING_PAGES_DIR)
     parser.add_argument("--discovery-locks-dir", type=Path, default=DISCOVERY_LOCKS_DIR)
     parser.add_argument("--exports-dir", type=Path, default=DISCOVERY_EXPORTS_DIR)
-    parser.add_argument("--sort", default=None)
-    parser.add_argument("--openalex-refresh-sort", default=None)
-    parser.add_argument("--openalex-backfill-sort", default=None)
-    parser.add_argument("--crossref-refresh-sort", default=None)
-    parser.add_argument("--crossref-backfill-sort", default=None)
     parser.add_argument("--until-exhausted", action="store_true")
     parser.add_argument("--max-pages-total", type=int, default=None)
     parser.add_argument("--max-pending-candidates", type=int, default=1000)
@@ -136,7 +131,6 @@ def main(argv: list[str] | None = None) -> int:
         refresh_pages=args.refresh_pages,
         backfill_pages=args.backfill_pages,
         page_size=args.page_size,
-        domain_id=None,
         max_candidates=args.max_candidates,
         output_dir=args.output_dir,
         paper_raw_dir=args.paper_raw_dir,
@@ -150,10 +144,6 @@ def main(argv: list[str] | None = None) -> int:
         pending_pages_dir=args.pending_pages_dir,
         locks_dir=args.discovery_locks_dir,
         exports_dir=args.exports_dir,
-        openalex_refresh_sort=args.openalex_refresh_sort or args.sort,
-        openalex_backfill_sort=args.openalex_backfill_sort or args.sort,
-        crossref_refresh_sort=args.crossref_refresh_sort or args.sort,
-        crossref_backfill_sort=args.crossref_backfill_sort or args.sort,
         until_exhausted=args.until_exhausted,
         max_pages_total=args.max_pages_total,
         doi_resolution_budget=args.doi_resolution_budget,

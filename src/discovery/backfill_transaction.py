@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 
 from filelock import FileLock, Timeout
 
@@ -110,6 +110,7 @@ def recover_last_committed_journal(
     request_signature_hash: str,
     notebook_store: KeywordNotebookStore,
     journal_store: PageJournalStore,
+    finalize_page: Callable[[Path], Mapping[str, Mapping[str, Any]]] | None = None,
 ) -> BackfillTransactionResult | None:
     """Idempotently cross the journal cursor-commit boundary after a crash."""
     bf = notebook_store.get_backfill_state(keyword_zh, query_id, provider)
@@ -184,6 +185,19 @@ def recover_last_committed_journal(
             error_type="journal_corruption",
             stop_reason="recovery_corruption",
         )
+    if finalize_page is not None:
+        try:
+            decisions = finalize_page(page_path)
+            page_data = journal_store.finalize_relevance(page_path, decisions)
+        except Exception as exc:
+            configuration_error = "configuration" in str(exc).lower()
+            return _result(
+                status="failed_terminal" if configuration_error else "failed_retryable",
+                page_path=page_path,
+                page_id=page_id_value,
+                safe_error=f"relevance finalization failed: {type(exc).__name__}: {exc}",
+                error_type="provider_terminal" if configuration_error else "provider_retryable",
+            )
     current_cursor = str(bf.get("cursor") or INITIAL_CURSOR)
     next_cursor = page_data.get("next_cursor")
     ordinary_commit = next_cursor is not None and current_cursor == str(next_cursor)
@@ -234,7 +248,9 @@ def run_backfill_page_transaction(
     locks_dir: Path,
     request_signature: dict[str, Any],
     page_size: int,
+    relevance_profile_hash: str | None = None,
     fetch_page: Callable[..., Any],
+    finalize_page: Callable[[Path], Mapping[str, Mapping[str, Any]]] | None = None,
     lock_timeout: int = DISCOVERY_STATE_LOCK_TIMEOUT,
 ) -> BackfillTransactionResult:
     """Fetch or recover one Backfill page and CAS-commit its cursor.
@@ -268,6 +284,7 @@ def run_backfill_page_transaction(
                 request_signature_hash=request_signature["hash"],
                 notebook_store=notebook_store,
                 journal_store=journal_store,
+                finalize_page=finalize_page,
             )
             if recovery is not None and recovery.status != "success":
                 return recovery
@@ -375,11 +392,29 @@ def run_backfill_page_transaction(
                     next_cursor=page.next_cursor,
                     provider_exhausted=page.exhausted,
                     candidates=page.candidates,
+                    relevance_profile_hash=relevance_profile_hash,
                     state="fetched",
                 )
                 page_path = journal_store.write_page(page_data)
                 pages_persisted = 1
             if page_data["state"] == "fetched":
+                if finalize_page is not None:
+                    try:
+                        decisions = finalize_page(page_path)
+                        page_data = journal_store.finalize_relevance(page_path, decisions)
+                    except Exception as exc:
+                        configuration_error = "configuration" in str(exc).lower()
+                        return _result(
+                            status="failed_terminal" if configuration_error else "failed_retryable",
+                            page_path=page_path,
+                            page_id=page_id_value,
+                            pages_requested=pages_requested,
+                            pages_recovered=recovery_pages + pages_reused,
+                            pages_persisted=pages_persisted,
+                            journals_recovered=recovery_journals,
+                            safe_error=f"relevance finalization failed: {type(exc).__name__}: {exc}",
+                            error_type="provider_terminal" if configuration_error else "provider_retryable",
+                        )
                 try:
                     notebook_store.commit_backfill_cursor(
                         keyword_zh,

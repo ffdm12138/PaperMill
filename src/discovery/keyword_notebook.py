@@ -244,6 +244,17 @@ def validate_discovery_readiness(nb: dict[str, Any]) -> DiscoveryReadiness:
     if nb.get("enabled") is False:
         return DiscoveryReadiness(False, kw_zh, [f"notebook {kw_zh!r} is disabled"])
     errors: list[str] = []
+    if "enabled" in nb and nb.get("enabled") is True:
+        profile = nb.get("relevance_profile")
+        if profile is None:
+            errors.append("notebook missing relevance_profile")
+        elif isinstance(profile, dict):
+            from src.discovery.relevance import is_legacy_unbound_profile
+            if is_legacy_unbound_profile(profile):
+                errors.append(
+                    "notebook relevance_profile is profile_unbound; configure a "
+                    "taxonomy-resolved profile before discovery"
+                )
     if not kw_zh:
         return DiscoveryReadiness(False, "", ["notebook missing keyword_zh"])
     sq = nb.get("search_queries")
@@ -460,6 +471,7 @@ def empty_notebook(keyword_zh: str) -> dict[str, Any]:
     """Build a fresh v3 notebook dict for a new Chinese keyword concept."""
     if not isinstance(keyword_zh, str) or not _HAS_CJK.search(keyword_zh):
         raise ValueError("keyword_zh must contain Chinese text")
+    from src.discovery.relevance import legacy_unbound_profile
     normalized = normalize_keyword(keyword_zh)
     return {
         "schema_version": SCHEMA_VERSION,
@@ -467,6 +479,7 @@ def empty_notebook(keyword_zh: str) -> dict[str, Any]:
         "keyword_zh": keyword_zh.strip(),
         "normalized_keyword_zh": normalized,
         "enabled": True,
+        "relevance_generation": 1,
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
         "classification": {
@@ -474,6 +487,10 @@ def empty_notebook(keyword_zh: str) -> dict[str, Any]:
             "aliases_zh": [],
             "exclusions_zh": [],
         },
+        # A sentinel keeps historical v3 fixtures claimable; operator
+        # notebooks must replace it with a taxonomy-resolved profile through
+        # configure_relevance_profiles.py before production discovery.
+        "relevance_profile": legacy_unbound_profile(),
         "search_queries": {},
         "definition_history": [],
         "lifetime_statistics": {
@@ -510,6 +527,7 @@ _TOP_LEVEL_REQUIRED = {
     "definition_history", "lifetime_statistics", "pending", "backpressure",
     "reset_history", "migration_history",
 }
+_TOP_LEVEL_ALLOWED = _TOP_LEVEL_REQUIRED | {"relevance_profile", "relevance_generation"}
 _QUERY_REQUIRED = {
     "query_id", "query", "normalized_query", "language", "active", "source",
     "created_at", "updated_at", "providers",
@@ -709,7 +727,16 @@ def validate_notebook(data: Any) -> dict[str, Any]:
         raise UnsupportedNotebookSchemaError(
             f"unsupported notebook schema_version: {version!r}"
         )
-    _require_exact_keys(data, _TOP_LEVEL_REQUIRED, "notebook")
+    _require_keys(data, _TOP_LEVEL_REQUIRED, "notebook")
+    extra = sorted(set(data) - _TOP_LEVEL_ALLOWED)
+    if extra:
+        raise NotebookCorruptError(f"notebook has unexpected keys: {extra}")
+    if "relevance_profile" in data and data["relevance_profile"] is not None:
+        from src.discovery.relevance import validate_relevance_profile
+        try:
+            data["relevance_profile"] = validate_relevance_profile(data["relevance_profile"])
+        except ValueError as exc:
+            raise NotebookCorruptError(f"notebook.relevance_profile is invalid: {exc}") from exc
 
     keyword_zh = data["keyword_zh"]
     if (
@@ -731,6 +758,10 @@ def validate_notebook(data: Any) -> dict[str, Any]:
         raise NotebookCorruptError("notebook.keyword_id does not match keyword_zh")
     if not isinstance(data["enabled"], bool):
         raise NotebookCorruptError("notebook.enabled must be boolean")
+    if "relevance_generation" in data:
+        _require_nonnegative_int(data["relevance_generation"], "notebook.relevance_generation")
+        if data["relevance_generation"] < 1:
+            raise NotebookCorruptError("notebook.relevance_generation must be at least 1")
     for key in ("created_at", "updated_at"):
         if not isinstance(data[key], str) or not data[key].strip():
             raise NotebookCorruptError(f"notebook.{key} must be a non-blank string")
@@ -1515,6 +1546,47 @@ class KeywordNotebookStore:
 
         return self._mutate(keyword, m)
 
+    def set_relevance_profile(
+        self,
+        keyword: str,
+        profile: dict[str, Any],
+        *,
+        generation: int,
+        expected_profile_hash: str | None = None,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically bind one validated notebook profile at a generation."""
+        from src.discovery.relevance import validate_relevance_profile
+
+        normalized = validate_relevance_profile(profile)
+        if isinstance(expected_profile_hash, str) and expected_profile_hash:
+            current = self.require_v3(keyword).get("relevance_profile")
+            current_hash = current.get("profile_hash") if isinstance(current, dict) else ""
+            if current_hash != expected_profile_hash:
+                raise CursorConflictError(
+                    f"relevance profile changed for {keyword!r}: expected {expected_profile_hash}"
+                )
+
+        def m(nb: dict[str, Any]) -> None:
+            if isinstance(expected_profile_hash, str) and expected_profile_hash:
+                current_profile = nb.get("relevance_profile")
+                current_hash = (
+                    current_profile.get("profile_hash")
+                    if isinstance(current_profile, dict) else ""
+                )
+                if current_hash != expected_profile_hash:
+                    raise CursorConflictError(
+                        f"relevance profile changed for {keyword!r}: expected {expected_profile_hash}"
+                    )
+            if expected_generation is not None and int(nb.get("relevance_generation") or 1) != int(expected_generation):
+                raise CursorConflictError(
+                    f"relevance generation changed for {keyword!r}: expected {expected_generation}"
+                )
+            nb["relevance_profile"] = normalized
+            nb["relevance_generation"] = int(generation)
+
+        return self._mutate(keyword, m)
+
     def reset_backfill(self, keyword: str, *, reason: str, pag_sig: str | None = None) -> dict[str, Any] | None:
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("reset reason must be a non-blank string")
@@ -1564,7 +1636,10 @@ class KeywordNotebookStore:
 
     def list_keywords(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for p in sorted(self.notebook_dir.glob("*.json")):
+        # Notebook filenames are canonical ``<keyword>__<id>.json``.  The
+        # directory may also contain explicitly configured state JSON files;
+        # those are not notebook candidates and must not be parsed as such.
+        for p in sorted(self.notebook_dir.glob("*__*.json")):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except json.JSONDecodeError as exc:

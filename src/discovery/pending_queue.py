@@ -14,7 +14,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from filelock import FileLock, Timeout
 
@@ -30,7 +30,7 @@ from src.discovery.page_journal import (
     stable_hash,
     title_resolution_key,
 )
-from src.discovery.batch_runtime import DiscoveryBatchRuntime
+from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.resolve_crossref import resolve_doi_match_by_title
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.network_metadata_staging import stage_network_metadata_records
@@ -459,6 +459,9 @@ def _drain_staging_candidate_batches(
                 lease_seconds=lease_seconds,
                 limit=len(candidate_ids),
                 candidate_ids=candidate_ids,
+                expected_profile_hash=journal_index.active_profile_hashes.get(
+                    str((journal_index.page_cache.get(page_path) or {}).get("keyword_id") or "")
+                ),
             )
             claims.extend(page_claims)
             if page_claims:
@@ -801,14 +804,23 @@ def drain_pending_candidates(
     skip_duplicates: bool = False,
     hide_existing: bool = False,
     runtime: DiscoveryBatchRuntime | None = None,
+    active_profile_hashes: Mapping[str, str] | None = None,
 ) -> DrainReport:
     if runtime is None:
+        if active_profile_hashes is None:
+            raise ValueError(
+                "drain_pending_candidates requires explicit active relevance profiles"
+            )
+        active_profiles = ActiveRelevanceProfiles.build(active_profile_hashes)
         try:
             runtime = DiscoveryBatchRuntime.create(
                 journal=journal, paper_raw_dir=paper_raw_dir, papers_dir=papers_dir,
-                ledger_path=ledger_path, needs_staging=bool(stage_to_paper_raw or hide_existing))
+                ledger_path=ledger_path, needs_staging=bool(stage_to_paper_raw or hide_existing),
+                active_relevance_profiles=active_profiles)
         except Exception as exc:
-            index = JournalDrainIndex.build(journal)
+            index = JournalDrainIndex.build(
+                journal, active_profile_hashes=active_profiles.by_keyword_id,
+            )
             failed = DrainReport(before=index.pending_count(keyword_ids))
             failed.remaining = failed.before
             reason = f"registry_configuration_failed:{type(exc).__name__}"
@@ -819,7 +831,10 @@ def drain_pending_candidates(
             for page_path, candidate_ids in by_page.items():
                 claims = journal.claim_candidates_from_page(
                     page_path, worker_id=worker_id, lease_seconds=lease_seconds,
-                    limit=min(16, len(candidate_ids)), candidate_ids=candidate_ids)
+                    limit=min(16, len(candidate_ids)), candidate_ids=candidate_ids,
+                    expected_profile_hash=index.active_profile_hashes.get(
+                        str((index.page_cache.get(page_path) or {}).get("keyword_id") or "")
+                    ))
                 journal.commit_candidate_results(page_path, [{
                     "candidate_id": claim.candidate_id, "new_status": "failed_retryable",
                     "updates": {"last_error": reason},
@@ -913,7 +928,10 @@ def drain_pending_candidates(
     for page_path, candidate_ids in candidate_ids_by_page.items():
         page_claims = journal.claim_candidates_from_page(
             page_path, worker_id=worker_id, lease_seconds=lease_seconds,
-            limit=min(16, candidate_budget - len(claimed)), candidate_ids=candidate_ids)
+            limit=min(16, candidate_budget - len(claimed)), candidate_ids=candidate_ids,
+            expected_profile_hash=journal_index.active_profile_hashes.get(
+                str((journal_index.page_cache.get(page_path) or {}).get("keyword_id") or "")
+            ))
         claimed.extend(page_claims)
         if page_claims:
             runtime.metrics.candidate_claims += len(page_claims)

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 import scripts.audit_discovery_keyword_index_sources as audit
 from src.catalog_folders.registry import definition_hash
@@ -49,6 +50,7 @@ def _seed_notebook(root: Path, keyword_zh: str = "风吹雪", *, enabled: bool =
         {"query": "blowing snow", "language": "en", "source": "pytest"},
     ])
     if enabled:
+        bind_test_relevance_profile(store, keyword_zh)
         store.set_enabled(keyword_zh, True)
     return store.require_v3(keyword_zh)
 

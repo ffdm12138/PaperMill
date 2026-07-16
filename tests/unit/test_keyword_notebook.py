@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 from src.discovery.keyword_notebook import (
     INITIAL_CURSOR,
@@ -356,6 +357,7 @@ class TestV3Lifecycle:
             {"query": "风吹雪", "language": "zh"},
             {"query": "blowing snow", "language": "en"},
         ])
+        bind_test_relevance_profile(store, "风吹雪")
         store.set_enabled("风吹雪", True)
         nb = store.require_v3_ready("风吹雪")
         assert nb["keyword_zh"] == "风吹雪"
@@ -382,6 +384,7 @@ class TestV3Lifecycle:
             {"query": "风吹雪", "language": "zh"},
             {"query": "blowing snow", "language": "en"},
         ])
+        bind_test_relevance_profile(store, "风吹雪")
         store.set_enabled("风吹雪", True)
         path = tmp_path / notebook_filename("风吹雪")
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -654,6 +657,7 @@ class TestListShow:
             {"query": "测试主题", "language": "zh"},
             {"query": "test topic", "language": "en"},
         ])
+        bind_test_relevance_profile(store, "测试主题")
         store.set_enabled("测试主题", True)
         assert store.show("测试主题")["enabled"] is True
 

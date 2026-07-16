@@ -20,6 +20,7 @@ pytestmark = pytest.mark.unit
 KEYWORD_ZH = "测试关键词"
 KEYWORD_ID = keyword_id(KEYWORD_ZH)
 QUERY_ID = query_identity("zh", KEYWORD_ZH)
+PROFILE_HASH = "test-active-profile"
 
 
 def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/item") -> Path:
@@ -37,8 +38,9 @@ def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/item"
         next_cursor=None,
         provider_exhausted=True,
         candidates=[PaperCandidate(title=f"title {page_id}", doi=doi, source="openalex")],
-        state="cursor_committed",
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
     )
+    page["candidates"][0]["relevance"]["state"] = "passed"
     return store.write_page(page)
 
 
@@ -57,8 +59,9 @@ def _write_no_doi_page(store: PageJournalStore, page_id: str, title: str = "same
         next_cursor=None,
         provider_exhausted=True,
         candidates=[PaperCandidate(title=title, doi="", source="openalex")],
-        state="cursor_committed",
+        state="cursor_committed", relevance_profile_hash=PROFILE_HASH,
     )
+    page["candidates"][0]["relevance"]["state"] = "passed"
     return store.write_page(page)
 
 
@@ -105,6 +108,7 @@ def test_doi_duplicate_observation_across_pages(tmp_path: Path):
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
     assert report.emitted == 1
     assert report.duplicate_observation == 1
@@ -139,6 +143,7 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
     assert first.emitted == 1
     persisted = [
@@ -162,6 +167,7 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
         locks_dir=tmp_path / "locks",
         exports_dir=tmp_path / "exports",
         worker_id="worker",
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
     assert second.duplicate_observation == 1
     statuses = [item["status"] for ref in store.list_pages([KEYWORD_ID]) for item in store.read(ref.path)["candidates"]]
@@ -183,7 +189,10 @@ def test_emitted_export_validation_cache_is_artifact_fingerprint_bound(
     }
     exported = export_candidate_once(tmp_path / "exports", record)
     item = {**record, **exported}
-    index = JournalDrainIndex.build(PageJournalStore(tmp_path / "pages"))
+    index = JournalDrainIndex.build(
+        PageJournalStore(tmp_path / "pages"),
+        active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
+    )
     original = pending_queue.inspect_emitted_primary_export
     calls = 0
 

@@ -156,11 +156,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if store.load(keyword_zh) is not None:
                 raise ValueError(f"notebook already exists: {keyword_zh!r}")
             if not args.apply:
-                print(json.dumps({"would_create": keyword_zh, "enabled": not args.create_disabled,
+                print(json.dumps({"would_create": keyword_zh, "enabled": False,
+                                  "requires_relevance_profile": not args.create_disabled,
                                   "queries": rows}, ensure_ascii=False, indent=2))
                 return 0
             notebook = store.create_notebook(
-                keyword_zh, search_queries=rows, enabled=not args.create_disabled,
+                keyword_zh, search_queries=rows, enabled=False,
                 reason=args.reason, operator=args.operator,
             )
             readiness = _readiness_payload(notebook)
@@ -173,13 +174,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "errors": readiness["errors"],
                 }, ensure_ascii=False, indent=2))
                 return 0
-            if not readiness["ready"]:
-                raise RuntimeError(f"new notebook is not ready: {readiness['errors']}")
             print(json.dumps({
-                "status": "created",
+                "status": "created_disabled_profile_draft",
                 "keyword_zh": keyword_zh,
-                "enabled": True,
-                "ready": True,
+                "enabled": False,
+                "ready": False,
+                "requires_relevance_profile": True,
                 "errors": readiness["errors"],
             }, ensure_ascii=False, indent=2))
             return 0

@@ -63,6 +63,39 @@ reads only `keyword_zh`. The strict audit is read-only, and v3 recovery is
 currently inspect-only because no unsafe legacy write path is retained. The
 retired v2 notebook migration script is not an active entry point.
 
+Each enabled notebook also carries its own strict relevance profile. Resolve
+the complete OpenAlex subfield taxonomy and create a plan before applying it:
+
+```text
+python scripts/configure_relevance_profiles.py --plan --profiles <source.json> --notebook-root <isolated-notebooks> --journal-root <isolated-pages> --transaction-root <isolated-transactions> --json-report <plan.json>
+python scripts/configure_relevance_profiles.py --apply --plan <plan.json> --expected-plan-hash <sha256>
+python scripts/configure_relevance_profiles.py --resume <transaction.json>
+python scripts/configure_relevance_profiles.py --inspect-transaction <transaction.json>
+python scripts/configure_relevance_profiles.py --abort <transaction.json>
+```
+
+An enabled notebook with a missing or legacy/profile-unbound relevance profile
+fails before provider I/O. The apply transaction closes every old-profile
+nonterminal relevance verdict (`profile_unbound`, `passed`, and
+`verification_deferred`) by candidate/request profile hash, never by the
+provider lane's generation integer. `processing` and `failed_retryable` require
+normal Discovery recovery and block the whole plan; completed terminal history
+is immutable. Unknown lifecycle values also block the whole plan. Phase A binds
+exact expected-after bytes and performs a complete zero-write preflight before
+creating the durable `applying` journal. Apply/resume use only plan-bound
+metadata. It records page before/after hashes and commits notebook profiles and
+generations as its final point. The drain index and
+final claim independently require the candidate profile hash to equal the
+notebook's active profile hash.
+
+Crossref scope verification reuses raw OpenAlex Work evidence only; profile
+verdicts remain notebook-local. `config/relevance_profiles.example.json` is an
+unresolved source definition (`resolved=false`, empty IDs), never an active
+profile. Comparison requires explicit isolated roots: fetch freezes one shared
+wide-recall corpus and both sampling/replay configurations; replay verifies file
+hash/size/count and never uses the network. A/B/C evaluate identical candidate
+IDs and ranks. Human labels and Precision@50 remain null until manually supplied.
+
 For a final no-network plan check, run:
 
 ```text
@@ -109,6 +142,8 @@ create_write_job.py
 curate_paper_raw.py
 discover_papers.py
 discover_papers_concurrent.py
+configure_relevance_profiles.py
+compare_discovery_relevance.py
 doctor_ingest_pipeline.py
 doctor_write_pipeline.py
 export_job_bib.py

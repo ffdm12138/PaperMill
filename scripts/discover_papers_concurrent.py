@@ -82,7 +82,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--mode", choices=["hybrid", "refresh", "backfill"], default="hybrid")
     parser.add_argument("--refresh-pages", type=int, default=2)
     parser.add_argument("--backfill-pages", type=int, default=5)
-    parser.add_argument("--sort", default=None)
     parser.add_argument("--keyword-notebook-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
     parser.add_argument("--pending-pages-dir", type=Path, default=DISCOVERY_PENDING_PAGES_DIR)
     parser.add_argument("--discovery-locks-dir", type=Path, default=DISCOVERY_LOCKS_DIR)
@@ -201,10 +200,6 @@ def main_internal(argv: list[str]) -> int:
         doi_resolution_budget=args.doi_resolution_budget,
         max_pending_candidates=args.max_pending_candidates,
         resume_pending_candidates=args.resume_pending_candidates,
-        openalex_refresh_sort=args.sort,
-        openalex_backfill_sort=args.sort,
-        crossref_refresh_sort=args.sort,
-        crossref_backfill_sort=args.sort,
     )
     batch = run_discovery_batch(args.keywords, options=options, max_workers=args.max_workers)
     ended_at = datetime.now(timezone.utc).isoformat()

@@ -10,11 +10,14 @@ import threading
 import time
 import uuid
 import queue
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Literal
+
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from config.settings import (
     DISCOVERY_DIR,
@@ -32,7 +35,11 @@ from src.discovery.backfill_transaction import (
     run_backfill_page_transaction,
 )
 from src.discovery.constants import INITIAL_CURSOR
-from src.discovery.batch_runtime import DiscoveryBatchRuntime
+from src.discovery.batch_runtime import (
+    ActiveRelevanceProfiles,
+    DiscoveryBatchRuntime,
+    DiscoveryPipelineMetrics,
+)
 from src.discovery.keyword_notebook import (
     PROVIDERS,
     KeywordNotebookStore,
@@ -45,8 +52,19 @@ from src.discovery.keyword_notebook import (
 )
 from src.discovery.page_journal import (
     PageJournalStore,
+    parse_iso,
     refresh_page_id,
     request_signature,
+)
+from src.discovery.relevance_profiles import (
+    list_applying_relevance_profile_transactions,
+)
+from src.discovery.relevance import (
+    OpenAlexDoiVerifier,
+    RawOpenAlexWorkCache,
+    evaluate_page_candidates,
+    is_legacy_unbound_profile,
+    openalex_topic_filter,
 )
 from src.discovery.pending_queue import DrainReport, drain_pending_candidates
 from src.discovery.provider_models import DiscoveryPage, failed_page
@@ -81,7 +99,6 @@ class DiscoveryOptions:
     refresh_pages: int = 2
     backfill_pages: int = 5
     page_size: int = 50
-    domain_id: str | None = None
     max_candidates: int = 50
     stage_to_paper_raw: bool = False
     apply: bool = False
@@ -93,10 +110,6 @@ class DiscoveryOptions:
     max_pending_candidates: int = 1000
     resume_pending_candidates: int = 700
     staging_no_progress_timeout_seconds: float = 300.0
-    openalex_refresh_sort: str | None = None
-    openalex_backfill_sort: str | None = None
-    crossref_refresh_sort: str | None = None
-    crossref_backfill_sort: str | None = None
     notebook_dir: Path = DISCOVERY_KEYWORD_NOTEBOOK_DIR
     pending_pages_dir: Path = DISCOVERY_PENDING_PAGES_DIR
     locks_dir: Path = DISCOVERY_LOCKS_DIR
@@ -105,6 +118,12 @@ class DiscoveryOptions:
     paper_raw_dir: Path = PAPER_RAW_DIR
     papers_dir: Path = PAPERS_DIR
     ledger_path: Path = PAPER_NUMBER_LEDGER_PATH
+    relevance_cache_dir: Path = DISCOVERY_DIR / "relevance_raw_work_cache"
+    relevance_profiles_lock_path: Path | None = None
+    relevance_profiles_transaction_root: Path | None = None
+    # Tests and isolated callers may inject a DOI verifier.  Production uses
+    # the raw-Work cache backed OpenAlex verifier created by the coordinator.
+    crossref_scope_verifier: Any | None = None
 
 
 @dataclass
@@ -199,10 +218,71 @@ class BatchDiscoveryReport:
         }
 
 
-def _provider_sort(provider: str, lane: str, options: DiscoveryOptions) -> str | None:
-    if provider == "openalex":
-        return options.openalex_refresh_sort if lane == "refresh" else options.openalex_backfill_sort
-    return options.crossref_refresh_sort if lane == "refresh" else options.crossref_backfill_sort
+def _profile_sort(nb: dict[str, Any], provider: str, lane: str, options: DiscoveryOptions) -> str | None:
+    profile = nb.get("relevance_profile")
+    if isinstance(profile, dict):
+        if is_legacy_unbound_profile(profile):
+            return None
+        if provider == "openalex":
+            return str(profile["openalex"]["refresh_sort" if lane == "refresh" else "backfill_sort"])
+        return str(profile["crossref"]["refresh_sort" if lane == "refresh" else "backfill_sort"])
+    return None
+
+
+def _profile_order(nb: dict[str, Any], lane: str) -> str | None:
+    profile = nb.get("relevance_profile")
+    if isinstance(profile, dict):
+        if is_legacy_unbound_profile(profile):
+            return None
+        return str(profile["crossref"]["refresh_order" if lane == "refresh" else "backfill_order"])
+    return None
+
+
+def _profile_filters(nb: dict[str, Any], provider: str, lane: str, sort: str | None, order: str | None) -> dict[str, Any]:
+    profile = nb.get("relevance_profile")
+    if not isinstance(profile, dict):
+        return {"provider": provider, "lane": lane, "sort": sort or "", "order": order or ""}
+    if is_legacy_unbound_profile(profile):
+        return {}
+    return {
+        "provider": provider,
+        "lane": lane,
+        "profile_hash": profile["profile_hash"],
+        "openalex_filter": "" if is_legacy_unbound_profile(profile) else openalex_topic_filter(profile),
+        "scope_policy": profile["crossref"]["scope_policy"],
+        "sort": sort or "",
+        "order": order or "",
+    }
+
+
+_OPENALEX_SORT_VALUES = frozenset({
+    "relevance" + "_score:desc", "relevance" + "_score:asc",
+    "cited_by_count:desc", "cited_by_count:asc",
+    "publication_date:desc", "publication_date:asc",
+})
+_CROSSREF_SORT_VALUES = frozenset({"relevance", "published", "cited"})
+_CROSSREF_ORDER_VALUES = frozenset({"asc", "desc"})
+
+
+def _validate_openalex_sort(sort: str | None) -> str | None:
+    """Validate an OpenAlex sort; invalid values fail closed."""
+    if not sort:
+        return None
+    tokens = [t.strip() for t in sort.split(",")]
+    for token in tokens:
+        if token not in _OPENALEX_SORT_VALUES:
+            raise ValueError(f"invalid OpenAlex sort: {sort!r}")
+    return ",".join(tokens)
+
+
+def _validate_crossref_sort_order(sort: str | None, order: str | None) -> tuple[str | None, str | None]:
+    """Validate Crossref sort/order; invalid values fail closed."""
+    if sort and sort.strip().lower() not in _CROSSREF_SORT_VALUES:
+        raise ValueError(f"invalid Crossref sort: {sort!r}")
+    if order and order.strip().lower() not in _CROSSREF_ORDER_VALUES:
+        raise ValueError(f"invalid Crossref order: {order!r}")
+    return (sort.strip().lower() if sort else None,
+            order.strip().lower() if order else None)
 
 
 def _default_fetch_page(
@@ -216,11 +296,14 @@ def _default_fetch_page(
     page_size: int,
     cursor: str,
     sort: str | None = None,
-    domain_id: str | None = None,
+    order: str | None = None,
+    topic_filter: str = "",
     rate_limiter: Any | None = None,
     limiter_lock: threading.Lock | None = None,
 ) -> Any:
     if provider == "openalex":
+        if sort and "relevance" + "_score:" in sort and not query.strip():
+            raise ValueError("OpenAlex relevance" + "_score sort requires a non-empty search query")
         return search_openalex_page(
             query,
             keyword_zh=keyword_zh,
@@ -229,12 +312,13 @@ def _default_fetch_page(
             lane=lane,
             page_size=page_size,
             cursor=cursor,
-            sort=sort,
-            domain_id=domain_id,
+            sort=_validate_openalex_sort(sort),
+            topic_filter=topic_filter,
             rate_limiter=rate_limiter,
             limiter_lock=limiter_lock,
         )
     if provider == "crossref":
+        crossref_sort, crossref_order = _validate_crossref_sort_order(sort, order)
         return search_crossref_page(
             query,
             keyword_zh=keyword_zh,
@@ -243,8 +327,8 @@ def _default_fetch_page(
             lane=lane,
             page_size=page_size,
             cursor=cursor,
-            sort=sort,
-            domain_id=domain_id,
+            sort=crossref_sort,
+            order=crossref_order,
             rate_limiter=rate_limiter,
             limiter_lock=limiter_lock,
         )
@@ -375,7 +459,7 @@ def _aggregate(keyword_reports: list[KeywordDiscoveryReport], budget: PageBudget
     return agg
 
 
-def run_discovery_batch(
+def _run_discovery_batch_unlocked(
     keywords: list[str],
     *,
     options: DiscoveryOptions | None = None,
@@ -388,10 +472,50 @@ def run_discovery_batch(
     fetch_page = fetch_page or _default_fetch_page
     notebook = KeywordNotebookStore(options.notebook_dir)
     journal = PageJournalStore(options.pending_pages_dir)
+    enabled_notebooks: dict[str, dict[str, Any]] = {}
+    active_profile_hashes: dict[str, str] = {}
+    global_binding_error = ""
+    try:
+        for summary in notebook.list_keywords():
+            if not summary["enabled"]:
+                continue
+            current = notebook.require_v3(str(summary["keyword_zh"]))
+            readiness = validate_discovery_readiness(current)
+            if not readiness:
+                raise RuntimeError(
+                    f"enabled notebook {current['keyword_zh']!r} is not discovery-ready: "
+                    + "; ".join(readiness.errors)
+                )
+            enabled_notebooks[str(current["keyword_zh"])] = current
+            active_profile_hashes[str(current["keyword_id"])] = str(
+                current["relevance_profile"]["profile_hash"]
+            )
+    except (
+        RuntimeError, NotebookCorruptError, LegacyNotebookSchemaError,
+        UnsupportedNotebookSchemaError,
+    ) as exc:
+        global_binding_error = str(exc)
+    if global_binding_error:
+        reports = [KeywordDiscoveryReport(
+            keyword_zh=keyword, keyword_id=make_keyword_id(keyword), status="failed",
+            refresh=LaneReport(status="failed", errors=[global_binding_error]),
+            backfill=LaneReport(status="failed", errors=[global_binding_error]),
+            pending=DrainReport(), final_pending=DrainReport(), candidates={},
+            budget={"page_limit": options.max_pages_total, "pages_used": 0},
+            mode=options.mode, errors=[global_binding_error],
+        ) for keyword in keywords]
+        preflight_budget = PageBudget(options.max_pages_total)
+        return BatchDiscoveryReport(
+            status="failed", keywords=reports,
+            aggregate=_aggregate(reports, preflight_budget), exit_code=1,
+            pipeline_metrics=DiscoveryPipelineMetrics().to_dict(),
+        )
+    active_profiles = ActiveRelevanceProfiles.build(active_profile_hashes)
     runtime = DiscoveryBatchRuntime.create(
         journal=journal, paper_raw_dir=options.paper_raw_dir,
         papers_dir=options.papers_dir, ledger_path=options.ledger_path,
         needs_staging=bool(options.stage_to_paper_raw or options.hide_existing),
+        active_relevance_profiles=active_profiles,
         persist_repair_cursor=bool(options.apply and options.stage_to_paper_raw),
     )
     staging_notifications: queue.Queue[tuple[str, int] | None] = queue.Queue(
@@ -408,10 +532,87 @@ def run_discovery_batch(
         "crossref": ProviderRateLimiter(default_config()),
     }
     limiter_locks = {provider: threading.Lock() for provider in PROVIDERS}
+    cache_dir = options.relevance_cache_dir
+    if (
+        cache_dir == DiscoveryOptions().relevance_cache_dir
+        and options.notebook_dir != DISCOVERY_KEYWORD_NOTEBOOK_DIR
+    ):
+        cache_dir = Path(options.notebook_dir).parent / ".relevance_raw_work_cache"
+    raw_work_cache = RawOpenAlexWorkCache(cache_dir)
+    default_scope_verifier = OpenAlexDoiVerifier(
+        cache=raw_work_cache,
+        rate_limiter=limiters.get("openalex"),
+        limiter_lock=limiter_locks["openalex"],
+    )
+    scope_verifier = options.crossref_scope_verifier or default_scope_verifier
     worker_id = f"worker-{uuid.uuid4().hex[:12]}"
     keyword_reports: dict[str, KeywordDiscoveryReport] = {}
     executed_queries: dict[str, set[tuple[str, str]]] = {}
     executed_queries_lock = threading.Lock()
+
+    def finalize_page_relevance(page_path: Path, profile: dict[str, Any], provider: str) -> dict[str, dict[str, Any]]:
+        page_data = journal.read(page_path)
+        return evaluate_page_candidates(
+            page_data.get("candidates") or [],
+            profile,
+            provider=provider,
+            scope_verifier=scope_verifier,
+        )
+
+    def retry_due_deferred(keyword_id: str, profile: dict[str, Any]) -> None:
+        now_dt = datetime.now(timezone.utc)
+        changed = False
+        for ref in journal.list_pages([keyword_id]):
+            if ref.state not in {"cursor_committed", "draining"}:
+                continue
+            page = journal.read(ref.path)
+            due = False
+            for item in page.get("candidates", []):
+                relevance = item.get("relevance") if isinstance(item.get("relevance"), dict) else {}
+                if (
+                    relevance.get("state") == "verification_deferred"
+                    and relevance.get("profile_hash") == profile.get("profile_hash")
+                    and (not relevance.get("next_retry_at") or (parse_iso(relevance.get("next_retry_at")) or now_dt) <= now_dt)
+                ):
+                    due = True
+                    break
+            if not due:
+                continue
+            due_items = [
+                item for item in page.get("candidates", [])
+                if isinstance(item.get("relevance"), dict)
+                and item["relevance"].get("state") == "verification_deferred"
+                and item["relevance"].get("profile_hash") == profile.get("profile_hash")
+                and (
+                    not item["relevance"].get("next_retry_at")
+                    or (parse_iso(item["relevance"].get("next_retry_at")) or now_dt) <= now_dt
+                )
+            ]
+            decisions = evaluate_page_candidates(
+                due_items,
+                profile,
+                provider=str(page["provider"]),
+                scope_verifier=scope_verifier,
+            )
+            updated_page = journal.retry_deferred_relevance(ref.path, decisions)
+            updated_candidates = [
+                candidate for candidate in updated_page["candidates"]
+                if str(candidate.get("candidate_id") or "") in decisions
+            ]
+            runtime.journal_index.apply_relevance_updates(
+                ref.path, updated_candidates,
+            )
+            runtime.metrics.relevance_incremental_updates += len(updated_candidates)
+            changed = True
+        if changed:
+            try:
+                runtime.journal_index.assert_active_bindings(
+                    runtime.active_relevance_profiles.by_keyword_id
+                )
+            except RuntimeError:
+                runtime.metrics.relevance_binding_invariant_failures += 1
+                raise
+            runtime.metrics.sync_journal(runtime.journal_index)
 
     def notify_staging(keyword_id: str, candidate_count: int) -> None:
         """Publish weighted candidate work with an exact 500-candidate bound."""
@@ -452,17 +653,34 @@ def run_discovery_batch(
                 query_id=query_id_value,
                 query_language=query_language,
             )
-        call_kwargs = dict(
-            kwargs,
-            domain_id=options.domain_id,
-            rate_limiter=limiters.get(provider),
-            limiter_lock=limiter_locks.setdefault(provider, threading.Lock()),
-        )
-        page = fetch_page(
-            provider,
-            query,
-            **call_kwargs,
-        )
+        call_kwargs = dict(kwargs)
+        if provider == "openalex":
+            call_kwargs.setdefault("topic_filter", "")
+            call_kwargs.pop("order", None)
+        else:
+            call_kwargs.pop("topic_filter", None)
+        call_kwargs["rate_limiter"] = limiters.get(provider)
+        call_kwargs["limiter_lock"] = limiter_locks.setdefault(provider, threading.Lock())
+        try:
+            page = fetch_page(provider, query, **call_kwargs)
+        except TypeError as exc:
+            # Keep injected test/fake providers written against the pre-
+            # profile signature usable; production provider adapters accept
+            # every optional keyword above and never take this path.
+            message = str(exc)
+            if "unexpected keyword argument" not in message:
+                raise
+            retry_kwargs = dict(call_kwargs)
+            for optional in ("topic_filter", "order", "rate_limiter", "limiter_lock"):
+                retry_kwargs.pop(optional, None)
+                try:
+                    page = fetch_page(provider, query, **retry_kwargs)
+                    break
+                except TypeError as retry_exc:
+                    if "unexpected keyword argument" not in str(retry_exc):
+                        raise
+            else:
+                raise
         if isinstance(page, DiscoveryPage):
             page = replace(
                 page,
@@ -482,8 +700,17 @@ def run_discovery_batch(
             query_id_value = aq["query_id"]
             query_language = aq["language"]
             for provider in PROVIDERS:
-                sort = _provider_sort(provider, "refresh", options)
-                sig = request_signature(sort=sort, page_size=options.page_size)
+                sort = _profile_sort(nb, provider, "refresh", options)
+                order = _profile_order(nb, "refresh") if provider == "crossref" else None
+                sig = request_signature(
+                    sort=sort,
+                    filters=_profile_filters(nb, provider, "refresh", sort, order),
+                    page_size=options.page_size,
+                )
+                topic_filter = (
+                    "" if is_legacy_unbound_profile(nb["relevance_profile"])
+                    else openalex_topic_filter(nb["relevance_profile"])
+                ) if provider == "openalex" else ""
                 cursor = INITIAL_CURSOR
                 for seq in range(options.refresh_pages):
                     if candidate_budget_is_exhausted(kid):
@@ -498,6 +725,8 @@ def run_discovery_batch(
                         page_size=options.page_size,
                         cursor=cursor,
                         sort=sort,
+                        order=order,
+                        topic_filter=topic_filter,
                         query_id=query_id_value,
                         query_language=query_language,
                     )
@@ -525,23 +754,21 @@ def run_discovery_batch(
                         query_language=query_language,
                         provider=provider,
                         lane="refresh",
-                        generation=max(
-                            1,
-                            int(
-                                nb["search_queries"][query_id_value]["providers"]
-                                [provider]["backfill"].get("generation") or 1
-                            ),
-                        ),
+                        generation=max(1, int(nb.get("relevance_generation") or 1)),
                         request_signature_value=sig,
                         request_cursor=cursor,
                         next_cursor=page.next_cursor,
                         provider_exhausted=page.exhausted,
                         candidates=page.candidates,
+                        relevance_profile_hash=nb["relevance_profile"]["profile_hash"],
                         refresh_run_id=refresh_run_id,
                         page_sequence=seq,
-                        state="cursor_committed",
+                        state="fetched",
                     )
                     page_path = journal.write_page(page_data)
+                    decisions = finalize_page_relevance(page_path, nb["relevance_profile"], provider)
+                    page_data = journal.finalize_relevance(page_path, decisions)
+                    page_data = journal.mark_cursor_committed(page_path)
                     with state_lock:
                         runtime.metrics.journal_pages_written += 1
                         runtime.metrics.page_fsyncs += 1
@@ -573,8 +800,17 @@ def run_discovery_batch(
             query_id_value = aq["query_id"]
             query_language = aq["language"]
             for provider in PROVIDERS:
-                sort = _provider_sort(provider, "backfill", options)
-                sig = request_signature(sort=sort, page_size=options.page_size)
+                sort = _profile_sort(nb, provider, "backfill", options)
+                order = _profile_order(nb, "backfill") if provider == "crossref" else None
+                sig = request_signature(
+                    sort=sort,
+                    filters=_profile_filters(nb, provider, "backfill", sort, order),
+                    page_size=options.page_size,
+                )
+                topic_filter = (
+                    "" if is_legacy_unbound_profile(nb["relevance_profile"])
+                    else openalex_topic_filter(nb["relevance_profile"])
+                ) if provider == "openalex" else ""
                 pages_left = options.max_pages_total if options.until_exhausted else options.backfill_pages
                 pages_done = 0
                 while pages_done < pages_left:
@@ -595,8 +831,13 @@ def run_discovery_batch(
                             locks_dir=options.locks_dir,
                             request_signature=sig,
                             page_size=options.page_size,
+                            relevance_profile_hash=nb["relevance_profile"]["profile_hash"],
+                            finalize_page=lambda path, _profile=nb["relevance_profile"], _provider=provider: finalize_page_relevance(
+                                path, _profile, _provider
+                            ),
                             fetch_page=lambda p, q, **kw: fetch_with_budget(
-                                p, q, query_id=query_id_value, sort=sort, **kw,
+                                p, q, query_id=query_id_value, sort=sort, order=order,
+                                topic_filter=topic_filter, **kw,
                             ),
                         )
                     except StateLockTimeout as exc:
@@ -705,6 +946,7 @@ def run_discovery_batch(
             )
             return None
         kid = nb["keyword_id"]
+        retry_due_deferred(kid, nb["relevance_profile"])
         initial_drain = drain_pending_candidates(
             journal=journal,
             keyword_ids=[kid],
@@ -963,3 +1205,54 @@ def run_discovery_batch(
         status=status, keywords=ordered, aggregate=aggregate, exit_code=exit_code,
         pipeline_metrics=runtime.metrics.to_dict(),
     )
+
+
+def run_discovery_batch(
+    keywords: list[str],
+    *,
+    options: DiscoveryOptions | None = None,
+    max_workers: int = 4,
+    fetch_page: Callable[..., Any] | None = None,
+    rate_limiters: dict[str, ProviderRateLimiter] | None = None,
+) -> BatchDiscoveryReport:
+    """Run one batch while excluding the plan-bound profile apply transaction."""
+    effective = options or DiscoveryOptions()
+    lock_path = effective.relevance_profiles_lock_path
+    transaction_root = effective.relevance_profiles_transaction_root
+    if lock_path is None:
+        if effective.notebook_dir == DISCOVERY_KEYWORD_NOTEBOOK_DIR:
+            lock_path = DISCOVERY_DIR.parent / "transactions" / "locks" / "relevance_profiles.lock"
+            transaction_root = transaction_root or (
+                DISCOVERY_DIR.parent / "transactions" / "relevance_profiles"
+            )
+        else:
+            # Isolated tests/comparison runs must not touch production runtime
+            # state merely to acquire the shared mutex.
+            lock_path = Path(effective.notebook_dir).parent / ".relevance_profiles.lock"
+            transaction_root = transaction_root or (
+                Path(effective.notebook_dir).parent / ".relevance_profile_transactions"
+            )
+    elif transaction_root is None:
+        transaction_root = Path(lock_path).parent.parent / "relevance_profiles"
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(lock_path), timeout=0)
+    try:
+        lock.acquire()
+    except FileLockTimeout as exc:
+        raise RuntimeError("relevance profile transaction is applying; discovery is fail-closed") from exc
+    try:
+        applying = list_applying_relevance_profile_transactions(Path(transaction_root))
+        if applying:
+            raise RuntimeError(
+                "relevance profile transaction is durably applying; discovery is fail-closed: "
+                + ",".join(map(str, applying))
+            )
+        return _run_discovery_batch_unlocked(
+            keywords,
+            options=effective,
+            max_workers=max_workers,
+            fetch_page=fetch_page,
+            rate_limiters=rate_limiters,
+        )
+    finally:
+        lock.release()

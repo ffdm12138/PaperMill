@@ -97,6 +97,16 @@ DOI and identical discovery identity. Performance tests require one cold full
 Registry build and prohibit a per-candidate full rebuild; the four release
 benchmark tiers are 100, 1000, 3000, and 10000 existing workspaces.
 
+Relevance acceptance covers the authoritative lifecycle classifier and staging
+side-effect call graph, global unknown/recovery blocking, immutable historical
+terminal candidates and durable DOI projections, exact-byte Phase-A zero-write
+preflight, page/notebook crash-resume and abort boundaries, durable `applying`
+Discovery exclusion, immutable active-profile bindings across incremental and
+forced rebuilds, typed matcher reasons, and five resolved-profile contracts.
+Frozen comparison tests use injected providers, assert one fetch per sampling
+key, cap Crossref DOI evidence batches at 100, verify manifest hash/size/count,
+and replay identical IDs/ranks without staging or synthetic human Precision.
+
 The lifecycle matrix proves every required artifact missing from
 `metadata_staged` is `repair_required`, while `reserved` stays unsettled and
 does not advance allocation. Identity tests prove multiple provider identities

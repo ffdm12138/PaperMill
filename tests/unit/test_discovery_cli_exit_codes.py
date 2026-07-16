@@ -7,6 +7,7 @@ import pytest
 import scripts.discover_papers as discover_script
 import scripts.discover_papers_concurrent as concurrent_script
 from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id
+from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 
 pytestmark = pytest.mark.unit
@@ -23,6 +24,7 @@ def _seed_ready(root, keyword_zh: str) -> None:
         ],
         operator="test",
     )
+    bind_test_relevance_profile(store, keyword_zh)
     store.set_enabled(keyword_zh, True)
 
 

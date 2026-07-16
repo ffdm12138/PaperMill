@@ -36,6 +36,12 @@ Incomplete `reserved` remains unsettled, while incomplete `metadata_staged` is
 multiple providers per paper through freeze. Warm staging uses one locked
 ledger load, two durable new-record checkpoints, atomic refresh, and direct
 record publication with no successful-stage post-refresh.
+
+Relevance profiles are notebook-local. Only pre-staging lifecycle states may be
+closed during replacement; recovery-required and unknown states block the whole
+plan, and historical terminal DOI facts are immutable. Apply is exact-byte,
+zero-write-preflight, crash-resumable, and notebook-last. A/B/C comparison uses
+one frozen shared corpus and offline replay; it never invents human precision.
 # Discovery batch runtime
 
 Keyword discovery shares one raw/formal Registry and one journal index per batch,

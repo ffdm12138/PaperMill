@@ -113,3 +113,47 @@ def atomic_write_json(
         atomic_write_json_unlocked(
             path, data, indent=indent, sort_keys=sort_keys, fsync=fsync
         )
+
+
+def atomic_replace_bytes_unlocked(
+    path: str | Path,
+    payload: bytes,
+    *,
+    fsync: bool = True,
+) -> None:
+    """Atomically publish exact bytes while the caller holds the file lock.
+
+    This is intentionally separate from the text JSON writer: transaction
+    plans bind the byte-for-byte result, so platform newline translation must
+    never change the planned payload during apply or resume.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("wb") as fh:
+            fh.write(payload)
+            if fsync:
+                fh.flush()
+                os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        if fsync:
+            _fsync_dir(path.parent)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def atomic_replace_bytes(
+    path: str | Path,
+    payload: bytes,
+    *,
+    fsync: bool = True,
+) -> None:
+    """Lock and atomically publish exact bytes."""
+    path = Path(path)
+    with FileLock(str(lock_path_for(path))):
+        atomic_replace_bytes_unlocked(path, payload, fsync=fsync)

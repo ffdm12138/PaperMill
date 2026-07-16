@@ -185,6 +185,14 @@ Treat incomplete `reserved` as unsettled and incomplete `metadata_staged` as
 multiple provider identities survive freeze. Reuse one locked ledger view per
 lock epoch of at most 16 candidates, preserve reservation and final durable saves, publish refreshes
 atomically, and directly publish validated success without post-refresh.
+
+Profile replacement must use the page-journal lifecycle classifier. Close only
+safe pre-staging stale verdicts, require normal recovery for processing or
+retryable staging states, and preserve all historical terminal evidence. Bind
+timestamps, IDs, reasons, mutation IDs, and expected bytes in a zero-write plan;
+resume accepts only exact before or after hashes. Keep the complete active
+profile mapping in the batch runtime. Fetch an A/B/C corpus once and replay it
+offline without deriving Precision@50.
 # Discovery staging requirements
 
 For keyword batches, reuse one `DiscoveryStagingContext` and one

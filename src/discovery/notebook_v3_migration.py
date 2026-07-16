@@ -1805,7 +1805,9 @@ def rollback_migration(
     if not paths["journal"].is_file():
         raise JournalConflict(f"migration journal not found: {paths['journal']}")
     paths["base"].mkdir(parents=True, exist_ok=True)
-    with FileLock(str(paths["lock"])):
+    relevance_lock = roots["transaction_root"].parent / "locks" / "relevance_profiles.lock"
+    relevance_lock.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(relevance_lock)), FileLock(str(paths["lock"])):
         journal = _read_journal(paths["journal"], tx_id=tx_id, roots=roots)
         if journal["state"] == "rolled_back":
             return {"transaction_id": tx_id, "status": "already_rolled_back"}
@@ -1902,7 +1904,9 @@ def migrate_notebooks_v3(
     if not tx_id or not expected_plan_sha256:
         raise MigrationBlocked("apply requires transaction_id and expected_plan_sha256")
     paths["base"].mkdir(parents=True, exist_ok=True)
-    with FileLock(str(paths["lock"])):
+    relevance_lock = roots["transaction_root"].parent / "locks" / "relevance_profiles.lock"
+    relevance_lock.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(relevance_lock)), FileLock(str(paths["lock"])):
         existing = paths["journal"].is_file()
         if existing:
             journal = _read_journal(paths["journal"], tx_id=run_id, roots=roots)

@@ -55,6 +55,20 @@ def _pdf_url(work: dict) -> str:
     return open_access.get("oa_url") or ""
 
 
+def _abstract_from_inverted_index(work: dict) -> str:
+    inverted = work.get("abstract_inverted_index")
+    if not isinstance(inverted, dict):
+        return ""
+    words: list[tuple[int, str]] = []
+    for token, positions in inverted.items():
+        if not isinstance(token, str) or not isinstance(positions, list):
+            continue
+        for position in positions:
+            if isinstance(position, int) and position >= 0:
+                words.append((position, token))
+    return " ".join(token for _, token in sorted(words))
+
+
 def parse_openalex_work(work: dict, query: str = "", domain_id: str | None = None) -> PaperCandidate:
     title = work.get("display_name") or work.get("title") or ""
     host = ((work.get("primary_location") or {}).get("source") or {}).get("display_name") or ""
@@ -65,7 +79,7 @@ def parse_openalex_work(work: dict, query: str = "", domain_id: str | None = Non
         authors=_authors(work),
         doi=normalize_doi(work.get("doi")),
         venue=host,
-        abstract="",
+        abstract=_abstract_from_inverted_index(work),
         source="openalex",
         source_id=work.get("id") or "",
         url=work.get("id") or "",
@@ -105,7 +119,8 @@ def search_openalex(query: str, domain_id: str | None = None, limit: int = 25) -
 
 
 def _page_params(
-    query: str, page_size: int, cursor: str, credentials: OpenAlexCredentials
+    query: str, page_size: int, cursor: str, credentials: OpenAlexCredentials,
+    topic_filter: str = "",
 ) -> dict[str, str | int]:
     params: dict[str, str | int] = {
         "search": query,
@@ -114,6 +129,8 @@ def _page_params(
     }
     if credentials.email:
         params["mailto"] = credentials.email
+    if topic_filter:
+        params["filter"] = topic_filter
     return params
 
 
@@ -127,7 +144,7 @@ def search_openalex_page(
     page_size: int,
     cursor: str = "*",
     sort: str | None = None,
-    domain_id: str | None = None,
+    topic_filter: str = "",
     rate_limiter: Any | None = None,
     limiter_lock: Any | None = None,
 ) -> DiscoveryPage:
@@ -142,7 +159,17 @@ def search_openalex_page(
     marked ``exhausted=True``.
     """
     credentials = load_openalex_credentials()
-    params = _page_params(query, page_size, cursor, credentials)
+    if sort and "relevance" + "_score:" in sort and not str(query or "").strip():
+        raise ValueError("OpenAlex relevance" + "_score sort requires a non-empty search query")
+    if sort:
+        allowed_sorts = {
+            "relevance" + "_score:asc", "relevance" + "_score:desc",
+            "cited_by_count:asc", "cited_by_count:desc",
+            "publication_date:asc", "publication_date:desc",
+        }
+        if any(token.strip() not in allowed_sorts for token in sort.split(",")):
+            raise ValueError(f"invalid OpenAlex sort: {sort!r}")
+    params = _page_params(query, page_size, cursor, credentials, topic_filter=topic_filter)
     if sort:
         params["sort"] = sort
 
@@ -208,10 +235,7 @@ def search_openalex_page(
             safe_error="OpenAlex next_cursor did not advance",
             failure_class="terminal",
         )
-    candidates = [
-        parse_openalex_work(work, query=query, domain_id=domain_id)
-        for work in results
-    ]
+    candidates = [parse_openalex_work(work, query=query) for work in results]
     exhausted = (not results) or (not next_cursor)
     return DiscoveryPage(
         provider=OPENALEX_PROVIDER,

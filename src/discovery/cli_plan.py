@@ -19,6 +19,7 @@ from src.discovery.keyword_notebook import (
     validate_discovery_readiness,
     validate_notebook,
 )
+from src.discovery.relevance import openalex_topic_filter
 
 
 def _read_notebook(path: Path) -> dict[str, Any]:
@@ -101,6 +102,12 @@ def load_keyword_plan(
                     "backfill_pages": backfill_pages,
                     "worker_count": max_workers,
                     "page_budget": page_budget,
+                    "relevance_profile_hash": notebook["relevance_profile"]["profile_hash"],
+                    "openalex_filter": (
+                        openalex_topic_filter(notebook["relevance_profile"])
+                        if provider == "openalex" else None
+                    ),
+                    "crossref_scope_policy": notebook["relevance_profile"]["crossref"]["scope_policy"],
                 })
 
     return {
@@ -115,6 +122,7 @@ def load_keyword_plan(
         "worker_count": max_workers,
         "page_budget": page_budget,
         "notebook_path": str(path),
+        "relevance_profile_hash": notebook["relevance_profile"]["profile_hash"],
     }
 
 

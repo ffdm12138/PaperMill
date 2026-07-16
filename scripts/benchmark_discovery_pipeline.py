@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.discovery.batch_runtime import DiscoveryBatchRuntime
+from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.formal_publication import publish_formal_publication_state
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
@@ -77,6 +77,7 @@ def run_benchmark(*, raw_workspaces: int, formal_workspaces: int,
             )
             journal = PageJournalStore(root / "pages")
             kid = keyword_id("性能基准")
+            profile_hash = "benchmark-active-profile"
             page_count = min(40, max(1, pending_candidates))
             base_page_size, extra = divmod(pending_candidates, page_count)
             offset = 0
@@ -84,7 +85,7 @@ def run_benchmark(*, raw_workspaces: int, formal_workspaces: int,
                 page_size = base_page_size + (1 if page_number < extra else 0)
                 chunk = candidates[offset:offset + page_size]
                 offset += page_size
-                journal.write_page(journal.make_page(
+                page = journal.make_page(
                     page_id=f"benchmark-{page_number}", keyword_id=kid,
                     keyword_zh="性能基准", query_id=query_identity("zh", "性能基准"),
                     query="性能基准", query_language="zh", provider="crossref",
@@ -92,12 +93,18 @@ def run_benchmark(*, raw_workspaces: int, formal_workspaces: int,
                     request_cursor=INITIAL_CURSOR, next_cursor=None,
                     provider_exhausted=offset >= pending_candidates,
                     candidates=chunk, state="cursor_committed",
-                ))
+                    relevance_profile_hash=profile_hash,
+                )
+                for candidate in page["candidates"]:
+                    candidate["relevance"]["state"] = "passed"
+                journal.write_page(page)
             started = time.perf_counter()
             runtime = DiscoveryBatchRuntime.create(
                 journal=journal, paper_raw_dir=root / "paper_raw",
                 papers_dir=root / "papers", ledger_path=root / "ledger.json",
-                needs_staging=True, persist_repair_cursor=True)
+                needs_staging=True, persist_repair_cursor=True,
+                active_relevance_profiles=ActiveRelevanceProfiles.build(
+                    {kid: profile_hash}))
             report = drain_pending_candidates(
                 journal=journal, keyword_ids=[kid], candidate_budget=pending_candidates,
                 stage_to_paper_raw=True, apply=True,
