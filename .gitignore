@@ -95,6 +95,7 @@ Thumbs.db
 *.temp
 
 # Runtime catalog / ledger artifacts
+data/backups/
 data/catalog/paper_number_ledger.json
 data/catalog/paper_number_ledger.json.bak
 data/catalog/paper_number_ledger.bak_*.json
