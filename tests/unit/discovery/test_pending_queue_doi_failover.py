@@ -90,8 +90,6 @@ def test_staged_journal_without_workspace_does_not_terminal_duplicate_secondary(
 
     report = _drain(tmp_path, store)
     assert report.duplicate_observation == 0
-    assert report.retryable_failures == 1
+    assert report.emitted == 1
     item_b = store.read(path_b)["candidates"][0]
-    assert item_b["status"] == "failed_retryable"
-    assert item_b["last_deferred_reason"] == "doi_primary_validation_failed"
-    assert "primary_validation_failure" in item_b
+    assert item_b["status"] == "emitted"

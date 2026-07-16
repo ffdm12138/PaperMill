@@ -80,3 +80,32 @@ non-16-digit folder name). A folder is a workspace via `is_paper_raw_workspace()
 are audited and cleaned by `scripts/audit_paper_raw_duplicate_workspaces.py`
 (moves losers into `data/paper_raw/quarantine/duplicate_workspaces/`; never
 deletes, never recycles paper_numbers, never lowers `max_number`).
+
+## Discovery staging boundary
+
+The ledger owns only paper-number lifecycle. Evidence reads workspace facts
+once; Readiness uses only the explicit manifest workflow profile and unknown
+profiles fail closed. Registry is the sole DOI/identity disk scanner and
+publishes copy-on-write refreshes atomically. Network staging is coordinated
+only by `DiscoveryStageTransaction` under the raw write lock. The allocator is
+discovery-agnostic, the pending queue only orchestrates journals, and the old
+DuplicateIndex/WorkspaceIndex disk refresh APIs have no fallback.
+
+Incomplete `reserved` remains unsettled; incomplete `metadata_staged` is
+`repair_required`. Identity facts use `identity_key + paper_number`, preserving
+multiple providers per paper through freeze. Transaction reuses one locked
+ledger load, retains reservation/final durable saves, and directly publishes a
+validated success with no post-refresh; Registry refresh is atomic.
+
+Registry snapshots are caches, not permanent facts. Ledger state/folder/scope
+changes trigger a targeted rescan, and DOI/identity matches are live-validated
+before reuse or duplicate decisions. Missing settled evidence is
+`repair_required`; record replacement removes old formal refs after rollback.
+`actual_allocated` counts only a new number, while `reused_existing` counts
+reuse.
+# Discovery batch boundary
+
+Use one shared staging context and journal index per batch. DOI/identity lookup
+must include both raw and generation-valid formal papers; formal/raw collisions
+fail closed. Do not scan repair backlog per candidate or use pure TTL correctness
+caches. Stage at most 16 candidates per lock epoch and retain both ledger saves.

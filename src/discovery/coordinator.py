@@ -7,7 +7,9 @@ global lane concurrency, provider limiters, and report aggregation.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
+import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from dataclasses import replace
@@ -30,6 +32,7 @@ from src.discovery.backfill_transaction import (
     run_backfill_page_transaction,
 )
 from src.discovery.constants import INITIAL_CURSOR
+from src.discovery.batch_runtime import DiscoveryBatchRuntime
 from src.discovery.keyword_notebook import (
     PROVIDERS,
     KeywordNotebookStore,
@@ -53,6 +56,7 @@ from src.services.rate_limit import ProviderRateLimiter, default_config
 
 
 DiscoveryMode = Literal["refresh", "backfill", "hybrid"]
+STAGING_QUEUE_CAPACITY = 500
 
 
 @dataclass
@@ -88,6 +92,7 @@ class DiscoveryOptions:
     doi_resolution_budget: int = 10
     max_pending_candidates: int = 1000
     resume_pending_candidates: int = 700
+    staging_no_progress_timeout_seconds: float = 300.0
     openalex_refresh_sort: str | None = None
     openalex_backfill_sort: str | None = None
     crossref_refresh_sort: str | None = None
@@ -181,6 +186,7 @@ class BatchDiscoveryReport:
     keywords: list[KeywordDiscoveryReport]
     aggregate: dict[str, Any]
     exit_code: int
+    pipeline_metrics: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +195,7 @@ class BatchDiscoveryReport:
             "exit_code": self.exit_code,
             "keywords": [kw.to_dict() for kw in self.keywords],
             "aggregate": self.aggregate,
+            "pipeline_metrics": dict(self.pipeline_metrics),
         }
 
 
@@ -288,6 +295,8 @@ def _validate_discovery_options(
             "resume_pending_candidates must satisfy 0 <= resume < max_pending_candidates; "
             f"got resume={options.resume_pending_candidates!r}, max={options.max_pending_candidates!r}"
         )
+    if options.staging_no_progress_timeout_seconds <= 0:
+        raise ValueError("staging_no_progress_timeout_seconds must be positive")
     if options.max_pages_total is not None and options.max_pages_total < 1:
         raise ValueError(f"max_pages_total must be a positive integer or None; got {options.max_pages_total!r}")
     if options.until_exhausted and options.max_pages_total is None:
@@ -379,6 +388,20 @@ def run_discovery_batch(
     fetch_page = fetch_page or _default_fetch_page
     notebook = KeywordNotebookStore(options.notebook_dir)
     journal = PageJournalStore(options.pending_pages_dir)
+    runtime = DiscoveryBatchRuntime.create(
+        journal=journal, paper_raw_dir=options.paper_raw_dir,
+        papers_dir=options.papers_dir, ledger_path=options.ledger_path,
+        needs_staging=bool(options.stage_to_paper_raw or options.hide_existing),
+        persist_repair_cursor=bool(options.apply and options.stage_to_paper_raw),
+    )
+    staging_notifications: queue.Queue[tuple[str, int] | None] = queue.Queue(
+        maxsize=STAGING_QUEUE_CAPACITY)
+    staging_candidate_slots = threading.BoundedSemaphore(STAGING_QUEUE_CAPACITY)
+    state_lock = threading.RLock()
+    progress_lock = threading.Lock()
+    last_staging_progress = [time.monotonic()]
+    dynamically_backpressured: set[str] = set()
+    staging_budget_exhausted: set[str] = set()
     budget = PageBudget(options.max_pages_total)
     limiters = rate_limiters or {
         "openalex": ProviderRateLimiter(default_config()),
@@ -389,6 +412,23 @@ def run_discovery_batch(
     keyword_reports: dict[str, KeywordDiscoveryReport] = {}
     executed_queries: dict[str, set[tuple[str, str]]] = {}
     executed_queries_lock = threading.Lock()
+
+    def notify_staging(keyword_id: str, candidate_count: int) -> None:
+        """Publish weighted candidate work with an exact 500-candidate bound."""
+        remaining = max(0, candidate_count)
+        while remaining:
+            weight = min(STAGING_QUEUE_CAPACITY, remaining)
+            for _ in range(weight):
+                if not staging_candidate_slots.acquire(blocking=False):
+                    with state_lock:
+                        dynamically_backpressured.add(keyword_id)
+                    staging_candidate_slots.acquire()
+            staging_notifications.put((keyword_id, weight))
+            remaining -= weight
+
+    def candidate_budget_is_exhausted(keyword_id: str) -> bool:
+        with state_lock:
+            return keyword_id in staging_budget_exhausted
 
     def fetch_with_budget(provider: str, query: str, **kwargs: Any) -> Any:
         query_id_value = str(kwargs.pop("query_id", ""))
@@ -446,6 +486,10 @@ def run_discovery_batch(
                 sig = request_signature(sort=sort, page_size=options.page_size)
                 cursor = INITIAL_CURSOR
                 for seq in range(options.refresh_pages):
+                    if candidate_budget_is_exhausted(kid):
+                        report.stop_reason = "candidate_budget_exhausted"
+                        report.status = "partial_success" if report.items_returned else "skipped"
+                        return report
                     page = fetch_with_budget(
                         provider,
                         query,
@@ -497,7 +541,15 @@ def run_discovery_batch(
                         page_sequence=seq,
                         state="cursor_committed",
                     )
-                    journal.write_page(page_data)
+                    page_path = journal.write_page(page_data)
+                    with state_lock:
+                        runtime.metrics.journal_pages_written += 1
+                        runtime.metrics.page_fsyncs += 1
+                    runtime.journal_index.add_page(page_path, page_data)
+                    # Bounded notification queue is the provider backpressure
+                    # boundary; the single consumer owns staging mutations.
+                    notify_staging(
+                        str(page_data["keyword_id"]), len(page_data.get("candidates") or []))
                     report.pages_requested += 1
                     report.pages_persisted += 1
                     report.items_returned += int(page.returned_count)
@@ -526,6 +578,10 @@ def run_discovery_batch(
                 pages_left = options.max_pages_total if options.until_exhausted else options.backfill_pages
                 pages_done = 0
                 while pages_done < pages_left:
+                    if candidate_budget_is_exhausted(kid):
+                        report.stop_reason = "candidate_budget_exhausted"
+                        report.status = "partial_success" if report.items_returned else "skipped"
+                        return report
                     try:
                         result: BackfillTransactionResult = run_backfill_page_transaction(
                             keyword_zh=keyword,
@@ -569,6 +625,17 @@ def run_discovery_batch(
                     report.pages_persisted += result.pages_persisted
                     report.pages_committed += result.pages_committed
                     report.items_returned += result.candidates_returned
+                    with state_lock:
+                        journal_writes = result.pages_persisted + result.pages_committed
+                        runtime.metrics.journal_pages_written += journal_writes
+                        runtime.metrics.page_fsyncs += journal_writes
+                    if result.page_path is not None:
+                        if result.page_path not in runtime.journal_index.page_cache:
+                            committed_page = journal.read(result.page_path)
+                            with state_lock:
+                                runtime.journal_index.pages_read += 1
+                            runtime.journal_index.add_page(result.page_path, committed_page)
+                        notify_staging(kid, result.candidates_returned)
                     pages_done += 1
                     if result.provider_exhausted:
                         report.states_exhausted += 1
@@ -641,7 +708,7 @@ def run_discovery_batch(
         initial_drain = drain_pending_candidates(
             journal=journal,
             keyword_ids=[kid],
-            candidate_budget=options.max_candidates,
+            candidate_budget=min(16, options.max_candidates),
             stage_to_paper_raw=options.stage_to_paper_raw,
             apply=options.apply,
             paper_raw_dir=options.paper_raw_dir,
@@ -652,8 +719,10 @@ def run_discovery_batch(
             worker_id=worker_id,
             doi_resolution_budget=options.doi_resolution_budget,
             skip_duplicates=options.skip_duplicates,
+            hide_existing=options.hide_existing,
+            runtime=runtime,
         )
-        pending_after_drain = journal.count_pending_candidates([kid])
+        pending_after_drain = runtime.journal_index.pending_count([kid])
         bp_state = notebook.update_backpressure(
             keyword,
             pending_count=pending_after_drain,
@@ -671,6 +740,58 @@ def run_discovery_batch(
         if prepared_item is not None:
             prepared.append(prepared_item)
 
+    concurrent_drains: dict[str, DrainReport] = {}
+    initial_by_id = {nb["keyword_id"]: initial for _, nb, initial, _ in prepared}
+
+    def staging_consumer() -> None:
+        while True:
+            notification = staging_notifications.get()
+            try:
+                if notification is None:
+                    return
+                kid, candidate_count = notification
+                prior = concurrent_drains.setdefault(kid, DrainReport())
+                try:
+                    remaining = max(0, options.max_candidates
+                                    - initial_by_id.get(kid, DrainReport()).processed
+                                    - prior.processed)
+                    if remaining and candidate_count:
+                        current = drain_pending_candidates(
+                            journal=journal, keyword_ids=[kid],
+                            candidate_budget=min(candidate_count, remaining),
+                            stage_to_paper_raw=options.stage_to_paper_raw, apply=options.apply,
+                            paper_raw_dir=options.paper_raw_dir, papers_dir=options.papers_dir,
+                            ledger_path=options.ledger_path, locks_dir=options.locks_dir,
+                            exports_dir=options.exports_dir, worker_id=worker_id,
+                            doi_resolution_budget=options.doi_resolution_budget,
+                            skip_duplicates=options.skip_duplicates,
+                            hide_existing=options.hide_existing, runtime=runtime)
+                        for field_name in ("processed", "staged", "reused_existing", "emitted", "existing_duplicate",
+                                           "duplicate_observation", "invalid", "unresolved",
+                                           "retryable_failures", "terminal_failures", "planned"):
+                            setattr(prior, field_name, getattr(prior, field_name) + getattr(current, field_name))
+                        prior.before = max(prior.before, current.before)
+                        prior.remaining = current.remaining
+                        prior.errors.extend(current.errors)
+                    if (not options.until_exhausted and options.max_candidates > 0
+                            and initial_by_id.get(kid, DrainReport()).processed
+                            + prior.processed >= options.max_candidates):
+                        with state_lock:
+                            staging_budget_exhausted.add(kid)
+                except Exception as exc:
+                    prior.errors.append(
+                        f"staging_consumer_failed:{type(exc).__name__}:{exc}")
+            finally:
+                if notification is not None:
+                    for _ in range(notification[1]):
+                        staging_candidate_slots.release()
+                staging_notifications.task_done()
+                with progress_lock:
+                    last_staging_progress[0] = time.monotonic()
+
+    consumer = threading.Thread(target=staging_consumer, name="discovery-staging-consumer", daemon=False)
+    consumer.start()
+
     refresh_run_id = uuid.uuid4().hex
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {}
@@ -685,25 +806,98 @@ def run_discovery_batch(
             except Exception as exc:
                 lane_results[key] = LaneReport(status="failed", provider_failures=1, errors=[str(exc)])
 
+    no_progress_timeout = options.staging_no_progress_timeout_seconds
+
+    def assert_consumer_progress() -> None:
+        with progress_lock:
+            idle = time.monotonic() - last_staging_progress[0]
+        if idle >= no_progress_timeout:
+            raise RuntimeError(
+                f"staging consumer made no progress for {idle:.1f}s "
+                f"({staging_notifications.unfinished_tasks} unfinished notifications)")
+
+    while True:
+        try:
+            staging_notifications.put(None, timeout=min(1.0, no_progress_timeout))
+            break
+        except queue.Full:
+            assert_consumer_progress()
+    # Queue.join semantics with a progress watchdog: total drain time is
+    # unbounded while work keeps completing; only an idle consumer times out.
+    with staging_notifications.all_tasks_done:
+        while staging_notifications.unfinished_tasks:
+            assert_consumer_progress()
+            staging_notifications.all_tasks_done.wait(
+                timeout=min(1.0, no_progress_timeout))
+    consumer.join()
+    if consumer.is_alive():
+        raise RuntimeError("staging consumer stopped queue progress but did not exit")
+
+    def merge_drain(target: DrainReport, source: DrainReport) -> None:
+        for field_name in ("processed", "staged", "reused_existing", "emitted", "existing_duplicate",
+                           "duplicate_observation", "invalid", "unresolved",
+                           "retryable_failures", "terminal_failures", "planned"):
+            setattr(target, field_name,
+                    getattr(target, field_name) + getattr(source, field_name))
+        target.before = max(target.before, source.before)
+        target.remaining = source.remaining
+        target.errors.extend(source.errors)
+
     for keyword, nb, initial_drain, backpressure in prepared:
         kid = nb["keyword_id"]
-        final_drain = drain_pending_candidates(
-            journal=journal,
-            keyword_ids=[kid],
-            candidate_budget=max(0, options.max_candidates - initial_drain.processed),
-            stage_to_paper_raw=options.stage_to_paper_raw,
-            apply=options.apply,
-            paper_raw_dir=options.paper_raw_dir,
-            papers_dir=options.papers_dir,
-            ledger_path=options.ledger_path,
-            locks_dir=options.locks_dir,
-            exports_dir=options.exports_dir,
-            worker_id=worker_id,
-            doi_resolution_budget=options.doi_resolution_budget,
-            skip_duplicates=options.skip_duplicates,
-        )
+        concurrent_drain = concurrent_drains.get(kid, DrainReport())
+        final_drain = DrainReport(before=runtime.journal_index.pending_count([kid]))
+        if options.until_exhausted:
+            while True:
+                claimable = runtime.journal_index.pending_count([kid])
+                if claimable <= 0:
+                    break
+                current = drain_pending_candidates(
+                    journal=journal, keyword_ids=[kid], candidate_budget=min(16, claimable),
+                    stage_to_paper_raw=options.stage_to_paper_raw, apply=options.apply,
+                    paper_raw_dir=options.paper_raw_dir, papers_dir=options.papers_dir,
+                    ledger_path=options.ledger_path, locks_dir=options.locks_dir,
+                    exports_dir=options.exports_dir, worker_id=worker_id,
+                    doi_resolution_budget=options.doi_resolution_budget,
+                    skip_duplicates=options.skip_duplicates, hide_existing=options.hide_existing,
+                    runtime=runtime)
+                merge_drain(final_drain, current)
+                if current.processed <= 0:
+                    break
+            remaining_claimable = runtime.journal_index.pending_count([kid])
+            final_drain.remaining = remaining_claimable
+            if remaining_claimable:
+                final_drain.errors.append(
+                    f"until_exhausted_journal_not_empty:{remaining_claimable}")
+        else:
+            final_drain = drain_pending_candidates(
+                journal=journal,
+                keyword_ids=[kid],
+                candidate_budget=max(0, options.max_candidates - initial_drain.processed
+                                     - concurrent_drain.processed),
+                stage_to_paper_raw=options.stage_to_paper_raw,
+                apply=options.apply,
+                paper_raw_dir=options.paper_raw_dir,
+                papers_dir=options.papers_dir,
+                ledger_path=options.ledger_path,
+                locks_dir=options.locks_dir,
+                exports_dir=options.exports_dir,
+                worker_id=worker_id,
+                doi_resolution_budget=options.doi_resolution_budget,
+                skip_duplicates=options.skip_duplicates,
+                hide_existing=options.hide_existing,
+                runtime=runtime,
+            )
+        merge_drain(initial_drain, concurrent_drain)
         refresh = lane_results.get((keyword, "refresh"), LaneReport(status="skipped"))
         backfill = lane_results.get((keyword, "backfill"), LaneReport(status="skipped"))
+        if options.until_exhausted:
+            expected_lanes = len(_active_queries(nb)) * len(PROVIDERS)
+            if backfill.states_exhausted < expected_lanes:
+                backfill.errors.append(
+                    f"until_exhausted_provider_lanes_incomplete:"
+                    f"{backfill.states_exhausted}/{expected_lanes}")
+                backfill.status = "partial_success" if backfill.items_returned else "failed"
         errors = list(refresh.errors) + list(backfill.errors) + list(initial_drain.errors) + list(final_drain.errors)
         statuses = {refresh.status, backfill.status, initial_drain.status, final_drain.status}
         if "failed" in statuses:
@@ -720,6 +914,7 @@ def run_discovery_batch(
             status = "success"
         else:
             status = "success"
+        dynamic_backpressure = kid in dynamically_backpressured
         report = KeywordDiscoveryReport(
             keyword_zh=keyword,
             keyword_id=kid,
@@ -730,6 +925,7 @@ def run_discovery_batch(
             final_pending=final_drain,
             candidates={
                 "staged": initial_drain.staged + final_drain.staged,
+                "reused_existing": initial_drain.reused_existing + final_drain.reused_existing,
                 "emitted": initial_drain.emitted + final_drain.emitted,
                 "existing_duplicates": initial_drain.existing_duplicate + final_drain.existing_duplicate,
                 "duplicate_observations": initial_drain.duplicate_observation + final_drain.duplicate_observation,
@@ -748,17 +944,22 @@ def run_discovery_batch(
                 if (item["query"], item["language"])
                 in executed_queries.get(keyword, set())
             ],
-            backpressure=backpressure,
+            backpressure=backpressure or dynamic_backpressure,
             errors=errors,
         )
         notebook.update_pending_counts(
             keyword,
-            pages=len(journal.list_pages([kid])),
-            candidates=journal.count_pending_candidates([kid]),
+            pages=sum(1 for page in runtime.journal_index.page_cache.values()
+                      if page.get("keyword_id") == kid),
+            candidates=runtime.journal_index.pending_count([kid]),
         )
         keyword_reports[keyword] = report
 
     ordered = [keyword_reports[k] for k in keywords if k in keyword_reports]
     status, exit_code = _batch_status(ordered)
     aggregate = _aggregate(ordered, budget)
-    return BatchDiscoveryReport(status=status, keywords=ordered, aggregate=aggregate, exit_code=exit_code)
+    runtime.metrics.sync_journal(runtime.journal_index)
+    return BatchDiscoveryReport(
+        status=status, keywords=ordered, aggregate=aggregate, exit_code=exit_code,
+        pipeline_metrics=runtime.metrics.to_dict(),
+    )

@@ -1,8 +1,8 @@
 """Shared discovery receipt writer with conflict validation.
 
 This is the single entry point for writing discovery receipts anywhere in the
-project. The allocator (``PaperRawAllocator``) and the pending-queue drain loop
-both delegate here so receipt semantics are identical across paths:
+project. ``DiscoveryStageTransaction`` delegates here so receipt semantics are
+identical across all transaction replays:
 
 - Receipt absent  → atomic create + re-read verification → ``created``
 - Receipt present, identity matches → no rewrite → ``existing_match`` (idempotent)
@@ -13,16 +13,16 @@ Receipt identity is defined by ``RECEIPT_IDENTITY_KEYS``. Mutable fields such as
 ``staged_at`` are intentionally excluded from the comparison so that a replay of
 the same staging event is idempotent.
 
-Workspace reconciliation lives in :mod:`src.discovery.pending_queue`. This
-module is the single place that writes receipt files — any receipt write
-anywhere in the project must go through :func:`write_or_validate_discovery_receipt`.
+Workspace reconciliation lives in :mod:`src.discovery.stage_transaction`.
+Every receipt write must go through
+:func:`write_or_validate_discovery_receipt`.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from filelock import FileLock
 
@@ -74,15 +74,6 @@ class DiscoveryReceiptConflictError(RuntimeError):
             f"candidate_id={candidate_id!r} page_id={page_id!r} "
             f"keyword_id={keyword_id!r} normalized_doi={normalized_doi!r}"
         )
-
-
-class AmbiguousDiscoveryReceiptError(RuntimeError):
-    """Raised when a lookup key matches more than one receipt."""
-
-    def __init__(self, matches: list["MatchingReceipt"]) -> None:
-        self.matches = tuple(matches)
-        paths = ", ".join(match.path.as_posix() for match in matches)
-        super().__init__(f"ambiguous discovery receipt identity: {paths}")
 
 
 @dataclass(frozen=True)
@@ -308,85 +299,3 @@ def write_or_validate_discovery_receipt(
         if normalize_receipt_identity(verify) != identity:
             raise ValueError(f"discovery receipt verification mismatch: {path}")
     return ReceiptWriteResult(status="created", path=path, paper_number=paper_number)
-
-
-@dataclass(frozen=True)
-class MatchingReceipt:
-    """Structured result of :func:`find_matching_receipt`.
-
-    Carries the receipt path, the workspace it lives in, the paper_number
-    from the receipt, and the raw payload — enough for the caller to
-    build a full :class:`WorkspaceReconciliationState` and verify
-    completeness before marking the candidate as staged.
-    """
-
-    path: Path
-    workspace: Path
-    paper_number: str
-    payload: dict[str, Any]
-
-
-def find_matching_receipt(
-    roots: Iterable[Path],
-    *,
-    lookup_key: ReceiptLookupIdentity | Mapping[str, Any] | None = None,
-    candidate_id: str = "",
-    page_id: str = "",
-    keyword_id: str = "",
-    provider: str | None = None,
-    normalized_doi: str | None = None,
-) -> MatchingReceipt | None:
-    """Return the first receipt whose identity matches, or ``None``.
-
-    Searches every ``<root>/*/<paper_number>.discovery_receipt.json`` under the
-    given roots. Identity is compared via :func:`normalize_receipt_identity` so
-    DOI normalization and whitespace handling are consistent with the writer.
-
-    Returns a :class:`MatchingReceipt` with the receipt path, workspace,
-    paper_number, and payload — NOT just the raw dict.  The caller must
-    verify workspace completeness (metadata, manifest, ledger) before
-    marking the candidate as staged; a receipt alone is NOT proof of
-    complete staging.
-    """
-    target = normalize_receipt_lookup_key(
-        lookup_key
-        or ReceiptLookupIdentity(
-            candidate_id=candidate_id,
-            page_id=page_id,
-            keyword_id=keyword_id,
-            provider=provider,
-            normalized_doi=normalized_doi,
-        )
-    )
-    matches: list[MatchingReceipt] = []
-    for root in roots:
-        if not Path(root).exists():
-            continue
-        for path in sorted(Path(root).glob("*/*.discovery_receipt.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            try:
-                ident = normalize_receipt_identity(data)
-            except ValueError:
-                continue
-            if (
-                ident["candidate_id"] == target["candidate_id"]
-                and ident["page_id"] == target["page_id"]
-                and ident["keyword_id"] == target["keyword_id"]
-                and ident["provider"] == target["provider"]
-                and ident["normalized_doi"] == target["normalized_doi"]
-            ):
-                workspace = path.parent
-                matches.append(
-                    MatchingReceipt(
-                        path=path,
-                        workspace=workspace,
-                        paper_number=ident.get("paper_number", ""),
-                        payload=data,
-                    )
-                )
-    if len(matches) > 1:
-        raise AmbiguousDiscoveryReceiptError(matches)
-    return matches[0] if matches else None

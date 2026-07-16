@@ -99,7 +99,7 @@ def inspect_ingest_duplicates(
     ledger_paper_name = str(ledger_item.get("paper_name") or "")
     if ledger_state == "active" and ledger_paper_name == paper_name:
         findings.append({"kind": "paper_number", "classification": "same_paper_number_idempotent", "paper_number": workspace.paper_number, "paper_name": paper_name})
-    elif ledger_item and ledger_state not in {"reserved", "allocating"}:
+    elif ledger_item and ledger_state not in {"reserved", "metadata_staged", "allocating"}:
         findings.append({"kind": "paper_number", "classification": "conflict", "paper_number": workspace.paper_number, "state": ledger_state})
     elif ledger_paper_name and ledger_paper_name != paper_name:
         findings.append({"kind": "paper_number", "classification": "conflict", "paper_number": workspace.paper_number, "paper_name": ledger_paper_name})

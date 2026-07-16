@@ -218,3 +218,50 @@ run the packer and inspect an unpacked snapshot.
 For every completed code change, both the fast gate and full gate must finish,
 then `scripts/pack_repo.py` must generate a verified runtime-zero snapshot.
 `AGENTS.md` and `CLAUDE.md` must remain byte-for-byte identical.
+
+## Discovery staging ownership boundary
+
+Discovery duplicate lookup covers both `paper_raw` and active `papers`; a valid
+formal primary has priority. Formal projections are generation-bound and reload
+only when the durable formal publication generation changes. The generation is
+stored in `data/papers/.formal_publication_state.json` and binds every active
+formal's metadata/catalog/manifest hashes; each staging batch rechecks that
+closure before candidate decisions. One discovery batch
+owns one `DiscoveryStagingContext`, one cold Registry build, one
+`JournalDrainIndex`, and one bounded single-consumer staging queue. Repair backlog
+members are never scanned per candidate: batch-boundary probes are capped at 20,
+while an actual DOI/identity hit is always revalidated live. Page claims and
+commits are batched, staging lock epochs contain at most 16 candidates, and every
+new paper still has separate reserved and metadata_staged ledger checkpoints.
+Correctness caches are file-generation/fingerprint bound; pure TTL caches are
+forbidden.
+
+`PaperNumberLedger` owns only permanent number and raw/formal lifecycle state.
+`WorkspaceEvidence` reads single-workspace facts once; `WorkspaceReadiness`
+applies only the explicit `stage_manifest.workflow_path` profile and fails
+closed for missing or unknown profiles. `WorkspaceRegistry` is the sole DOI
+and discovery-identity disk scan entry point; incremental refresh is
+copy-on-write and publishes only a fully validated replacement snapshot.
+`DiscoveryStageTransaction` is the sole network-staging coordinator under the
+raw write lock. The allocator contains only generic workspace primitives, and
+`pending_queue.py` contains only candidate-journal orchestration. The retired
+DuplicateIndex/WorkspaceIndex disk refresh APIs and `workspace_refresh.py` do
+not have compatibility fallbacks.
+
+`reserved` workspaces may lack staging evidence and remain unsettled;
+`metadata_staged` asserts a complete profile closure, so any missing metadata,
+source record, discovery receipt, stage manifest, import status, or marker is
+`repair_required`. Discovery identities use the sole entity key
+`(identity_key, paper_number)`, allowing multiple provider identities per paper
+through freeze. Refresh consumes the locked ledger view and publishes
+atomically. Successful staging directly publishes its validated record without
+post-refresh. Each candidate loads the ledger once; a new record keeps two
+durable saves: reservation before writes and `metadata_staged` after validation.
+
+A Registry snapshot is a performance cache, not permanent truth. Refresh
+compares every record's in-memory ledger state, folder, and expected scope and
+target-rescans only changed paper numbers. Before reuse or duplicate decisions,
+DOI/identity matches are live-revalidated; damaged `metadata_staged` evidence
+returns `repair_required`. Record replacement removes all old DOI/identity
+projections, including formal refs after active rollback. Adapter reports keep
+`actual_allocated` exclusive to new staging and report reuse separately.

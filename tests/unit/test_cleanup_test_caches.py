@@ -21,6 +21,13 @@ from scripts.cleanup_test_caches import (
 from scripts.test_runtime_workspace import _system_temp_dir
 
 
+def test_cleanup_disables_bytecode_before_local_import():
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "cleanup_test_caches.py").read_text(
+        encoding="utf-8")
+    assert source.index("sys.dont_write_bytecode = True") < source.index(
+        "from scripts.test_runtime_workspace import")
+
+
 # ---------------------------------------------------------------------------
 # _check_cache_only_content
 # ---------------------------------------------------------------------------

@@ -49,14 +49,13 @@ def _stage_manual(tmp_path: Path) -> tuple[Path, Path, str]:
 def _stage_network_metadata(tmp_path: Path, doi: str = "10.1000/net-meta") -> tuple[Path, Path, str]:
     """Stage network metadata (no PDF); return (paper_raw_dir, workspace_folder, paper_number)."""
     paper_raw = tmp_path / "paper_raw"
-    allocator = PaperRawAllocator(paper_raw, ledger_path=_ledger(tmp_path), papers_dir=tmp_path / "papers")
-    meta = empty_metadata("0000000000000001", source_type="network_search")
-    meta["identifiers"]["doi"] = doi
-    meta["title"]["original"] = "Network Metadata Paper"
-    meta["year"] = 2024
-    meta["source"]["provider"] = "crossref"
-    result = allocator.allocate_metadata(meta, source_type="network_search",
-                                         raw_record={"provider": "crossref", "record": {"DOI": doi}})
+    from src.services.network_metadata_staging import stage_network_metadata_records
+    report = stage_network_metadata_records(
+        [{"title": "Network Metadata Paper", "year": 2024, "doi": doi,
+          "provider": "crossref"}],
+        paper_raw_dir=paper_raw, papers_dir=tmp_path / "papers",
+        ledger_path=_ledger(tmp_path), apply=True)
+    result = report["items"][0]
     return paper_raw, Path(result["folder"]), result["paper_number"]
 
 

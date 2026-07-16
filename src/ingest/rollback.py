@@ -12,7 +12,13 @@ from pathlib import Path
 from filelock import Timeout as FileLockTimeout
 
 from src.catalog.freeze import assert_catalog_frozen
+from src.discovery.formal_publication import (
+    publish_formal_publication_state_unlocked,
+    publication_state_path,
+)
 from src.ingest.locking import (
+    LEDGER_RANK,
+    INDEX_PUBLISH_RANK,
     LEDGER_RANK,
     PAPER_RAW_GLOBAL_RANK,
     PAPERS_INSTALL_RANK,
@@ -224,22 +230,32 @@ def resume_rollback(
 
         elif phase == "raw_installed":
             _raw_is_valid(target, number, papers_dir=papers_dir, paper_raw_root=paper_raw_root)
-            with acquire_locks(LockRequest.path_lock(LEDGER_RANK, ledger._lock_path)):
+            with acquire_locks(
+                LockRequest.path_lock(LEDGER_RANK, ledger._lock_path),
+                LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
+                LockRequest.path_lock(
+                    INDEX_PUBLISH_RANK,
+                    Path(publication_state_path(papers_dir).as_posix() + ".lock"),
+                ),
+            ):
                 item = (ledger.load().get("items") or {}).get(number) or {}
                 state = item.get("state")
                 if state == "active":
-                    ledger.rollback_active_to_reserved_locked(number, target, planned_paper_name=paper_name)
-                elif state == "reserved":
+                    ledger.rollback_active_to_metadata_staged_locked(number, target, planned_paper_name=paper_name)
+                elif state in {"reserved", "metadata_staged"}:
                     if item.get("planned_paper_name") != paper_name or Path(str(item.get("folder_path") or "")).name != number:
                         raise RuntimeError("transaction_repair_required: reserved ledger identity mismatch")
                 else:
                     raise RuntimeError(f"transaction_repair_required: rollback ledger state {state!r}")
+                publish_formal_publication_state_unlocked(
+                    papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
+                )
             journal = _write_journal(journal_path, journal, "ledger_reserved")
             _fault(fault_injector, "ledger_reserved")
 
         elif phase == "ledger_reserved":
             item = (ledger.load().get("items") or {}).get(number) or {}
-            if item.get("state") != "reserved":
+            if item.get("state") not in {"reserved", "metadata_staged"}:
                 raise RuntimeError("transaction_repair_required: ledger reservation evidence missing")
             from src.catalog_folders.formal_registry import FormalPaperRegistry
             from src.catalog_folders.reconcile import reconcile_catalog_folders

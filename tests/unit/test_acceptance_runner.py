@@ -15,10 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from scripts.agent_acceptance import _pid_state, run_command_with_timeout
+from scripts.agent_acceptance import PYTEST_PREFIX, _pid_state, run_command_with_timeout
 
 
 pytestmark = pytest.mark.unit
+
+
+def test_pytest_prefix_disables_repo_cache_provider():
+    assert PYTEST_PREFIX[-2:] == ["-p", "no:cacheprovider"]
 
 
 def _write_script(path: Path, body: str) -> Path:

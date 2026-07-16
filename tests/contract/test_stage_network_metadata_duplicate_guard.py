@@ -23,11 +23,8 @@ def _run_script(argv: list[str]) -> int:
 
 
 def _formal_doi(root: Path, doi: str) -> None:
-    folder = root / "2024_wang_existing"
-    folder.mkdir(parents=True)
-    meta = empty_metadata("2024_wang_existing")
-    meta["identifiers"]["doi"] = doi
-    (folder / "2024_wang_existing.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    from tests.factories.paper_raw_factory import create_active_formal_workspace
+    create_active_formal_workspace(root, doi=doi)
 
 
 def _paper_raw_doi(root: Path, number: str, doi: str) -> None:
@@ -42,7 +39,7 @@ def test_network_metadata_duplicate_formal_doi_does_not_allocate(tmp_path, monke
     input_path = tmp_path / "items.jsonl"
     input_path.write_text(json.dumps({"title": "Dup", "year": 2024, "doi": "10.1000/dup"}) + "\n", encoding="utf-8")
     papers = tmp_path / "papers"
-    _formal_doi(papers, "10.1000/dup")
+    _formal_doi(tmp_path, "10.1000/dup")
     report = tmp_path / "report.json"
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
 
@@ -51,7 +48,7 @@ def test_network_metadata_duplicate_formal_doi_does_not_allocate(tmp_path, monke
         "--input", str(input_path),
         "--paper-raw-dir", str(tmp_path / "paper_raw"),
         "--papers-dir", str(papers),
-        "--ledger-path", str(tmp_path / "catalog" / "ledger.json"),
+        "--ledger-path", str(tmp_path / "ledger.json"),
         "--report", str(report),
         "--apply",
     ])
@@ -73,7 +70,7 @@ def test_network_metadata_skip_duplicates_stages_unique_record(tmp_path, monkeyp
         encoding="utf-8",
     )
     papers = tmp_path / "papers"
-    _formal_doi(papers, "10.1000/dup")
+    _formal_doi(tmp_path, "10.1000/dup")
     report = tmp_path / "report.json"
     paper_raw = tmp_path / "paper_raw"
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
@@ -83,7 +80,7 @@ def test_network_metadata_skip_duplicates_stages_unique_record(tmp_path, monkeyp
         "--input", str(input_path),
         "--paper-raw-dir", str(paper_raw),
         "--papers-dir", str(papers),
-        "--ledger-path", str(tmp_path / "catalog" / "ledger.json"),
+        "--ledger-path", str(tmp_path / "ledger.json"),
         "--report", str(report),
         "--skip-duplicates",
         "--apply",
@@ -92,7 +89,7 @@ def test_network_metadata_skip_duplicates_stages_unique_record(tmp_path, monkeyp
     assert rc == 0
     report_obj = json.loads(report.read_text(encoding="utf-8"))
     assert [item["status"] for item in report_obj["items"]] == ["duplicate", "staged"]
-    assert (paper_raw / "0000000000000001" / "0000000000000001.metadata.json").exists()
+    assert (paper_raw / "0000000000000002" / "0000000000000002.metadata.json").exists()
 
 
 def test_network_metadata_batch_duplicate_doi(tmp_path, monkeypatch):
@@ -124,14 +121,15 @@ def test_network_metadata_batch_duplicate_doi(tmp_path, monkeypatch):
 
 
 def test_stage_network_metadata_rejects_existing_paper_raw_doi(tmp_path):
+    from tests.factories.paper_raw_factory import create_network_metadata_workspace
+    create_network_metadata_workspace(tmp_path, doi="10.1000/existing")
     paper_raw = tmp_path / "paper_raw"
-    _paper_raw_doi(paper_raw, "0000000000000001", "10.1000/existing")
 
     report = stage_network_metadata_records(
         [{"title": "Dup", "year": 2024, "doi": "10.1000/existing"}],
         paper_raw_dir=paper_raw,
         papers_dir=tmp_path / "papers",
-        ledger_path=tmp_path / "catalog" / "ledger.json",
+        ledger_path=tmp_path / "ledger.json",
         apply=True,
     )
 

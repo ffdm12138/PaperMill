@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -92,6 +93,10 @@ def test_report_aggregation_uses_in_memory_objects(tmp_path: Path):
     assert report.to_dict()["schema_version"] == "3.0"
     assert report.aggregate["keywords"]["total"] == 2
     assert len(list((tmp_path / "pages").glob("**/*.json"))) >= 2
+    assert report.pipeline_metrics["journal_full_scans"] == 1
+    assert report.pipeline_metrics["journal_pages_written"] >= 2
+    assert report.pipeline_metrics["staging_context_builds"] == 0
+    assert report.to_dict()["pipeline_metrics"] == report.pipeline_metrics
 
 
 @pytest.mark.parametrize("state", ["missing", "not_ready", "corrupt", "legacy"])
@@ -190,3 +195,139 @@ def test_two_chinese_and_two_english_queries_schedule_both_providers(tmp_path: P
         {"query": "atmospheric boundary layer", "query_language": "en"},
         {"query": "boundary layer turbulence", "query_language": "en"},
     ]
+
+
+def test_until_exhausted_drains_provider_journal_and_staging_queue(tmp_path: Path):
+    nb_dir = tmp_path / "notebooks"
+    _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
+    counter = 0
+    counter_lock = threading.Lock()
+
+    def fetch(provider: str, query: str, **kwargs):
+        nonlocal counter
+        with counter_lock:
+            start = counter
+            counter += 3
+        return _Page([
+            PaperCandidate(title=f"T {start + index}", doi=f"10.9900/{start + index}")
+            for index in range(3)
+        ], exhausted=True)
+
+    options = DiscoveryOptions(
+        mode="backfill", until_exhausted=True, max_pages_total=4,
+        max_candidates=1, notebook_dir=nb_dir,
+        pending_pages_dir=tmp_path / "pages", locks_dir=tmp_path / "locks",
+        exports_dir=tmp_path / "exports", output_dir=tmp_path / "out",
+        paper_raw_dir=tmp_path / "paper_raw", papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "ledger.json",
+    )
+
+    report = run_discovery_batch(
+        ["风吹雪"], options=options, max_workers=4, fetch_page=fetch)
+
+    assert report.status == "success"
+    assert report.keywords[0].backfill.states_exhausted == 4
+    assert report.aggregate["pending"]["remaining"] == 0
+    assert report.aggregate["candidates"]["emitted"] == 12
+    assert report.pipeline_metrics["journal_full_scans"] == 1
+
+
+def test_consumer_exception_is_reported_without_queue_join_deadlock(
+    tmp_path: Path, monkeypatch,
+):
+    import src.discovery.coordinator as coordinator
+
+    nb_dir = tmp_path / "notebooks"
+    _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
+    original = coordinator.drain_pending_candidates
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def fail_once_in_consumer(**kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 2:
+            raise RuntimeError("injected consumer failure")
+        return original(**kwargs)
+
+    monkeypatch.setattr(coordinator, "drain_pending_candidates", fail_once_in_consumer)
+    options = DiscoveryOptions(
+        mode="refresh", refresh_pages=1, max_candidates=1,
+        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
+        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
+    )
+
+    report = run_discovery_batch(
+        ["风吹雪"], options=options, max_workers=1,
+        fetch_page=lambda *args, **kwargs: _Page([
+            PaperCandidate(title="T", doi="10.9901/consumer")]),
+    )
+
+    assert report.status == "partial_success"
+    assert any("staging_consumer_failed:RuntimeError" in error
+               for error in report.keywords[0].errors)
+
+
+def test_candidate_weighted_queue_applies_dynamic_backpressure(
+    tmp_path: Path, monkeypatch,
+):
+    import src.discovery.coordinator as coordinator
+
+    nb_dir = tmp_path / "notebooks"
+    _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
+    monkeypatch.setattr(coordinator, "STAGING_QUEUE_CAPACITY", 2)
+    original_drain = coordinator.drain_pending_candidates
+    consumer_entered = threading.Event()
+    release_consumer = threading.Event()
+    call_lock = threading.Lock()
+    drain_calls = 0
+
+    def gate_first_consumer_drain(**kwargs):
+        nonlocal drain_calls
+        with call_lock:
+            drain_calls += 1
+            call_number = drain_calls
+        if call_number == 2:
+            consumer_entered.set()
+            assert release_consumer.wait(timeout=10)
+        return original_drain(**kwargs)
+
+    monkeypatch.setattr(coordinator, "drain_pending_candidates", gate_first_consumer_drain)
+    fetch_calls = 0
+
+    def fetch(provider: str, query: str, **kwargs):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        if fetch_calls == 1:
+            return _Page([
+                PaperCandidate(title=f"T {index}", doi=f"10.9902/{index}")
+                for index in range(3)
+            ])
+        return _Page([])
+
+    options = DiscoveryOptions(
+        mode="refresh", refresh_pages=1, max_candidates=3,
+        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
+        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
+    )
+    holder: dict[str, object] = {}
+
+    def run() -> None:
+        holder["report"] = run_discovery_batch(
+            ["风吹雪"], options=options, max_workers=1, fetch_page=fetch)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert consumer_entered.wait(timeout=10)
+    release_consumer.set()
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+    report = holder["report"]
+    assert report.keywords[0].backpressure is True
+    assert report.aggregate["candidates"]["emitted"] == 3

@@ -15,8 +15,6 @@ from config.settings import (
 )
 from src.cleaner import MinerUOutputCleaner
 from src.converter import MinerUConverter
-from src.discovery.discovery_receipt import DiscoveryReceiptConflictError, build_receipt_payload, normalize_receipt_identity, write_or_validate_discovery_receipt
-from src.discovery.models import normalize_doi
 from src.file_fingerprint import compute_file_hashes, compute_sha256
 from src.ingest.models import now_iso
 from src.library.paper_number_ledger import PaperNumberLedger
@@ -25,7 +23,10 @@ from src.metadata.freeze import assert_metadata_frozen
 from src.naming import safe_child
 from src.path_utils import normalize_repo_path
 from src.services.asset_manifest import write_asset_manifest
-from src.services.ingest_duplicate_guard import DuplicateIngestError, check_metadata_duplicate, check_pdf_duplicate
+from src.services.ingest_duplicate_guard import (
+    DuplicateIngestError,
+    check_pdf_duplicate,
+)
 from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.ingest_state import METADATA_MANUAL_REVIEW_REQUIRED, STAGE_FAILED, write_import_status as _write_import_status
 from src.services.mineru_output_cache import MinerUOutputCache
@@ -96,40 +97,6 @@ class PaperRawAllocator:
         )
         return any(any(folder.glob(pattern)) for pattern in patterns)
 
-    def _write_discovery_receipt(
-        self,
-        folder: Path,
-        paper_number: str,
-        context: dict[str, Any],
-    ) -> str:
-        """Write/validate a discovery receipt via the shared receipt service.
-
-        Delegates to :mod:`src.discovery.discovery_receipt` so the allocator
-        and the pending-queue drain loop share identical create/idempotent/
-        conflict semantics. Raises :class:`DiscoveryReceiptConflictError` when
-        an existing receipt's identity disagrees; never overwrites.
-        """
-        candidate_id = str(context.get("candidate_id") or "")
-        page_id = str(context.get("page_id") or "")
-        keyword_id = str(context.get("keyword_id") or "")
-        normalized_doi = normalize_doi(context.get("normalized_doi") or context.get("doi") or "")
-        provider = str(context.get("provider") or "").strip().lower()
-        if not candidate_id or not page_id or not normalized_doi:
-            raise ValueError("discovery receipt context requires candidate_id, page_id, and normalized_doi")
-        payload = build_receipt_payload(
-            candidate_id=candidate_id,
-            page_id=page_id,
-            keyword_id=keyword_id,
-            normalized_doi=normalized_doi,
-            paper_number=paper_number,
-            provider=provider,
-        )
-        path = folder / f"{paper_number}.discovery_receipt.json"
-        result = write_or_validate_discovery_receipt(
-            path, payload, workspace_root=folder.parent
-        )
-        return normalize_repo_path(result.path)
-
     def _mark_allocation_failure(self, paper_number: str, folder: Path, exc: Exception) -> None:
         if self._workspace_has_core_assets(folder, paper_number):
             self._mark_stage_failed(paper_number, folder, exc)
@@ -140,6 +107,12 @@ class PaperRawAllocator:
             pass
 
     def _mark_stage_failed(self, paper_number: str, folder: Path, exc: Exception) -> None:
+        """Record staging failure in .import_status.json only.
+
+        The ledger stays at ``reserved`` — staging failure is an operation
+        result, not a lifecycle state. The workspace remains unsettled so the
+        index re-scans it on the next drain.
+        """
         try:
             _write_import_status(
                 folder,
@@ -148,10 +121,6 @@ class PaperRawAllocator:
                 errors=[str(exc)],
                 extra={"paper_number": paper_number, "paper_raw_id": paper_number},
             )
-        except Exception:
-            pass
-        try:
-            self.ledger.mark_stage_failed(paper_number, folder, errors=[str(exc)])
         except Exception:
             pass
 
@@ -246,141 +215,6 @@ class PaperRawAllocator:
                 )
                 self.ledger.mark_metadata_staged(source_id, folder)
                 return {**workspace, "pdf": str(dest_pdf)}
-            except Exception as exc:
-                self._mark_allocation_failure(source_id, folder, exc)
-                raise
-
-    def allocate_metadata(
-        self,
-        metadata: dict | None = None,
-        *,
-        source_type: str = "network_search",
-        raw_record: dict | None = None,
-        discovery_receipt_context: dict[str, Any] | None = None,
-        reuse_paper_number: str | None = None,
-    ) -> dict:
-        """Stage a network-metadata record into a paper_raw workspace.
-
-        When ``reuse_paper_number`` is given, no new paper number is allocated:
-        the allocator completes staging into the EXISTING workspace previously
-        reserved for the same candidate (discovery-context match). This is the
-        crash-recovery path — it must never recycle a hole for a different
-        candidate. The duplicate check is scoped to skip the reused workspace.
-        """
-        self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
-            reuse_number = str(reuse_paper_number or "").strip()
-            if reuse_number and not _PAPER_NUMBER_RE.match(reuse_number):
-                raise ValueError(f"invalid reuse_paper_number: {reuse_number}")
-            if metadata:
-                dup = check_metadata_duplicate(
-                    metadata,
-                    paper_raw_dir=self.paper_raw_dir,
-                    papers_dir=self.papers_dir,
-                    skip_paper_number=reuse_number or None,
-                )
-                if dup.blocking:
-                    raise DuplicateIngestError(dup)
-            if reuse_number:
-                folder = safe_child(self.paper_raw_dir, reuse_number)
-                if not folder.is_dir():
-                    raise FileNotFoundError(
-                        f"reuse_paper_number workspace not found: {folder}"
-                    )
-                source_id = reuse_number
-                workspace = {
-                    "paper_number": source_id,
-                    "paper_raw_id": source_id,
-                    "folder": str(folder),
-                    "reused": True,
-                }
-            else:
-                workspace = self._allocate_workspace_unlocked()
-                source_id = workspace["paper_number"]
-                folder = Path(workspace["folder"])
-            receipt_context: dict[str, Any] | None = None
-            receipt_path = ""
-            if discovery_receipt_context:
-                receipt_context = {
-                    **discovery_receipt_context,
-                    "normalized_doi": normalize_doi(
-                        discovery_receipt_context.get("normalized_doi")
-                        or discovery_receipt_context.get("doi")
-                        or metadata_doi(metadata or {})
-                    ),
-                }
-                # A reused workspace is immutable until its durable discovery
-                # identity has been validated.  Perform this preflight before
-                # touching Metadata, source records, status, or ledger.
-                if reuse_number:
-                    receipt_path = self._write_discovery_receipt(folder, source_id, receipt_context)
-            try:
-                data = metadata or empty_metadata(source_id, source_type=source_type)
-                data["paper_number"] = source_id
-                data["paper_raw_id"] = source_id
-                data["schema_version"] = METADATA_SCHEMA_VERSION
-                data["source_type"] = source_type
-                schema_errors = validate_metadata_schema(data)
-                if schema_errors:
-                    raise ValueError("invalid metadata: " + "; ".join(schema_errors))
-                source = data.get("source") if isinstance(data.get("source"), dict) else {}
-                provider = str(source.get("provider") or source_type)
-                source["raw_record_path"] = ensure_raw_record_path_is_metadata_source(
-                    source.get("raw_record_path") or "", provider,
-                )
-                data["source"] = source
-                if raw_record is not None:
-                    if discovery_receipt_context:
-                        raw_record = {
-                            **raw_record,
-                            "discovery_context": {
-                                **discovery_receipt_context,
-                                "normalized_doi": normalize_doi(
-                                    discovery_receipt_context.get("normalized_doi")
-                                    or discovery_receipt_context.get("doi")
-                                    or metadata_doi(data)
-                                ),
-                            },
-                        }
-                    write_metadata_source_record(folder, provider, raw_record)
-                atomic_write_json(folder / f"{source_id}.metadata.json", data, indent=2)
-                if receipt_context and not receipt_path:
-                    receipt_path = self._write_discovery_receipt(folder, source_id, receipt_context)
-                doi = metadata_doi(data)
-                # Staging proves only that citation facts were resolved.  PDF
-                # identity matching is a separate, replayable receipt written
-                # after a PDF exists; never infer it from Metadata content.
-                match_warnings: list[str] = []
-                status = "staged_metadata"
-                reason = "citation metadata resolved; independent PDF identity match pending"
-                write_stage_manifest(
-                    folder,
-                    paper_number=source_id,
-                    paper_raw_id=source_id,
-                    workflow_path="network_metadata",
-                    source_type=source_type,
-                    pdf_source=None,
-                    staged_pdf=None,
-                )
-                _write_import_status(
-                    folder,
-                    status,
-                    reason=reason,
-                    warnings=match_warnings,
-                    extra={
-                        "paper_number": source_id,
-                        "paper_raw_id": source_id,
-                        "source_type": source_type,
-                        "source_provider": provider,
-                        "doi": doi,
-                        "pdf_md5": "",
-                        "pdf_sha256": "",
-                    },
-                )
-                self.ledger.mark_metadata_staged(source_id, folder)
-                if receipt_path:
-                    workspace["receipt_path"] = receipt_path
-                return workspace
             except Exception as exc:
                 self._mark_allocation_failure(source_id, folder, exc)
                 raise

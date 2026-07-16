@@ -69,7 +69,7 @@ class PaperRawWorkspace:
         except (OSError,json.JSONDecodeError) as exc: raise ValueError(f"invalid paper-number marker: {exc}") from exc
         if marker.get("paper_number")!=self.paper_number: raise ValueError("marker.paper_number does not match workspace")
         if marker.get("folder_name")!=self.root.name: raise ValueError("marker.folder_name does not match workspace")
-        if marker.get("state") not in {"allocating","reserved","active","abandoned"}: raise ValueError("marker.state is not a ledger lifecycle state")
+        if marker.get("state") not in {"allocating","reserved","metadata_staged","active","abandoned"}: raise ValueError("marker.state is not a ledger lifecycle state")
         return marker
 
 

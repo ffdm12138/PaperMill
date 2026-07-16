@@ -1,5 +1,13 @@
 # Project status
 
+The discovery pipeline now uses a shared batch runtime: formal and raw identities
+share one Registry, durable formal publication state controls reloads, a single
+`JournalDrainIndex` replaces per-candidate page scans, and one bounded consumer
+stages groups of at most 16. Historical repair backlog is isolated from candidate
+refresh while exact matches remain live-validated. Retryable candidates remain
+scheduled in the same runtime, repair probes rotate through a durable cursor,
+and a consumer watchdog measures lack of progress rather than total drain time.
+
 The active ingest architecture is the frozen Metadata / complete Catalog v3.2
 pipeline. There is one active implementation.
 
@@ -85,3 +93,30 @@ folder-integrity projection is safe; 4 formal papers classified, all decisions
 current. Classification was completed through the validated manual backend.
 The final discovery check is `--from-enabled-notebooks --dry-run`; it does not
 start real network search or mutate discovery, ingest, or Catalog state.
+
+Runtime formal readiness is guarded by
+`data/papers/.formal_publication_state.json` and a full metadata/catalog/
+manifest hash closure at each staging batch boundary. Use
+`repair_formal_publications.py` for identity-only legacy sidecars; any closure
+or freeze drift is reported as `rollback_recommit_required`. Use
+`repair_discovery_workspaces.py` to demote historical incomplete
+`metadata_staged` entries to `reserved` while preserving permanent numbers.
+
+Discovery staging is single-tracked through `DiscoveryStageTransaction` and
+the authoritative `WorkspaceRegistry`. Evidence and profile readiness are
+separate; missing/unknown workflow profiles fail closed. Incremental Registry
+publication is copy-on-write, while the in-memory DOI and identity indexes
+have no disk refresh methods. The allocator is generic and `pending_queue.py`
+is journal orchestration only.
+
+Snapshot 53 closes the remaining integrity and warm-path gaps: incomplete
+`reserved` remains unsettled, incomplete `metadata_staged` fails closed,
+`identity_key + paper_number` preserves multiple providers per paper, refresh
+publishes atomically, and each candidate reuses one locked ledger load. New
+records retain two crash-safe saves and publish directly with no post-refresh.
+
+Snapshot 54 closes stale-cache decisions without restoring settled full scans.
+Refresh compares state/folder/scope lifecycle projections from the locked
+ledger and target-rescans only changed numbers. Matched DOI/identity records are
+live-revalidated, damaged settled evidence fails `repair_required`, rollback
+replacement removes old formal refs, and reuse no longer counts as allocation.

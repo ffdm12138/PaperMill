@@ -24,3 +24,22 @@ Catalog natural-language values default to Chinese for Chinese search,
 classification, paper selection, and writing workflows. JSON keys/schema enums
 stay English, technical terms may remain English, and metadata remains the
 original/canonical bibliographic source.
+
+Discovery imports use one staging path: the pending journal calls the thin
+network adapter, which delegates workspace reconciliation, duplicate checks,
+allocation, and durable writes to `DiscoveryStageTransaction`. Its validated
+`WorkspaceRegistry` snapshot is the only DOI/identity scan result; unknown
+workflow profiles and refresh errors fail closed before allocation.
+
+Incomplete `reserved` remains unsettled, while incomplete `metadata_staged` is
+`repair_required`. Identity entities use `identity_key + paper_number` and keep
+multiple providers per paper through freeze. Warm staging uses one locked
+ledger load, two durable new-record checkpoints, atomic refresh, and direct
+record publication with no successful-stage post-refresh.
+# Discovery batch runtime
+
+Keyword discovery shares one raw/formal Registry and one journal index per batch,
+uses generation-bound formal publication facts, bounded repair probes, live match
+revalidation, page-level claims/commits, and a single staging consumer. Applied
+repair probes rotate through a durable cursor; retryable candidates remain in
+the current runtime. Formal assets are immutable and manifest-hash audited.

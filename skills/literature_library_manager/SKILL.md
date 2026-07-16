@@ -169,3 +169,28 @@ Facts:
 - catalog natural-language values default to Chinese; JSON keys/schema enums stay English, and technical terms may remain English or mixed Chinese-English.
 - Initial generated catalog uses `screening.read_decision = "pending"`; final read decisions are post-triage / writing-stage annotations.
 - metadata remains original/canonical bibliographic facts and is not rewritten for catalog Chinese localization.
+
+### Discovery staging ownership
+
+For network discovery, use only `pending_queue → stage_network_metadata_records
+→ DiscoveryStageTransaction → WorkspaceRegistry`. The ledger manages numbers,
+Evidence reads facts, and Readiness applies the explicit workflow profile;
+never infer a profile from a PDF or receipt. Registry alone scans DOI/identity
+facts and atomically publishes copy-on-write refreshes. Do not add allocation
+or workspace decisions to the pending queue or discovery reconciliation to the
+generic allocator, and do not restore retired index disk-refresh fallbacks.
+
+Treat incomplete `reserved` as unsettled and incomplete `metadata_staged` as
+`repair_required`. Key identity facts by `identity_key + paper_number` so
+multiple provider identities survive freeze. Reuse one locked ledger view per
+lock epoch of at most 16 candidates, preserve reservation and final durable saves, publish refreshes
+atomically, and directly publish validated success without post-refresh.
+# Discovery staging requirements
+
+For keyword batches, reuse one `DiscoveryStagingContext` and one
+`JournalDrainIndex`. Treat valid active formal papers as the highest-priority
+durable primary, fail closed on cross-scope collisions, never scan the repair
+backlog per candidate, and never use TTL-only correctness caches. Batch page
+mutations and staging up to 16 while retaining both ledger checkpoints per paper.
+Keep retryable candidates scheduled in the current Journal index, rotate applied
+repair probes, and treat formal Metadata as manifest-hash-bound immutable bytes.

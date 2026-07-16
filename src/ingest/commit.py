@@ -11,12 +11,18 @@ from src.file_fingerprint import compute_sha256
 from src.ingest.formalization import assert_formalization_current
 from src.ingest.duplicate_inspection import inspect_ingest_duplicates
 from src.ingest.locking import (
+    INDEX_PUBLISH_RANK,
     LEDGER_RANK,
     PAPER_RAW_GLOBAL_RANK,
     PAPERS_INSTALL_RANK,
     WORKSPACE_RANK,
     LockRequest,
     acquire_locks,
+)
+from src.discovery.formal_publication import (
+    publish_formal_publication_state_unlocked,
+    publication_state_path,
+    validate_publication_state,
 )
 from src.ingest.transactions import (
     CommitJournalStore,
@@ -288,6 +294,11 @@ def validate_committed_state(
         from src.path_utils import resolve_stored_path
         if resolve_stored_path(str(item.get("folder_path") or "")).resolve() != final.resolve():
             raise ValueError("ledger folder_path mismatch")
+        publication = validate_publication_state(
+            papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
+        )
+        if not publication.valid:
+            raise ValueError("formal publication state invalid: " + ";".join(publication.issues))
     except Exception as exc:
         raise CommitRecoveryCorruptionError(
             f"commit recovery preflight failed for {number}: {exc}"
@@ -384,14 +395,34 @@ def resume_commit(
                     PAPERS_INSTALL_RANK,
                     papers_dir / ".papers_install.lock",
                 ),
+                LockRequest.path_lock(
+                    INDEX_PUBLISH_RANK,
+                    Path(publication_state_path(papers_dir).as_posix() + ".lock"),
+                ),
             ):
+                ledger_before = ledger.load()
+                had_existing_active = any(
+                    isinstance(item, dict)
+                    and item.get("state") == "active"
+                    and number != str(candidate_number)
+                    for candidate_number, item in (ledger_before.get("items") or {}).items()
+                )
                 if final.exists() and not staging.exists():
                     validate_formal_paper(final)
-                    # Ledger should already be active; if not, this is recovery
+                    # Ledger should already be active; if not, this is recovery.
                     state = _ledger_state(ledger, number)
                     if state == "reserved":
-                        # Crash recovery: final exists but ledger not yet active
-                        ledger.activate_reserved_locked(
+                        # Crash between final install and ledger activation —
+                        # but the workspace was never metadata_staged. This is a
+                        # historical anomaly; refuse and require explicit repair.
+                        raise RuntimeError(
+                            f"repair_required_reserved_final_mismatch: "
+                            f"final exists for {number} but ledger is reserved, "
+                            f"not metadata_staged"
+                        )
+                    if state == "metadata_staged":
+                        # Crash recovery: final exists but ledger not yet active.
+                        ledger.activate_metadata_staged_locked(
                             number, final, paper_name=paper_name
                         )
                 else:
@@ -424,9 +455,13 @@ def resume_commit(
                         )
                     os.replace(staging, final)
                     # Activate ledger within the same lock scope
-                    ledger.activate_reserved_locked(
+                    ledger.activate_metadata_staged_locked(
                         number, final, paper_name=paper_name
                     )
+                publish_formal_publication_state_unlocked(
+                    papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
+                    allow_initialize=not had_existing_active,
+                )
             journal = store.update(journal, "final_installed")
             _fault(fault_injector, "final_installed")
 
@@ -437,20 +472,52 @@ def resume_commit(
             if _ledger_state(ledger, number) != "active":
                 # Edge case: final installed, ledger still reserved.
                 with acquire_locks(
+                    LockRequest.path_lock(LEDGER_RANK, ledger._lock_path),
+                    LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
                     LockRequest.path_lock(
-                        LEDGER_RANK,
-                        ledger._lock_path,
+                        INDEX_PUBLISH_RANK,
+                        Path(publication_state_path(papers_dir).as_posix() + ".lock"),
                     ),
                 ):
                     state = _ledger_state(ledger, number)
                     if state == "reserved":
-                        ledger.activate_reserved_locked(
+                        raise RuntimeError(
+                            f"repair_required_reserved_final_mismatch: "
+                            f"final exists for {number} but ledger is reserved"
+                        )
+                    if state == "metadata_staged":
+                        ledger.activate_metadata_staged_locked(
                             number, final, paper_name=paper_name
                         )
                     elif state != "active":
                         raise RuntimeError(
                             f"ledger cannot resume commit from state {state}"
                         )
+                    publish_formal_publication_state_unlocked(
+                        papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
+                        allow_initialize=True,
+                    )
+            else:
+                with acquire_locks(
+                    LockRequest.path_lock(LEDGER_RANK, ledger._lock_path),
+                    LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
+                    LockRequest.path_lock(
+                        INDEX_PUBLISH_RANK,
+                        Path(publication_state_path(papers_dir).as_posix() + ".lock"),
+                    ),
+                ):
+                    current = ledger.load()
+                    other_active = any(
+                        isinstance(item, dict)
+                        and item.get("state") == "active"
+                        and str(candidate_number) != str(number)
+                        for candidate_number, item in (current.get("items") or {}).items()
+                    )
+                    publish_formal_publication_state_unlocked(
+                        papers_dir=papers_dir,
+                        ledger_items=current.get("items") or {},
+                        allow_initialize=not other_active,
+                    )
             journal = store.update(journal, "ledger_active")
             _fault(fault_injector, "ledger_active")
 

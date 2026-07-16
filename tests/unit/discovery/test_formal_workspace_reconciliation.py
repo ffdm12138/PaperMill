@@ -1,88 +1,22 @@
+"""Formal DOI decisions are made by the stage transaction registry."""
 from pathlib import Path
 
-import pytest
-
-from src.discovery.pending_queue import reconcile_discovery_workspace
-from src.library.paper_number_ledger import PaperNumberLedger
-from src.metadata.schema import empty_metadata
-from src.utils.atomic_io import atomic_write_json
+from src.discovery.stage_transaction import NormalizedDiscoveryCandidate
+from src.discovery.staging_context import DiscoveryStagingContext
+from src.services.network_metadata_staging import _metadata_from_record
+from tests.factories.paper_raw_factory import create_active_formal_workspace
 
 
-pytestmark = pytest.mark.unit
-
-
-PAPER_NUMBER = "0000000000000001"
-paper_name = "2024_doe_discovery"
-DOI = "10.1234/formal"
-
-
-def _metadata() -> dict:
-    data = empty_metadata(PAPER_NUMBER, source_type="network_search")
-    data["title"]["original"] = "Formal paper"
-    data["year"] = 2024
-    data["authors"] = [{"full_name": "Jane Doe", "family": "Doe", "given": "Jane", "orcid": "", "affiliation": ""}]
-    data["first_author"] = {"family": "Doe", "display": "Jane Doe"}
-    data["identifiers"]["doi"] = DOI
-    data["metadata_match"] = {
-        "status": "matched",
-        "source": "openalex",
-        "confidence": 0.9,
-        "matched_at": "2026-01-01T00:00:00",
-        "warnings": [],
-    }
-    return data
-
-
-def _incomplete_formal_workspace(tmp_path: Path) -> Path:
-    papers = tmp_path / "papers"
-    workspace = papers / paper_name
-    (workspace / "source_records").mkdir(parents=True)
-    atomic_write_json(
-        workspace / "source_records" / "metadata_source.openalex.json",
-        {
-            "provider": "openalex",
-            "record": {"doi": DOI, "title": "Formal paper"},
-            "discovery_context": {
-                "candidate_id": "candidate-a",
-                "page_id": "page-1",
-                "keyword_id": "kw",
-                "provider": "openalex",
-                "normalized_doi": DOI,
-            },
-        },
-        indent=2,
+def test_formal_primary_is_reported_as_duplicate(tmp_path: Path):
+    formal = create_active_formal_workspace(tmp_path, doi="10.1000/formal")
+    context = DiscoveryStagingContext.create(
+        paper_raw_dir=tmp_path / "paper_raw", papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "ledger.json")
+    candidate = NormalizedDiscoveryCandidate(
+        candidate_id="other", page_id="page", keyword_id="kw", provider="crossref",
+        normalized_doi="10.1000/formal",
+        metadata=_metadata_from_record({"title": "Other", "year": 2026, "doi": "10.1000/formal"}),
     )
-    atomic_write_json(workspace / f"{paper_name}.metadata.json", _metadata(), indent=2)
-    PaperNumberLedger.write_marker(workspace, PAPER_NUMBER, state="active")
-    ledger_data = PaperNumberLedger.empty_data()
-    ledger_data["max_number"] = PAPER_NUMBER
-    ledger_data["items"][PAPER_NUMBER] = {
-        "folder_name": paper_name,
-        "folder_path": workspace.as_posix(),
-        "state": "active",
-    }
-    atomic_write_json(tmp_path / "ledger.json", ledger_data, indent=2)
-    return workspace
-
-
-def test_formal_incomplete_requires_repair_without_receipt_backfill(tmp_path: Path):
-    workspace = _incomplete_formal_workspace(tmp_path)
-    before = {p.relative_to(workspace).as_posix(): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
-
-    result = reconcile_discovery_workspace(
-        [tmp_path / "papers"],
-        candidate_id="candidate-a",
-        page_id="page-1",
-        keyword_id="kw",
-        provider="openalex",
-        normalized_doi=DOI,
-        ledger_path=tmp_path / "ledger.json",
-    )
-
-    assert result.status == "formal_repair_required"
-    assert result.workspace_kind == "formal"
-    assert result.disposition == "formal_repair_required"
-    assert result.reason == "formal_workspace_repair_required"
-    after = {p.relative_to(workspace).as_posix(): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
-    assert after == before
-    assert not (workspace / f"{PAPER_NUMBER}.discovery_receipt.json").exists()
+    result = context.transaction.stage_candidate(candidate, source_record={"record": {}}, apply=True)
+    assert result.status == "duplicate"
+    assert result.paper_number == "0000000000000001"

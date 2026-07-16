@@ -92,32 +92,37 @@ def test_pid_state_current_process_is_alive():
 
 
 def test_runner_kill_runs_in_finally_on_keyboard_interrupt(tmp_path: Path):
-    """When wait() raises KeyboardInterrupt (a BaseException), the process
-    tree must still be killed because cleanup is in ``finally``.
+    """When polling is interrupted by KeyboardInterrupt (a BaseException), the
+    process tree must still be killed because cleanup is in ``finally``.
 
-    BEFORE fix: kill was in ``except TimeoutExpired`` only, so
+    The runner polls ``proc.poll()`` in a loop (not ``proc.wait()``), so the
+    interrupt is injected via ``poll.side_effect`` to match the real control
+    flow. BEFORE fix: kill was in ``except TimeoutExpired`` only, so
     BaseException bypassed cleanup, leaving orphan processes.
     """
     import subprocess
 
-    # Create a mock proc whose wait raises KeyboardInterrupt.
+    # Create a mock proc whose second poll() raises KeyboardInterrupt (the
+    # first poll returns None so the loop body executes once, then the
+    # interrupt fires during polling — exactly how a real Ctrl-C lands).
     mock_proc = MagicMock(spec=subprocess.Popen)
     mock_proc.pid = 99999
-    mock_proc.poll.return_value = None  # still running
-    mock_proc.wait.side_effect = KeyboardInterrupt("simulated interrupt")
-    mock_proc.returncode = None
+    mock_proc.poll.side_effect = [None, KeyboardInterrupt("simulated interrupt")]
+    mock_proc.wait.return_value = 0
+    mock_proc.returncode = 0
 
     with patch("subprocess.Popen", return_value=mock_proc):
         with patch("scripts.agent_acceptance._kill_process_tree") as mock_kill:
-            with pytest.raises(KeyboardInterrupt):
-                run_command_with_timeout(
-                    [sys.executable, "-c", "pass"],
-                    timeout_seconds=5,
-                    check=False,
-                )
-            # _kill_process_tree MUST have been called even though
-            # the exception was KeyboardInterrupt (BaseException).
-            mock_kill.assert_called_once()
+            with patch("scripts.agent_acceptance._descendant_pids", return_value=[]):
+                with pytest.raises(KeyboardInterrupt):
+                    run_command_with_timeout(
+                        [sys.executable, "-c", "pass"],
+                        timeout_seconds=5,
+                        check=False,
+                    )
+                # _kill_process_tree MUST have been called even though
+                # the exception was KeyboardInterrupt (BaseException).
+                mock_kill.assert_called_once()
 
 
 

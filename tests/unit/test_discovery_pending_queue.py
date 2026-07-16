@@ -7,7 +7,12 @@ import pytest
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
-from src.discovery.pending_queue import drain_pending_candidates
+from src.discovery.pending_queue import (
+    _inspect_emitted_primary_export_cached,
+    drain_pending_candidates,
+    export_candidate_once,
+)
+from src.discovery.page_journal import JournalDrainIndex
 from src.discovery.resolve_crossref import ResolvedDoiMatch
 
 
@@ -161,3 +166,43 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
     assert second.duplicate_observation == 1
     statuses = [item["status"] for ref in store.list_pages([KEYWORD_ID]) for item in store.read(ref.path)["candidates"]]
     assert sorted(statuses) == ["duplicate_observation", "emitted"]
+
+
+def test_emitted_export_validation_cache_is_artifact_fingerprint_bound(
+    tmp_path: Path, monkeypatch,
+):
+    import src.discovery.pending_queue as pending_queue
+
+    doi = "10.1234/cached-export"
+    record = {
+        "candidate_id": "candidate-cache",
+        "page_id": "page-cache",
+        "keyword_id": KEYWORD_ID,
+        "provider": "openalex",
+        "candidate": PaperCandidate(title="Cached", doi=doi).to_dict(),
+    }
+    exported = export_candidate_once(tmp_path / "exports", record)
+    item = {**record, **exported}
+    index = JournalDrainIndex.build(PageJournalStore(tmp_path / "pages"))
+    original = pending_queue.inspect_emitted_primary_export
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pending_queue, "inspect_emitted_primary_export", counted)
+    assert _inspect_emitted_primary_export_cached(
+        index, item, doi, exports_dir=tmp_path / "exports") == (True, "")
+    assert _inspect_emitted_primary_export_cached(
+        index, item, doi, exports_dir=tmp_path / "exports") == (True, "")
+    assert calls == 1
+
+    jsonl = Path(exported["export_path"])
+    jsonl.write_bytes(jsonl.read_bytes() + b" ")
+    valid, reason = _inspect_emitted_primary_export_cached(
+        index, item, doi, exports_dir=tmp_path / "exports")
+    assert not valid
+    assert reason == "artifact size mismatch"
+    assert calls == 2

@@ -10,38 +10,30 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+from contextlib import ExitStack
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from filelock import FileLock, Timeout
 
 from src.discovery.discovery_receipt import (
-    AmbiguousDiscoveryReceiptError,
-    ReceiptLookupIdentity,
-    DiscoveryReceiptConflictError,
-    MatchingReceipt,
-    ReceiptWriteResult,
     build_receipt_payload,
-    find_matching_receipt,
     receipt_path_for,
     write_or_validate_discovery_receipt,
 )
 from src.discovery.models import PaperCandidate, normalize_doi
 from src.discovery.page_journal import (
+    JournalDrainIndex,
     PageJournalStore,
     stable_hash,
     title_resolution_key,
 )
+from src.discovery.batch_runtime import DiscoveryBatchRuntime
 from src.discovery.resolve_crossref import resolve_doi_match_by_title
-from src.services.ingest_duplicate_guard import check_doi_duplicate
-from src.services.ingest_ids import PAPER_NUMBER_RE
-from src.services.formal_workspace_validation import validate_formal_paper_workspace
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.network_metadata_staging import stage_network_metadata_records
-from src.library.paper_number_ledger import LEDGER_METADATA_STAGED, PaperNumberLedger
-from src.metadata.schema import metadata_doi, validate_metadata_schema
 
 
 DISCOVERY_LEASE_SECONDS = 300
@@ -54,6 +46,7 @@ class DrainReport:
     processed: int = 0
     remaining: int = 0
     staged: int = 0
+    reused_existing: int = 0
     emitted: int = 0
     existing_duplicate: int = 0
     duplicate_observation: int = 0
@@ -77,6 +70,7 @@ class DrainReport:
             "processed": self.processed,
             "remaining": self.remaining,
             "staged": self.staged,
+            "reused_existing": self.reused_existing,
             "emitted": self.emitted,
             "existing_duplicate": self.existing_duplicate,
             "duplicate_observation": self.duplicate_observation,
@@ -159,525 +153,6 @@ def write_discovery_receipt(
         workspace_root=Path(paper_raw_dir),
     )
     return result.path
-
-
-@dataclass(frozen=True)
-class WorkspaceReconciliationState:
-    """Structured snapshot of a workspace's staging completeness.
-
-    A workspace is only ``staged`` when metadata is valid AND a receipt with
-    matching identity exists AND the manifest/import-status/ledger are
-    terminal. A source record alone proves staging STARTED, not that it
-    finished — that distinction is the core of the reconciliation fix.
-    """
-
-    paper_number: str
-    source_record_exists: bool
-    source_context_matches: bool
-    metadata_exists: bool
-    metadata_valid: bool
-    receipt_exists: bool
-    receipt_matches: bool
-    stage_manifest_exists: bool
-    asset_manifest_exists: bool
-    import_status_exists: bool
-    ledger_entry_exists: bool
-    ledger_state: str | None
-
-
-@dataclass(frozen=True)
-class ReconciliationResult:
-    """Typed outcome of :func:`reconcile_discovery_workspace`.
-
-    ``status`` is one of:
-
-    - ``staged``             — workspace was already fully complete (Case A)
-    - ``recovered``          — receipt backfilled and workspace is now complete (Case B)
-    - ``retryable_incomplete`` — needs re-staging into the same workspace via
-                               ``reuse_paper_number`` (Cases B-partial, C, D, E)
-    - ``receipt_conflict``   — existing receipt identity disagrees (Case F)
-    - ``corruption``         — corrupt metadata/receipt files (Case E-unrecoverable)
-    - ``not_found``          — no workspace has a matching source record (Case G)
-    """
-
-    status: str
-    paper_number: str = ""
-    receipt_path: str = ""
-    reason: str = ""
-    workspace_path: str = ""
-    workspace_kind: str = ""
-    disposition: str = ""
-    state: WorkspaceReconciliationState | None = None
-
-
-def _scan_source_record_contexts(
-    data: dict[str, Any],
-) -> list[dict[str, Any]]:
-    contexts: list[dict[str, Any]] = []
-    if isinstance(data.get("discovery_context"), dict):
-        contexts.append(data["discovery_context"])
-    record = data.get("record") if isinstance(data.get("record"), dict) else {}
-    if isinstance(record.get("discovery_context"), dict):
-        contexts.append(record["discovery_context"])
-    return contexts
-
-
-def _context_matches(
-    ctx: dict[str, Any],
-    *,
-    candidate_id: str,
-    page_id: str,
-    keyword_id: str,
-    normalized_doi: str,
-    provider: str = "",
-) -> bool:
-    ctx_doi = normalize_doi(ctx.get("normalized_doi") or ctx.get("doi") or "")
-    return (
-        str(ctx.get("candidate_id") or "") == candidate_id
-        and str(ctx.get("page_id") or "") == page_id
-        and str(ctx.get("keyword_id") or "") == keyword_id
-        and str(ctx.get("provider") or "").strip().lower() == str(provider or "").strip().lower()
-        and ctx_doi == normalized_doi
-    )
-
-
-def _resolve_workspace_paper_number(workspace: Path) -> str:
-    """Resolve the 16-digit paper_number for a workspace.
-
-    Resolution order:
-    1. Unique ``*.paper.number`` marker (parsed via PaperNumberLedger).
-    2. Canonical metadata file's ``paper_number`` field.
-    3. Fallback: ``workspace.name`` if it is a valid 16-digit number.
-
-    For formal workspaces (in ``data/papers/``), the folder name is a
-    ``paper_name`` (not a 16-digit number), so the marker is the only
-    reliable source.  Returns ``""`` when unresolvable.
-    """
-    # 1. Marker
-    markers = sorted(workspace.glob("*.paper.number")) if workspace.exists() else []
-    for marker in markers:
-        parsed = PaperNumberLedger.parse_marker_number(marker)
-        if parsed and PAPER_NUMBER_RE.match(parsed):
-            return parsed
-    # 2. Canonical metadata (try both paper_number and paper_name naming)
-    for candidate in sorted(workspace.glob("*.metadata.json")):
-        # Skip non-canonical sidecars.
-        name = candidate.name
-        if any(suffix in name for suffix in (
-            ".candidates.json", ".patch.json", ".resolve_report.json",
-        )):
-            continue
-        try:
-            data = json.loads(candidate.read_text(encoding="utf-8"))
-            pn = str(data.get("paper_number") or "").strip()
-            if pn and PAPER_NUMBER_RE.match(pn):
-                return pn
-        except Exception:
-            continue
-    # 3. Fallback: workspace.name if it's a valid 16-digit number
-    if PAPER_NUMBER_RE.match(workspace.name):
-        return workspace.name
-    return ""
-
-
-def _resolve_metadata_path(workspace: Path, paper_number: str) -> Path | None:
-    """Resolve the canonical metadata file path for a workspace.
-
-    - paper_raw: ``{paper_number}.metadata.json``
-    - formal (papers/): ``{workspace.name}.metadata.json`` (workspace.name == paper_name)
-
-    Excludes ``*.metadata.candidates.json``, ``*.metadata.patch.json``,
-    ``*.metadata.resolve_report.json``, and other sidecars.
-    """
-    # Try paper_number-named file first (paper_raw convention).
-    candidate = workspace / f"{paper_number}.metadata.json"
-    if candidate.is_file():
-        return candidate
-    # Try workspace.name-named file (formal convention: paper_name).
-    candidate = workspace / f"{workspace.name}.metadata.json"
-    if candidate.is_file():
-        return candidate
-    # Fallback: glob for any canonical metadata file.
-    for match in sorted(workspace.glob("*.metadata.json")):
-        name = match.name
-        if any(suffix in name for suffix in (
-            ".candidates.json", ".patch.json", ".resolve_report.json",
-        )):
-            continue
-        return match
-    return None
-
-
-def _resolve_receipt_path(workspace: Path, paper_number: str) -> Path | None:
-    """Resolve the canonical receipt file path.
-
-    Receipt is always named ``{paper_number}.discovery_receipt.json``,
-    regardless of workspace lifecycle (the marker carries the number).
-    """
-    candidate = workspace / f"{paper_number}.discovery_receipt.json"
-    if candidate.is_file():
-        return candidate
-    # Fallback: glob for any receipt in this workspace.
-    matches = sorted(workspace.glob("*.discovery_receipt.json"))
-    return matches[0] if matches else None
-
-
-def _workspace_kind(workspace: Path) -> str:
-    if workspace.parent.name == "papers":
-        return "formal"
-    if workspace.parent.name == "paper_raw" and not PAPER_NUMBER_RE.match(workspace.name):
-        return "formal"
-    if workspace.parent.name == "paper_raw" and PAPER_NUMBER_RE.match(workspace.name):
-        return "paper_raw"
-    return "unknown"
-
-
-def _build_reconciliation_state(
-    workspace: Path,
-    paper_number: str,
-    *,
-    candidate_id: str,
-    page_id: str,
-    keyword_id: str,
-    normalized_doi: str,
-    ledger_path: Path | None,
-    provider: str = "",
-) -> WorkspaceReconciliationState:
-    """Read-only snapshot of one workspace's staging completeness.
-
-    ``paper_number`` is resolved by the caller via
-    :func:`_resolve_workspace_paper_number` (marker-first), so this
-    function works correctly for both paper_raw and formal workspaces.
-    """
-    # Re-resolve paper_number from the workspace in case the caller
-    # passed workspace.name (which may be a paper_name for formal workspaces).
-    resolved_number = _resolve_workspace_paper_number(workspace)
-    if resolved_number:
-        paper_number = resolved_number
-
-    source_record_exists = False
-    source_context_matches = False
-    for sr in sorted(workspace.glob("source_records/metadata_source.*.json")):
-        source_record_exists = True
-        try:
-            data = json.loads(sr.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        for ctx in _scan_source_record_contexts(data):
-            if _context_matches(
-                ctx,
-                candidate_id=candidate_id,
-                page_id=page_id,
-                keyword_id=keyword_id,
-                provider=provider,
-                normalized_doi=normalized_doi,
-            ):
-                source_context_matches = True
-                break
-        if source_context_matches:
-            break
-
-    # Resolve metadata path (not hardcoded — handles formal workspaces).
-    metadata_path = _resolve_metadata_path(workspace, paper_number)
-    metadata_exists = metadata_path is not None and metadata_path.is_file()
-    metadata_valid = False
-    if metadata_exists and metadata_path is not None:
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            if not validate_metadata_schema(metadata):
-                metadata_valid = metadata_doi(metadata) == normalized_doi
-        except Exception:
-            metadata_valid = False
-
-    # Resolve receipt path (always {paper_number}.discovery_receipt.json).
-    receipt_path = _resolve_receipt_path(workspace, paper_number)
-    receipt_exists = receipt_path is not None and receipt_path.is_file()
-    receipt_matches = False
-    if receipt_exists and receipt_path is not None:
-        try:
-            existing = json.loads(receipt_path.read_text(encoding="utf-8"))
-            from src.discovery.discovery_receipt import normalize_receipt_identity
-
-            ident = normalize_receipt_identity(existing)
-            receipt_matches = (
-                ident["candidate_id"] == candidate_id
-                and ident["page_id"] == page_id
-                and ident["keyword_id"] == keyword_id
-                and ident["provider"] == str(provider or "").strip().lower()
-                and ident["normalized_doi"] == normalized_doi
-                and ident["paper_number"] == paper_number
-            )
-        except Exception:
-            receipt_matches = False
-
-    stage_manifest_exists = (workspace / "stage_manifest.json").is_file()
-    asset_manifest_exists = bool(list(workspace.glob("*.asset_manifest.json")))
-    import_status_exists = bool(list(workspace.glob("*.import_status.json")))
-
-    ledger_entry_exists = False
-    ledger_state: str | None = None
-    if ledger_path is not None:
-        try:
-            ledger = PaperNumberLedger(ledger_path)
-            entry = ledger.load().get("items", {}).get(paper_number)
-            if isinstance(entry, dict):
-                ledger_entry_exists = True
-                ledger_state = str(entry.get("state") or "")
-        except Exception:
-            pass
-
-    return WorkspaceReconciliationState(
-        paper_number=paper_number,
-        source_record_exists=source_record_exists,
-        source_context_matches=source_context_matches,
-        metadata_exists=metadata_exists,
-        metadata_valid=metadata_valid,
-        receipt_exists=receipt_exists,
-        receipt_matches=receipt_matches,
-        stage_manifest_exists=stage_manifest_exists,
-        asset_manifest_exists=asset_manifest_exists,
-        import_status_exists=import_status_exists,
-        ledger_entry_exists=ledger_entry_exists,
-        ledger_state=ledger_state,
-    )
-
-
-def inspect_discovery_workspace(
-    roots: Iterable[Path],
-    *,
-    candidate_id: str,
-    page_id: str,
-    keyword_id: str,
-    normalized_doi: str,
-    provider: str = "",
-    ledger_path: Path | None = None,
-) -> ReconciliationResult:
-    """Reconcile a discovery candidate against existing paper_raw workspaces.
-
-    Finds a workspace whose source record carries a matching discovery context
-    (candidate_id + page_id + keyword_id + normalized_doi), then classifies its
-    staging completeness. A source record alone is NOT enough to mark staged —
-    metadata must exist and be valid. When metadata is present but the receipt
-    is missing, the receipt is backfilled via the shared receipt service (Case B
-    recovery). When the workspace is incomplete in a way the reconciler cannot
-    safely fix, it returns ``retryable_incomplete`` with the ``paper_number`` so
-    the caller can re-stage into the SAME workspace without allocating a new
-    number. A conflicting existing receipt is never overwritten.
-    """
-    normalized = normalize_doi(normalized_doi)
-    for root in roots:
-        if not Path(root).exists():
-            continue
-        for path in sorted(Path(root).glob("*/source_records/metadata_source.*.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            matched = False
-            for ctx in _scan_source_record_contexts(data):
-                if _context_matches(
-                    ctx,
-                    candidate_id=candidate_id,
-                    page_id=page_id,
-                    keyword_id=keyword_id,
-                    normalized_doi=normalized,
-                    provider=provider,
-                ):
-                    matched = True
-                    break
-            if not matched:
-                continue
-            workspace = path.parents[1]
-            # Resolve paper_number from marker/metadata, NOT workspace.name
-            # (formal workspaces are named after paper_name, not paper_number).
-            paper_number = _resolve_workspace_paper_number(workspace)
-            if not paper_number:
-                # Cannot safely reconcile a workspace with no resolvable number.
-                continue
-            state = _build_reconciliation_state(
-                workspace,
-                paper_number,
-                candidate_id=candidate_id,
-                page_id=page_id,
-                keyword_id=keyword_id,
-                normalized_doi=normalized,
-                ledger_path=ledger_path,
-                provider=provider,
-            )
-            kind = _workspace_kind(workspace)
-
-            # Case F: receipt exists but identity conflicts — never overwrite.
-            if state.receipt_exists and not state.receipt_matches:
-                return ReconciliationResult(
-                    status="receipt_conflict",
-                    paper_number=paper_number,
-                    reason="existing receipt identity disagrees with candidate",
-                    workspace_path=workspace.as_posix(),
-                    workspace_kind=kind,
-                    disposition="identity_conflict",
-                    state=state,
-                )
-
-            # Formalized / committed workspaces are never repaired by the
-            # discovery staging allocator. A complete formal workspace can be
-            # treated as an already successful primary only when its receipt
-            # identity is present and matches; otherwise it requires an
-            # explicit formal repair path and remains non-terminal here.
-            if kind == "formal":
-                formal_result = validate_formal_paper_workspace(
-                    workspace,
-                    ledger=PaperNumberLedger(ledger_path) if ledger_path is not None else PaperNumberLedger(Path("__missing_ledger__.json")),
-                    mode="strict",
-                ) if ledger_path is not None else None
-                if (
-                    formal_result is not None
-                    and formal_result.valid
-                    and formal_result.paper_number == paper_number
-                    and formal_result.normalized_doi == normalized
-                    and state.receipt_matches
-                ):
-                    return ReconciliationResult(
-                        status="formal_complete",
-                        paper_number=paper_number,
-                        receipt_path=(workspace / f"{paper_number}.discovery_receipt.json").as_posix(),
-                        reason="formal workspace complete",
-                        workspace_path=workspace.as_posix(),
-                        workspace_kind=kind,
-                        disposition="formal_complete",
-                        state=state,
-                    )
-                return ReconciliationResult(
-                    status="formal_repair_required",
-                    paper_number=paper_number,
-                    reason="formal_workspace_repair_required",
-                    workspace_path=workspace.as_posix(),
-                    workspace_kind=kind,
-                    disposition="formal_repair_required",
-                    state=state,
-                )
-
-            # Case C: metadata missing/invalid — cannot safely mark staged; the
-            # caller re-stages into this workspace to rebuild metadata.
-            if not state.metadata_valid:
-                return ReconciliationResult(
-                    status="retryable_incomplete",
-                    paper_number=paper_number,
-                    reason="metadata missing or invalid; re-stage to rebuild",
-                    workspace_path=workspace.as_posix(),
-                    workspace_kind=kind,
-                    disposition="paper_raw_retryable_incomplete",
-                    state=state,
-                )
-
-            staging_complete = (
-                state.stage_manifest_exists
-                and state.import_status_exists
-                and state.ledger_state == LEDGER_METADATA_STAGED
-            )
-
-            # Case A: fully complete and consistent — idempotent staged.
-            if state.receipt_matches and staging_complete:
-                return ReconciliationResult(
-                    status="staged",
-                    paper_number=paper_number,
-                    receipt_path=(workspace / f"{paper_number}.discovery_receipt.json").as_posix(),
-                    reason="workspace already fully staged",
-                    workspace_path=workspace.as_posix(),
-                    workspace_kind=kind,
-                    disposition="paper_raw_complete",
-                    state=state,
-                )
-
-            # Case B: metadata valid but receipt missing — backfill the receipt.
-            # If that completes the workspace, return recovered; otherwise the
-            # caller re-stages to backfill manifest/import-status/ledger.
-            if not state.receipt_matches:
-                return ReconciliationResult(
-                    status="retryable_incomplete",
-                    paper_number=paper_number,
-                    reason="receipt missing or mismatched; re-stage under allocator lock",
-                    workspace_path=workspace.as_posix(),
-                    workspace_kind=kind,
-                    disposition="paper_raw_retryable_incomplete",
-                    state=state,
-                )
-
-            # Case D/E: receipt matches and metadata valid, but manifest/import
-            # status/ledger are not terminal — re-stage to backfill them.
-            return ReconciliationResult(
-                status="retryable_incomplete",
-                paper_number=paper_number,
-                receipt_path=(workspace / f"{paper_number}.discovery_receipt.json").as_posix()
-                if state.receipt_exists else "",
-                reason="manifest/import-status/ledger incomplete; re-stage to backfill",
-                workspace_path=workspace.as_posix(),
-                workspace_kind=kind,
-                disposition="paper_raw_retryable_incomplete",
-                state=state,
-            )
-    return ReconciliationResult(
-        status="not_found",
-        reason="no matching source record",
-        disposition="not_found",
-    )
-
-
-def reconcile_discovery_workspace(
-    roots: Iterable[Path],
-    *,
-    candidate_id: str,
-    page_id: str,
-    keyword_id: str,
-    normalized_doi: str,
-    provider: str = "",
-    ledger_path: Path | None = None,
-) -> ReconciliationResult:
-    """Compatibility wrapper for strict read-only workspace inspection."""
-    return inspect_discovery_workspace(
-        roots,
-        candidate_id=candidate_id,
-        page_id=page_id,
-        keyword_id=keyword_id,
-        normalized_doi=normalized_doi,
-        provider=provider,
-        ledger_path=ledger_path,
-    )
-
-
-def reconcile_receipt_from_source_records(
-    roots: Iterable[Path],
-    *,
-    candidate_id: str,
-    page_id: str,
-    keyword_id: str,
-    normalized_doi: str,
-) -> dict[str, Any] | None:
-    """Backward-compat thin wrapper around :func:`reconcile_discovery_workspace`.
-
-    Returns a dict only when the workspace is fully staged or recovered
-    (receipt backfilled). Incomplete workspaces return ``None`` so legacy
-    callers fall through to normal staging — the new drain loop uses the typed
-    result directly to drive ``reuse_paper_number`` recovery.
-    """
-    result = reconcile_discovery_workspace(
-        roots,
-        candidate_id=candidate_id,
-        page_id=page_id,
-        keyword_id=keyword_id,
-        normalized_doi=normalized_doi,
-        provider="",
-    )
-    if result.status in {"staged", "recovered"}:
-        return {
-            "paper_number": result.paper_number,
-            "candidate_id": candidate_id,
-            "page_id": page_id,
-            "keyword_id": keyword_id,
-            "normalized_doi": normalize_doi(normalized_doi),
-            "receipt_path": result.receipt_path,
-            "recovered": result.status == "recovered",
-        }
-    return None
 
 
 def _export_id(candidate_id: str) -> str:
@@ -814,29 +289,6 @@ def export_candidate_once(exports_dir: Path, record: dict[str, Any]) -> dict[str
     }
 
 
-def _candidate_doi_from_item(item: dict[str, Any]) -> str:
-    cand = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
-    return normalize_doi(cand.get("doi"))
-
-
-def _find_doi_processing_owner(
-    journal: PageJournalStore,
-    keyword_ids: Iterable[str] | None,
-    doi: str,
-    *,
-    exclude_candidate_id: str,
-) -> str:
-    for ref in journal.list_pages(keyword_ids):
-        data = journal.read(ref.path)
-        for item in data.get("candidates", []):
-            candidate_id = str(item.get("candidate_id") or "")
-            if candidate_id == exclude_candidate_id:
-                continue
-            if item.get("status") == "processing" and _candidate_doi_from_item(item) == doi:
-                return candidate_id
-    return ""
-
-
 def inspect_emitted_primary_export(
     item: dict[str, Any],
     doi: str,
@@ -875,53 +327,40 @@ def inspect_emitted_primary_export(
     return validation.valid, validation.reason
 
 
-def _find_durable_primary_for_doi(
-    journal: PageJournalStore,
-    keyword_ids: Iterable[str] | None,
+def _inspect_emitted_primary_export_cached(
+    journal_index: JournalDrainIndex,
+    item: dict[str, Any],
     doi: str,
     *,
-    exclude_candidate_id: str,
-    paper_raw_dir: Path,
-    papers_dir: Path,
-    ledger_path: Path,
     exports_dir: Path,
-) -> tuple[str, str, str]:
-    """Return (candidate_id, status, reason) for a verified DOI primary."""
-    validation_failures: list[str] = []
-    for ref in journal.list_pages(keyword_ids):
-        data = journal.read(ref.path)
-        page_id = str(data.get("page_id") or "")
-        keyword_id = str(data.get("keyword_id") or "")
-        for item in data.get("candidates", []):
-            candidate_id = str(item.get("candidate_id") or "")
-            if candidate_id == exclude_candidate_id:
-                continue
-            status = str(item.get("status") or "")
-            if status not in {"staged", "emitted"}:
-                continue
-            if _candidate_doi_from_item(item) != doi:
-                continue
-            if status == "emitted":
-                durable, reason = inspect_emitted_primary_export(item, doi, exports_dir=exports_dir)
-                if durable:
-                    return candidate_id, status, ""
-                validation_failures.append(f"{candidate_id}: {reason}")
-                continue
-            recon = reconcile_discovery_workspace(
-                [paper_raw_dir, papers_dir],
-                candidate_id=candidate_id,
-                page_id=page_id,
-                keyword_id=keyword_id,
-                normalized_doi=doi,
-                provider=str(data.get("provider") or ""),
-                ledger_path=ledger_path,
-            )
-            if recon.status in {"staged", "recovered", "formal_complete"}:
-                return candidate_id, status, ""
-            validation_failures.append(
-                f"{candidate_id}: {recon.reason or recon.status or 'primary validation failed'}"
-            )
-    return "", "", "; ".join(validation_failures)
+) -> tuple[bool, str]:
+    """Cache validation only while both artifact fingerprints are unchanged."""
+    export_id = str(item.get("export_id") or "").strip()
+    jsonl_path, manifest_path = _export_paths(exports_dir, export_id)
+
+    def stat_fingerprint(path: Path) -> tuple[int, int]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return -1, -1
+        return stat.st_size, stat.st_mtime_ns
+
+    manifest_size, manifest_mtime = stat_fingerprint(manifest_path)
+    jsonl_size, jsonl_mtime = stat_fingerprint(jsonl_path)
+    key = (
+        str(manifest_path.absolute()), manifest_size, manifest_mtime,
+        str(jsonl_path.absolute()), jsonl_size, jsonl_mtime,
+    )
+    cached = journal_index.emitted_validation_cache.get(key)
+    if cached is not None:
+        return cached
+    result = inspect_emitted_primary_export(item, doi, exports_dir=exports_dir)
+    manifest_identity, jsonl_identity = key[0], key[3]
+    for old_key in list(journal_index.emitted_validation_cache):
+        if old_key[0] == manifest_identity and old_key[3] == jsonl_identity:
+            journal_index.emitted_validation_cache.pop(old_key, None)
+    journal_index.emitted_validation_cache[key] = result
+    return result
 
 
 def _resolve_missing_doi(candidate: PaperCandidate, budget_left: int) -> tuple[PaperCandidate, int, bool]:
@@ -935,6 +374,413 @@ def _resolve_missing_doi(candidate: PaperCandidate, budget_left: int) -> tuple[P
         candidate.raw.setdefault("crossref_resolution", match.to_dict())
         return candidate, budget_left, True
     return candidate, budget_left, False
+
+
+def _drain_staging_candidate_batches(
+    *,
+    journal: PageJournalStore,
+    journal_index: JournalDrainIndex,
+    runtime: DiscoveryBatchRuntime,
+    report: DrainReport,
+    keyword_ids: list[str] | None,
+    candidate_budget: int,
+    apply: bool,
+    paper_raw_dir: Path,
+    papers_dir: Path,
+    ledger_path: Path,
+    locks_dir: Path,
+    exports_dir: Path,
+    worker_id: str,
+    doi_resolution_budget: int,
+    lease_seconds: int,
+    skip_duplicates: bool,
+) -> DrainReport:
+    """Drain authoritative staging work in lock epochs of at most 16 claims.
+
+    DOI/title normalization and same-batch DOI grouping happen before the
+    transaction acquires ``.paper_raw_write.lock``.  Unique DOI file locks are
+    then acquired in stable order, and the complete authoritative group enters
+    ``stage_network_metadata_records`` once.  Journal outcomes are committed
+    once per page after the staging result is durable.
+    """
+    staging_context = runtime.staging_context
+    if staging_context is None:
+        report.remaining = report.before
+        report.errors.append("registry_configuration_failed:missing_staging_context")
+        return report
+
+    remaining_resolution_budget = doi_resolution_budget
+    drain_generation = f"drain-{worker_id}-{datetime.now(timezone.utc).timestamp():.6f}"
+    attempted_candidate_ids: set[str] = set()
+    claimed_total = 0
+
+    def set_outcome(
+        outcomes: dict[str, dict[str, Any]],
+        candidate_id: str,
+        *,
+        new_status: str,
+        updates: dict[str, Any],
+        counter: str | None,
+    ) -> None:
+        outcomes[candidate_id] = {
+            "candidate_id": candidate_id,
+            "new_status": new_status,
+            "updates": updates,
+            "counter": counter,
+        }
+
+    def retry_updates(reason: str, detail: str) -> dict[str, Any]:
+        return {
+            "last_deferred_reason": reason,
+            "deferred_generation": drain_generation,
+            "next_attempt_at": None,
+            "last_error": detail,
+        }
+
+    while claimed_total < candidate_budget:
+        batch_limit = min(16, candidate_budget - claimed_total)
+        refs = [
+            ref for ref in journal_index.claimable(keyword_ids)
+            if ref.candidate_id not in attempted_candidate_ids
+        ][:batch_limit]
+        if not refs:
+            break
+
+        candidate_ids_by_page: dict[Path, list[str]] = {}
+        for ref in refs:
+            attempted_candidate_ids.add(ref.candidate_id)
+            candidate_ids_by_page.setdefault(ref.page_path, []).append(ref.candidate_id)
+
+        claims = []
+        for page_path, candidate_ids in candidate_ids_by_page.items():
+            page_claims = journal.claim_candidates_from_page(
+                page_path,
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+                limit=len(candidate_ids),
+                candidate_ids=candidate_ids,
+            )
+            claims.extend(page_claims)
+            if page_claims:
+                runtime.metrics.candidate_claims += len(page_claims)
+                runtime.metrics.journal_pages_written += 1
+                runtime.metrics.page_fsyncs += 1
+                for claim in page_claims:
+                    journal_index.update_candidate(page_path, claim.payload)
+        if not claims:
+            continue
+        claimed_total += len(claims)
+
+        outcomes: dict[str, dict[str, Any]] = {}
+        entries_by_id: dict[str, tuple[Any, dict[str, Any], PaperCandidate, str]] = {}
+        primary_by_doi: dict[str, str] = {}
+        followers_by_primary: dict[str, list[str]] = {}
+
+        for claim in claims:
+            current = dict(claim.payload)
+            current.update(
+                page_id=claim.page_id,
+                keyword_id=claim.keyword_id,
+                provider=claim.provider,
+            )
+            candidate = _candidate_from_record(current)
+            try:
+                if not candidate.doi:
+                    with _lock(_resolution_lock_path(locks_dir, current)):
+                        candidate, remaining_resolution_budget, _resolved = _resolve_missing_doi(
+                            candidate, remaining_resolution_budget)
+                doi = normalize_doi(candidate.doi)
+            except Exception as exc:
+                set_outcome(
+                    outcomes,
+                    claim.candidate_id,
+                    new_status="failed_retryable",
+                    updates=retry_updates("doi_resolution_failed", str(exc)),
+                    counter="retryable_failures",
+                )
+                continue
+            current["candidate"] = candidate.to_dict()
+            if not doi:
+                set_outcome(
+                    outcomes,
+                    claim.candidate_id,
+                    new_status="unresolved",
+                    updates={"candidate": candidate.to_dict(), "terminal_reason": "doi_unresolved"},
+                    counter="unresolved",
+                )
+                continue
+            if not is_valid_normalized_doi(doi):
+                set_outcome(
+                    outcomes,
+                    claim.candidate_id,
+                    new_status="invalid_doi",
+                    updates={"candidate": candidate.to_dict(), "terminal_reason": "invalid_doi"},
+                    counter="invalid",
+                )
+                continue
+            candidate.doi = doi
+            current["candidate"] = candidate.to_dict()
+            entries_by_id[claim.candidate_id] = (claim, current, candidate, doi)
+            primary_id = primary_by_doi.get(doi)
+            if primary_id is None:
+                primary_by_doi[doi] = claim.candidate_id
+            else:
+                followers_by_primary.setdefault(primary_id, []).append(claim.candidate_id)
+
+        # A claimed item waits only behind the rest of its <=16 item epoch.
+        # Renew only genuinely slow epochs; ordinary staging does not pay an
+        # immediate extra page write after claim.
+        for claim, _current, _candidate, _doi in entries_by_id.values():
+            claimed_at = claim.payload.get("claimed_at")
+            try:
+                claim_age = (
+                    datetime.now(timezone.utc) - datetime.fromisoformat(str(claimed_at))
+                ).total_seconds()
+            except (TypeError, ValueError):
+                claim_age = 0.0
+            if claim_age >= lease_seconds / 2:
+                if journal.renew_candidate_lease(
+                    claim.page_path,
+                    candidate_id_value=claim.candidate_id,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                ):
+                    runtime.metrics.candidate_lease_renewals += 1
+                    runtime.metrics.journal_pages_written += 1
+                    runtime.metrics.page_fsyncs += 1
+
+        primary_ids = list(primary_by_doi.values())
+        locks = sorted({
+            _doi_lock_path(locks_dir, entries_by_id[candidate_id][3])
+            for candidate_id in primary_ids
+        }, key=str)
+        try:
+            with ExitStack() as lock_stack:
+                for lock_path in locks:
+                    lock_stack.enter_context(_lock(lock_path))
+
+                stage_primary_ids: list[str] = []
+                stage_records: list[dict[str, Any]] = []
+                for primary_id in primary_ids:
+                    claim, current, candidate, doi = entries_by_id[primary_id]
+                    emitted_ref = journal_index.emitted_by_doi.get(doi)
+                    if emitted_ref is not None and emitted_ref.candidate_id != primary_id:
+                        valid, reason = _inspect_emitted_primary_export_cached(
+                            journal_index, dict(emitted_ref.payload), doi,
+                            exports_dir=exports_dir)
+                        if valid:
+                            set_outcome(
+                                outcomes,
+                                primary_id,
+                                new_status="duplicate_observation",
+                                updates={
+                                    "candidate": candidate.to_dict(),
+                                    "terminal_reason": "duplicate_observation",
+                                    "primary_candidate_id": emitted_ref.candidate_id,
+                                },
+                                counter="duplicate_observation",
+                            )
+                        else:
+                            set_outcome(
+                                outcomes,
+                                primary_id,
+                                new_status="failed_retryable",
+                                updates=retry_updates("doi_primary_validation_failed", reason),
+                                counter="retryable_failures",
+                            )
+                        continue
+                    stage_primary_ids.append(primary_id)
+                    stage_records.append({
+                        **candidate.to_dict(),
+                        "doi_resolution": candidate.doi_resolution,
+                        "discovery_context": {
+                            "candidate_id": primary_id,
+                            "page_id": claim.page_id,
+                            "keyword_id": claim.keyword_id,
+                            "provider": claim.provider,
+                            "normalized_doi": doi,
+                        },
+                    })
+
+                if stage_records:
+                    stage_report = stage_network_metadata_records(
+                        stage_records,
+                        paper_raw_dir=paper_raw_dir,
+                        papers_dir=papers_dir,
+                        ledger_path=ledger_path,
+                        apply=apply,
+                        dry_run=not apply,
+                        skip_duplicates=skip_duplicates,
+                        transaction=staging_context.transaction,
+                    )
+                    stage_items = list(stage_report.get("items") or [])
+                    if len(stage_items) != len(stage_primary_ids):
+                        raise RuntimeError("staging batch result count mismatch")
+                    for primary_id, item in zip(stage_primary_ids, stage_items, strict=True):
+                        _claim, _current, candidate, _doi = entries_by_id[primary_id]
+                        status = str(item.get("status") or "")
+                        if status == "staged":
+                            actual_allocated = bool(item.get("actual_allocated"))
+                            set_outcome(
+                                outcomes,
+                                primary_id,
+                                new_status="staged",
+                                updates={
+                                    "candidate": candidate.to_dict(),
+                                    "staged_paper_number": str(item.get("paper_number") or ""),
+                                    "terminal_reason": "staged",
+                                },
+                                counter="staged" if actual_allocated else "reused_existing",
+                            )
+                        elif status == "duplicate":
+                            set_outcome(
+                                outcomes,
+                                primary_id,
+                                new_status="existing_duplicate",
+                                updates={
+                                    "candidate": candidate.to_dict(),
+                                    "terminal_reason": "doi_duplicate",
+                                    "stage_item": item,
+                                },
+                                counter="existing_duplicate",
+                            )
+                        elif status in {"failed_retryable", "repair_required"}:
+                            set_outcome(
+                                outcomes,
+                                primary_id,
+                                new_status="failed_retryable",
+                                updates=retry_updates(
+                                    status,
+                                    str(item.get("safe_error") or item.get("error") or status),
+                                ),
+                                counter="retryable_failures",
+                            )
+                        elif status == "planned":
+                            set_outcome(
+                                outcomes,
+                                primary_id,
+                                new_status="failed_retryable",
+                                updates={"last_error": "dry_run_planned_not_terminal"},
+                                counter="planned",
+                            )
+                        else:
+                            set_outcome(
+                                outcomes,
+                                primary_id,
+                                new_status="failed_terminal",
+                                updates={
+                                    "last_error": str(
+                                        item.get("safe_error") or item.get("error") or "stage_failed")
+                                },
+                                counter="terminal_failures",
+                            )
+        except Exception as exc:
+            detail = f"{type(exc).__name__}:{exc}"
+            report.errors.append(detail)
+            for primary_id in primary_ids:
+                if primary_id not in outcomes:
+                    set_outcome(
+                        outcomes,
+                        primary_id,
+                        new_status="failed_retryable",
+                        updates=retry_updates("staging_batch_failed", detail),
+                        counter="retryable_failures",
+                    )
+
+        # Followers never enter the authoritative transaction.  They inherit a
+        # durable primary result, or remain retryable when the primary did not
+        # reach a durable result.
+        for primary_id, follower_ids in followers_by_primary.items():
+            primary_outcome = outcomes.get(primary_id)
+            for follower_id in follower_ids:
+                _claim, _current, candidate, _doi = entries_by_id[follower_id]
+                if primary_outcome and primary_outcome["new_status"] == "staged":
+                    set_outcome(
+                        outcomes,
+                        follower_id,
+                        new_status="duplicate_observation",
+                        updates={
+                            "candidate": candidate.to_dict(),
+                            "terminal_reason": "duplicate_observation",
+                            "primary_candidate_id": primary_id,
+                        },
+                        counter="duplicate_observation",
+                    )
+                elif primary_outcome and primary_outcome["new_status"] in {
+                    "existing_duplicate", "duplicate_observation"
+                }:
+                    set_outcome(
+                        outcomes,
+                        follower_id,
+                        new_status=primary_outcome["new_status"],
+                        updates={
+                            "candidate": candidate.to_dict(),
+                            "terminal_reason": primary_outcome["updates"].get(
+                                "terminal_reason", "doi_duplicate"),
+                            "primary_candidate_id": primary_id,
+                        },
+                        counter=(
+                            "existing_duplicate"
+                            if primary_outcome["new_status"] == "existing_duplicate"
+                            else "duplicate_observation"
+                        ),
+                    )
+                else:
+                    detail = "same_batch_primary_not_durable"
+                    if primary_outcome:
+                        detail = str(primary_outcome["updates"].get("last_error") or detail)
+                    set_outcome(
+                        outcomes,
+                        follower_id,
+                        new_status="failed_retryable",
+                        updates=retry_updates("same_batch_primary_not_durable", detail),
+                        counter="retryable_failures",
+                    )
+
+        for claim in claims:
+            if claim.candidate_id not in outcomes:
+                set_outcome(
+                    outcomes,
+                    claim.candidate_id,
+                    new_status="failed_retryable",
+                    updates=retry_updates("missing_batch_outcome", "missing_batch_outcome"),
+                    counter="retryable_failures",
+                )
+
+        results_by_page: dict[Path, list[dict[str, Any]]] = {}
+        for claim in claims:
+            results_by_page.setdefault(claim.page_path, []).append(outcomes[claim.candidate_id])
+        for page_path, page_results in results_by_page.items():
+            serialized = [{
+                "candidate_id": result["candidate_id"],
+                "new_status": result["new_status"],
+                "updates": result["updates"],
+            } for result in page_results]
+            try:
+                committed = journal.commit_candidate_results(
+                    page_path, serialized, worker_id=worker_id)
+            except Exception as exc:
+                report.errors.append(f"{type(exc).__name__}:{exc}")
+                report.retryable_failures += len(page_results)
+                report.processed += len(page_results)
+                continue
+            runtime.metrics.journal_pages_written += 1
+            runtime.metrics.page_fsyncs += 1
+            for item in committed:
+                journal_index.update_candidate(page_path, item)
+            for result in page_results:
+                counter = result.get("counter")
+                if counter:
+                    setattr(report, counter, getattr(report, counter) + 1)
+                report.processed += 1
+
+    terminal = (
+        report.staged + report.reused_existing + report.existing_duplicate + report.duplicate_observation
+        + report.invalid + report.unresolved + report.terminal_failures
+    )
+    report.remaining = max(0, report.before - terminal)
+    runtime.metrics.sync_journal(journal_index)
+    return report
 
 
 def drain_pending_candidates(
@@ -953,35 +799,141 @@ def drain_pending_candidates(
     doi_resolution_budget: int = 10,
     lease_seconds: int = DISCOVERY_LEASE_SECONDS,
     skip_duplicates: bool = False,
+    hide_existing: bool = False,
+    runtime: DiscoveryBatchRuntime | None = None,
 ) -> DrainReport:
-    report = DrainReport(before=journal.count_pending_candidates(keyword_ids))
+    if runtime is None:
+        try:
+            runtime = DiscoveryBatchRuntime.create(
+                journal=journal, paper_raw_dir=paper_raw_dir, papers_dir=papers_dir,
+                ledger_path=ledger_path, needs_staging=bool(stage_to_paper_raw or hide_existing))
+        except Exception as exc:
+            index = JournalDrainIndex.build(journal)
+            failed = DrainReport(before=index.pending_count(keyword_ids))
+            failed.remaining = failed.before
+            reason = f"registry_configuration_failed:{type(exc).__name__}"
+            refs = index.claimable(keyword_ids)[:candidate_budget]
+            by_page: dict[Path, list[str]] = {}
+            for ref in refs:
+                by_page.setdefault(ref.page_path, []).append(ref.candidate_id)
+            for page_path, candidate_ids in by_page.items():
+                claims = journal.claim_candidates_from_page(
+                    page_path, worker_id=worker_id, lease_seconds=lease_seconds,
+                    limit=min(16, len(candidate_ids)), candidate_ids=candidate_ids)
+                journal.commit_candidate_results(page_path, [{
+                    "candidate_id": claim.candidate_id, "new_status": "failed_retryable",
+                    "updates": {"last_error": reason},
+                } for claim in claims], worker_id=worker_id)
+                failed.processed += len(claims)
+                failed.retryable_failures += len(claims)
+            failed.errors.append(reason)
+            return failed
+    journal_index = runtime.journal_index
+    report = DrainReport(before=journal_index.pending_count(keyword_ids))
     if candidate_budget <= 0:
         report.remaining = report.before
         return report
+    if not stage_to_paper_raw and candidate_budget > 16:
+        remaining_budget = candidate_budget
+        remaining_resolution_budget = doi_resolution_budget
+        while remaining_budget > 0:
+            current = drain_pending_candidates(
+                journal=journal, keyword_ids=keyword_ids,
+                candidate_budget=min(16, remaining_budget),
+                stage_to_paper_raw=False, apply=apply,
+                paper_raw_dir=paper_raw_dir, papers_dir=papers_dir,
+                ledger_path=ledger_path, locks_dir=locks_dir,
+                exports_dir=exports_dir, worker_id=worker_id,
+                doi_resolution_budget=remaining_resolution_budget,
+                lease_seconds=lease_seconds, skip_duplicates=skip_duplicates,
+                hide_existing=hide_existing, runtime=runtime,
+            )
+            for field_name in (
+                "processed", "staged", "reused_existing", "emitted", "existing_duplicate",
+                "duplicate_observation", "invalid", "unresolved",
+                "retryable_failures", "terminal_failures", "planned",
+            ):
+                setattr(report, field_name,
+                        getattr(report, field_name) + getattr(current, field_name))
+            report.errors.extend(current.errors)
+            report.remaining = current.remaining
+            if current.processed <= 0:
+                break
+            remaining_resolution_budget = 0
+            remaining_budget -= current.processed
+        return report
 
     remaining_resolution_budget = doi_resolution_budget
+    # Build the shared DOI duplicate index ONCE for this drain and thread it
+    # through staging so the per-candidate hot path does O(1) lookups instead
+    # of O(N) full-library rescans. The index is refreshed under the paper_raw
+    # write lock inside the allocator before each authoritative check, so
+    # concurrent writers cannot slip a duplicate DOI past it.
+    staging_context = runtime.staging_context
+    if stage_to_paper_raw:
+        return _drain_staging_candidate_batches(
+            journal=journal,
+            journal_index=journal_index,
+            runtime=runtime,
+            report=report,
+            keyword_ids=keyword_ids,
+            candidate_budget=candidate_budget,
+            apply=apply,
+            paper_raw_dir=paper_raw_dir,
+            papers_dir=papers_dir,
+            ledger_path=ledger_path,
+            locks_dir=locks_dir,
+            exports_dir=exports_dir,
+            worker_id=worker_id,
+            doi_resolution_budget=doi_resolution_budget,
+            lease_seconds=lease_seconds,
+            skip_duplicates=skip_duplicates,
+        )
     drain_generation = f"drain-{worker_id}-{datetime.now(timezone.utc).timestamp():.6f}"
     deferred_candidate_ids: set[str] = set()
-    claimable = journal.iter_claimable(keyword_ids)
-    for page_path, record in claimable:
+
+    def _commit(page_path: Path, **kwargs: Any) -> dict[str, Any]:
+        committed = journal.commit_candidate(page_path, **kwargs)
+        runtime.metrics.journal_pages_written += 1
+        runtime.metrics.page_fsyncs += 1
+        journal_index.update_candidate(page_path, committed)
+        return committed
+
+    def _defer(page_path: Path, **kwargs: Any) -> dict[str, Any]:
+        deferred = journal.defer_candidate(page_path, **kwargs)
+        runtime.metrics.journal_pages_written += 1
+        runtime.metrics.page_fsyncs += 1
+        journal_index.update_candidate(page_path, deferred)
+        return deferred
+    claimable = journal_index.claimable(keyword_ids)[:candidate_budget]
+    candidate_ids_by_page: dict[Path, list[str]] = {}
+    for ref in claimable:
+        candidate_ids_by_page.setdefault(ref.page_path, []).append(ref.candidate_id)
+    claimed = []
+    for page_path, candidate_ids in candidate_ids_by_page.items():
+        page_claims = journal.claim_candidates_from_page(
+            page_path, worker_id=worker_id, lease_seconds=lease_seconds,
+            limit=min(16, candidate_budget - len(claimed)), candidate_ids=candidate_ids)
+        claimed.extend(page_claims)
+        if page_claims:
+            runtime.metrics.candidate_claims += len(page_claims)
+            runtime.metrics.journal_pages_written += 1
+            runtime.metrics.page_fsyncs += 1
+        if len(claimed) >= candidate_budget:
+            break
+    for claim in claimed:
+        page_path = claim.page_path
+        record = dict(claim.payload)
         if report.processed >= candidate_budget:
             break
         cid = record["candidate_id"]
         if cid in deferred_candidate_ids:
             continue
-        claim = journal.claim_candidate(
-            page_path,
-            candidate_id_value=cid,
-            worker_id=worker_id,
-            lease_seconds=lease_seconds,
-        )
-        if not claim.claimed or not claim.candidate:
-            continue
-        current = claim.candidate
-        page = journal.read(page_path)
-        current["page_id"] = page.get("page_id")
-        current["keyword_id"] = page.get("keyword_id")
-        current["provider"] = page.get("provider")
+        current = record
+        current["page_id"] = claim.page_id
+        current["keyword_id"] = claim.keyword_id
+        current["provider"] = claim.provider
+        journal_index.update_candidate(page_path, current)
         candidate = _candidate_from_record(current)
 
         try:
@@ -996,12 +948,6 @@ def drain_pending_candidates(
                     def __exit__(self, exc_type, exc, tb): return False
                 lock_context = _Noop()
             with lock_context:
-                journal.renew_candidate_lease(
-                    page_path,
-                    candidate_id_value=cid,
-                    worker_id=worker_id,
-                    lease_seconds=lease_seconds,
-                )
                 if not candidate.doi:
                     candidate, remaining_resolution_budget, resolved = _resolve_missing_doi(candidate, remaining_resolution_budget)
                     current["candidate"] = candidate.to_dict()
@@ -1014,7 +960,7 @@ def drain_pending_candidates(
                         )
                 doi = normalize_doi(candidate.doi)
                 if not doi:
-                    journal.commit_candidate(
+                    _commit(
                         page_path,
                         candidate_id_value=cid,
                         worker_id=worker_id,
@@ -1025,7 +971,7 @@ def drain_pending_candidates(
                     report.processed += 1
                     continue
                 if not is_valid_normalized_doi(doi):
-                    journal.commit_candidate(
+                    _commit(
                         page_path,
                         candidate_id_value=cid,
                         worker_id=worker_id,
@@ -1036,408 +982,102 @@ def drain_pending_candidates(
                     report.processed += 1
                     continue
 
+                claimed_at = current.get("claimed_at")
+                try:
+                    claim_age = (datetime.now(timezone.utc) - datetime.fromisoformat(
+                        str(claimed_at))).total_seconds()
+                except (TypeError, ValueError):
+                    claim_age = 0.0
+                if claim_age >= lease_seconds / 2:
+                    if journal.renew_candidate_lease(
+                        page_path, candidate_id_value=cid, worker_id=worker_id,
+                        lease_seconds=lease_seconds):
+                        runtime.metrics.candidate_lease_renewals += 1
+
                 doi_lock = _lock(_doi_lock_path(locks_dir, doi))
                 with doi_lock:
-                    processing_owner = _find_doi_processing_owner(
-                        journal,
-                        keyword_ids,
-                        doi,
-                        exclude_candidate_id=cid,
-                    )
-                    if processing_owner:
-                        journal.defer_candidate(
-                            page_path,
-                            candidate_id_value=cid,
-                            worker_id=worker_id,
-                            reason="doi_primary_processing",
-                            drain_generation=drain_generation,
-                            updates={
-                                "last_error": f"same DOI candidate is processing: {processing_owner}",
-                            },
-                        )
+                    processing_owner = journal_index.processing_by_doi.get(doi, "")
+                    if processing_owner and processing_owner != cid:
+                        _defer(
+                            page_path, candidate_id_value=cid, worker_id=worker_id,
+                            reason="doi_primary_processing", drain_generation=drain_generation,
+                            updates={"last_error": f"same DOI candidate is processing: {processing_owner}"})
                         deferred_candidate_ids.add(cid)
                         report.retryable_failures += 1
                         report.processed += 1
                         continue
-
-                    primary_cid, primary_status, primary_failure = _find_durable_primary_for_doi(
-                        journal,
-                        keyword_ids,
-                        doi,
-                        exclude_candidate_id=cid,
-                        paper_raw_dir=paper_raw_dir,
-                        papers_dir=papers_dir,
-                        ledger_path=ledger_path,
-                        exports_dir=exports_dir,
-                    )
-                    if primary_cid:
-                        journal.commit_candidate(
-                            page_path,
-                            candidate_id_value=cid,
-                            worker_id=worker_id,
+                    emitted_primary = ""
+                    emitted_failure = ""
+                    emitted_ref = journal_index.emitted_by_doi.get(doi)
+                    if emitted_ref is not None and emitted_ref.candidate_id != cid:
+                        valid, reason = _inspect_emitted_primary_export_cached(
+                            journal_index, dict(emitted_ref.payload), doi,
+                            exports_dir=exports_dir)
+                        emitted_primary = emitted_ref.candidate_id if valid else ""
+                        emitted_failure = "" if valid else reason
+                    if emitted_primary:
+                        _commit(
+                            page_path, candidate_id_value=cid, worker_id=worker_id,
                             new_status="duplicate_observation",
-                            updates={
-                                "terminal_reason": "duplicate_observation",
-                                "primary_candidate_id": primary_cid,
-                                "primary_status": primary_status,
-                            },
+                            updates={"terminal_reason": "duplicate_observation",
+                                     "primary_candidate_id": emitted_primary},
                         )
                         report.duplicate_observation += 1
                         report.processed += 1
                         continue
-                    if primary_failure:
-                        journal.defer_candidate(
-                            page_path,
-                            candidate_id_value=cid,
-                            worker_id=worker_id,
+                    if emitted_failure:
+                        _defer(
+                            page_path, candidate_id_value=cid, worker_id=worker_id,
                             reason="doi_primary_validation_failed",
                             drain_generation=drain_generation,
-                            updates={
-                                "last_error": primary_failure,
-                                "primary_validation_failure": primary_failure,
-                            },
+                            updates={"last_error": emitted_failure},
                         )
                         deferred_candidate_ids.add(cid)
                         report.retryable_failures += 1
                         report.processed += 1
                         continue
-                    # Reconciliation runs BEFORE the receipt fast-path so a
-                    # workspace whose receipt exists but whose manifest/import
-                    # status/ledger are incomplete (crash between receipt write
-                    # and manifest write) is re-staged into the SAME workspace
-                    # instead of being silently marked staged with missing
-                    # assets. find_matching_receipt below is the fallback for
-                    # workspaces that carry a receipt but no discoverable
-                    # source record.
-                    recon = reconcile_discovery_workspace(
-                        [paper_raw_dir, papers_dir],
-                        candidate_id=cid,
-                        page_id=page["page_id"],
-                        keyword_id=page["keyword_id"],
-                        normalized_doi=doi,
-                        provider=str(page.get("provider") or ""),
-                        ledger_path=ledger_path,
+
+                    if hide_existing and staging_context is not None:
+                        existing = staging_context.transaction.classify_existing_doi(doi)
+                        if existing.status == "duplicate":
+                            _commit(
+                                page_path, candidate_id_value=cid, worker_id=worker_id,
+                                new_status="existing_duplicate",
+                                updates={"terminal_reason": "doi_duplicate",
+                                         "duplicate_refs": [ref.paper_number for ref in existing.duplicate_refs]},
+                            )
+                            report.existing_duplicate += 1
+                            report.processed += 1
+                            continue
+                        if existing.status in {"repair_required", "failed_retryable"}:
+                            _defer(
+                                page_path, candidate_id_value=cid, worker_id=worker_id,
+                                reason=existing.status, drain_generation=drain_generation,
+                                updates={"last_error": existing.error.code if existing.error else existing.status},
+                            )
+                            report.retryable_failures += 1
+                            report.processed += 1
+                            continue
+
+                    export = export_candidate_once(exports_dir, current)
+                    _commit(
+                        page_path, candidate_id_value=cid, worker_id=worker_id,
+                        new_status="emitted",
+                        updates={
+                            "export_id": export["export_id"],
+                            "export_path": export["export_path"],
+                            "manifest_path": export.get("manifest_path", ""),
+                            "emitted_at": _now_iso(),
+                            "reconciled": export.get("reconciled", False),
+                        },
                     )
-                    if recon.status in {"staged", "recovered", "formal_complete"}:
-                        journal.commit_candidate(
-                            page_path,
-                            candidate_id_value=cid,
-                            worker_id=worker_id,
-                            new_status="staged" if recon.status != "formal_complete" else "existing_duplicate",
-                            updates={
-                                "staged_paper_number": recon.paper_number,
-                                "reconciled": True,
-                                "terminal_reason": (
-                                    "reconciled_formal_workspace_complete"
-                                    if recon.status == "formal_complete"
-                                    else
-                                    "reconciled_discovery_source_record"
-                                    if recon.status == "recovered"
-                                    else "reconciled_discovery_workspace_complete"
-                                ),
-                            },
-                        )
-                        if recon.status == "formal_complete":
-                            report.existing_duplicate += 1
-                        else:
-                            report.staged += 1
-                        report.processed += 1
-                        continue
-                    if recon.status == "formal_repair_required":
-                        next_attempt_at = (
-                            datetime.now(timezone.utc) + timedelta(minutes=15)
-                        ).isoformat()
-                        journal.defer_candidate(
-                            page_path,
-                            candidate_id_value=cid,
-                            worker_id=worker_id,
-                            reason="formal_workspace_repair_required",
-                            drain_generation=drain_generation,
-                            next_attempt_at=next_attempt_at,
-                            updates={
-                                "terminal_reason": "formal_workspace_repair_required",
-                                "last_error": recon.reason or "formal_workspace_repair_required",
-                                "formal_workspace_path": recon.workspace_path,
-                            },
-                        )
-                        deferred_candidate_ids.add(cid)
-                        report.retryable_failures += 1
-                        report.processed += 1
-                        continue
-                    if recon.status == "receipt_conflict":
-                        journal.commit_candidate(
-                            page_path,
-                            candidate_id_value=cid,
-                            worker_id=worker_id,
-                            new_status="failed_retryable",
-                            updates={
-                                "terminal_reason": "receipt_conflict",
-                                "last_error": recon.reason,
-                            },
-                        )
-                        report.retryable_failures += 1
-                        report.processed += 1
-                        continue
-                    # Initialize reuse_number — may be set by the receipt
-                    # fallback below or by the retryable_incomplete branch.
-                    reuse_number = ""
-                    # Fallback for workspaces that carry a receipt but no
-                    # discoverable source record (e.g. staged via a path that
-                    # did not write one). The receipt identity match locates
-                    # the workspace, but does NOT by itself prove staging is
-                    # complete — we must verify metadata/manifest/ledger.
-                    if recon.status == "not_found":
-                        try:
-                            receipt_match = find_matching_receipt(
-                                [paper_raw_dir, papers_dir],
-                                lookup_key=ReceiptLookupIdentity(
-                                    candidate_id=cid,
-                                    page_id=str(page["page_id"]),
-                                    keyword_id=str(page["keyword_id"]),
-                                    provider=str(page.get("provider") or ""),
-                                    normalized_doi=doi,
-                                ),
-                            )
-                        except AmbiguousDiscoveryReceiptError as exc:
-                            journal.defer_candidate(
-                                page_path,
-                                candidate_id_value=cid,
-                                worker_id=worker_id,
-                                reason="ambiguous_receipt_identity",
-                                drain_generation=drain_generation,
-                                updates={"last_error": str(exc)},
-                            )
-                            deferred_candidate_ids.add(cid)
-                            report.retryable_failures += 1
-                            report.processed += 1
-                            continue
-                        if receipt_match:
-                            # Resolve paper_number from the workspace (marker-first).
-                            receipt_pn = _resolve_workspace_paper_number(
-                                receipt_match.workspace
-                            ) or receipt_match.paper_number
-                            # Build a full reconciliation state for the workspace.
-                            receipt_state = _build_reconciliation_state(
-                                receipt_match.workspace,
-                                receipt_pn,
-                                candidate_id=cid,
-                                page_id=page["page_id"],
-                                keyword_id=page["keyword_id"],
-                                normalized_doi=doi,
-                                ledger_path=ledger_path,
-                                provider=str(page.get("provider") or ""),
-                            )
-                            # Only mark staged if the workspace is ACTUALLY
-                            # complete (metadata valid + manifest + import_status
-                            # + ledger terminal). A receipt alone is NOT proof.
-                            receipt_staging_complete = (
-                                receipt_state.metadata_valid
-                                and receipt_state.receipt_matches
-                                and receipt_state.stage_manifest_exists
-                                and receipt_state.import_status_exists
-                                and (
-                                    receipt_state.ledger_state == LEDGER_METADATA_STAGED
-                                    or receipt_state.ledger_state == "active"
-                                )
-                            )
-                            if receipt_staging_complete:
-                                journal.commit_candidate(
-                                    page_path,
-                                    candidate_id_value=cid,
-                                    worker_id=worker_id,
-                                    new_status="staged",
-                                    updates={
-                                        "staged_paper_number": receipt_pn,
-                                        "reconciled": True,
-                                        "terminal_reason": "reconciled_discovery_receipt",
-                                    },
-                                )
-                                report.staged += 1
-                                report.processed += 1
-                                continue
-                            # Receipt found but workspace incomplete — check if
-                            # we can re-stage in place (paper_raw only, not formal).
-                            if (
-                                receipt_state.metadata_valid
-                                and PAPER_NUMBER_RE.match(receipt_pn)
-                                and receipt_match.workspace.parent.name == "paper_raw"
-                            ):
-                                reuse_number = receipt_pn
-                            # else: fall through to normal staging
-                    # retryable_incomplete: re-stage into the SAME workspace to
-                    # backfill metadata/receipt/manifest/ledger without
-                    # allocating a new paper number. not_found/corruption fall
-                    # through to the normal duplicate guard + fresh staging.
-                    # The receipt fallback above may have already set reuse_number.
-                    if not reuse_number and recon.status == "retryable_incomplete":
-                        reuse_number = recon.paper_number
-
-                    if not reuse_number:
-                        dup = check_doi_duplicate(doi, paper_raw_dir=paper_raw_dir, papers_dir=papers_dir)
-                        if dup.refs:
-                            formal_refs = [
-                                ref for ref in dup.refs
-                                if getattr(ref, "workspace_kind", "") == "formal" or ref.scope == "papers"
-                            ]
-                            formal_blocking_errors: list[str] = []
-                            for ref in formal_refs:
-                                validation = validate_formal_paper_workspace(
-                                    Path(ref.folder),
-                                    ledger=PaperNumberLedger(ledger_path),
-                                    mode="strict",
-                                )
-                                if (
-                                    not validation.valid
-                                    or validation.normalized_doi != doi
-                                    or validation.paper_number != ref.paper_number
-                                ):
-                                    formal_blocking_errors.append(
-                                        "; ".join(validation.errors)
-                                        or "formal workspace validation failed"
-                                    )
-                            if formal_blocking_errors:
-                                next_attempt_at = (
-                                    datetime.now(timezone.utc) + timedelta(minutes=15)
-                                ).isoformat()
-                                journal.defer_candidate(
-                                    page_path,
-                                    candidate_id_value=cid,
-                                    worker_id=worker_id,
-                                    reason="formal_workspace_repair_required",
-                                    drain_generation=drain_generation,
-                                    next_attempt_at=next_attempt_at,
-                                    updates={
-                                        "terminal_reason": "formal_workspace_repair_required",
-                                        "last_error": " | ".join(formal_blocking_errors),
-                                    },
-                                )
-                                deferred_candidate_ids.add(cid)
-                                report.retryable_failures += 1
-                                report.processed += 1
-                                continue
-                            journal.commit_candidate(
-                                page_path,
-                                candidate_id_value=cid,
-                                worker_id=worker_id,
-                                new_status="existing_duplicate",
-                                updates={
-                                    "terminal_reason": "doi_duplicate",
-                                    "duplicate_refs": [ref.to_dict() for ref in dup.refs],
-                                },
-                            )
-                            report.existing_duplicate += 1
-                            report.processed += 1
-                            continue
-
-                    if stage_to_paper_raw:
-                        stage_report = stage_network_metadata_records(
-                            [{
-                                **candidate.to_dict(),
-                                "doi_resolution": candidate.doi_resolution,
-                                "discovery_context": {
-                                    "candidate_id": cid,
-                                    "page_id": page["page_id"],
-                                    "keyword_id": page["keyword_id"],
-                                    "provider": str(page.get("provider") or ""),
-                                    "normalized_doi": doi,
-                                },
-                            }],
-                            paper_raw_dir=paper_raw_dir,
-                            papers_dir=papers_dir,
-                            ledger_path=ledger_path,
-                            apply=apply,
-                            dry_run=not apply,
-                            skip_duplicates=skip_duplicates,
-                            reuse_paper_number=reuse_number or None,
-                        )
-                        item = (stage_report.get("items") or [{}])[0]
-                        status = item.get("status")
-                        if status == "staged":
-                            paper_number = str(item.get("paper_number") or item.get("paper_raw_id") or "")
-                            if not item.get("receipt_path"):
-                                journal.commit_candidate(
-                                    page_path,
-                                    candidate_id_value=cid,
-                                    worker_id=worker_id,
-                                    new_status="failed_retryable",
-                                    updates={
-                                        "terminal_reason": "receipt_missing_after_staging",
-                                        "last_error": "allocator did not return discovery receipt path",
-                                    },
-                                )
-                                report.retryable_failures += 1
-                                report.processed += 1
-                                continue
-                            journal.commit_candidate(
-                                page_path,
-                                candidate_id_value=cid,
-                                worker_id=worker_id,
-                                new_status="staged",
-                                updates={
-                                    "staged_paper_number": paper_number,
-                                    "terminal_reason": "recovered_via_reuse" if reuse_number else "staged",
-                                    "reused_paper_number": reuse_number or "",
-                                },
-                            )
-                            report.staged += 1
-                        elif status == "planned":
-                            journal.commit_candidate(
-                                page_path,
-                                candidate_id_value=cid,
-                                worker_id=worker_id,
-                                new_status="failed_retryable",
-                                updates={"last_error": "dry_run_planned_not_terminal"},
-                            )
-                            report.planned += 1
-                        elif status == "duplicate":
-                            journal.commit_candidate(
-                                page_path,
-                                candidate_id_value=cid,
-                                worker_id=worker_id,
-                                new_status="existing_duplicate",
-                                updates={"terminal_reason": "doi_duplicate", "stage_item": item},
-                            )
-                            report.existing_duplicate += 1
-                        elif status == "failed_retryable":
-                            journal.commit_candidate(
-                                page_path,
-                                candidate_id_value=cid,
-                                worker_id=worker_id,
-                                new_status="failed_retryable",
-                                updates={"last_error": item.get("safe_error") or item.get("error")},
-                            )
-                            report.retryable_failures += 1
-                        else:
-                            journal.commit_candidate(
-                                page_path,
-                                candidate_id_value=cid,
-                                worker_id=worker_id,
-                                new_status="failed_terminal",
-                                updates={"last_error": item.get("safe_error") or item.get("error") or "stage_failed"},
-                            )
-                            report.terminal_failures += 1
-                    else:
-                        export = export_candidate_once(exports_dir, current)
-                        journal.commit_candidate(
-                            page_path,
-                            candidate_id_value=cid,
-                            worker_id=worker_id,
-                            new_status="emitted",
-                            updates={
-                                "export_id": export["export_id"],
-                                "export_path": export["export_path"],
-                                "manifest_path": export.get("manifest_path", ""),
-                                "emitted_at": _now_iso(),
-                                "reconciled": export.get("reconciled", False),
-                            },
-                        )
-                        report.emitted += 1
+                    report.emitted += 1
                     report.processed += 1
         except Timeout as exc:
             report.retryable_failures += 1
             report.errors.append(str(exc))
             try:
-                journal.commit_candidate(
+                _commit(
                     page_path,
                     candidate_id_value=cid,
                     worker_id=worker_id,
@@ -1450,7 +1090,7 @@ def drain_pending_candidates(
             report.retryable_failures += 1
             report.errors.append(str(exc))
             try:
-                journal.commit_candidate(
+                _commit(
                     page_path,
                     candidate_id_value=cid,
                     worker_id=worker_id,
@@ -1459,5 +1099,10 @@ def drain_pending_candidates(
                 )
             except Exception:
                 pass
-    report.remaining = journal.count_pending_candidates(keyword_ids)
+    terminal = (report.staged + report.reused_existing + report.emitted + report.existing_duplicate
+                + report.duplicate_observation + report.invalid + report.unresolved
+                + report.terminal_failures)
+    report.remaining = max(0, report.before - terminal)
+    if runtime is not None:
+        runtime.metrics.sync_journal(journal_index)
     return report

@@ -12,8 +12,11 @@
 ## Formal identity and classification
 
 The live formal registry verifies active ledger rows against every formal
-directory, marker, Metadata, Catalog and asset manifest. It persists no path
-map. DOI keyword notebooks contribute stable Chinese category definitions.
+directory, marker, Metadata, Catalog and asset manifest. The durable
+`data/papers/.formal_publication_state.json` sidecar binds the active set and
+all formal identity/content hashes; a missing or drifted sidecar is a
+fail-closed repair condition. DOI keyword notebooks contribute stable Chinese
+category definitions.
 An LLM reads one paper Catalog and records an independent positive or negative
 decision for every active category.
 
@@ -63,3 +66,49 @@ For the manual PDF path, stage the PDF, convert it first, then resolve Metadata
 from converted Markdown front matter. `data/raw/` is a queue; manual PDF staging uses
 `stage_raw_pdfs_to_paper_raw.py --move --apply` before conversion. Network ingest may stage Metadata before fetching
 and converting the PDF.
+
+## Discovery staging control plane
+
+The production call graph is `pending_queue → stage_network_metadata_records
+→ DiscoveryStageTransaction.stage_candidate → WorkspaceRegistry`. The ledger
+owns only numbering/lifecycle; Evidence reads facts once; Readiness accepts
+only an explicit known workflow profile. Registry is the only DOI/identity
+scanner and publishes validated copy-on-write snapshots. Transaction owns the
+raw write-lock decision sequence. Allocator and pending queue contain no
+discovery reconciliation, and the old index disk-refresh paths are deleted.
+
+Registry keeps incomplete `reserved` workspaces unsettled and rejects an
+incomplete `metadata_staged` closure. Schema-incomplete reserved Metadata is
+kept in the repair backlog without blocking a complete Registry; structural
+JSON/path/identity damage still fails closed. Identity entities are keyed by
+`identity_key + paper_number`, permitting multiple provider identities per
+paper. Transaction loads one locked ledger view per lock epoch of at most 16
+candidates, uses it for one atomic pre-refresh, persists reservation and final transition as separate
+checkpoints, and directly publishes success without a post-refresh.
+
+Registry snapshots are caches rather than durable facts. A discovery batch
+performs one full publication-sidecar/hash-closure validation; each staging
+lock epoch then reads only the sidecar revision/generation. A supported
+commit/rollback generation change triggers a full formal reload before the
+next candidate decision. Unsupported direct disk edits are found by the next
+batch-boundary or explicit periodic audit, while a DOI/identity hit always
+gets targeted live revalidation. Refresh compares the in-memory ledger
+lifecycle projection and target-rescans only numbers whose state, folder, or
+expected scope changed. Atomic record replacement removes old formal
+DOI/identity refs after rollback. Reporting distinguishes a new allocation
+(`actual_allocated`) from an existing-workspace reuse (`reused_existing`).
+# Discovery batch runtime
+
+Discovery uses one context/full Registry build and one journal scan per batch.
+The Registry indexes `metadata_staged` raw workspaces and valid active formal
+papers, reloads the formal view on publication-generation change, refreshes only
+new/lifecycle-dirty numbers, and live-revalidates matched records. Repair backlog
+is not a per-candidate scan source. Provider producers and the single staging
+consumer overlap through a candidate-weighted bounded queue. `JournalDrainIndex`
+has its own short critical sections, so providers can publish a page while the
+consumer stages earlier work. Shutdown has a configurable no-progress watchdog,
+not a fixed total-duration deadline; page and staging mutations are batched.
+Retryable candidates remain claimable in this runtime or enter its delayed
+schedule. Applied repair probes use a durable round-robin cursor. Formal
+generation is the active-ledger publication revision; committed formal assets
+are immutable and their Metadata hash is checked against the asset manifest.

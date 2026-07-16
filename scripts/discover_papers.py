@@ -90,6 +90,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--backfill-pages must be >= 1")
     if args.max_candidates < 1:
         parser.error("--max-candidates must be >= 1")
+    if args.stage_to_paper_raw and not args.apply and not args.dry_run:
+        parser.error("--stage-to-paper-raw requires --apply")
     if args.apply and not args.stage_to_paper_raw:
         parser.error("--apply requires --stage-to-paper-raw")
     if args.apply and args.dry_run:

@@ -117,7 +117,7 @@ def test_public_rollback_recovers_every_crash_boundary(tmp_path: Path, crash_pha
     assert (paper_raw_root / NUMBER).is_dir()
     assert not list(papers.glob(".*.rollback_quarantine_*"))
     assert not list(paper_raw_root.glob(".rollback_*"))
-    assert ((PaperNumberLedger(ledger_path).load().get("items") or {})[NUMBER]["state"] == "reserved")
+    assert ((PaperNumberLedger(ledger_path).load().get("items") or {})[NUMBER]["state"] == "metadata_staged")
     assert not list((catalog_root / "all").iterdir())
 
 

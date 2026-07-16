@@ -123,6 +123,19 @@ page budget. It performs no provider I/O, cursor advance, page-journal write,
 paper allocation, notebook mutation, or Catalog mutation. Real network search
 starts only on an explicit user command after these checks.
 
+Discovery startup also requires the active formal publication closure at
+`data/papers/.formal_publication_state.json`. Audit and repair it with:
+
+```text
+python scripts/repair_formal_publications.py --audit-only --json-report reports/formal_publication_repair.json
+python scripts/repair_discovery_workspaces.py --audit-only --limit 100
+```
+
+The formal repair writer only applies identity-only fixes after a temporary
+current-schema validation; closure or freeze drift emits a
+`rollback_recommit_required` plan. Raw incomplete `metadata_staged` entries
+may be explicitly demoted to `reserved` without recycling their numbers.
+
 ```text
 python scripts/sync_catalog_categories.py --apply
 python scripts/doctor_catalog_folders.py --json
@@ -154,3 +167,32 @@ formal-paper roots. PDF retrieval is direct-first with content-aware proxy
 fallback and independently configured route timeouts; persisted diagnostics
 strip URL queries recursively. Discovery exports and source snapshots are
 accepted only after complete identity and byte-level integrity verification.
+
+### Discovery staging single track
+
+Discovery batches share one staging context and one journal index. Both numeric
+raw workspaces and active formal papers participate in DOI/provider-identity
+deduplication; formal papers win only after generation, ledger, path, Metadata,
+paper-number, and immutable manifest-hash validation. Repair backlog probing is
+capped and cursor-rotated at batch boundaries,
+whereas matched workspaces are revalidated immediately. A bounded producer queue
+feeds one staging consumer in groups of at most 16 without weakening either
+per-paper ledger durability checkpoint.
+Retryable outcomes remain scheduled in the current runtime. Provider page
+publication uses a short Journal-index lock and consumer shutdown is governed by
+a configurable no-progress watchdog rather than a fixed 60-second total limit.
+
+Network candidates follow one production path:
+`pending_queue → stage_network_metadata_records → DiscoveryStageTransaction → WorkspaceRegistry`.
+The ledger owns numbering only; Evidence reads facts; Readiness applies the
+manifest workflow profile (unknown profiles fail closed); Registry alone scans
+DOI/identity facts and atomically publishes copy-on-write refreshes. The
+allocator is discovery-agnostic, and the pending queue makes no workspace
+reuse, duplicate, or allocation decision.
+
+An incomplete `reserved` workspace remains unsettled; an incomplete
+`metadata_staged` closure is `repair_required` before allocation. Identity
+facts use `identity_key + paper_number`, so one paper retains multiple provider
+identities through freeze. Warm staging reuses one locked ledger view, keeps
+reservation and final-state durable checkpoints, and directly publishes the
+validated record with no successful-stage post-refresh.

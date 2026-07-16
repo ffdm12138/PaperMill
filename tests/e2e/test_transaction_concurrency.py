@@ -376,7 +376,8 @@ class TestCrashRecoveryStress:
             source, planned_paper_name="2024_Smith_test"
         )
         assert len(number) == 16, f"expected 16-digit number, got {number}"
-        ledger.activate_reserved(number, source)
+        ledger.mark_metadata_staged(number, source)
+        ledger.activate_metadata_staged(number, source)
 
         # Create content files named after the ledger-assigned number.
         (source / f"{number}.md").write_text("# content", encoding="utf-8")

@@ -137,6 +137,7 @@ FAST_GROUPS: list[tuple[str, list[str]]] = [
 ]
 FAST_MARKERS = "not process and not slow and not stress and not external"
 FULL_MARKERS = "not stress and not external"
+PYTEST_PREFIX = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
 
 
 def step(name: str) -> None:
@@ -578,7 +579,7 @@ def _run_fast_groups(*, stop_on_first_failure: bool = False,
         print(f"  paths: {len(gpaths)}", flush=True)
         for p in gpaths:
             print(f"    - {p}", flush=True)
-        cmd = [sys.executable, "-m", "pytest", "-q", "-m", FAST_MARKERS] + gpaths \
+        cmd = PYTEST_PREFIX + ["-q", "-m", FAST_MARKERS] + gpaths \
               + ["--durations=20"]
         cmd_display = ' '.join(cmd)
         print(f"  cmd: {cmd_display}", flush=True)
@@ -661,7 +662,7 @@ def _run_full_groups(*, stop_on_first_failure: bool = False,
         print(f"  files: {len(gpaths)}", flush=True)
         for p in gpaths:
             print(f"    - {p}", flush=True)
-        cmd = [sys.executable, "-m", "pytest", "-q", "-m", FULL_MARKERS] + gpaths \
+        cmd = PYTEST_PREFIX + ["-q", "-m", FULL_MARKERS] + gpaths \
               + ["--durations=30", "--durations-min=0.5"]
         cmd_display = ' '.join(cmd)
         print(f"  cmd: {cmd_display}", flush=True)
@@ -995,7 +996,7 @@ def main() -> int:
     if args.process:
         step("2/6 pytest --process")
         with TestRuntimeWorkspace(group="process") as ws:
-            run([sys.executable, "-m", "pytest", "-q", "-m",
+            run(PYTEST_PREFIX + ["-q", "-m",
                  "process and not stress and not external", "--durations=20",
                  "--basetemp", str(ws.pytest_dir)],
                 env=ws.child_env(), timeout=args.full_timeout_seconds)
@@ -1005,7 +1006,7 @@ def main() -> int:
         print(f"  stress seed: {seed}", flush=True)
         with TestRuntimeWorkspace(group="stress") as ws:
             env = ws.child_env(extra={"MINERU_STRESS_SEED": seed})
-            run([sys.executable, "-m", "pytest", "-q", "-m", "stress",
+            run(PYTEST_PREFIX + ["-q", "-m", "stress",
                  "--durations=20", "--basetemp", str(ws.pytest_dir)],
                 env=env, timeout=args.full_timeout_seconds)
     elif args.area:
@@ -1017,7 +1018,7 @@ def main() -> int:
             "security": ["tests/security", "tests/hygiene/test_snapshot_hygiene.py"],
         }
         with TestRuntimeWorkspace(group=f"area_{args.area}") as ws:
-            run([sys.executable, "-m", "pytest", "-q", "-m", FAST_MARKERS] + area_tests[args.area]
+            run(PYTEST_PREFIX + ["-q", "-m", FAST_MARKERS] + area_tests[args.area]
                 + ["--basetemp", str(ws.pytest_dir)],
                 env=ws.child_env(), timeout=args.full_timeout_seconds)
     elif args.full_groups:
@@ -1029,7 +1030,7 @@ def main() -> int:
     elif args.full:
         step("2/6 pytest --full")
         with TestRuntimeWorkspace(group="full") as ws:
-            run([sys.executable, "-m", "pytest", "-q", "-m", FULL_MARKERS,
+            run(PYTEST_PREFIX + ["-q", "-m", FULL_MARKERS,
                  "--durations=30", "--durations-min=0.5",
                  "--basetemp", str(ws.pytest_dir)],
                 env=ws.child_env(), timeout=args.full_timeout_seconds)

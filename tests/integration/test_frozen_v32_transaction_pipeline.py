@@ -17,6 +17,9 @@ from src.metadata.pdf_match import build_match_receipt,write_match_receipt
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.metadata.schema import empty_metadata
 from src.utils.atomic_io import atomic_write_json
+from src.services.stage_manifest import write_stage_manifest
+from src.services.ingest_state import write_import_status
+from src.discovery.discovery_receipt import build_receipt_payload, write_or_validate_discovery_receipt
 
 NUMBER="0000000000000001"
 
@@ -33,12 +36,23 @@ def _workspace(tmp_path: Path)->tuple[PaperRawWorkspace,Path,Path,Path]:
     metadata=_metadata(folder); atomic_write_json(folder/f"{NUMBER}.metadata.json",metadata,indent=2); (folder/f"{NUMBER}.pdf").write_bytes(b"%PDF-1.7\nDOI 10.1234/example\n"); (folder/"source_records").mkdir(); atomic_write_json(folder/metadata["source"]["raw_record_path"],{"title":"Terrain Wind Downscaling","abstract":"Provider abstract"},indent=2)
     evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{NUMBER}.pdf"); write_match_receipt(folder,build_match_receipt(folder,NUMBER,metadata,evidence,provider_records=[metadata["source"]["raw_record_path"]])); freeze_metadata(folder,NUMBER); assert_metadata_frozen(folder,NUMBER)
     markdown="# Terrain Wind Downscaling\n\n## Abstract\nSource abstract text.\n\n## Results\nThe model improves RMSE.\n\n## Discussion\nLimitations.\n"; (folder/f"{NUMBER}.md").write_text(markdown,encoding="utf-8"); (folder/"images").mkdir(); atomic_write_json(folder/f"{NUMBER}.conversion.json",{"pdf_sha256":compute_sha256(folder/f"{NUMBER}.pdf"),"markdown_sha256":compute_sha256(folder/f"{NUMBER}.md")},indent=2)
+    # Write stage manifest and .import_status.json so workspace is complete for metadata_staged.
+    write_stage_manifest(folder,paper_number=NUMBER,paper_raw_id=NUMBER,workflow_path="network_metadata",source_type="network_search",pdf_source=None,staged_pdf=None)
+    write_import_status(folder,"staged_metadata",extra={"paper_number":NUMBER,"paper_raw_id":NUMBER,"source_type":"network_search","source_provider":"fixture","doi":"10.1234/example"})
+    # Write a discovery receipt to satisfy lifecycle inspection.
+    write_or_validate_discovery_receipt(folder/f"{NUMBER}.discovery_receipt.json",build_receipt_payload(paper_number=NUMBER,candidate_id="test",page_id="test",keyword_id="test",provider="fixture",normalized_doi="10.1234/example"),workspace_root=raw)
+    # Promote ledger state to metadata_staged.
+    ledger.mark_metadata_staged(NUMBER,folder)
     assert_metadata_frozen(folder,NUMBER); task_path=write_task_envelope(folder,NUMBER); task=json.loads(task_path.read_text(encoding="utf-8")); task["_path"]=str(task_path); catalog=_catalog(task); atomic_write_json(folder/f"{NUMBER}.catalog.json",catalog,indent=2); freeze_catalog(folder,NUMBER,papers_dir=papers,paper_raw_root=raw); assert_catalog_frozen(folder,NUMBER,papers_dir=papers,paper_raw_root=raw)
     return PaperRawWorkspace.from_path(folder),papers,ledger_path,catalog_dir
 
 def test_network_style_frozen_catalog_formalize_commit(tmp_path: Path):
     workspace,papers,ledger_path,catalog_root=_workspace(tmp_path); metadata_hash=compute_sha256(workspace.metadata); catalog_hash=compute_sha256(workspace.catalog); before=set(p.name for p in workspace.root.iterdir()); plan=write_formalization_plan(workspace,papers_dir=papers)
-    assert workspace.root.name==NUMBER and set(p.name for p in workspace.root.iterdir())-before=={f"{NUMBER}.formalization.json",".import_status.json"}
+    after_formalize = set(p.name for p in workspace.root.iterdir())
+    diff = after_formalize - before
+    assert f"{NUMBER}.formalization.json" in diff
+    # .import_status.json may already exist from metadata_staged setup; formalization
+    # only writes it if absent.
     result=commit_paper_raw(workspace,paper_raw_root=tmp_path/"paper_raw",papers_dir=papers,ledger_path=ledger_path,catalog_root=catalog_root,transactions_dir=tmp_path/"transactions")
     final=papers/result["paper_name"]; assert result["phase"]=="complete" and final.is_dir() and not workspace.root.exists(); assert compute_sha256(final/f"{result['paper_name']}.metadata.json")==metadata_hash; assert compute_sha256(final/f"{result['paper_name']}.catalog.json")==catalog_hash
     assert read_category_members(catalog_root/"all",papers_dir=papers)[0]["paper_number"]==NUMBER

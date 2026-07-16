@@ -1,5 +1,24 @@
 # Testing
 
+Discovery performance acceptance is counter-based. The compact contract uses
+200 raw workspaces, 200 formal papers and 500 candidates and asserts one context,
+one cold Registry/formal load, batch-bounded lock/ledger loads, two saves per new
+paper, and fingerprint work proportional to dirty/matched/new records rather than
+candidate×repair-backlog. Journal tests assert one initial full scan and page-level
+batch claim/commit. Tests use only isolated temporary roots.
+Publication-state tests cover the supported publication boundary: official
+commit/rollback/repair changes generation/revision and the next warm refresh
+reloads the formal closure, while an unsupported direct formal-asset edit is
+rejected by the next batch cold build or an explicit audit. A DOI/identity hit
+still performs targeted live revalidation. Tests also cover commit/rollback
+sidecar publication, identity-only formal repair, closure-drift refusal, and
+demotion of incomplete `metadata_staged` workspaces to permanent `reserved`
+numbers. Real runtime repair commands remain audit-only during agent
+acceptance; operator apply is a separate reviewed step.
+The fixture setup is outside the measured pipeline interval. The contract also
+includes 40 Journal pages, 40 repair-backlog members, retryable in-memory
+rescheduling, rotating repair probes, and formal immutable-hash detection.
+
 Tests use `tmp_path`, fake providers, fake MinerU, mock transports, isolated
 ledger/index roots, and no real runtime data or network. Set
 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`.
@@ -64,8 +83,30 @@ run, and pack evidence. A timeout is a failure, never a pass.
 
 ## Current test suite
 
-- **1763 tests collected** (down from 1869 after July 2026 cleanup)
-- **Full gate** (`not stress and not external`): 1752 passed, 8 skipped, 0 failed
-- **Contract/hygiene gate**: 360 passed
-- **Fast gate** (`not process and not slow and not stress and not external`): 353 passed
-- **Snapshot**: runtime-zero, 481 payload files, 0 runtime files, secret scan passed
+- **1812 tests collected**
+- **Unfiltered suite**: 1808 passed, 4 platform skips, 0 failed
+- **Full gate** (`not stress and not external`): 1805 passed, 4 platform skips, 3 deselected, 0 failed
+- **Contract/hygiene shards**: 218 passed / 157 passed
+- **Fast gate**: all configured groups passed with clean pre/post pollution checks
+- **Snapshot**: runtime-zero, 507 ZIP members, 0 runtime files, secret scan passed
+
+Discovery staging acceptance additionally covers strict ledger validation,
+single-read evidence, unknown-profile failure, atomic copy-on-write refresh,
+zero allocation after refresh failure, and real-process races for identical
+DOI and identical discovery identity. Performance tests require one cold full
+Registry build and prohibit a per-candidate full rebuild; the four release
+benchmark tiers are 100, 1000, 3000, and 10000 existing workspaces.
+
+The lifecycle matrix proves every required artifact missing from
+`metadata_staged` is `repair_required`, while `reserved` stays unsettled and
+does not advance allocation. Identity tests prove multiple provider identities
+for one paper survive freeze. At 3000 existing + 100 staged, ledger performance
+requires one cold build, about one load and at most two saves per new candidate,
+zero post-refreshes, and direct publication for each successful stage.
+
+Stale-snapshot regression coverage creates a Context before damaging each
+required `metadata_staged` artifact and requires `repair_required` with no
+allocation. It also rolls an active formal workspace back to `paper_raw` and
+asserts targeted lifecycle refresh removes all old formal DOI/identity refs.
+Adapter tests independently assert new allocation, reuse, and duplicate count
+semantics. The compact patch gate uses one 1000-existing + 10-new smoke only.

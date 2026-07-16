@@ -18,12 +18,32 @@ FORMALIZATION_SCHEMA_VERSION="1.0"
 
 def build_formalization_plan(workspace: PaperRawWorkspace, *, papers_dir: Path, ledger_path: Path|None=None) -> dict:
     ledger_path=ledger_path or papers_dir.parent/"catalog"/"paper_number_ledger.json"
+    ledger = PaperNumberLedger(ledger_path)
+
+    # ── Gate: only metadata_staged workspaces can be formalized ──────────
+    from src.library.paper_number_ledger import LEDGER_METADATA_STAGED
+    from src.ingest.workspace_lifecycle import inspect_workspace_lifecycle
+
+    item = (ledger.load().get("items") or {}).get(workspace.paper_number)
+    state = str((item or {}).get("state", ""))
+    if state != LEDGER_METADATA_STAGED:
+        raise ValueError(
+            f"workspace_not_metadata_staged: {workspace.paper_number} is "
+            f"{state or 'unknown'}, formalize requires metadata_staged"
+        )
+
+    inspection = inspect_workspace_lifecycle(workspace.root, ledger_item=item)
+    if not inspection.complete_for_metadata_staged:
+        raise ValueError(
+            f"workspace_lifecycle_incomplete: {workspace.paper_number}: "
+            + "; ".join(inspection.errors)
+        )
+
     metadata_freeze=assert_metadata_frozen(workspace.root,workspace.paper_number)
     catalog_freeze=assert_catalog_frozen(workspace.root,workspace.paper_number,papers_dir=papers_dir,paper_raw_root=workspace.root.parent)
     readiness=inspect_workspace_readiness(workspace)
     if not readiness["ready_for_formalize"]: raise ValueError("workspace is not ready for formalization: "+"; ".join(readiness["errors"]))
     catalog=json.loads(workspace.catalog.read_text(encoding="utf-8")); paper_name=str(catalog["paper_name"]); final_dir=papers_dir/paper_name
-    ledger = PaperNumberLedger(ledger_path)
     duplicate = inspect_ingest_duplicates(workspace,ledger=ledger,papers_root=papers_dir)
     if duplicate.status != "clear":
         raise ValueError(f"duplicate preflight failed: {duplicate.status}")

@@ -134,6 +134,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--refresh-pages must be >= 1")
     if args.backfill_pages < 1:
         parser.error("--backfill-pages must be >= 1")
+    if args.stage_to_paper_raw and not args.apply and not args.dry_run:
+        parser.error("--stage-to-paper-raw requires --apply")
     if args.apply and not args.stage_to_paper_raw:
         parser.error("--apply requires --stage-to-paper-raw")
     if args.apply and args.dry_run:

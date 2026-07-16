@@ -11,8 +11,8 @@ Default mode is a DRY RUN: prints a report, exits 0 (no drops) or 1 (drops
 pending). ``--apply-cleanup`` moves the ruled-out workspaces into
 ``data/paper_raw/quarantine/duplicate_workspaces/<name>/`` (never deletes),
 rewrites their ``.import_status.json`` to ``quarantined_duplicate``, and marks
-the matching ledger entry ``state=quarantined_duplicate`` with ``folder_path``
-repointed into quarantine. Paper numbers are NEVER recycled and ``max_number``
+the matching ledger entry ``state=abandoned`` with canonical quarantine
+provenance. Paper numbers are NEVER recycled and ``max_number``
 is NEVER decremented.
 
 Idempotent: a repeated ``--apply-cleanup`` finds nothing because quarantined
@@ -276,17 +276,19 @@ def _apply_cleanup(report: dict[str, Any], *, paper_raw_dir: Path, ledger_path: 
                 "previous_status": previous_status,
             })
 
-            # Ledger update: mark state, repoint folder_path. Never remove the
-            # item or touch max_number (numbers are not recycled).
+            # Ledger update: mark quarantined, repoint folder_path via the
+            # canonical quarantine method. Never recycles numbers.
             if drop["paper_number"]:
-                data = ledger.load()
-                item = data.get("items", {}).get(drop["paper_number"])
-                if isinstance(item, dict):
-                    item["state"] = "quarantined_duplicate"
-                    item["folder_path"] = str(target)
-                    item["quarantined_at"] = now_iso()
-                    item["quarantined_duplicate_of"] = keep.get("paper_number", "")
-                    ledger.save(data)
+                try:
+                    ledger.quarantine_reserved_duplicate(
+                        drop["paper_number"],
+                        target,
+                        duplicate_of=str(keep.get("paper_number", "")),
+                        duplicate_reasons=[group.get("duplicate_reason", "")],
+                    )
+                except ValueError:
+                    # Already-quarantined or incompatible state; skip silently.
+                    pass
 
     manifest_path = paper_raw_dir / _QUARANTINE_DIR_NAME / f"duplicate_cleanup_{now_iso().replace(':', '')}.json"
     manifest = {**report, "applied": True, "moved": moved}

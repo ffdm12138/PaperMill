@@ -111,6 +111,7 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
         output_dir=runtime_base / "output",
         paper_raw_dir=paper_raw_dir or (runtime_base / "paper_raw"),
         papers_dir=papers_dir or (runtime_base / "papers"),
+        ledger_path=(paper_raw_dir.parent / "ledger.json") if paper_raw_dir else (runtime_base / "ledger.json"),
     )
     batch_report = run_discovery_batch([keyword], options=options, max_workers=2)
     report_obj = batch_report.keywords[0]
@@ -229,19 +230,11 @@ class TestDualLaneScheduling:
         """Existing DOI observations are terminal and new candidates remain recoverable."""
         paper_raw = tmp_path / "paper_raw"
         papers = tmp_path / "papers"
-        # Create 50 existing DOIs in paper_raw.
-        from src.metadata.schema import empty_metadata
-
-        for i in range(50):
-            ws = paper_raw / f"0000000000000{i:03d}"
-            ws.mkdir(parents=True)
-            meta = empty_metadata(f"0000000000000{i:03d}", source_type="network_search")
-            meta["identifiers"]["doi"] = f"10.1/existing{i}"
-            (ws / f"0000000000000{i:03d}.metadata.json").write_text(
-                __import__("json").dumps(meta), encoding="utf-8",
-            )
+        # Create 50 existing DOI workspaces through the canonical factory.
+        from tests.factories.paper_raw_factory import create_network_metadata_workspaces_bulk
+        create_network_metadata_workspaces_bulk(tmp_path, count=50)
         new_cands = [_cand(f"10.1/new{i}") for i in range(50)]
-        existing_cands = [_cand(f"10.1/existing{i}") for i in range(50)]
+        existing_cands = [_cand(f"10.7000/bench.{i + 1}") for i in range(50)]
         all_cands = existing_cands + new_cands
         _install_fake_fetch(
             monkeypatch,

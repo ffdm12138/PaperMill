@@ -71,21 +71,17 @@ def test_staging_receipt_only_does_not_restore_staged(tmp_path: Path):
         exports_dir=tmp_path / "exports",
         worker_id="worker",
     )
-    # The candidate IS staged (via normal staging, not reconciliation).
-    assert report.staged == 1
+    # Untracked receipt-only workspaces make Registry fail closed.
+    assert report.retryable_failures == 1
     item = store.read(path)["candidates"][0]
-    assert item["status"] == "staged"
-    # But NOT reconciled — a receipt alone is not proof of complete staging.
-    assert item.get("reconciled") is not True
+    assert item["status"] == "failed_retryable"
 
 
 def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
-    """Case B: metadata staged, receipt missing → reconciler backfills receipt.
+    """Case B: metadata_staged with a missing receipt fails closed.
 
-    A source record alone must NOT be enough to mark staged (Phase 2 contract).
-    Here the workspace also carries valid metadata + manifest + import_status +
-    a terminal ledger entry, so reconciliation backfills the receipt and marks
-    the candidate staged without re-allocating a paper number.
+    A terminal ledger state is a claim that all required evidence exists.  The
+    normal drain must not silently repair or allocate past a broken closure.
     """
     from src.services.network_metadata_staging import stage_network_metadata_records
     from src.library.paper_number_ledger import PaperNumberLedger
@@ -152,12 +148,11 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
         worker_id="worker",
     )
 
-    assert report.staged == 1
-    assert receipt.exists()
-    item = store.read(path)["candidates"][0]
-    assert item["status"] == "staged"
-    # Paper number reused — no second workspace created.
-    assert item["staged_paper_number"] == "0000000000000001"
+    assert report.staged == 0
+    assert report.remaining == 1
+    assert not receipt.exists()
+    assert PaperNumberLedger(tmp_path / "ledger.json").load()["max_number"] == "0000000000000001"
+    # Fail-closed means no second workspace is allocated.
     workspaces = [p.name for p in (tmp_path / "paper_raw").iterdir() if p.is_dir()]
     assert workspaces == ["0000000000000001"]
 
@@ -207,18 +202,14 @@ def test_source_record_only_not_marked_staged(tmp_path: Path):
         worker_id="worker",
     )
 
-    # Re-staged into the SAME workspace (reused paper number).
-    assert report.staged == 1
+    # An untracked source-record-only folder is corruption, so no allocation.
+    assert report.retryable_failures == 1
     item = store.read(path)["candidates"][0]
-    assert item["status"] == "staged"
-    assert item["staged_paper_number"] == "0000000000000001"
-    assert item["terminal_reason"] == "recovered_via_reuse"
+    assert item["status"] == "failed_retryable"
     # No second workspace was created.
     workspaces = [p.name for p in (tmp_path / "paper_raw").iterdir() if p.is_dir()]
     assert workspaces == ["0000000000000001"]
-    # Metadata was rebuilt.
-    assert (workspace / "0000000000000001.metadata.json").exists()
-    assert (workspace / "0000000000000001.discovery_receipt.json").exists()
+    assert not (workspace / "0000000000000001.metadata.json").exists()
 
 
 def test_export_manifest_reconciliation_is_idempotent(tmp_path: Path):

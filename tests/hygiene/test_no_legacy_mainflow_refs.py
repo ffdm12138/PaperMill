@@ -152,6 +152,8 @@ _READY_ARTIFACT_ALLOWED = {
     "tests/unit/test_formal_registry_errors.py",
     # validate_v2_library tests create formal fixtures with markers
     "tests/integration/test_validate_v2_library.py",
+    # Lifecycle state-machine tests below intentionally exercise marker recovery.
+    "tests/integration/test_discovery_index_unsettled_refresh.py",
 }
 
 

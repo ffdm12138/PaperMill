@@ -1,5 +1,21 @@
 # Project contract
 
+Discovery DOI and provider identity decisions cover both `paper_raw` and
+generation-valid active `papers`. Formal/raw collisions fail closed. A batch has
+one staging context, one Registry cold build and one journal full scan; repair
+backlog is probed only with an explicit batch budget, and matched records are
+always revalidated. Batch staging never combines or removes the two durable
+ledger checkpoints required for each newly allocated paper.
+
+Formal publication generation is the durable
+`data/papers/.formal_publication_state.json` revision. Each entry binds
+`paper_number`, canonical path/name, and the asset-manifest, Metadata, and
+Catalog SHA-256 values. Formal assets are immutable after commit; every
+staging batch rechecks this closure before DOI/identity lookup and fails closed
+on missing, stale, or drifted publication state.
+Localized workspace damage yields a typed partial Registry only for explicit
+audit/repair. Discovery still rejects every `complete=False` Registry.
+
 1. Metadata v2.0 contains no `paper_name`, LLM content, or match state. It must
    independently generate CSL-JSON, BibTeX, and styled references.
 2. Journal articles require valid DOI; conference/chapter/thesis/report records
@@ -146,3 +162,16 @@ page journals.
 36. Discovery recovery v3 当前只支持 inspect；输出必须绑定
     `keyword_id/query_id/provider/generation/request_signature` 与 page-chain 证明，
     cursor 分叉、signature/generation 冲突或无证明状态必须 fail closed。
+37. Network discovery staging 只有
+    `pending_queue → stage_network_metadata_records → DiscoveryStageTransaction
+    → WorkspaceRegistry` 一条生产路径。Registry 是 DOI/identity 唯一扫描入口，
+    refresh 以 copy-on-write 原子发布；未知 workflow profile、损坏 ledger 或刷新
+    失败均在分配前 fail closed。Allocator 不承载 discovery 业务，pending queue
+    不作 workspace reuse/duplicate/allocation 决策，旧索引磁盘刷新无 fallback。
+38. `reserved` 缺失证据仍是 unsettled；`metadata_staged` 缺失 metadata、source
+    record、receipt、stage manifest、import status 或 marker 必须在分配前返回
+    `repair_required`。
+39. Discovery identity 的唯一实体键是 `identity_key + paper_number`，同一编号可
+    保存多个 provider identity，freeze 不得丢失。Registry refresh 原子发布；
+    Transaction 每 candidate 复用一次锁内 ledger load，新 staging 保留 reserved
+    与 metadata_staged 两个 durable save，成功后直接 publish、无 post-refresh。

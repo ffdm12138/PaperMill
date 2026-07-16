@@ -2,6 +2,17 @@
 
 | Script | Role | Mutates state |
 |---|---|---|
+| `audit_discovery_workspace_registry.py` | read-only raw/formal Registry, conflict, generation, and repair-backlog audit | no |
+| `repair_discovery_workspaces.py` | explicit reserved-workspace repair planning/promotion | `--apply` |
+| `repair_formal_publications.py` | audit or identity-only repair of legacy active formal sidecars; unsafe closures emit rollback/recommit plans | `--apply` |
+| `migrate_quarantined_duplicate_ledger_state.py` | explicit retired-state migration to abandoned quarantine facts | `--apply` |
+| `benchmark_discovery_pipeline.py` | synthetic raw+formal+candidate batch I/O benchmark | no real runtime state |
+
+`repair_discovery_workspaces.py` fails on a globally unreadable/invalid ledger,
+but can repair a selected independently healthy raw workspace when unrelated
+workspaces have typed local issues. `registry_complete=false` remains visible in
+the report; `registry_usable_for_repair=true` authorizes only the explicit repair
+actions, never discovery staging.
 | `stage_raw_pdfs_to_paper_raw.py` | allocate numeric raw workspace and attach local PDF | `--apply` |
 | `stage_network_metadata_to_paper_raw.py` | stage DOI-backed citation Metadata | `--apply` |
 | `fetch_pdf_for_paper_raw.py` | duplicate-guarded PDF attach | `--apply` |
@@ -30,6 +41,7 @@
 | `cleanup_test_caches.py` | safe cleanup of stale test workspaces and legacy caches | `--apply` |
 | `test_runtime_workspace.py` | isolated test workspace context manager (library) | no |
 | `pack_repo.py` | runtime-zero source audit snapshot | creates ZIP |
+| `benchmark_discovery_staging.py` | performance benchmark for discovery staging (synthetic temp data only) | no |
 
 Real migration apply requires explicit authorization after inventory, backup,
 dry-run reports, and fixture acceptance. Agent tests always use temporary roots.
@@ -121,6 +133,7 @@ show_catalog_classification_progress.py
 sync_catalog_categories.py
 reconcile_paper_raw_non_destructive.py
 repair_corrupted_markers.py
+repair_formal_publications.py
 repair_ledger_folder_names.py
 repair_paper_raw_derived_files.py
 repair_stale_formal_asset_manifests.py
@@ -145,3 +158,19 @@ write_catalog_tex_article.py
 Audit/check/validate commands are read-only unless their own help explicitly
 offers an apply flag. Repair/reset/rollback/commit/stage/fetch/convert
 commands mutate only with their explicit apply/confirmation gates.
+
+### Discovery staging benchmark
+
+`scripts/benchmark_discovery_staging.py` builds only synthetic temporary
+workspaces and sends every measured candidate through the complete staging
+transaction. Required arguments are `--existing-workspaces`, `--new-records`,
+`--unsettled-workspaces`, `--repeat`, and `--json-report`. Its observer reports
+full/incremental Registry operations, workspace reads, ledger loads/saves,
+allocations, staged records, and cold/warm latency. Benchmark JSON under
+`reports/` is runtime output and is excluded from source snapshots.
+
+Release benchmark tiers are 100/20, 1000/50, 3000/100, and 10000/100
+existing/new records. Reports include Registry pre-refresh, post-refresh, and
+direct-publish counters in addition to ledger loads/saves. A valid warm run has
+zero successful-stage post-refreshes and retains both durable saves for each
+new record.

@@ -299,6 +299,7 @@ def test_citation_ready_metadata_skipped(tmp_path, monkeypatch):
     from tests.integration.test_frozen_v32_transaction_pipeline import _workspace
     workspace,_,_,_= _workspace(tmp_path)
     paper_raw=workspace.root.parent; folder=workspace.root
+    import_status_before = (folder / ".import_status.json").read_bytes()
 
     # Any network call should explode if attempted
     from src.services import metadata_resolver as mr
@@ -323,7 +324,7 @@ def test_citation_ready_metadata_skipped(tmp_path, monkeypatch):
     assert not (folder / "0000000000000001.metadata.candidates.json").exists()
     assert not (folder / "0000000000000001.metadata.patch.json").exists()
     assert not (folder / "0000000000000001.metadata.resolve_report.json").exists()
-    assert not (folder / ".import_status.json").exists()
+    assert (folder / ".import_status.json").read_bytes() == import_status_before
 
 
 # ── 9. --rate-probe --probe-size processes only N papers ───────────────

@@ -23,6 +23,7 @@ is covered by the repository license boundary.
 | pydantic | Data validation | MIT. |
 | loguru | Logging | MIT. |
 | filelock | File-based locking | MIT. |
+| orjson | Fast ledger JSON encoding and validation | Apache-2.0 OR MIT. |
 | pytest | Test runner | MIT. |
 | jsonschema | Schema validation used by tests/checks | MIT. |
 

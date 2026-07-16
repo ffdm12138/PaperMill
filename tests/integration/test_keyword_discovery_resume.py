@@ -127,6 +127,7 @@ def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
         output_dir=runtime_base / "output",
         paper_raw_dir=paper_raw_dir or (runtime_base / "paper_raw"),
         papers_dir=papers_dir or (runtime_base / "papers"),
+        ledger_path=(paper_raw_dir.parent / "ledger.json") if paper_raw_dir else (runtime_base / "ledger.json"),
     )
     batch_report = run_discovery_batch(
         [keyword_zh], options=options, max_workers=2, fetch_page=fetch_page,
@@ -204,11 +205,8 @@ class TestKeywordDiscoveryResume:
         keyword_zh = "边界层"
         _seed_ready(KeywordNotebookStore(notebook_dir), keyword_zh, "boundary layer")
 
-        ws = paper_raw / "0000000000000001"
-        ws.mkdir(parents=True)
-        meta = empty_metadata("0000000000000001", source_type="network_search")
-        meta["identifiers"]["doi"] = "10.1/exists"
-        (ws / "0000000000000001.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+        from tests.factories.paper_raw_factory import create_network_metadata_workspace
+        create_network_metadata_workspace(tmp_path, doi="10.1/exists")
 
         scripts = {
             ("refresh", INITIAL_CURSOR): (

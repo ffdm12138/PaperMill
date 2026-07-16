@@ -10,10 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+import threading
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 from filelock import FileLock
 
@@ -403,6 +405,202 @@ class ClaimResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class CandidateClaim:
+    candidate_id: str
+    keyword_id: str
+    page_id: str
+    provider: str
+    doi: str
+    page_path: Path
+    payload: Mapping[str, Any]
+    lease_expires_at: str
+
+
+@dataclass(frozen=True)
+class CandidateRef:
+    candidate_id: str
+    keyword_id: str
+    page_path: Path
+    payload: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class EmittedPrimaryRef:
+    candidate_id: str
+    page_path: Path
+    payload: Mapping[str, Any]
+
+
+@dataclass
+class JournalDrainIndex:
+    """One full journal read per batch followed by in-memory lookups."""
+    candidate_by_id: dict[str, CandidateRef]
+    claimable_by_keyword: dict[str, deque[str]]
+    processing_by_doi: dict[str, str]
+    emitted_by_doi: dict[str, EmittedPrimaryRef]
+    terminal_by_doi: dict[str, list[str]]
+    page_cache: dict[Path, dict[str, Any]]
+    dirty_pages: set[Path]
+    emitted_validation_cache: dict[
+        tuple[str, int, int, str, int, int], tuple[bool, str]
+    ] = field(default_factory=dict)
+    full_scans: int = 1
+    pages_read: int = 0
+    lookups: int = 0
+    delayed_candidate_ids: set[str] = field(default_factory=set)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    @classmethod
+    def build(cls, store: "PageJournalStore") -> "JournalDrainIndex":
+        index = cls({}, {}, {}, {}, {}, {}, set(), pages_read=0)
+        if not store.root_dir.exists():
+            return index
+        now_dt = datetime.now(timezone.utc)
+        for path in sorted(store.root_dir.glob("*/*/*/*/*.json")):
+            page = store.read(path)
+            index.pages_read += 1
+            index.page_cache[path] = page
+            keyword_id = str(page["keyword_id"])
+            queue = index.claimable_by_keyword.setdefault(keyword_id, deque())
+            for item in page["candidates"]:
+                cid = str(item.get("candidate_id") or "")
+                if not cid:
+                    continue
+                index.candidate_by_id[cid] = CandidateRef(cid, keyword_id, path, dict(item))
+                doi = _candidate_doi(item)
+                status = str(item.get("status") or "")
+                expires = parse_iso(item.get("lease_expires_at"))
+                next_attempt = parse_iso(item.get("next_attempt_at"))
+                claimable = (not next_attempt or next_attempt <= now_dt) and (
+                    status in {"pending", "ready", "failed_retryable"}
+                    or status == "processing" and (not expires or expires <= now_dt))
+                if claimable and page["state"] in {"cursor_committed", "draining"}:
+                    queue.append(cid)
+                elif (next_attempt and next_attempt > now_dt
+                      and status in {"pending", "ready", "failed_retryable"}
+                      and page["state"] in {"cursor_committed", "draining"}):
+                    index.delayed_candidate_ids.add(cid)
+                if status == "processing" and doi and expires and expires > now_dt:
+                    index.processing_by_doi.setdefault(doi, cid)
+                elif status == "emitted" and doi:
+                    index.emitted_by_doi.setdefault(doi, EmittedPrimaryRef(cid, path, dict(item)))
+                elif status in TERMINAL_CANDIDATE_STATES and doi:
+                    index.terminal_by_doi.setdefault(doi, []).append(cid)
+        return index
+
+    def claimable(self, keyword_ids: Iterable[str] | None = None) -> list[CandidateRef]:
+        with self._lock:
+            self._promote_due_candidates()
+            self.lookups += 1
+            wanted = set(keyword_ids or self.claimable_by_keyword)
+            return [self.candidate_by_id[cid] for keyword in sorted(wanted)
+                    for cid in self.claimable_by_keyword.get(keyword, ())]
+
+    def add_page(self, path: Path, page: Mapping[str, Any]) -> None:
+        """Publish a freshly persisted page without another full journal scan."""
+        with self._lock:
+            materialized = dict(page)
+            self.page_cache[path] = materialized
+            keyword_id = str(page["keyword_id"])
+            queue = self.claimable_by_keyword.setdefault(keyword_id, deque())
+            now_dt = datetime.now(timezone.utc)
+            for raw in page.get("candidates", []):
+                item = dict(raw)
+                cid = str(item.get("candidate_id") or "")
+                if not cid:
+                    continue
+                self.candidate_by_id[cid] = CandidateRef(cid, keyword_id, path, item)
+                status = str(item.get("status") or "")
+                expires = parse_iso(item.get("lease_expires_at"))
+                next_attempt = parse_iso(item.get("next_attempt_at"))
+                if (not next_attempt or next_attempt <= now_dt) and (
+                    status in {"pending", "ready", "failed_retryable"}
+                    or status == "processing" and (not expires or expires <= now_dt)):
+                    queue.append(cid)
+                elif next_attempt and next_attempt > now_dt and status in {
+                    "pending", "ready", "failed_retryable"
+                }:
+                    self.delayed_candidate_ids.add(cid)
+
+    def pending_count(self, keyword_ids: Iterable[str] | None = None) -> int:
+        with self._lock:
+            self._promote_due_candidates()
+            self.lookups += 1
+            wanted = set(keyword_ids or self.claimable_by_keyword)
+            return sum(len(self.claimable_by_keyword.get(keyword, ())) for keyword in wanted)
+
+    def update_candidate(self, page_path: Path, item: Mapping[str, Any]) -> None:
+        with self._lock:
+            cid = str(item.get("candidate_id") or "")
+            old = self.candidate_by_id.get(cid)
+            keyword_id = old.keyword_id if old else str(
+                (self.page_cache.get(page_path) or {}).get("keyword_id") or "")
+            materialized = dict(item)
+            self.candidate_by_id[cid] = CandidateRef(
+                cid, keyword_id, page_path, materialized)
+            self.dirty_pages.add(page_path)
+            self.delayed_candidate_ids.discard(cid)
+            for queue in self.claimable_by_keyword.values():
+                try:
+                    queue.remove(cid)
+                except ValueError:
+                    pass
+            for doi, owner in list(self.processing_by_doi.items()):
+                if owner == cid:
+                    self.processing_by_doi.pop(doi, None)
+            for doi, ref in list(self.emitted_by_doi.items()):
+                if ref.candidate_id == cid:
+                    self.emitted_by_doi.pop(doi, None)
+            for doi, owners in list(self.terminal_by_doi.items()):
+                if cid in owners:
+                    self.terminal_by_doi[doi] = [owner for owner in owners if owner != cid]
+                    if not self.terminal_by_doi[doi]:
+                        self.terminal_by_doi.pop(doi, None)
+            doi = _candidate_doi(materialized)
+            status = str(item.get("status") or "")
+            expires = parse_iso(item.get("lease_expires_at"))
+            next_attempt = parse_iso(item.get("next_attempt_at"))
+            now_dt = datetime.now(timezone.utc)
+            page_state = str((self.page_cache.get(page_path) or {}).get("state") or "")
+            if status == "processing" and doi and expires and expires > now_dt:
+                self.processing_by_doi.setdefault(doi, cid)
+            elif status == "emitted" and doi:
+                self.emitted_by_doi[doi] = EmittedPrimaryRef(cid, page_path, materialized)
+            elif status in TERMINAL_CANDIDATE_STATES and doi:
+                self.terminal_by_doi.setdefault(doi, []).append(cid)
+            if page_state in {"cursor_committed", "draining"} and (
+                status in {"pending", "ready", "failed_retryable"}
+                or status == "processing" and (not expires or expires <= now_dt)
+            ):
+                if not next_attempt or next_attempt <= now_dt:
+                    self.claimable_by_keyword.setdefault(keyword_id, deque()).append(cid)
+                else:
+                    self.delayed_candidate_ids.add(cid)
+
+    def _promote_due_candidates(self) -> None:
+        now_dt = datetime.now(timezone.utc)
+        for cid in tuple(self.delayed_candidate_ids):
+            ref = self.candidate_by_id.get(cid)
+            if ref is None:
+                self.delayed_candidate_ids.discard(cid)
+                continue
+            next_attempt = parse_iso(ref.payload.get("next_attempt_at"))
+            page_state = str((self.page_cache.get(ref.page_path) or {}).get("state") or "")
+            if (not next_attempt or next_attempt <= now_dt) and page_state in {
+                "cursor_committed", "draining"
+            }:
+                queue = self.claimable_by_keyword.setdefault(ref.keyword_id, deque())
+                if cid not in queue:
+                    queue.append(cid)
+                self.delayed_candidate_ids.discard(cid)
+
+
+def _candidate_doi(item: Mapping[str, Any]) -> str:
+    payload = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+    return normalize_doi(payload.get("doi") or "")
+
+
 class PageJournalStore:
     """File-backed page journal store.
 
@@ -613,6 +811,50 @@ class PageJournalStore:
                 return ClaimResult(True, page_path, candidate_id_value, candidate=dict(item))
         return ClaimResult(False, page_path, candidate_id_value, reason="candidate_not_found")
 
+    def claim_candidates_from_page(self, page_path: Path, *, worker_id: str,
+                                   lease_seconds: int, limit: int = 16,
+                                   candidate_ids: Iterable[str] | None = None) -> list[CandidateClaim]:
+        """Claim up to ``limit`` candidates with one page read and one fsync."""
+        if limit < 1:
+            return []
+        wanted = set(candidate_ids or [])
+        claims: list[CandidateClaim] = []
+        with self.lock_for(page_path):
+            data = self.read(page_path)
+            if data["state"] not in {"cursor_committed", "draining"}:
+                return claims
+            now_dt = datetime.now(timezone.utc)
+            if data["state"] == "cursor_committed":
+                data["state"] = "draining"
+            for item in data["candidates"]:
+                if len(claims) >= limit:
+                    break
+                cid = str(item.get("candidate_id") or "")
+                if wanted and cid not in wanted:
+                    continue
+                expires = parse_iso(item.get("lease_expires_at"))
+                next_attempt = parse_iso(item.get("next_attempt_at"))
+                status = item.get("status")
+                if next_attempt and next_attempt > now_dt:
+                    continue
+                if status == "processing" and expires and expires > now_dt:
+                    continue
+                if status not in {"pending", "ready", "failed_retryable", "processing"}:
+                    continue
+                _transition_candidate(item, "processing")
+                item["claimed_by"] = worker_id
+                item["claimed_at"] = now_iso()
+                item["lease_expires_at"] = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
+                item["attempts"] = int(item.get("attempts") or 0) + 1
+                claims.append(CandidateClaim(
+                    cid, str(data["keyword_id"]), str(data["page_id"]),
+                    str(data["provider"]), _candidate_doi(item), page_path,
+                    dict(item), str(item["lease_expires_at"])))
+            if claims:
+                data["statistics"] = _statistics(data["candidates"])
+                _atomic_write_json_unlocked(page_path, data)
+        return claims
+
     def renew_candidate_lease(
         self,
         page_path: Path,
@@ -710,6 +952,43 @@ class PageJournalStore:
                 _atomic_write_json_unlocked(page_path, data)
                 return dict(item)
         raise KeyError(f"candidate not found: {candidate_id_value}")
+
+    def commit_candidate_results(self, page_path: Path, results: Iterable[Mapping[str, Any]],
+                                 *, worker_id: str) -> list[dict[str, Any]]:
+        """Merge multiple candidate outcomes into one atomic page write."""
+        by_id = {str(result["candidate_id"]): result for result in results}
+        if not by_id:
+            return []
+        committed: list[dict[str, Any]] = []
+        with self.lock_for(page_path):
+            data = self.read(page_path)
+            for item in data["candidates"]:
+                result = by_id.get(str(item.get("candidate_id") or ""))
+                if result is None:
+                    continue
+                if item.get("status") == "processing" and item.get("claimed_by") != worker_id:
+                    raise InvalidStateTransition("only claim owner may commit processing result")
+                new_status = str(result["new_status"])
+                _transition_candidate(item, new_status)  # type: ignore[arg-type]
+                updates = result.get("updates")
+                if isinstance(updates, Mapping):
+                    item.update(updates)
+                if new_status in TERMINAL_CANDIDATE_STATES or new_status == "failed_retryable":
+                    item["claimed_by"] = None
+                    item["claimed_at"] = None
+                    item["lease_expires_at"] = None
+                committed.append(dict(item))
+            if len(committed) != len(by_id):
+                missing = sorted(set(by_id) - {str(item["candidate_id"]) for item in committed})
+                raise KeyError(f"candidates not found: {','.join(missing)}")
+            data["statistics"] = _statistics(data["candidates"])
+            if _all_terminal(data["candidates"]):
+                if data["state"] not in {"cursor_committed", "draining", "drained"}:
+                    raise InvalidStateTransition(f"cannot drain page from {data['state']}")
+                data["state"] = "drained"
+                data["drained_at"] = data.get("drained_at") or now_iso()
+            _atomic_write_json_unlocked(page_path, data)
+        return committed
 
     def update_candidate_payload(
         self,

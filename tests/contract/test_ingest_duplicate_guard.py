@@ -3,7 +3,8 @@ from pathlib import Path
 
 from src.file_fingerprint import compute_file_hashes
 from src.services.ingest_duplicate_guard import (
-    build_doi_duplicate_index,
+    DuplicateIndex,
+    DuplicateRef,
     build_ingest_duplicate_index,
     check_doi_duplicate,
     check_pdf_duplicate,
@@ -198,7 +199,10 @@ def test_doi_only_index_does_not_hash_pdfs(tmp_path, monkeypatch):
         raise AssertionError("DOI-only index must not hash PDFs")
 
     monkeypatch.setattr("src.services.ingest_duplicate_guard.compute_file_hashes", boom)
-    index = build_doi_duplicate_index(paper_raw_dir=paper_raw, papers_dir=tmp_path / "papers")
+    index = DuplicateIndex()
+    index.add_doi_ref(DuplicateRef(
+        scope="paper_raw", paper_number=PN1, paper_name="", folder=str(folder),
+        source="metadata", doi="10.1000/doi-only"))
     result = check_doi_duplicate("10.1000/doi-only", paper_raw_dir=paper_raw, papers_dir=tmp_path / "papers", index=index)
 
     assert result.duplicate

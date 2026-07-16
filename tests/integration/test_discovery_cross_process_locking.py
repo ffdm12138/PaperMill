@@ -13,7 +13,7 @@ from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.process]
 
 
 def _claim_worker(root: str, path: str, cid: str, worker: str, queue) -> None:
@@ -156,3 +156,37 @@ def test_allocator_new_allocation_and_reuse_do_not_deadlock_across_processes(tmp
 KEYWORD_ZH = "测试关键词"
 KEYWORD_ID = keyword_id(KEYWORD_ZH)
 QUERY_ID = query_identity("zh", KEYWORD_ZH)
+
+
+@pytest.mark.parametrize("same_identity", [False, True])
+def test_concurrent_same_doi_has_one_durable_primary(tmp_path: Path, same_identity: bool):
+    ctx = mp.get_context("spawn")
+    paper_raw, papers, ledger = tmp_path / "paper_raw", tmp_path / "papers", tmp_path / "ledger.json"
+    base = {
+        "title": "Concurrent", "doi": "10.1234/concurrent",
+        "discovery_context": {
+            "candidate_id": "candidate-a", "page_id": "page-a", "keyword_id": "kw",
+            "provider": "openalex", "normalized_doi": "10.1234/concurrent",
+        },
+    }
+    second = {**base, "discovery_context": dict(base["discovery_context"])}
+    if not same_identity:
+        second["discovery_context"].update(candidate_id="candidate-b", page_id="page-b")
+    queue = ctx.Queue()
+    processes = [
+        ctx.Process(target=_stage_worker, args=(str(paper_raw), str(papers), str(ledger), record, "", queue))
+        for record in (base, second)
+    ]
+    for process in processes:
+        process.start()
+    results = [queue.get(timeout=30), queue.get(timeout=30)]
+    for process in processes:
+        process.join(30)
+        if process.is_alive():
+            process.terminate(); process.join(5)
+        assert process.exitcode == 0
+    assert {result[2] for result in results} == {"0000000000000001"}, results
+    assert sum(path.is_dir() for path in paper_raw.iterdir()) == 1
+    assert PaperNumberLedger(ledger).load()["max_number"] == "0000000000000001"
+    statuses = sorted(result[1] for result in results)
+    assert statuses == (["staged", "staged"] if same_identity else ["duplicate", "staged"])
