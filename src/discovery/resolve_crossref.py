@@ -165,22 +165,6 @@ def get_crossref_work_by_doi(doi: str) -> dict | None:
     return data.get("message") if isinstance(data, dict) else None
 
 
-def get_bibtex_by_doi(doi: str) -> str:
-    doi = doi.strip()
-    if not doi:
-        return ""
-    try:
-        response = requests.get(
-            f"{CROSSREF_WORKS_URL}/{doi}/transform/application/x-bibtex",
-            timeout=20,
-            proxies=get_fetch_proxies(),
-        )
-        response.raise_for_status()
-        return response.text.strip()
-    except Exception as exc:
-        logger.warning(f"Crossref BibTeX lookup failed for {doi!r}: {exc}")
-        return ""
-
 
 # ── Cursor-paginated page (Refresh/Backfill lanes) ──────────────────
 
@@ -196,8 +180,11 @@ def search_crossref_page(
     cursor: str = "*",
     sort: str | None = None,
     order: str | None = None,
+    from_date: str = "",
+    to_date: str = "",
     rate_limiter: Any | None = None,
     limiter_lock: Any | None = None,
+    request_observer: Any | None = None,
 ) -> DiscoveryPage:
     """Fetch one Crossref works page via deep-paging cursor.
 
@@ -222,6 +209,11 @@ def search_crossref_page(
         if order not in {"asc", "desc"}:
             raise ValueError(f"invalid Crossref order: {order!r}")
         params["order"] = order
+    # ── Apply time window to actual request ─────────────────────────
+    if from_date:
+        params["from-pub-date"] = from_date
+    if to_date:
+        params["until-pub-date"] = to_date
 
     lock_ctx = limiter_lock if limiter_lock is not None else nullcontext()
     try:
@@ -265,6 +257,34 @@ def search_crossref_page(
             http_status=http_status,
             retry_after_seconds=retry_after,
         )
+
+    # Keep local evidence failures out of the provider failure path.
+    if request_observer is not None:
+        from src.discovery.provider_request_evidence import (
+            ActualRequestEvidence, RequestEvidenceError, build_safe_signature,
+            safe_response_hash,
+        )
+        evidence = ActualRequestEvidence(
+            safe_signature=build_safe_signature(
+                provider=CROSSREF_PROVIDER, query=query,
+                sort=sort or "", order=order or "", page_size=page_size,
+                lane=lane, pagination_schema_version="2.0",
+                time_window={"from": from_date, "to": to_date},
+            ),
+            cursor_in=cursor,
+            cursor_out=str(data.get("message", {}).get("next-cursor") or ""),
+            response_hash=safe_response_hash(response.content),
+            observation_count=len(data.get("message", {}).get("items", []) or []),
+            response_bytes=response.content,
+        )
+        try:
+            request_observer(evidence)
+        except RequestEvidenceError:
+            raise
+        except Exception as exc:
+            raise RequestEvidenceError(
+                f"Crossref request evidence observer failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     message = data.get("message") or {}
     items = message.get("items") or []

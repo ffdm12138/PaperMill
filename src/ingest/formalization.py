@@ -33,7 +33,7 @@ def build_formalization_plan(workspace: PaperRawWorkspace, *, papers_dir: Path, 
         )
 
     inspection = inspect_workspace_lifecycle(workspace.root, ledger_item=item)
-    if not inspection.complete_for_metadata_staged:
+    if not inspection.readiness.ready:
         raise ValueError(
             f"workspace_lifecycle_incomplete: {workspace.paper_number}: "
             + "; ".join(inspection.errors)

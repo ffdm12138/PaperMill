@@ -120,7 +120,7 @@ def search_openalex(query: str, domain_id: str | None = None, limit: int = 25) -
 
 def _page_params(
     query: str, page_size: int, cursor: str, credentials: OpenAlexCredentials,
-    topic_filter: str = "",
+    combined_filter: str = "",
 ) -> dict[str, str | int]:
     params: dict[str, str | int] = {
         "search": query,
@@ -129,8 +129,8 @@ def _page_params(
     }
     if credentials.email:
         params["mailto"] = credentials.email
-    if topic_filter:
-        params["filter"] = topic_filter
+    if combined_filter:
+        params["filter"] = combined_filter
     return params
 
 
@@ -145,8 +145,11 @@ def search_openalex_page(
     cursor: str = "*",
     sort: str | None = None,
     topic_filter: str = "",
+    from_date: str = "",
+    to_date: str = "",
     rate_limiter: Any | None = None,
     limiter_lock: Any | None = None,
+    request_observer: Any | None = None,
 ) -> DiscoveryPage:
     """Fetch one OpenAlex works page via cursor pagination.
 
@@ -169,7 +172,19 @@ def search_openalex_page(
         }
         if any(token.strip() not in allowed_sorts for token in sort.split(",")):
             raise ValueError(f"invalid OpenAlex sort: {sort!r}")
-    params = _page_params(query, page_size, cursor, credentials, topic_filter=topic_filter)
+    params = _page_params(query, page_size, cursor, credentials, combined_filter=topic_filter)
+    # ── Apply time window to actual request filter ──────────────────
+    date_filters: list[str] = []
+    if from_date:
+        date_filters.append(f"from_publication_date:{from_date}")
+    if to_date:
+        date_filters.append(f"to_publication_date:{to_date}")
+    if date_filters:
+        existing_filter = params.get("filter", "")
+        params["filter"] = (
+            existing_filter + "," + ",".join(date_filters)
+            if existing_filter else ",".join(date_filters)
+        )
     if sort:
         params["sort"] = sort
 
@@ -216,6 +231,36 @@ def search_openalex_page(
             http_status=http_status,
             retry_after_seconds=retry_after,
         )
+
+    # Evidence observation is deliberately outside the broad HTTP/JSON
+    # exception boundary.  A local observer bug is not a provider failure.
+    if request_observer is not None:
+        from src.discovery.provider_request_evidence import (
+            ActualRequestEvidence, RequestEvidenceError, build_safe_signature,
+            safe_response_hash,
+        )
+        evidence = ActualRequestEvidence(
+            safe_signature=build_safe_signature(
+                provider=OPENALEX_PROVIDER, query=query,
+                sort=sort or "", filter=params.get("filter", ""),
+                topic_filter=topic_filter, page_size=page_size, lane=lane,
+                pagination_schema_version="2.0",
+                time_window={"from": from_date, "to": to_date},
+            ),
+            cursor_in=cursor,
+            cursor_out=str(data.get("meta", {}).get("next_cursor") or ""),
+            response_hash=safe_response_hash(response.content),
+            observation_count=len(data.get("results", []) or []),
+            response_bytes=response.content,
+        )
+        try:
+            request_observer(evidence)
+        except RequestEvidenceError:
+            raise
+        except Exception as exc:
+            raise RequestEvidenceError(
+                f"OpenAlex request evidence observer failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     results = data.get("results", []) or []
     meta = data.get("meta") or {}

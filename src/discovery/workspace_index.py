@@ -125,9 +125,6 @@ class DiscoveryWorkspaceIndex:
             candidate_id=candidate_id)
         return list(self._by_observation.get(observation, {}).values()) if observation else []
 
-    def lookup_by_paper_number(self, paper_number: str) -> DiscoveryIdentityRef | None:
-        return next((ref for ref in self.refs if ref.paper_number == paper_number), None)
-
     def lookup_by_doi(self, normalized_doi: str) -> list[DiscoveryIdentityRef]:
         doi = normalize_doi(normalized_doi)
         return [ref for ref in self.refs if ref.normalized_doi == doi]

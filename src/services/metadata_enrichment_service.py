@@ -77,11 +77,6 @@ def extract_doi_from_metadata_record(record: dict) -> str | None:
     return None
 
 
-def extract_doi_from_sidecar(sidecar: dict) -> str | None:
-    """Backward-compatible alias for metadata-record DOI extraction."""
-    return extract_doi_from_metadata_record(sidecar)
-
-
 def extract_doi_from_markdown(md_text: str, max_lines: int = 60) -> str | None:
     """Extract DOI from the first *max_lines* of MinerU markdown."""
     if not md_text:
@@ -545,11 +540,6 @@ def enrich_from_metadata_record(record: dict, chinese_title: str = "") -> Enrich
         warnings=["no DOI in metadata record; metadata from record only"],
     )
     return result
-
-
-def enrich_from_sidecar(sidecar: dict, chinese_title: str = "") -> EnrichmentResult:
-    """Backward-compatible alias for metadata-record enrichment."""
-    return enrich_from_metadata_record(sidecar, chinese_title=chinese_title)
 
 
 def enrich_from_pdf(

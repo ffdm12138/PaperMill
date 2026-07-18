@@ -39,6 +39,26 @@ def test_audit_report_reads_formal_receipt(tmp_path):
     assert report["errors"] == []
 
 
+def test_audit_report_strips_full_paper_number_marker_suffix(tmp_path):
+    paper_number = "0000000000000001"
+    paper_name = "2024_Doe_测试"
+    folder = tmp_path / "papers" / paper_name
+    folder.mkdir(parents=True)
+    (folder / f"{paper_number}.paper.number").write_text("not-json", encoding="utf-8")
+    (folder / f"{paper_name}.metadata.json").write_text(
+        json.dumps(make_minimal_metadata(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (folder / f"{paper_name}.metadata_match.json").write_text(
+        json.dumps(_receipt()),
+        encoding="utf-8",
+    )
+
+    report = audit_metadata_library(tmp_path / "papers")
+
+    assert report["papers"][0]["paper_number"] == paper_number
+
+
 def test_audit_report_writes_stable_json(tmp_path):
     paper_name = "2024_Doe_测试"
     folder = tmp_path / "papers" / paper_name

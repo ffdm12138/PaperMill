@@ -81,7 +81,7 @@ def _register_cache(cache: MinerUOutputCache, pdf: Path, source_out: Path, sourc
 
 def _converter(paper_raw: Path, cache_dir: Path, fake: FakeMinerUConverter | None = None):
     fake = fake or FakeMinerUConverter()
-    cache = MinerUOutputCache(cache_dir, legacy_output_roots=[])
+    cache = MinerUOutputCache(cache_dir)
     return PaperRawConverter(paper_raw, converter=fake, output_cache=cache, reuse_output_cache=True), fake, cache
 
 
@@ -171,13 +171,22 @@ def test_conversion_parameter_mismatch_is_rejected(tmp_path):
     assert "method mismatch" in hit.reason
 
 
-def test_legacy_output_without_manifest_and_pdf_is_not_reused(tmp_path):
+def test_legacy_dir_with_matching_pdf_but_no_manifest_is_cache_miss(tmp_path):
+    """Old output with matching PDF bytes but no manifest → cache miss.
+    The legacy fallback was removed; only manifest-based lookup remains."""
+    import shutil as _shutil
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw)
-    legacy = tmp_path / "output" / "legacy"
-    _source_output(legacy, PN1)
-    cache = MinerUOutputCache(tmp_path / "output" / "mineru_cache", legacy_output_roots=[legacy])
+    # Simulate pre-manifest-era output: PDF copy + markdown/images, no manifest
+    legacy_out = tmp_path / "output" / "old_stem" / "hybrid_auto"
+    legacy_out.mkdir(parents=True)
+    (legacy_out / "old_stem.md").write_text("# Old cached", encoding="utf-8")
+    (legacy_out / "images").mkdir()
+    (legacy_out / "images" / "a.png").write_bytes(b"old")
+    pdf_copy = legacy_out / "old_stem_origin.pdf"
+    _shutil.copy2(folder / f"{PN1}.pdf", pdf_copy)
 
+    cache = MinerUOutputCache(tmp_path / "output" / "mineru_cache")
     hit = cache.find(
         folder / f"{PN1}.pdf",
         backend=MINERU_BACKEND,
@@ -188,30 +197,7 @@ def test_legacy_output_without_manifest_and_pdf_is_not_reused(tmp_path):
     )
 
     assert hit.ok is False
-    assert "unverifiable legacy output" in hit.reason
-
-
-def test_legacy_output_with_matching_pdf_hash_is_reused(tmp_path):
-    import shutil as _shutil
-    paper_raw = tmp_path / "paper_raw"
-    folder = _raw_folder(paper_raw)
-    legacy_root = tmp_path / "output" / "legacy_uuid"
-    legacy_out = _source_output(legacy_root, "oldstem")
-    shutil_pdf = legacy_out / "oldstem_origin.pdf"
-    shutil_pdf.write_bytes((folder / f"{PN1}.pdf").read_bytes())
-    cache = MinerUOutputCache(tmp_path / "output" / "mineru_cache", legacy_output_roots=[legacy_root])
-
-    hit = cache.find(
-        folder / f"{PN1}.pdf",
-        backend=MINERU_BACKEND,
-        method=MINERU_METHOD,
-        lang=MINERU_LANG,
-        effort=MINERU_EFFORT,
-        stem=PN1,
-    )
-
-    assert hit.ok is True
-    assert hit.markdown_path and hit.markdown_path.name == "oldstem.md"
+    assert "cache manifest missing" in hit.reason
 
 
 def test_force_reconvert_bypasses_cache(tmp_path):
@@ -230,7 +216,7 @@ def test_force_reconvert_bypasses_cache(tmp_path):
 def test_all_cache_hits_batch_does_not_run_runtime_preflight(monkeypatch, tmp_path):
     paper_raw = tmp_path / "paper_raw"
     folder = _raw_folder(paper_raw)
-    cache = MinerUOutputCache(tmp_path / "output" / "mineru_cache", legacy_output_roots=[])
+    cache = MinerUOutputCache(tmp_path / "output" / "mineru_cache")
     _register_cache(cache, folder / f"{PN1}.pdf", _source_output(tmp_path / "source", PN1), PN1)
 
     def fail_if_called(*args, **kwargs):

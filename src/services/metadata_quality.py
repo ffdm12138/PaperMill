@@ -149,7 +149,7 @@ def _paper_number_from_folder(folder: Path) -> str:
         data = _read_json(marker)
     except Exception:
         data = {}
-    return _text(data.get("paper_number")) or marker.stem
+    return _text(data.get("paper_number")) or marker.name.removesuffix(".paper.number")
 
 
 def audit_metadata_library(papers_dir: str | Path) -> dict:

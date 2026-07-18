@@ -107,54 +107,6 @@ def test_preflight_detects_formal_and_internal_duplicates(tmp_path, monkeypatch)
     assert "pdf_md5_duplicate" in second_status["errors"]
 
 
-def test_convert_only_preflight_ready_skips_nonready(tmp_path, monkeypatch):
-    paper_raw = tmp_path / "paper_raw"
-    ready = _raw_folder(paper_raw, PN1, pdf_bytes=b"%PDF-ready")
-    skipped = _raw_folder(paper_raw, PN2, doi="", matched=False, pdf_bytes=b"%PDF-skip")
-    (ready / ".import_status.json").write_text(json.dumps({"status": "ready_for_convert"}), encoding="utf-8")
-    (skipped / ".import_status.json").write_text(json.dumps({"status": "doi_invalid"}), encoding="utf-8")
-    calls: list[str] = []
-
-    class FakeConverter:
-        def __init__(self, paper_raw_dir):
-            self.paper_raw_dir = paper_raw_dir
-
-        def inspect_conversion(self, source_id, **kwargs):
-            return {
-                "state": "not_converted",
-                "reason": "not converted",
-                "manifest": None,
-                "markdown": "",
-                "images_dir": "",
-                "pdf_sha256": "",
-            }
-
-        def convert(self, source_id, **kwargs):
-            calls.append(source_id)
-            return {"success": True, "paper_number": source_id, "paper_raw_id": source_id}
-
-    import src.ingest.paper_raw as v2_library
-    monkeypatch.setattr(v2_library, "PaperRawConverter", FakeConverter)
-    monkeypatch.setenv("MINERU_RUNNER", "cli")
-    monkeypatch.syspath_prepend(str(_REPO_ROOT))
-
-    rc = _run_script(
-        "convert_paper_raw_batch.py",
-        [
-            "convert_paper_raw_batch.py",
-            "--all",
-            "--paper-raw-dir", str(paper_raw),
-            "--only-preflight-ready",
-            "--apply",
-            "--allow-cpu",
-            "--allow-cold-cli-batch",
-        ],
-    )
-
-    assert rc == 0
-    assert calls == [PN1]
-
-
 def _status_folder(root: Path, source_id: str, status: str, *, doi: str = "") -> Path:
     folder = root / source_id
     folder.mkdir(parents=True)
@@ -209,14 +161,14 @@ def test_convert_report_metadata_fields(tmp_path, monkeypatch, capsys):
     # doi_invalid / empty-DOI workspace is still planned for conversion when
     # the staging-created metadata shell exists.
     assert items[PN1]["status"] == "planned"
-    assert items[PN1]["metadata_required_for_conversion"] is True
+    assert items[PN1]["metadata_shell_required_for_conversion"] is True
     assert items[PN1]["metadata_ready_for_commit"] is False
     assert items[PN1]["post_conversion_metadata_resolution_recommended"] is True
     assert items[PN1]["import_status"] == "doi_invalid"
 
     # A legacy flat status cannot replace the independent match/freeze receipt.
     assert items[PN2]["status"] == "planned"
-    assert items[PN2]["metadata_required_for_conversion"] is True
+    assert items[PN2]["metadata_shell_required_for_conversion"] is True
     assert items[PN2]["metadata_ready_for_commit"] is False
     assert items[PN2]["post_conversion_metadata_resolution_recommended"] is True
 

@@ -14,13 +14,6 @@ def _args(resolver: str, *, base_url: str = "", url_template: str = "") -> argpa
     return argparse.Namespace(resolver=resolver, base_url=base_url, url_template=url_template, timeout=30)
 
 
-def test_auto_policy_has_no_not_configured_header_based_marker():
-    policy = fetch_cli._build_policy(_args("auto"), {})
-
-    assert policy.extra.get("not_configured_resolvers", []) == []
-    assert "header_based_skipped_reason" not in policy.extra
-
-
 def test_header_based_policy_records_masked_headers_only_as_config():
     policy = fetch_cli._build_policy(_args("header-based"), {"Cookie": "secret"})
 

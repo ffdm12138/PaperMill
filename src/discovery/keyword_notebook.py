@@ -15,9 +15,7 @@ but uniqueness is enforced by the 16-hex ``keyword_id``.
 Each search query stores independent per-provider Refresh / Backfill
 state.  Cursors, statistics, and backoff tracking are per-query.
 
-This module accepts ONLY schema v3 notebooks.  Legacy (v1/v2) notebooks
-must be migrated via ``scripts/migrate_keyword_notebooks_v3.py`` before
-active discovery can use them.
+This module accepts ONLY schema v3 notebooks.
 
 Concurrency: each notebook file has a companion ``.lock`` (via
 ``filelock``).  All updates read-modify-write inside the lock and only
@@ -57,8 +55,6 @@ PAGINATION_SCHEMA_VERSION = "2.0"
 LANES = ("refresh", "backfill")
 PROVIDERS = ("openalex", "crossref")
 
-# Legacy schema versions rejected by active code (accepted only by the
-# migration module at src/discovery/notebook_v3_migration.py).
 _REJECTED_SCHEMA_VERSIONS = {"1.0", "2.0"}
 
 
@@ -249,12 +245,27 @@ def validate_discovery_readiness(nb: dict[str, Any]) -> DiscoveryReadiness:
         if profile is None:
             errors.append("notebook missing relevance_profile")
         elif isinstance(profile, dict):
-            from src.discovery.relevance import is_legacy_unbound_profile
+            from src.discovery.relevance import (
+                RelevanceProfileError,
+                is_legacy_unbound_profile,
+                validate_relevance_profile,
+            )
             if is_legacy_unbound_profile(profile):
                 errors.append(
                     "notebook relevance_profile is profile_unbound; configure a "
                     "taxonomy-resolved profile before discovery"
                 )
+            else:
+                # Active validator — must resolve taxonomy, non-empty filter_ids,
+                # valid matcher schema, correct profile_hash.  This is independent
+                # of validate_notebook(); readiness owns its own active-profile
+                # gate so that an unresolved profile never reaches a provider.
+                try:
+                    validate_relevance_profile(profile)
+                except RelevanceProfileError as exc:
+                    errors.append(
+                        f"notebook relevance_profile is not active-ready: {exc}"
+                    )
     if not kw_zh:
         return DiscoveryReadiness(False, "", ["notebook missing keyword_zh"])
     sq = nb.get("search_queries")
@@ -720,8 +731,7 @@ def validate_notebook(data: Any) -> dict[str, Any]:
     version = str(data.get("schema_version") or "")
     if version in _REJECTED_SCHEMA_VERSIONS:
         raise LegacyNotebookSchemaError(
-            f"notebook schema {version} must be migrated to v3; "
-            "run scripts/migrate_keyword_notebooks_v3.py"
+            f"notebook schema {version} must be migrated to v3"
         )
     if version != SCHEMA_VERSION:
         raise UnsupportedNotebookSchemaError(
@@ -732,9 +742,25 @@ def validate_notebook(data: Any) -> dict[str, Any]:
     if extra:
         raise NotebookCorruptError(f"notebook has unexpected keys: {extra}")
     if "relevance_profile" in data and data["relevance_profile"] is not None:
-        from src.discovery.relevance import validate_relevance_profile
+        from src.discovery.relevance import (
+            is_legacy_unbound_profile,
+            validate_relevance_profile,
+            validate_relevance_profile_source,
+        )
         try:
-            data["relevance_profile"] = validate_relevance_profile(data["relevance_profile"])
+            enabled = data.get("enabled", True)
+            # Enabled notebooks must pass the full active-profile validator.
+            # Disabled/draft notebooks may carry a source-only profile.
+            if enabled and not is_legacy_unbound_profile(
+                data["relevance_profile"]
+            ):
+                data["relevance_profile"] = validate_relevance_profile(
+                    data["relevance_profile"]
+                )
+            else:
+                data["relevance_profile"] = validate_relevance_profile_source(
+                    data["relevance_profile"]
+                )
         except ValueError as exc:
             raise NotebookCorruptError(f"notebook.relevance_profile is invalid: {exc}") from exc
 

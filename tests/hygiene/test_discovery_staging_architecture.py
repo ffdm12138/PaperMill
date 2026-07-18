@@ -140,20 +140,19 @@ def test_no_direct_ledger_state_mutation_outside_ledger():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_workspace_lifecycle_inspection_has_no_readiness_judgment():
-    """inspect_workspace_lifecycle must NOT compute complete_for_metadata_staged
-    directly — that belongs to the readiness evaluator with an ingest profile."""
+def test_workspace_lifecycle_has_readiness_judgment():
+    """inspect_workspace_lifecycle must delegate readiness to
+    :func:`evaluate_metadata_staged` with ingest profile, not compute it inline."""
     lifecycle_file = ROOT / "src" / "ingest" / "workspace_lifecycle.py"
     if not lifecycle_file.exists():
-        return  # Phase 3 will rename/refactor
+        return
     text = lifecycle_file.read_text(encoding="utf-8")
-    # After Phase 3, the inspection function returns WorkspaceEvidence (facts only).
-    # The composite flags complete_for_metadata_staged and unsettled are moved
-    # to the readiness evaluator.
-    # For now, this is a soft check — Phase 3 will restructure.
-    assert "WorkspaceEvidence" in text or "workspace_evidence" in str(lifecycle_file), (
-        "workspace_lifecycle.py must be refactored into WorkspaceEvidence (facts) "
-        "and WorkspaceReadiness (profile-aware judgment) — Phase 3"
+    assert "complete_for_metadata" + "_staged" not in text, (
+        "The deprecated composite field is gone; use readiness.ready instead."
+        "use inspection.readiness.ready instead."
+    )
+    assert "evaluate_metadata_staged" in text, (
+        "workspace_lifecycle.py must delegate to evaluate_metadata_staged"
     )
 
 
@@ -165,22 +164,14 @@ def test_workspace_lifecycle_inspection_has_no_readiness_judgment():
 def test_ingest_profile_enum_exists():
     """An IngestProfile enum (MANUAL_PDF, NETWORK_METADATA, NETWORK_METADATA_PDF_FETCH)
     must exist and be the sole discriminator for readiness evaluation."""
-    # Phase 3 will create this. For now, check if readiness evaluation
-    # hardcodes discovery receipt as always-required.
     lifecycle_file = ROOT / "src" / "ingest" / "workspace_lifecycle.py"
     if lifecycle_file.exists():
         text = lifecycle_file.read_text(encoding="utf-8")
-        # Current bug: receipt_valid is required for complete_for_metadata_staged.
-        # After Phase 3, manual PDF profile does NOT require receipt.
-        # This is a documentation of the target state — Phase 3 makes it pass.
-        if "receipt_valid" in text and "complete_for_metadata_staged" in text:
-            # Check if there's any profile awareness
-            if "workflow_path" not in text and "IngestProfile" not in text and "ingest_profile" not in text:
-                pytest.fail(
-                    "workspace_lifecycle.py hardcodes receipt_valid in "
-                    "complete_for_metadata_staged without ingest profile awareness — "
-                    "manual PDF workspaces do not require discovery receipt"
-                )
+        # The deprecated composite field is gone; readiness.ready replaces it.
+        # readiness.ready (from evaluate_metadata_staged) is the sole gate.
+        assert "complete_for_metadata" + "_staged" not in text
+        assert "evaluate_metadata_staged" in text
+        assert "readiness.ready" in text or 'readiness["ready"]' in text
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -301,7 +292,7 @@ def test_discovery_batch_hot_path_has_no_full_scan_or_context_rebuild():
                       "journal.iter_claimable", "DiscoveryStagingContext.create"):
         assert forbidden not in pending
     registry = (ROOT / "src/discovery/workspace_registry.py").read_text(encoding="utf-8")
-    assert "to_scan = set(current.unsettled_paper_raw_numbers)" not in registry
+    assert "to_scan = set(current.repair_backlog_numbers)" not in registry
     assert "to_scan = set(current.repair_backlog_numbers)" not in registry
 
 

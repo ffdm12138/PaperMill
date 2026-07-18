@@ -23,7 +23,8 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from loguru import logger
 
@@ -70,6 +71,10 @@ def _source_ids(root: Path, all_unmatched: bool, all_papers: bool, one: str | No
                 try:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 except Exception:
+                    # Keep corrupt workspaces in the bulk selection so the
+                    # per-item resolver reports a failure and the CLI exits
+                    # non-zero instead of silently hiding them.
+                    out.append(p.name)
                     continue
                 receipt = p / f"{p.name}.metadata_match.json"
                 freeze = p / f"{p.name}.metadata_freeze.json"
@@ -80,6 +85,74 @@ def _source_ids(root: Path, all_unmatched: bool, all_papers: bool, one: str | No
                 out.append(p.name)
         return out
     raise ValueError("--paper-number, --all-unmatched, or --all is required")
+
+
+def _preflight_metadata_batch(
+    source_ids: list[str], paper_raw_dir: Path,
+) -> list[dict[str, str]]:
+    """Validate all metadata files against the authoritative v2.0 contract.
+
+    Delegates to ``validate_metadata_schema`` from ``src.metadata.schema`` —
+    there is no second, hand-maintained copy of the schema rules.
+    """
+    from src.metadata.schema import validate_metadata_schema
+
+    corrupt: list[dict[str, str]] = []
+    for source_id in source_ids:
+        meta_path = paper_raw_dir / source_id / f"{source_id}.metadata.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            corrupt.append({
+                "paper_number": source_id,
+                "path": str(meta_path),
+                "error": f"metadata JSON corrupt: {exc}",
+            })
+            continue
+        except OSError as exc:
+            corrupt.append({
+                "paper_number": source_id,
+                "path": str(meta_path),
+                "error": f"metadata file unreadable: {exc}",
+            })
+            continue
+
+        if not isinstance(meta, dict):
+            corrupt.append({
+                "paper_number": source_id,
+                "path": str(meta_path),
+                "error": "metadata root is not a JSON object",
+            })
+            continue
+
+        errors = validate_metadata_schema(meta)
+        if errors:
+            corrupt.append({
+                "paper_number": source_id,
+                "path": str(meta_path),
+                "error": f"metadata contract: {'; '.join(errors)}",
+            })
+            continue
+
+        # Identity: workspace folder == paper_number == paper_raw_id.
+        pn = str(meta.get("paper_number") or "")
+        raw_id = str(meta.get("paper_raw_id") or "")
+        if pn != source_id:
+            corrupt.append({
+                "paper_number": source_id,
+                "path": str(meta_path),
+                "error": f"paper_number {pn!r} != folder {source_id}",
+            })
+            continue
+        if raw_id != source_id:
+            corrupt.append({
+                "paper_number": source_id,
+                "path": str(meta_path),
+                "error": f"paper_raw_id {raw_id!r} != folder {source_id}",
+            })
+            continue
+
+    return corrupt
 
 
 def _is_citation_ready(folder: Path, paper_number: str) -> bool:
@@ -171,7 +244,7 @@ def main() -> int:
                         help="when <paper_number>.md exists, prefer Markdown title/first-pages/abstract "
                              "evidence (post-conversion re-resolution); DOI priority is unchanged")
     # ── Rate limiting / checkpoint / probe ──
-    parser.add_argument("--rate-config", type=Path, default=Path("config/metadata_rate_limits.json"),
+    parser.add_argument("--rate-config", type=Path, default=PROJECT_ROOT / "config" / "metadata_rate_limits.json",
                         help="path to the rate-limit config JSON")
     parser.add_argument("--paper-interval-seconds", type=float, default=None,
                         help="override global seconds between papers (default: 8.0 from config)")
@@ -210,6 +283,15 @@ def main() -> int:
         source_ids = _source_ids(args.paper_raw_dir, args.all_unmatched, args.all, args.paper_number)
     except ValueError as exc:
         parser.error(str(exc))
+
+    # ── Batch preflight: validate ALL metadata files before ANY write ──
+    corrupt = _preflight_metadata_batch(source_ids, args.paper_raw_dir)
+    if corrupt:
+        print(json.dumps({
+            "status": "invalid_candidate_data",
+            "corrupt_workspaces": corrupt,
+        }, ensure_ascii=False, indent=2))
+        return 1
 
     # --resume: skip citation-ready papers (checkpoint or live metadata)
     checkpoint_data = None

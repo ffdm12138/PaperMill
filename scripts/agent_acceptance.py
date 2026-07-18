@@ -91,7 +91,6 @@ FAST_ACCEPTANCE_TESTS = [
     "tests/integration/test_catalog_doctor_fail_closed.py",
     "tests/integration/test_writer_catalog_safety_gate.py",
     "tests/integration/test_catalog_apply_recovery.py",
-    "tests/integration/test_keyword_notebook_v3_migration_transaction.py",
     "tests/integration/test_validate_v2_library.py",
 ]
 # Logical groups for fast acceptance — each group runs as its own pytest
@@ -108,7 +107,6 @@ FAST_GROUPS: list[tuple[str, list[str]]] = [
         "tests/integration/test_catalog_folder_classification_lifecycle.py",
         "tests/integration/test_catalog_doctor_fail_closed.py",
         "tests/integration/test_catalog_apply_recovery.py",
-        "tests/integration/test_keyword_notebook_v3_migration_transaction.py",
     ]),
     ("discovery", [
         "tests/unit/test_discovery_models.py",

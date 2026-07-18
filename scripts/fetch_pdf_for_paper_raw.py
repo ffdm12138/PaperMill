@@ -19,7 +19,7 @@ from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 import src.fetch.fetch_pipeline as fetch_pipeline
-from src.fetch.pdf_transport import TRANSPORT_POLICY, sanitize_url_fields, sanitize_url_for_persistence
+from src.fetch.pdf_transport import TRANSPORT_POLICY, sanitize_for_persistence, sanitize_url_for_persistence
 from src.services.ingest_duplicate_guard import DuplicateIngestError
 from src.services.ingest_ids import validate_paper_raw_id
 from src.services.ingest_state import write_import_status
@@ -131,7 +131,16 @@ def classify_pdf_fetch_candidate(
         item.status = "skipped"
         item.reason = "metadata file missing"
         return item
-    metadata = _read_json(meta_path)
+    try:
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        item.status = "failed"
+        item.reason = f"metadata unreadable: {exc}"
+        return item
+    if not isinstance(metadata, dict):
+        item.status = "failed"
+        item.reason = "metadata must be a JSON object"
+        return item
     item.metadata = metadata
     doi = normalize_doi(((metadata.get("identifiers") or {}).get("doi") or "").strip())
     item.doi = doi
@@ -277,7 +286,7 @@ def _sanitized_fetch_record(
     final_reason: str = "",
 ) -> dict[str, Any]:
     attached = dict(attached or {})
-    return sanitize_url_fields({
+    return sanitize_for_persistence({
         "success": bool(result.success) if success is None else bool(success),
         "final_reason": final_reason or result.error or "",
         "resolver": result.resolver,
@@ -359,10 +368,9 @@ def _fetch_one(
                 "status": "failed",
                 "reason": result.error or "fetch failed",
                 "resolver_chain": list(result.resolver_chain or []),
-                "attempts": sanitize_url_fields(list(result.attempts or [])),
+                "attempts": sanitize_for_persistence(list(result.attempts or [])),
                 "transport_policy": TRANSPORT_POLICY,
-                "transport_attempts": sanitize_url_fields(list(result.transport_attempts or [])),
-                "not_configured_resolvers": list(result.not_configured_resolvers or []),
+                "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
                 "final_reason": result.error or "fetch failed",
             })
             if result.transport_attempts:
@@ -394,7 +402,7 @@ def _fetch_one(
                 "pdf_md5": exc.result.pdf_md5,
                 "pdf_sha256": exc.result.pdf_sha256,
                 "transport_policy": TRANSPORT_POLICY,
-                "transport_attempts": sanitize_url_fields(list(result.transport_attempts or [])),
+                "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
             })
             write_import_status(
                 folder,
@@ -474,7 +482,7 @@ def _fetch_one(
             "pdf_md5": attached.get("pdf_md5", ""),
             "pdf_sha256": attached.get("pdf_sha256", ""),
             "transport_policy": TRANSPORT_POLICY,
-            "transport_attempts": sanitize_url_fields(list(result.transport_attempts or [])),
+            "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
         })
         return item
     except Exception as exc:
@@ -599,7 +607,7 @@ def main() -> int:
             "keys": header_keys,
             "masked": bool(header_keys),
         },
-        "items": sanitize_url_fields(items),
+        "items": sanitize_for_persistence(items),
     }
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

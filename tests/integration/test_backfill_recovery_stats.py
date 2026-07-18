@@ -21,6 +21,7 @@ from src.discovery.page_journal import (
     backfill_page_id,
     request_signature,
 )
+from tests.helpers.relevance_profiles import finalize_all_passed
 
 
 pytestmark = pytest.mark.integration
@@ -113,6 +114,8 @@ def test_recover_then_fetch_next_page_carries_recovery_stats(tmp_path: Path):
         query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
     assert result.status == "success"
@@ -141,6 +144,8 @@ def test_recover_then_exhausted_carries_recovery_stats(tmp_path: Path):
         query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
     assert result.status == "exhausted"
@@ -162,6 +167,8 @@ def test_recover_then_page_budget_stop_carries_recovery_stats(tmp_path: Path):
         query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
     assert result.status == "stopped"
@@ -184,6 +191,8 @@ def test_recover_then_provider_failure_carries_recovery_stats(tmp_path: Path):
         query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
     assert result.status == "failed_retryable"
@@ -208,6 +217,8 @@ def test_no_recovery_when_clean_has_zero_recovery_stats(tmp_path: Path):
         query=QUERY, query_language="en", provider="openalex",
         notebook_store=notebook, journal_store=journal,
         locks_dir=tmp_path / "locks", request_signature=sig, page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
     assert result.status == "success"

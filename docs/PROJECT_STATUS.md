@@ -86,9 +86,9 @@ active source tree or runtime-zero snapshot.
 
 ## Test suite status
 
-- **Full acceptance selection:** 1886 passed, 4 skipped, 3 deselected, 0 failed
-- **Acceptance:** pre-flight clean, syntax gate 454/454 passed, runtime-zero snapshot verified
-- **Snapshot:** 544 payload files, 0 runtime files, secret scan passed
+- **Tests collected:** 1951 (run `pytest --collect-only -q` for current count)
+- **Acceptance:** pre-flight clean, syntax gate 464/464 passed, runtime-zero snapshot verified
+- **Snapshot:** 548 payload files, 549 members, 0 runtime files, secret scan passed
 
 ### Cleanup principles
 

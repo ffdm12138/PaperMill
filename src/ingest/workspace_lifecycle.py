@@ -32,11 +32,6 @@ class WorkspaceLifecycleInspection:
     :class:`~src.ingest.workspace_evidence.WorkspaceEvidence` (pure file facts)
     and :class:`~src.ingest.workspace_readiness.WorkspaceReadiness`
     (profile-aware readiness). New code should use those types directly.
-
-    Attributes:
-        complete_for_metadata_staged: DEPRECATED. Delegates to profile-aware
-            readiness evaluation. For network_metadata profile this requires a
-            discovery receipt; for manual_pdf profile it does not.
     """
 
     paper_number: str
@@ -48,7 +43,6 @@ class WorkspaceLifecycleInspection:
     stage_manifest_valid: bool
     import_status_valid: bool
     discovery_identity_valid: bool
-    complete_for_metadata_staged: bool
     unsettled: bool
     repair_required: bool
     errors: tuple[str, ...] = ()
@@ -124,7 +118,6 @@ def inspect_workspace_lifecycle(
         stage_manifest_valid=evidence.stage_manifest_valid,
         import_status_valid=evidence.import_status_valid,
         discovery_identity_valid=discovery_identity_valid,
-        complete_for_metadata_staged=complete,
         unsettled=readiness.unsettled,
         repair_required=len(all_errors) > 0,
         errors=all_errors,

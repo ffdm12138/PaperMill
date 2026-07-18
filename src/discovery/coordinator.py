@@ -59,6 +59,7 @@ from src.discovery.page_journal import (
 from src.discovery.relevance_profiles import (
     list_applying_relevance_profile_transactions,
 )
+from src.discovery.relevance_runtime import RelevanceRuntimePaths
 from src.discovery.relevance import (
     OpenAlexDoiVerifier,
     RawOpenAlexWorkCache,
@@ -119,8 +120,7 @@ class DiscoveryOptions:
     papers_dir: Path = PAPERS_DIR
     ledger_path: Path = PAPER_NUMBER_LEDGER_PATH
     relevance_cache_dir: Path = DISCOVERY_DIR / "relevance_raw_work_cache"
-    relevance_profiles_lock_path: Path | None = None
-    relevance_profiles_transaction_root: Path | None = None
+    relevance_runtime_paths: RelevanceRuntimePaths | None = None
     # Tests and isolated callers may inject a DOI verifier.  Production uses
     # the raw-Work cache backed OpenAlex verifier created by the coordinator.
     crossref_scope_verifier: Any | None = None
@@ -849,6 +849,19 @@ def _run_discovery_batch_unlocked(
                     # run is real work even if the same call then stops/exhausts.
                     report.pages_recovered += result.pages_recovered
                     report.journals_recovered += result.journals_recovered
+                    for recovered_path in result.recovered_page_paths:
+                        recovered_page = journal.read(recovered_path)
+                        with state_lock:
+                            runtime.journal_index.pages_read += 1
+                            runtime.metrics.journal_pages_written += 1
+                            runtime.metrics.page_fsyncs += 1
+                        runtime.journal_index.add_page(
+                            recovered_path, recovered_page,
+                        )
+                        notify_staging(
+                            str(recovered_page["keyword_id"]),
+                            len(recovered_page.get("candidates") or []),
+                        )
                     if result.status == "stopped" and result.stop_reason == "page_budget_exhausted":
                         report.stop_reason = "page_budget_exhausted"
                         break
@@ -871,7 +884,7 @@ def _run_discovery_batch_unlocked(
                         runtime.metrics.journal_pages_written += journal_writes
                         runtime.metrics.page_fsyncs += journal_writes
                     if result.page_path is not None:
-                        if result.page_path not in runtime.journal_index.page_cache:
+                        if not runtime.journal_index.has_page(result.page_path):
                             committed_page = journal.read(result.page_path)
                             with state_lock:
                                 runtime.journal_index.pages_read += 1
@@ -1191,8 +1204,7 @@ def _run_discovery_batch_unlocked(
         )
         notebook.update_pending_counts(
             keyword,
-            pages=sum(1 for page in runtime.journal_index.page_cache.values()
-                      if page.get("keyword_id") == kid),
+            pages=runtime.journal_index.page_count_for_keyword(kid),
             candidates=runtime.journal_index.pending_count([kid]),
         )
         keyword_reports[keyword] = report
@@ -1217,23 +1229,13 @@ def run_discovery_batch(
 ) -> BatchDiscoveryReport:
     """Run one batch while excluding the plan-bound profile apply transaction."""
     effective = options or DiscoveryOptions()
-    lock_path = effective.relevance_profiles_lock_path
-    transaction_root = effective.relevance_profiles_transaction_root
-    if lock_path is None:
-        if effective.notebook_dir == DISCOVERY_KEYWORD_NOTEBOOK_DIR:
-            lock_path = DISCOVERY_DIR.parent / "transactions" / "locks" / "relevance_profiles.lock"
-            transaction_root = transaction_root or (
-                DISCOVERY_DIR.parent / "transactions" / "relevance_profiles"
-            )
-        else:
-            # Isolated tests/comparison runs must not touch production runtime
-            # state merely to acquire the shared mutex.
-            lock_path = Path(effective.notebook_dir).parent / ".relevance_profiles.lock"
-            transaction_root = transaction_root or (
-                Path(effective.notebook_dir).parent / ".relevance_profile_transactions"
-            )
-    elif transaction_root is None:
-        transaction_root = Path(lock_path).parent.parent / "relevance_profiles"
+    runtime_paths = effective.relevance_runtime_paths or RelevanceRuntimePaths.resolve_default(
+        notebook_root=effective.notebook_dir,
+        journal_root=effective.pending_pages_dir,
+    )
+    lock_path = runtime_paths.lock_path
+    transaction_root = runtime_paths.transaction_root
+    # Never derive transaction_root backward from lock_path.
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(lock_path), timeout=0)
     try:

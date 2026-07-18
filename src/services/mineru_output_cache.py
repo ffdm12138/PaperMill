@@ -52,15 +52,9 @@ class MinerUOutputCache:
         self,
         cache_dir: str | Path = MINERU_OUTPUT_CACHE_DIR,
         cleaner: MinerUOutputCleaner | None = None,
-        legacy_output_roots: list[str | Path] | None = None,
     ):
         self.cache_dir = Path(cache_dir)
         self.cleaner = cleaner or MinerUOutputCleaner()
-        if legacy_output_roots is None:
-            parent = self.cache_dir.parent
-            legacy_output_roots = [parent] if parent.name == "output" else []
-        self.legacy_output_roots = [Path(p) for p in legacy_output_roots]
-        self._legacy_index: dict[tuple[str, str, int], list[Path]] | None = None
 
     def key_for_pdf(
         self,
@@ -109,14 +103,12 @@ class MinerUOutputCache:
                 effort=effort,
                 stem=stem,
             )
-        return self._find_legacy(
+        return self._miss(
             key,
-            backend=backend,
-            method=method,
-            lang=lang,
-            effort=effort,
-            stem=stem,
-            cache_dir=cache_dir,
+            cache_dir,
+            None,
+            "cache manifest missing",
+            state="unverifiable",
         )
 
     def register(
@@ -321,93 +313,6 @@ class MinerUOutputCache:
             pdf_file_size=key.pdf_file_size,
             state="hit",
         )
-
-    def _find_legacy(
-        self,
-        key: MinerUOutputCacheKey,
-        *,
-        backend: str,
-        method: str,
-        lang: str,
-        effort: str,
-        stem: str,
-        cache_dir: Path,
-    ) -> MinerUOutputCacheHit:
-        del lang, effort
-        matches = self._legacy_pdf_index().get((key.pdf_md5, key.pdf_sha256, key.pdf_file_size), [])
-        if not matches:
-            return self._miss(
-                key,
-                cache_dir,
-                None,
-                "cache manifest missing; unverifiable legacy output: missing cache manifest and source pdf copy",
-                state="unverifiable",
-            )
-        for embedded_pdf in matches:
-            legacy = self._locate_legacy_assets(embedded_pdf, backend=backend, method=method, current_stem=stem)
-            if legacy:
-                legacy_root, md_path, images_dir = legacy
-                return MinerUOutputCacheHit(
-                    ok=True,
-                    reason="verified legacy output matched by embedded PDF hash",
-                    cache_dir=legacy_root,
-                    output_dir=legacy_root,
-                    manifest_path=None,
-                    markdown_path=md_path,
-                    images_dir=images_dir,
-                    pdf_md5=key.pdf_md5,
-                    pdf_sha256=key.pdf_sha256,
-                    pdf_file_size=key.pdf_file_size,
-                    state="hit",
-                )
-        return self._miss(key, cache_dir, None, "verified legacy PDF found but Markdown/images were not reusable", state="unverifiable")
-
-    def _legacy_pdf_index(self) -> dict[tuple[str, str, int], list[Path]]:
-        if self._legacy_index is not None:
-            return self._legacy_index
-        index: dict[tuple[str, str, int], list[Path]] = {}
-        cache_resolved = self.cache_dir.resolve()
-        for root in self.legacy_output_roots:
-            if not root.exists() or not root.is_dir():
-                continue
-            for pdf in root.rglob("*.pdf"):
-                try:
-                    pdf.resolve().relative_to(cache_resolved)
-                    continue
-                except ValueError:
-                    pass
-                try:
-                    hashes = compute_file_hashes(pdf)
-                except OSError:
-                    continue
-                key = (str(hashes["md5"]).lower(), str(hashes["sha256"]).lower(), int(hashes["file_size"]))
-                index.setdefault(key, []).append(pdf)
-        self._legacy_index = index
-        return index
-
-    def _locate_legacy_assets(
-        self,
-        embedded_pdf: Path,
-        *,
-        backend: str,
-        method: str,
-        current_stem: str,
-    ) -> tuple[Path, Path, Path] | None:
-        source_stem = embedded_pdf.stem.removesuffix("_origin")
-        roots = []
-        for candidate in (embedded_pdf.parent, embedded_pdf.parent.parent, embedded_pdf.parent.parent.parent):
-            if candidate not in roots and candidate.exists():
-                roots.append(candidate)
-        stems = [current_stem, source_stem, embedded_pdf.stem]
-        for root in roots:
-            for stem in stems:
-                md_path = self.cleaner.locate_markdown(root, method=method, stem=stem, backend=backend)
-                if md_path is None:
-                    continue
-                images_dir = self.cleaner.locate_images_dir(root, md_path)
-                if images_dir and images_dir.is_dir():
-                    return root, md_path, images_dir
-        return None
 
     def _manifest_mismatches(
         self,

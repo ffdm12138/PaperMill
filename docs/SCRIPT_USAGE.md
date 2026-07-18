@@ -7,6 +7,7 @@
 | `repair_formal_publications.py` | audit or identity-only repair of legacy active formal sidecars; unsafe closures emit rollback/recommit plans | `--apply` |
 | `migrate_quarantined_duplicate_ledger_state.py` | explicit retired-state migration to abandoned quarantine facts | `--apply` |
 | `benchmark_discovery_pipeline.py` | synthetic raw+formal+candidate batch I/O benchmark | no real runtime state |
+| `audit_discovery_reset_state.py` | read-only full discovery reset-state audit (paper_raw, ledger, formal, journals, cursors, locks) | no |
 
 `repair_discovery_workspaces.py` fails on a globally unreadable/invalid ledger,
 but can repair a selected independently healthy raw workspace when unrelated
@@ -28,7 +29,6 @@ actions, never discovery staging.
 | `run_catalog_classification.py` | execute pending tasks via injectable backend | `--apply` |
 | `apply_catalog_classification_result.py` | validate and apply one LLM result | `--apply` |
 | `audit_discovery_keyword_index_sources.py` | read-only audit of DOI keyword identity and cursor state | no |
-| `migrate_keyword_notebooks_v3.py` | inventory and plan-bound transactional migration to strict notebook v3 | `--write-plan`; `--apply` requires transaction id and plan hash |
 | `claim_catalog_classification_tasks.py` | list next unapplied tasks for a worker | no |
 | `reconcile_catalog_folders.py` | rebuild folder links from authoritative state | `--apply` |
 | `doctor_catalog_folders.py` | audit writer safety and folder integrity | no |
@@ -88,13 +88,30 @@ generations as its final point. The drain index and
 final claim independently require the candidate profile hash to equal the
 notebook's active profile hash.
 
-Crossref scope verification reuses raw OpenAlex Work evidence only; profile
-verdicts remain notebook-local. `config/relevance_profiles.example.json` is an
+Actual A/B/C subject-screening comparison uses OpenAlex only because its
+responses directly contain Topics/Subfields evidence. Crossref remains part of
+production Discovery, but is rejected before file generation for this frozen
+comparison corpus. Synthetic fixtures may exercise the Crossref matcher and are
+explicitly marked synthetic. `config/relevance_profiles.example.json` is an
 unresolved source definition (`resolved=false`, empty IDs), never an active
 profile. Comparison requires explicit isolated roots: fetch freezes one shared
 wide-recall corpus and both sampling/replay configurations; replay verifies file
 hash/size/count and never uses the network. A/B/C evaluate identical candidate
 IDs and ranks. Human labels and Precision@50 remain null until manually supplied.
+
+The comparison CLI has two strict, mutually exclusive modes. Fetch does not
+load profiles, notebooks, or known DOIs:
+
+```text
+python scripts/compare_discovery_relevance.py --fetch --sampling-config <sampling.json> --output-root <corpus-root> --allow-network-fetch
+python scripts/compare_discovery_relevance.py --replay --profiles <profiles.json> --notebook-root <isolated-notebooks> --sampling-config <sampling.json> --output-root <corpus-root> [--known-dois <known-dois.txt>]
+```
+
+Replay publishes only the committed run under
+`<corpus-root>/replay_runs/<run_id>/`, containing `manifest.json`,
+`report.json`, and `COMMITTED`. The former root-level
+`relevance_comparison.json` is a legacy artifact: it is not authoritative and
+is no longer created, updated, or read.
 
 For a final no-network plan check, run:
 
@@ -151,7 +168,6 @@ fetch_pdf_for_paper_raw.py
 formalize_paper_raw.py
 freeze_paper_raw_metadata.py
 manage_discovery_keywords.py
-migrate_keyword_notebooks_v3.py
 migrate_import_status_v2.py
 pack_repo.py
 preflight_paper_raw_import.py

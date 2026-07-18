@@ -9,6 +9,7 @@ from src.discovery.backfill_transaction import run_backfill_page_transaction
 from src.discovery.keyword_notebook import KeywordNotebookStore, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
+from tests.helpers.relevance_profiles import finalize_all_passed
 
 
 pytestmark = pytest.mark.integration
@@ -67,6 +68,8 @@ def test_backfill_transaction_journal_first_then_recovers_without_refetch(tmp_pa
         locks_dir=tmp_path / "locks",
         request_signature=sig,
         page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
     assert result.pages_requested == 1
@@ -86,6 +89,8 @@ def test_backfill_transaction_journal_first_then_recovers_without_refetch(tmp_pa
         locks_dir=tmp_path / "locks",
         request_signature=sig,
         page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
     assert calls == 2
@@ -130,6 +135,8 @@ def test_existing_fetched_journal_commit_does_not_consume_network(tmp_path: Path
         locks_dir=tmp_path / "locks",
         request_signature=sig,
         page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=lambda *a, **k: pytest.fail("existing journal should be recovered"),
     )
     assert result.pages_recovered == 1
@@ -190,6 +197,8 @@ def test_cursor_committed_before_journal_mark_is_recovered(tmp_path: Path):
         locks_dir=tmp_path / "locks",
         request_signature=sig,
         page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=fetch,
     )
 
@@ -246,6 +255,8 @@ def test_exhausted_cursor_commit_recovery_is_noop_then_exhausted(tmp_path: Path)
         locks_dir=tmp_path / "locks",
         request_signature=sig,
         page_size=10,
+        relevance_profile_hash="test-hash",
+        finalize_page=lambda p: finalize_all_passed(journal, p),
         fetch_page=lambda *a, **k: pytest.fail("exhausted recovery must not fetch"),
     )
     assert journal.read(page_path)["state"] == "cursor_committed"

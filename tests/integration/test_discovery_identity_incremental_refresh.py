@@ -39,7 +39,7 @@ def test_failed_refresh_does_not_mutate_live_snapshot(tmp_path: Path):
     before_dois = tuple(snapshot.doi_index.lookup_doi("10.1000/a"))
     before_refs = snapshot.workspace_id_index.refs
     before_max = snapshot.observed_paper_raw_max
-    before_unsettled = snapshot.unsettled_paper_raw_numbers
+    before_unsettled = snapshot.repair_backlog_numbers
 
     second = create_network_metadata_workspace(tmp_path, doi="10.1000/b", candidate_id="b")
     (second / f"{second.name}.discovery_receipt.json").write_text("{bad", encoding="utf-8")
@@ -51,7 +51,7 @@ def test_failed_refresh_does_not_mutate_live_snapshot(tmp_path: Path):
     assert tuple(snapshot.doi_index.lookup_doi("10.1000/a")) == before_dois
     assert snapshot.workspace_id_index.refs == before_refs
     assert snapshot.observed_paper_raw_max == before_max
-    assert snapshot.unsettled_paper_raw_numbers == before_unsettled
+    assert snapshot.repair_backlog_numbers == before_unsettled
     assert not snapshot.doi_index.lookup_doi("10.1000/b")
 
 

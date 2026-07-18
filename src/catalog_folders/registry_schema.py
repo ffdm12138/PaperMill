@@ -1,10 +1,9 @@
 """Strict Registry loader with schema validation and path-safety enforcement.
 
 The normal loader (``load_registry`` / ``load_categories``) rejects any
-registry that fails schema, identity, or path-safety checks.  The legacy
-loader (``load_legacy_registry_for_migration``) is the ONLY entry point
-that reads old-format registries, and its result MUST NOT enter the
-normal Reader / Writer / Reconcile paths.
+registry that fails schema, identity, or path-safety checks.  Legacy-format
+registries must be recreated using the current schema before they can be
+loaded by the normal path.
 """
 from __future__ import annotations
 
@@ -286,29 +285,4 @@ def load_registry_for_sync(registry_path: Path) -> dict:
     return data
 
 
-def load_legacy_registry_for_migration(registry_path: Path) -> dict:
-    """Load a legacy registry for migration purposes ONLY.
 
-    This bypasses strict ``definition_sha256`` validation (legacy entries
-    may have been computed with an older ``definition_hash``).  The result
-    MUST NOT be passed to normal Reader / Writer / Reconcile paths.
-    Callers must validate entries themselves post-migration.
-    """
-    data = json.loads(Path(registry_path).read_text(encoding="utf-8"))
-
-    if not isinstance(data.get("categories"), list):
-        raise ValueError("legacy registry: categories must be a list")
-
-    # Basic structural checks only — no sha256 or keyword_id checks
-    for idx, row in enumerate(data["categories"]):
-        if not isinstance(row, dict):
-            raise ValueError(f"legacy registry: categories[{idx}] is not a dict")
-        for field in ("category_id", "keyword_zh", "directory_name"):
-            if not row.get(field):
-                raise ValueError(
-                    f"legacy registry: categories[{idx}] missing {field}"
-                )
-        # Validate directory safety even for legacy entries
-        _validate_directory_name(str(row.get("directory_name") or ""))
-
-    return data

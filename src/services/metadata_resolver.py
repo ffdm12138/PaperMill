@@ -263,35 +263,6 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
-def formal_dois(papers_dir: str | Path = PAPERS_DIR) -> set[str]:
-    """Deprecated compatibility helper for formal-only DOI inventories.
-
-    Active ingest duplicate checks must use ``ingest_duplicate_guard`` so DOI
-    hits across both data/paper_raw and data/papers are considered.
-    """
-    dois: set[str] = set()
-    papers_dir = Path(papers_dir)
-    if papers_dir.exists():
-        for meta_path in papers_dir.glob("*/*.metadata.json"):
-            meta = _read_json(meta_path, {})
-            doi = normalize_doi(((meta.get("identifiers") or {}).get("doi") or ""))
-            if doi:
-                dois.add(doi)
-    return dois
-
-
-def formal_pdf_shas(papers_dir: str | Path = PAPERS_DIR) -> set[str]:
-    """Deprecated compatibility helper for formal-only PDF sha256 inventories."""
-    shas: set[str] = set()
-    papers_dir = Path(papers_dir)
-    if papers_dir.exists():
-        for meta_path in papers_dir.glob("*/*.metadata.json"):
-            meta = _read_json(meta_path, {})
-            sha = str(((meta.get("pdf") or {}).get("sha256") or "")).strip().lower()
-            if sha:
-                shas.add(sha)
-    return shas
-
 
 # ── Name helpers (conservative author split) ───────────────────────────
 

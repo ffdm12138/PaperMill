@@ -30,6 +30,7 @@ from src.discovery.relevance_profiles import (  # noqa: E402
     inspect_relevance_profile_transaction,
     resume_relevance_profile_transaction,
 )
+from src.discovery.relevance_runtime import RelevanceRuntimePaths  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -47,6 +48,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan-file", type=Path, help="Plan JSON path for --apply (alias: --plan-report).")
     parser.add_argument("--plan-report", dest="plan_file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--expected-plan-hash", help="Required SHA-256 plan hash for --apply.")
+    parser.add_argument("--taxonomy-snapshot", type=Path, help="Pre-fetched taxonomy snapshot JSON (offline --plan).")
+    parser.add_argument("--allow-network-taxonomy", action="store_true",
+                        help="Authorize real OpenAlex taxonomy fetch during --plan.")
     parser.add_argument("--notebook-root", "--keyword-notebook-dir", dest="keyword_notebook_dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
     parser.add_argument("--journal-root", "--pending-pages-dir", dest="pending_pages_dir", type=Path, default=DISCOVERY_PENDING_PAGES_DIR)
     parser.add_argument(
@@ -83,11 +87,8 @@ def _plan_from_transaction(path: Path) -> dict:
 
 
 def _plan_write_roots(plan: dict) -> list[Path]:
-    return [
-        Path(str(plan["notebook_dir"])),
-        Path(str(plan["pending_pages_dir"])),
-        Path(str(plan["transaction_root"])),
-    ]
+    rp = RelevanceRuntimePaths.from_plan(plan)
+    return [rp.notebook_root, rp.journal_root, rp.transaction_root]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.abort is not None:
             plan = _plan_from_transaction(args.abort)
-            _assert_runtime_write_authorized([Path(str(plan["transaction_root"]))], args)
+            _assert_runtime_write_authorized(_plan_write_roots(plan), args)
             result = abort_relevance_profile_transaction(args.abort)
             print(f"[ABORTED] transaction_id={result['transaction_id']}")
             return 0
@@ -120,11 +121,53 @@ def main(argv: list[str] | None = None) -> int:
         if plan_mode:
             if args.profiles is None or args.json_report is None:
                 parser.error("--plan requires --profiles and --json-report")
+            snapshot = args.taxonomy_snapshot is not None
+            network = args.allow_network_taxonomy
+            if snapshot == network:
+                parser.error(
+                    "--plan requires exactly one of --taxonomy-snapshot FILE "
+                    "or --allow-network-taxonomy"
+                )
+            taxonomy_kwargs = {}
+            if snapshot:
+                from src.discovery.relevance_profiles import (
+                    TaxonomySnapshot, validate_taxonomy_snapshot,
+                )
+                raw = json.loads(args.taxonomy_snapshot.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise RelevanceProfileTransactionError(
+                        "taxonomy snapshot must be a JSON object")
+                # Full validation BEFORE constructing the object — closes
+                # the bypass where malformed/hash-mismatched snapshots were
+                # silently accepted.
+                violations = validate_taxonomy_snapshot(raw)
+                if violations:
+                    raise RelevanceProfileTransactionError(
+                        "taxonomy snapshot validation failed: "
+                        + "; ".join(violations))
+                taxonomy_kwargs["taxonomy"] = TaxonomySnapshot(
+                    pages=tuple(raw.get("pages") or ()),
+                    entities=tuple(raw.get("entities") or ()),
+                    retrieved_at=str(raw.get("retrieved_at") or ""),
+                    page_hashes=tuple(raw.get("page_hashes") or ()),
+                    snapshot_sha256=str(raw.get("snapshot_sha256") or ""),
+                    schema_version=str(raw.get("schema_version") or "1.0"),
+                    raw_snapshot_sha256=str(raw.get("raw_snapshot_sha256") or ""),
+                    taxonomy_semantic_sha256=str(
+                        raw.get("taxonomy_semantic_sha256") or ""),
+                )
+            runtime_paths = RelevanceRuntimePaths.resolve(
+                notebook_root=args.keyword_notebook_dir,
+                journal_root=args.pending_pages_dir,
+                transaction_root=args.transactions_root,
+            )
             plan = build_relevance_profile_plan(
                 profiles_path=args.profiles,
-                notebook_dir=args.keyword_notebook_dir,
-                pending_pages_dir=args.pending_pages_dir,
-                transaction_root=args.transactions_root,
+                notebook_dir=runtime_paths.notebook_root,
+                pending_pages_dir=runtime_paths.journal_root,
+                transaction_root=runtime_paths.transaction_root,
+                runtime_paths=runtime_paths,
+                **taxonomy_kwargs,
             )
             args.json_report.parent.mkdir(parents=True, exist_ok=True)
             args.json_report.write_text(

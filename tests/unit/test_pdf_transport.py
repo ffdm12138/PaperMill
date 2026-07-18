@@ -7,7 +7,7 @@ from src.fetch.pdf_transport import (
     PdfTransportConfig,
     fetch_url_direct_then_proxy,
     load_pdf_transport_config,
-    sanitize_url_fields,
+    sanitize_for_persistence,
     sanitize_url_for_persistence,
     sanitize_transport_url,
 )
@@ -142,7 +142,7 @@ def test_timeout_precedence(monkeypatch):
     assert _Session.calls[1]["kwargs"]["timeout"] == 22
 
     _install(monkeypatch, requests.exceptions.ReadTimeout("timeout"), _Resp(200))
-    with fetch_url_direct_then_proxy("https://example.test/paper.pdf", expected_content="pdf", timeout=7, config=config):
+    with fetch_url_direct_then_proxy("https://example.test/paper.pdf", expected_content="pdf", direct_timeout=7, proxy_timeout=7, config=config):
         pass
     assert _Session.calls[0]["kwargs"]["timeout"] == 7
     assert _Session.calls[1]["kwargs"]["timeout"] == 7
@@ -254,7 +254,7 @@ def test_sanitize_url_handles_malformed_port_ipv6_and_unicode():
     assert sanitize_url_for_persistence("https://例子.测试/path.pdf?token=x") == "https://例子.测试/path.pdf"
 
 
-def test_sanitize_url_fields_redacts_urls_in_every_nested_string():
+def test_sanitize_for_persistence_redacts_urls_in_every_nested_string():
     data = {
         "title": "https://example.test/title?token=not-a-url-field",
         "pdf_url": "https://user:pass@example.test/p.pdf?token=a",
@@ -266,7 +266,7 @@ def test_sanitize_url_fields_redacts_urls_in_every_nested_string():
             }
         ],
     }
-    safe = sanitize_url_fields(data)
+    safe = sanitize_for_persistence(data)
     assert safe["title"] == "https://example.test/title"
     assert safe["pdf_url"] == "https://example.test/p.pdf"
     assert safe["attempts"][0]["request_url"] == "https://example.test/a.pdf"

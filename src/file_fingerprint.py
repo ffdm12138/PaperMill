@@ -37,13 +37,5 @@ def compute_file_hashes(path: Path) -> dict:
     }
 
 
-def file_meta(path: Path) -> dict:
-    """采集文件元信息：sha256/size/mtime"""
-    p = Path(path)
-    st = p.stat()
-    return {
-        "md5": compute_md5(p),
-        "sha256": compute_sha256(p),
-        "file_size": st.st_size,
-        "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
-    }
+
+

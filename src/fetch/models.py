@@ -48,11 +48,6 @@ class FetchResult:
     # serialized before they enter FetchResult; resolvers must not persist
     # headers, cookies, proxy URLs, or credentials here.
     transport_attempts: list[dict[str, Any]] = field(default_factory=list)
-    # Legacy compatibility marker for resolvers that were genuinely not
-    # configured.  Current fetch_pdf_for_paper_raw.py --resolver auto does
-    # NOT use this for header_based because header_based defaults to
-    # https://doi.org/{doi} without any --base-url/--url-template.
-    not_configured_resolvers: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.doi = normalize_doi(self.doi)

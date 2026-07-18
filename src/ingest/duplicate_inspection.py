@@ -20,10 +20,6 @@ class DuplicateInspectionResult:
     findings: tuple[dict[str, Any], ...]
     ledger_snapshot_sha256: str
 
-    @property
-    def clear_for_new_commit(self) -> bool:
-        return self.status in {"clear", "same_paper_number_idempotent"}
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

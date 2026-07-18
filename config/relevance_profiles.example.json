@@ -67,7 +67,7 @@
         "crossref": {"scope_policy": "require_openalex_subfield", "refresh_sort": "published", "refresh_order": "desc", "backfill_sort": "relevance", "backfill_order": "desc"},
         "anchors": {
           "required_groups": [
-            {"name": "object", "terms": ["blowing snow", "drifting snow", "wind-driven snow", "wind-blown snow", "snowdrift", "snow particle", "snow transport"]},
+            {"name": "object", "terms": ["blowing snow", "drifting snow", "wind-driven snow", "wind-blown snow", "snowdrift", "snow particle"]},
             {"name": "process", "terms": ["transport", "saltation", "suspension", "erosion", "deposition", "redistribution", "sublimation", "flux", "snow transport", "particle trajectory", "drift evolution", "deposition dynamics"]}
           ],
           "negative_any": ["snow leopard", "snow crab", "snow cover classification", "snowball sampling", "semiconductor transport", "charge transport", "electron transport", "electrochemical transport", "slurry pipeline", "pneumatic pipeline", "fluvial sediment transport", "submarine sediment transport", "medical aerosol", "drug delivery", "blood flow"],

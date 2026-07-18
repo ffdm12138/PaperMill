@@ -110,7 +110,6 @@ remain excluded runtime transaction state. None is source or snapshot content.
 The read-only workflow is:
 
 ```text
-python scripts/migrate_keyword_notebooks_v3.py --inventory --mapping-template .local/discovery_keyword_v3/mapping.template.json
 python scripts/audit_discovery_keyword_index_sources.py
 python scripts/recover_discovery_keyword_notebooks.py --inspect
 python scripts/sync_catalog_categories.py

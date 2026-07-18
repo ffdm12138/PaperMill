@@ -118,10 +118,6 @@ def _metadata_fields_for_report(root: Path, source_id: str) -> dict:
         # "Ingest layered semantics".
         "metadata_shell_required_for_conversion": True,
         "matched_metadata_required_for_conversion": False,
-        # Deprecated alias — means metadata shell only, not complete matched
-        # metadata. Kept for backward-compatible report readers; prefer the
-        # two fields above.
-        "metadata_required_for_conversion": True,
         "post_conversion_metadata_resolution_recommended": (
             import_status in POST_CONVERSION_RESOLVE_RECOMMENDED_STATUSES
             or not _metadata_ready_for_commit(root, source_id, metadata)
@@ -330,9 +326,6 @@ def main() -> int:
                         help="override MinerU output cache directory for this run")
     parser.add_argument("--cache-only", action="store_true",
                         help="restore from output cache only; never run MinerU")
-    parser.add_argument("--only-preflight-ready", action="store_true",
-                        help="(deprecated, use --only-convertible) only convert paper_raw folders whose "
-                             ".import_status.json status is ready_for_convert")
     parser.add_argument("--only-convertible", action="store_true",
                         help="only convert workspaces with a PDF, metadata.json shell, and a status that is safe for conversion; "
                              "this includes unmatched/incomplete metadata bootstrap statuses (doi_invalid, "
@@ -538,16 +531,6 @@ def main() -> int:
         asset_ok, asset_reason, has_pdf, has_metadata_shell = asset_gates[source_id]
         item["has_pdf"] = has_pdf
         item["has_metadata_shell"] = has_metadata_shell
-        if args.only_preflight_ready:
-            preflight_status = _preflight_status(args.paper_raw_dir, source_id)
-            item["preflight_status"] = preflight_status
-            if preflight_status != "ready_for_convert":
-                item["status"] = "skipped"
-                item["stage"] = "skip"
-                item["reason"] = "preflight status is not ready_for_convert"
-                _finish_item(item, item_started, api_before_item, api_before_item)
-                report.append(item)
-                continue
         if args.only_convertible:
             preflight_status = _preflight_status(args.paper_raw_dir, source_id)
             item["preflight_status"] = preflight_status

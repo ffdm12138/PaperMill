@@ -30,6 +30,17 @@ RELEVANCE_STATES = frozenset({
     "verification_deferred",
     "candidate_invalid",
 })
+
+
+class RelevanceState(str, Enum):
+    """Authoritative relevance-state values shared across the codebase."""
+    PROFILE_UNBOUND = "profile_unbound"
+    PASSED = "passed"
+    REJECTED = "rejected"
+    VERIFICATION_DEFERRED = "verification_deferred"
+    CANDIDATE_INVALID = "candidate_invalid"
+
+
 SCOPE_POLICY_REQUIRE_OPENALEX_SUBFIELD = "require_openalex_subfield"
 LEGACY_UNBOUND_FILTER_ID = "S0"
 LEGACY_UNBOUND_LABEL = "__legacy_unbound__"
@@ -172,8 +183,13 @@ def _validate_groups(value: Any) -> list[dict[str, Any]]:
             raise RelevanceProfileError("required group names must be unique and non-blank")
         terms = _require_string_list(raw["terms"], f"anchors.required_groups[{index}].terms")
         normalized_terms = [normalize_relevance_term(term) for term in terms]
-        if all_terms.intersection(normalized_terms):
-            raise RelevanceProfileError("terms may not occur in multiple required groups")
+        conflicting = all_terms.intersection(normalized_terms)
+        if conflicting:
+            raise RelevanceProfileError(
+                f"terms may not occur in multiple required groups: "
+                f"{', '.join(sorted(conflicting))} already in "
+                f"{', '.join(sorted(names))}"
+            )
         all_terms.update(normalized_terms)
         names.add(name)
         groups.append({"name": str(raw["name"]).strip(), "terms": terms})
@@ -224,6 +240,35 @@ def profile_hash(profile: Mapping[str, Any]) -> str:
 
 
 def validate_relevance_profile(value: Any) -> dict[str, Any]:
+    """Validate a fully-resolved active relevance profile.
+
+    An active profile must have resolved taxonomy (resolved=True, non-empty
+    filter_ids).  Source definitions that are deliberately unresolved should
+    pass through :func:`validate_relevance_profile_source` first, then resolve
+    labels, then call this function.
+    """
+    normalized = validate_relevance_profile_source(value, require_resolved=True)
+    openalex = normalized["openalex"]
+    if not openalex["resolved"]:
+        raise RelevanceProfileError("active relevance profiles must resolve OpenAlex subfields")
+    if not openalex["filter_ids"]:
+        raise RelevanceProfileError("openalex.filter_ids must contain at least one ID")
+    return normalized
+
+
+def validate_relevance_profile_source(
+    value: Any, *, require_resolved: bool = False,
+) -> dict[str, Any]:
+    """Validate the structure and anchors of a relevance profile definition.
+
+    Unlike :func:`validate_relevance_profile`, this function does not require
+    taxonomy resolution: ``resolved`` may be ``False`` and ``filter_ids`` may
+    be empty.  Set *require_resolved* to ``True`` to enforce the same
+    resolution checks as the active-profile validator (useful as a pre-flight
+    before the full ``validate_relevance_profile`` call).
+
+    Returns a normalized dict whose ``profile_hash`` is always present.
+    """
     if not isinstance(value, dict):
         raise RelevanceProfileError("relevance_profile must be an object")
     allowed_keys = {
@@ -257,13 +302,13 @@ def validate_relevance_profile(value: Any) -> dict[str, Any]:
         and filter_ids == [LEGACY_UNBOUND_FILTER_ID]
         and openalex.get("filter_labels") == [LEGACY_UNBOUND_LABEL]
     )
-    if not resolved and not legacy_unbound:
+    if require_resolved and not resolved and not legacy_unbound:
         raise RelevanceProfileError("active relevance profiles must resolve OpenAlex subfields")
-    if not filter_ids:
+    if require_resolved and not filter_ids:
         raise RelevanceProfileError("openalex.filter_ids must contain at least one ID")
     if not isinstance(openalex["filter_labels"], list):
         raise RelevanceProfileError("openalex.filter_labels must be a list")
-    if len(openalex["filter_labels"]) != len(filter_ids):
+    if filter_ids and len(openalex["filter_labels"]) != len(filter_ids):
         raise RelevanceProfileError("openalex.filter_labels must align with filter_ids")
     labels = [str(label).strip() for label in openalex["filter_labels"]]
     if any(not label for label in labels):
@@ -345,7 +390,7 @@ def legacy_unbound_profile() -> dict[str, Any]:
     plan-bound configuration tool.  It intentionally makes no provider
     relevance claim and prevents old v3 fixtures from becoming unclaimable.
     """
-    return validate_relevance_profile({
+    return validate_relevance_profile_source({
         "schema_version": RELEVANCE_PROFILE_SCHEMA_VERSION,
         "matcher_schema_version": MATCHER_SCHEMA_VERSION,
         "openalex": {
@@ -498,6 +543,138 @@ class ScopeVerification:
     error_class: str | None = None
     http_status: int | None = None
     retry_after_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class ScopeClassification:
+    """Single authoritative OpenAlex Work → subfield scope classification.
+
+    Canonical evidence is profile-independent: *subfield_ids* from the
+    target profile are not embedded in the evidence hash.  The
+    profile-specific match verdict is computed separately from the
+    stable evidence.
+    """
+
+    verdict: str  # verified | mismatch | invalid
+    canonical_evidence: dict[str, Any]
+    evidence_hash: str
+    invalid_reason: str | None = None
+    malformed_types: tuple[str, ...] = ()
+
+    @classmethod
+    def classify(
+        cls,
+        work: dict[str, Any],
+        subfield_ids: list[str],
+    ) -> "ScopeClassification":
+        """The single entry point for both production and frozen verifiers."""
+        import re as _re
+        import hashlib as _hashlib
+        import json as _json
+
+        canonical_doi = normalize_doi(str(work.get("doi") or ""))
+        malformed: list[str] = []
+
+        topics = work.get("topics") if isinstance(work, dict) else None
+        if topics is None:
+            malformed.append("topics_missing")
+            return cls._invalid(
+                canonical_doi, "topics_missing", tuple(malformed),
+            )
+        if not isinstance(topics, list):
+            malformed.append("topics_not_list")
+            return cls._invalid(
+                canonical_doi, "topics_not_list", tuple(malformed),
+            )
+
+        wanted = {
+            _re.sub(r"^https?://openalex\.org/subfields/", "", str(item))
+            for item in subfield_ids
+        }
+        canonical_topics: list[dict[str, Any]] = []
+        canonical_entity_pairs: set[tuple[str, str]] = set()
+
+        for topic in topics:
+            if not isinstance(topic, dict):
+                malformed.append("topic_not_object")
+                continue
+            subfield = topic.get("subfield")
+            if not isinstance(subfield, dict) or not subfield.get("id"):
+                if "subfield_missing" not in malformed:
+                    malformed.append("subfield_missing")
+                continue
+            sid = str(subfield.get("id") or "")
+            sid = _re.sub(r"^https?://openalex\.org/subfields/", "", sid)
+            if not _re.fullmatch(r"[A-Za-z0-9]+", sid):
+                if "subfield_id_type_error" not in malformed:
+                    malformed.append("subfield_id_type_error")
+                continue
+            topic_id = str(topic.get("id") or "")
+            pair = (topic_id, sid)
+            if pair not in canonical_entity_pairs:
+                canonical_entity_pairs.add(pair)
+                canonical_topics.append({
+                    "id": topic_id,
+                    "subfield": {"id": sid},
+                })
+
+        if malformed:
+            return cls._invalid(
+                canonical_doi,
+                "multiple_malformed" if len(malformed) > 1 else malformed[0],
+                tuple(sorted(set(malformed))),
+            )
+
+        # Stable sort for canonical evidence.
+        canonical_topics.sort(key=lambda t: (t["id"], t["subfield"]["id"]))
+        evidence = {
+            "schema_version": "1.0",
+            "normalized_doi": canonical_doi,
+            "classification_input_state": "valid",
+            "topics": canonical_topics,
+        }
+        evidence_hash = _hashlib.sha256(
+            _json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")
+        ).hexdigest()
+
+        # Check subfield match.
+        matched = {t["subfield"]["id"] for t in canonical_topics}
+        if matched & wanted:
+            return cls(
+                verdict="verified",
+                canonical_evidence=evidence,
+                evidence_hash=evidence_hash,
+            )
+        return cls(
+            verdict="mismatch",
+            canonical_evidence=evidence,
+            evidence_hash=evidence_hash,
+        )
+
+    @classmethod
+    def _invalid(
+        cls, doi: str, reason: str, malformed_types: tuple[str, ...],
+    ) -> "ScopeClassification":
+        import hashlib as _hashlib
+        import json as _json
+        evidence = {
+            "schema_version": "1.0",
+            "normalized_doi": doi,
+            "classification_input_state": reason,
+            "topics": None,
+        }
+        evidence_hash = _hashlib.sha256(
+            _json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            .encode("utf-8")
+        ).hexdigest()
+        return cls(
+            verdict="invalid",
+            canonical_evidence=evidence,
+            evidence_hash=evidence_hash,
+            invalid_reason=reason,
+            malformed_types=malformed_types,
+        )
 
 
 @dataclass(frozen=True)
@@ -927,26 +1104,11 @@ class OpenAlexDoiVerifier:
 
     @staticmethod
     def _scope_result(work: dict[str, Any], subfield_ids: list[str]) -> ScopeVerification:
-        topics = work.get("topics") if isinstance(work, dict) else None
-        if not isinstance(topics, list):
-            return ScopeVerification(status="invalid", raw_work=work)
-        wanted = {
-            re.sub(r"^https?://openalex\.org/subfields/", "", str(item))
-            for item in subfield_ids
-        }
-        for topic in topics:
-            if not isinstance(topic, dict):
-                return ScopeVerification(status="invalid", raw_work=work)
-            subfield = topic.get("subfield")
-            if not isinstance(subfield, dict) or not subfield.get("id"):
-                return ScopeVerification(status="invalid", raw_work=work)
-            sid = str(subfield.get("id") or "")
-            sid = re.sub(r"^https?://openalex\.org/subfields/", "", sid)
-            if not re.fullmatch(r"[A-Za-z0-9]+", sid):
-                return ScopeVerification(status="invalid", raw_work=work)
-            if sid in wanted:
-                return ScopeVerification(status="verified", raw_work=work)
-        return ScopeVerification(status="mismatch", raw_work=work)
+        classification = ScopeClassification.classify(work, subfield_ids)
+        return ScopeVerification(
+            status=classification.verdict,
+            raw_work=work,
+        )
 
     def _fetch_batch_http(self, dois: list[str]) -> Mapping[str, Any] | ScopeVerification:
         import requests

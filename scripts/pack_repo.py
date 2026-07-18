@@ -296,7 +296,34 @@ SECRET_PLACEHOLDERS = {
     "your_key_if_needed",
     "test@example.com",
     "test-openalex-key",
+    # Known test-fixture values — real-format but synthetic.
+    "leak-check-key-99999",
+    "fetch-test-key-abc",
+    "err-leak-key-99999",
+    "leaked-key-12345",
+    "leak-check@test.org",
+    "fetch@test.org",
+    "err-leak@test.org",
+    "secret@leak.com",
 }
+
+# Test fixture files that legitimately contain fake credential literals for
+# unit-test purposes.  They are still scanned — individual placeholder values
+# (above) suppress false positives — but files listed here never fail the
+# packer's secret gate.
+# Value-level allowlist — a finding whose matched line contains one of these
+# exact substrings is a known test placeholder, not a leaked secret.
+# Files are never skipped wholesale.
+TEST_SECRET_PLACEHOLDER_VALUES: frozenset[str] = frozenset({
+    "test-openalex-key",
+    "test-openalex-email",
+    "test@example.com",
+    "fake-api-key-123",
+    "test_api_key_placeholder",
+    "not-a-real-key",
+    "placeholder_key_12345",
+    "test-secret-value",
+})
 
 
 @dataclass(frozen=True)
@@ -389,7 +416,11 @@ def scan_text_for_secrets(text: str, rel_path: str = "") -> list[SecretFinding]:
     for name, pattern in SECRET_PATTERNS:
         for match in pattern.finditer(text):
             value = match.group(1) if match.groups() else match.group(0)
-            if value in SECRET_PLACEHOLDERS or value.startswith("your_"):
+            if (
+                value in SECRET_PLACEHOLDERS
+                or value in TEST_SECRET_PLACEHOLDER_VALUES
+                or value.startswith("your_")
+            ):
                 continue
             line = text[:match.start()].count("\n") + 1
             findings.append(SecretFinding(
@@ -400,17 +431,19 @@ def scan_text_for_secrets(text: str, rel_path: str = "") -> list[SecretFinding]:
     return findings
 
 
-def scan_files_for_secrets(files: list[str]) -> list[SecretFinding]:
+def scan_files_for_secrets(
+    files: list[str], *, include_tests: bool = False,
+) -> list[SecretFinding]:
     """Scan files for hardcoded credential-like patterns.
 
-    Test files (``tests/``) are excluded — they legitimately contain fake
-    credentials for unit-test purposes. The dedicated hygiene test
-    ``test_no_hardcoded_openalex_secrets.py`` separately covers non-test
-    tracked files.
+    By default test files (``tests/``) are excluded — they legitimately
+    contain fake credentials.  The authoritative packer entry point always
+    passes *include_tests=True* so the snapshot scan covers every file that
+    will actually ship.
     """
     findings: list[SecretFinding] = []
     for rel in files:
-        if rel.startswith("tests/"):
+        if rel.startswith("tests/") and not include_tests:
             continue
         path = PROJECT_ROOT / rel
         if not _lightweight_suffix_match(rel, path):
@@ -787,7 +820,7 @@ def main():
         sys.exit(1)
 
     # Secret scan on filtered list (only files entering the zip).
-    secret_findings = scan_files_for_secrets(files)
+    secret_findings = scan_files_for_secrets(files, include_tests=True)
     if secret_findings:
         print("[ERROR] Secret-like literal(s) found; refusing to pack")
         for finding in secret_findings[:20]:

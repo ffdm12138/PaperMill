@@ -33,6 +33,7 @@ from src.discovery.relevance import (
     MATCHER_SCHEMA_VERSION,
     RelevanceReason,
     validate_relevance_profile,
+    validate_relevance_profile_source,
 )
 from src.utils.atomic_io import atomic_replace_bytes, atomic_write_json
 
@@ -95,6 +96,12 @@ def is_profile_closeable_candidate_state(
     return _profile_change_relevance_state(candidate) and old_hash != target_profile_hash
 
 
+# Re-exported from the neutral relevance_runtime module so that every
+# consumer (coordinator, migration, etc.) can import without pulling in
+# the full profile transaction machinery.
+from src.discovery.relevance_runtime import RelevanceRuntimePaths  # noqa: F401
+
+
 @dataclass(frozen=True)
 class TaxonomySnapshot:
     pages: tuple[dict[str, Any], ...]
@@ -102,12 +109,18 @@ class TaxonomySnapshot:
     retrieved_at: str
     page_hashes: tuple[str, ...]
     snapshot_sha256: str
+    schema_version: str = "1.0"
+    raw_snapshot_sha256: str = ""
+    taxonomy_semantic_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "retrieved_at": self.retrieved_at,
             "page_hashes": list(self.page_hashes),
             "snapshot_sha256": self.snapshot_sha256,
+            "raw_snapshot_sha256": self.raw_snapshot_sha256,
+            "taxonomy_semantic_sha256": self.taxonomy_semantic_sha256,
             "pages": list(self.pages),
             "entities": list(self.entities),
         }
@@ -154,10 +167,313 @@ def fetch_subfields_taxonomy(
         cursor = str(next_cursor)
     page_hashes = tuple(_canonical_hash(page) for page in pages)
     snapshot_sha = _canonical_hash({"pages": pages, "entities": entities})
+
+    # ── Dual hashes (Phase 6.2) ────────────────────────────────────────
+    # raw_snapshot_sha256 — proves raw pages were not modified.
+    raw_payload = b"".join(
+        _json_bytes(page) for page in pages
+    )
+    raw_snapshot_sha256 = hashlib.sha256(raw_payload).hexdigest()
+
+    # taxonomy_semantic_sha256 — from canonical entities rebuilt from pages.
+    canonical_entities = _rebuild_canonical_entities(pages)
+    taxonomy_semantic_sha256 = _canonical_hash(
+        {"entities": canonical_entities}
+    )
+
+    # ── Validate entity cache consistency (Phase 6.3) ──────────────────
+    raw_entity_ids: set[str] = set()
+    for page in pages:
+        for entity in page.get("results", []):
+            if not isinstance(entity, dict):
+                raise RelevanceProfileTransactionError(
+                    "OpenAlex taxonomy entity is malformed"
+                )
+            eid = _entity_id(entity)
+            if eid in raw_entity_ids:
+                raise RelevanceProfileTransactionError(
+                    f"duplicate taxonomy entity ID across pages: {eid}"
+                )
+            raw_entity_ids.add(eid)
+
+    canonical_ids = {e["id"] for e in canonical_entities}
+    if canonical_ids != raw_entity_ids:
+        missing_from_canonical = sorted(raw_entity_ids - canonical_ids)
+        missing_from_raw = sorted(canonical_ids - raw_entity_ids)
+        raise RelevanceProfileTransactionError(
+            f"taxonomy entity/page mismatch: "
+            f"canonical={len(canonical_ids)}, raw={len(raw_entity_ids)}; "
+            + (f"in-pages-not-in-canonical: {missing_from_canonical[:5]}; "
+               if missing_from_canonical else "")
+            + (f"in-canonical-not-in-pages: {missing_from_raw[:5]}"
+               if missing_from_raw else "")
+        )
+
     return TaxonomySnapshot(
         pages=tuple(pages), entities=tuple(entities), retrieved_at=retrieved_at,
         page_hashes=page_hashes, snapshot_sha256=snapshot_sha,
+        raw_snapshot_sha256=raw_snapshot_sha256,
+        taxonomy_semantic_sha256=taxonomy_semantic_sha256,
     )
+
+
+def validate_taxonomy_snapshot(snapshot: dict[str, Any]) -> list[str]:
+    """Offline validation: re-derive every hash and structural invariant.
+
+    Returns a list of violation descriptions (empty ⇒ valid).  Call this
+    before trusting a stored or user-supplied taxonomy snapshot in any
+    plan, resolve, or CLI operation.
+
+    This function must NEVER raise an exception — all failures return as
+    violation strings.
+    """
+    violations: list[str] = []
+
+    # ── Phase 0: Top-level type guard ─────────────────────────────────
+    if not isinstance(snapshot, dict):
+        violations.append("taxonomy snapshot is not a dict")
+        return violations
+
+    # ── Phase 1: Schema version gate ──────────────────────────────────
+    schema = str(snapshot.get("schema_version") or "")
+    if schema != "1.0":
+        violations.append(
+            f"unsupported taxonomy snapshot schema_version: {schema!r}")
+        return violations  # cannot trust structure of unknown schema
+
+    # ── Phase 2: Required fields ─────────────────────────────────────
+    for field in ("pages", "entities", "retrieved_at", "page_hashes",
+                  "snapshot_sha256", "raw_snapshot_sha256",
+                  "taxonomy_semantic_sha256"):
+        if field not in snapshot:
+            violations.append(f"taxonomy snapshot missing field: {field}")
+    if violations:
+        return violations
+
+    pages = snapshot.get("pages")
+    entities = snapshot.get("entities")
+    page_hashes = snapshot.get("page_hashes")
+    retrieved_at = snapshot.get("retrieved_at")
+
+    # ── Phase 3: Structural pre-checks BEFORE any hash computation ───
+    # All malformed inputs are collected as violations and trigger an
+    # early return so hashes are never computed on known-bad data.
+
+    # 3a. pages must be a list (not string, not None).
+    if not isinstance(pages, list):
+        violations.append("taxonomy pages must be a list")
+    else:
+        # 3b. Each page must be a dict.
+        for i, page in enumerate(pages):
+            if not isinstance(page, dict):
+                violations.append(f"taxonomy page[{i}] is not a dict")
+                continue
+            # 3c. Each page's results must be a list.
+            results = page.get("results")
+            if not isinstance(results, list):
+                violations.append(
+                    f"taxonomy page[{i}].results is not a list")
+                continue
+            # 3d. Each result in results must be a dict.
+            # 3e. Each entity ID must be a valid subfield URI
+            #     (catch errors from _entity_id).
+            for j, result in enumerate(results):
+                if not isinstance(result, dict):
+                    violations.append(
+                        f"taxonomy page[{i}].results[{j}] is not a dict")
+                    continue
+                try:
+                    _entity_id(result)
+                except RelevanceProfileTransactionError as exc:
+                    violations.append(
+                        f"taxonomy page[{i}].results[{j}] entity ID "
+                        f"invalid: {exc}")
+
+    # 3f. entities must be a list.
+    if not isinstance(entities, list):
+        violations.append("taxonomy entities must be a list")
+    else:
+        # 3g. Each entity must be a dict.
+        # 3h. Each entity ID must be a valid subfield URI.
+        for i, entity in enumerate(entities):
+            if not isinstance(entity, dict):
+                violations.append(
+                    f"taxonomy entity[{i}] is not a dict")
+                continue
+            try:
+                _entity_id(entity)
+            except RelevanceProfileTransactionError as exc:
+                violations.append(
+                    f"taxonomy entity[{i}] ID invalid: {exc}")
+
+    # 3i. page_hashes must be a list of strings.
+    if not isinstance(page_hashes, list):
+        violations.append("taxonomy page_hashes must be a list")
+    elif isinstance(pages, list):
+        # 3j. Length of page_hashes must equal length of pages.
+        if len(page_hashes) != len(pages):
+            violations.append(
+                f"page_hashes length ({len(page_hashes)}) != "
+                f"pages length ({len(pages)})")
+        # 3k. Each page_hash must be 64 hex characters.
+        for i, h in enumerate(page_hashes):
+            if not isinstance(h, str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", str(h)):
+                violations.append(
+                    f"page_hashes[{i}] is not a 64-char hex string")
+
+    # 3l. retrieved_at must be a valid timezone-aware ISO-8601 string.
+    retrieved_at_str = str(retrieved_at or "")
+    try:
+        dt = datetime.fromisoformat(retrieved_at_str)
+        if dt.tzinfo is None:
+            violations.append("retrieved_at is not timezone-aware")
+    except (ValueError, TypeError):
+        violations.append(
+            f"retrieved_at is not a valid ISO-8601 string: "
+            f"{retrieved_at_str!r}")
+
+    # If any structural pre-check failed, return early — do not compute
+    # hashes on data known to be malformed.
+    if violations:
+        return violations
+
+    # ── Phase 4: Hash computations (safe now that structure is valid) ──
+
+    # 4a. Re-derive raw_snapshot_sha256.
+    raw_payload = b"".join(_json_bytes(page) for page in pages)
+    expected_raw = hashlib.sha256(raw_payload).hexdigest()
+    stored_raw = str(snapshot.get("raw_snapshot_sha256") or "")
+    if expected_raw != stored_raw:
+        violations.append(
+            f"raw_snapshot_sha256 mismatch: computed={expected_raw[:16]}..., "
+            f"stored={stored_raw[:16]}...")
+
+    # 4b. Raw pages must not contain duplicate subfield IDs.
+    raw_page_ids: set[str] = set()
+    for page in pages:
+        for raw in page.get("results", []):
+            if isinstance(raw, dict):
+                try:
+                    eid = _entity_id(raw)
+                except RelevanceProfileTransactionError:
+                    continue
+                if eid in raw_page_ids:
+                    violations.append(
+                        f"duplicate subfield ID in raw pages: {eid}")
+                raw_page_ids.add(eid)
+
+    # 4c. Rebuild canonical entities and re-derive semantic hash.
+    canonical = _rebuild_canonical_entities(pages)
+    expected_semantic = _canonical_hash({"entities": canonical})
+    stored_semantic = str(
+        snapshot.get("taxonomy_semantic_sha256") or "")
+    if expected_semantic != stored_semantic:
+        violations.append(
+            f"taxonomy_semantic_sha256 mismatch: "
+            f"computed={expected_semantic[:16]}..., "
+            f"stored={stored_semantic[:16]}...")
+
+    # 4d. Snapshot hash.
+    expected_snapshot = _canonical_hash(
+        {"pages": pages, "entities": entities})
+    stored_snapshot = str(snapshot.get("snapshot_sha256") or "")
+    if expected_snapshot != stored_snapshot:
+        violations.append("snapshot_sha256 mismatch")
+
+    # 4e. Page hashes.
+    stored_page_hashes = snapshot.get("page_hashes")
+    if isinstance(stored_page_hashes, list):
+        expected_page_hashes = [
+            _canonical_hash(page) for page in pages]
+        if expected_page_hashes != stored_page_hashes:
+            violations.append("page_hashes mismatch")
+
+    # 4f. Validate entity IDs are subfield URIs (deep entity validation).
+    seen_eids: set[str] = set()
+    for entity in entities:
+        if not isinstance(entity, dict):
+            violations.append("taxonomy entity is not a dict")
+            continue
+        eid = str(entity.get("id") or "")
+        if not eid.startswith("https://openalex.org/subfields/"):
+            violations.append(
+                f"taxonomy entity ID is not a subfield URI: {eid!r}")
+            continue
+        short = eid.rsplit("/", 1)[-1]
+        if not re.fullmatch(r"[A-Za-z0-9]+", short):
+            violations.append(
+                f"taxonomy subfield ID is invalid: {short!r}")
+        try:
+            short_id = _entity_id(entity)
+        except RelevanceProfileTransactionError as exc:
+            violations.append(
+                f"taxonomy entity {eid} ID invalid for dedup: {exc}")
+            continue
+        if short_id in seen_eids:
+            violations.append(
+                f"duplicate taxonomy entity ID: {short_id}")
+        seen_eids.add(short_id)
+        display = str(entity.get("display_name") or "")
+        if not display.strip():
+            violations.append(
+                f"taxonomy entity {eid} has empty display_name")
+        for parent_key in ("field", "domain"):
+            parent = entity.get(parent_key)
+            if not isinstance(parent, dict) or not parent.get("id"):
+                violations.append(
+                    f"taxonomy entity {eid} missing {parent_key}.id")
+
+    # 4g. Cross-check entities vs pages — full canonical content comparison.
+    #     Not just IDs: display_name, field, and domain must also match,
+    #     because profile label resolution uses snapshot.entities, not pages.
+    canonical_from_pages = _rebuild_canonical_entities(pages)
+    canonical_from_snapshot = _rebuild_canonical_entities(
+        [{"results": entities}])
+    if canonical_from_pages != canonical_from_snapshot:
+        violations.append(
+            "canonical entities rebuilt from pages do not match "
+            "snapshot.entities cache — labels may be inconsistent")
+
+    return violations
+
+
+def _rebuild_canonical_entities(
+    pages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rebuild canonical entities from raw taxonomy pages.
+
+    Each entity preserves only ``id``, ``display_name``, ``field``, and
+    ``domain`` — the minimal stable identity.  Results are sorted by ID.
+    """
+    seen: set[str] = set()
+    entities: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for raw in page.get("results", []):
+            if not isinstance(raw, dict):
+                continue
+            eid = _entity_id(raw)
+            if eid in seen:
+                continue
+            seen.add(eid)
+            field = raw.get("field") if isinstance(raw.get("field"), dict) else {}
+            domain = raw.get("domain") if isinstance(raw.get("domain"), dict) else {}
+            entities.append({
+                "id": eid,
+                "display_name": str(raw.get("display_name") or ""),
+                "field": {
+                    "id": str(field.get("id") or ""),
+                    "display_name": str(field.get("display_name") or ""),
+                },
+                "domain": {
+                    "id": str(domain.get("id") or ""),
+                    "display_name": str(domain.get("display_name") or ""),
+                },
+            })
+    entities.sort(key=lambda e: e["id"])
+    return entities
 
 
 def _entity_id(entity: Mapping[str, Any]) -> str:
@@ -258,13 +574,82 @@ def build_relevance_profile_plan(
     profiles_path: Path,
     notebook_dir: Path,
     pending_pages_dir: Path,
-    transaction_root: Path,
+    transaction_root: Path | None = None,
+    runtime_paths: RelevanceRuntimePaths | None = None,
     taxonomy: TaxonomySnapshot | None = None,
     taxonomy_fetcher: Callable[[], TaxonomySnapshot] | None = None,
 ) -> dict[str, Any]:
     """Create a complete, hash-bound plan without mutating notebooks/pages."""
-    snapshot = taxonomy or (taxonomy_fetcher() if taxonomy_fetcher else fetch_subfields_taxonomy())
+    if runtime_paths is None:
+        if transaction_root is None:
+            raise RelevanceProfileTransactionError(
+                "transaction_root or runtime_paths is required for a profile plan"
+            )
+        runtime_paths = RelevanceRuntimePaths.resolve(
+            notebook_root=Path(notebook_dir),
+            journal_root=Path(pending_pages_dir),
+            transaction_root=Path(transaction_root),
+        )
+    else:
+        supplied = {
+            "notebook_root": Path(notebook_dir).resolve(),
+            "journal_root": Path(pending_pages_dir).resolve(),
+            "transaction_root": (
+                Path(transaction_root).resolve() if transaction_root is not None
+                else runtime_paths.transaction_root
+            ),
+        }
+        expected = {
+            "notebook_root": runtime_paths.notebook_root,
+            "journal_root": runtime_paths.journal_root,
+            "transaction_root": runtime_paths.transaction_root,
+        }
+        if supplied != expected:
+            raise RelevanceProfileTransactionError(
+                "supplied relevance roots do not match runtime_paths"
+            )
+    notebook_dir = runtime_paths.notebook_root
+    pending_pages_dir = runtime_paths.journal_root
+    transaction_root = runtime_paths.transaction_root
+    # ── Step 1: Load and structurally validate profile definitions ─────
     definitions = _load_profile_definitions(Path(profiles_path))
+    # Validate every source definition locally before any network access.
+    for definition in definitions:
+        validate_relevance_profile_source(definition["profile"])
+    # ── Step 2: Fetch taxonomy (only after local validation passes) ────
+    if taxonomy is not None:
+        if isinstance(taxonomy, TaxonomySnapshot):
+            # Always validate — a TaxonomySnapshot can be constructed
+            # from untrusted data by tests, CLI, or other callers.
+            raw = taxonomy.to_dict()
+        elif isinstance(taxonomy, dict):
+            raw = dict(taxonomy)
+        else:
+            raise RelevanceProfileTransactionError(
+                f"taxonomy must be a TaxonomySnapshot or dict, got {type(taxonomy)}")
+        # Both paths go through the same validation gate.
+        violations = validate_taxonomy_snapshot(raw)
+        if violations:
+            raise RelevanceProfileTransactionError(
+                "taxonomy snapshot validation failed: " + "; ".join(violations))
+        snapshot = TaxonomySnapshot(
+            pages=tuple(raw.get("pages") or ()),
+            entities=tuple(raw.get("entities") or ()),
+            retrieved_at=str(raw.get("retrieved_at") or ""),
+            page_hashes=tuple(raw.get("page_hashes") or ()),
+            snapshot_sha256=str(raw.get("snapshot_sha256") or ""),
+            schema_version=str(raw.get("schema_version") or "1.0"),
+            raw_snapshot_sha256=str(raw.get("raw_snapshot_sha256") or ""),
+            taxonomy_semantic_sha256=str(raw.get("taxonomy_semantic_sha256") or ""),
+        )
+    else:
+        snapshot = taxonomy_fetcher() if taxonomy_fetcher else fetch_subfields_taxonomy()
+        # Validate the fetched snapshot — the fetcher path previously
+        # bypassed validate_taxonomy_snapshot entirely.
+        violations = validate_taxonomy_snapshot(snapshot.to_dict())
+        if violations:
+            raise RelevanceProfileTransactionError(
+                "taxonomy snapshot validation failed: " + "; ".join(violations))
     notebook_store = KeywordNotebookStore(Path(notebook_dir))
     planned: list[dict[str, Any]] = []
     seen_keywords: set[str] = set()
@@ -491,10 +876,10 @@ def build_relevance_profile_plan(
         "closure_reason": RelevanceReason.STALE_PROFILE_CLOSED_BY_PROFILE_APPLY.value,
         "matcher_schema_version": MATCHER_SCHEMA_VERSION,
         "profiles_path": str(Path(profiles_path).resolve()),
-        "notebook_dir": str(Path(notebook_dir).resolve()),
-        "pending_pages_dir": str(Path(pending_pages_dir).resolve()),
-        "transaction_root": str(Path(transaction_root).resolve()),
-        "lock_path": str((Path(transaction_root).parent / "locks" / "relevance_profiles.lock").resolve()),
+        "resolved_notebook_root": str(runtime_paths.notebook_root),
+        "resolved_journal_root": str(runtime_paths.journal_root),
+        "resolved_transaction_root": str(runtime_paths.transaction_root),
+        "resolved_lock_path": str(runtime_paths.lock_path),
         "taxonomy_snapshot_sha256": snapshot.snapshot_sha256,
         "taxonomy_retrieved_at": snapshot.retrieved_at,
         "taxonomy_page_hashes": list(snapshot.page_hashes),
@@ -509,7 +894,7 @@ def build_relevance_profile_plan(
         for item in planned for mutation in item["page_mutations"]
     )
     plan_core["transaction_journal_path"] = str(
-        (Path(transaction_root) / f"{plan_core['transaction_id']}.json").resolve()
+        (runtime_paths.transaction_root / f"{plan_core['transaction_id']}.json").resolve()
     )
     plan_core["page_mutation_order"] = page_order
     plan_core["expected_after_decision_count"] = sum(
@@ -517,7 +902,7 @@ def build_relevance_profile_plan(
         for item in planned for mutation in item["page_mutations"]
     )
     plan_core["commit_point_files"] = [item["notebook_path"] for item in planned] + [
-        str((Path(transaction_root) / f"{plan_core['transaction_id']}.commit.json").resolve())
+        str((runtime_paths.transaction_root / f"{plan_core['transaction_id']}.commit.json").resolve())
     ]
     plan_core["resume_policy"] = (
         "resume the sole applying journal; skip applied paths only when after_sha256 matches; "
@@ -529,7 +914,8 @@ def build_relevance_profile_plan(
 
 
 def _journal_path(plan: Mapping[str, Any]) -> Path:
-    return Path(str(plan["transaction_root"])) / f"{plan['transaction_id']}.json"
+    runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    return runtime_paths.transaction_root / f"{plan['transaction_id']}.json"
 
 
 def _write_journal(path: Path, journal: dict[str, Any]) -> None:
@@ -558,9 +944,8 @@ def list_applying_relevance_profile_transactions(root: Path) -> list[Path]:
 
 
 def _assert_sole_applying_journal(plan: Mapping[str, Any]) -> None:
-    applying = list_applying_relevance_profile_transactions(
-        Path(str(plan["transaction_root"]))
-    )
+    runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    applying = list_applying_relevance_profile_transactions(runtime_paths.transaction_root)
     current = _journal_path(plan).resolve()
     foreign = [path for path in applying if path != current]
     if foreign:
@@ -590,17 +975,125 @@ def _validate_plan_identity(plan: Mapping[str, Any], expected_plan_hash: str) ->
     taxonomy = plan.get("taxonomy_snapshot")
     if not isinstance(taxonomy, Mapping) or taxonomy.get("snapshot_sha256") != plan.get("taxonomy_snapshot_sha256"):
         raise RelevanceProfileTransactionError("profile plan taxonomy snapshot drift")
+    taxonomy_violations = validate_taxonomy_snapshot(dict(taxonomy))
+    if taxonomy_violations:
+        raise RelevanceProfileTransactionError(
+            "profile plan taxonomy snapshot invalid: " + "; ".join(taxonomy_violations))
     for item in plan.get("notebooks") or []:
         normalized = validate_relevance_profile(item.get("profile"))
         if normalized.get("profile_hash") != item.get("profile_hash"):
             raise RelevanceProfileTransactionError("profile plan target profile hash drift")
+    # All four resolved roots are checked by the one runtime-path authority.
+    try:
+        RelevanceRuntimePaths.from_plan(plan)
+    except ValueError as exc:
+        raise RelevanceProfileTransactionError(str(exc)) from exc
+
+
+def validate_relevance_profile_transaction_journal(
+    journal: Mapping[str, Any], *, journal_path: Path | None = None,
+) -> dict[str, Any]:
+    """Validate the complete durable shape of one profile transaction journal."""
+    if not isinstance(journal, Mapping):
+        raise RelevanceProfileTransactionError("profile transaction journal must be an object")
+    required = {
+        "schema_version", "transaction_id", "plan_hash", "state", "started_at",
+        "preflight", "plan", "page_mutations", "notebook_mutations", "commit_points",
+    }
+    optional = {"committed_at", "aborted_at"}
+    if set(journal) - required - optional:
+        raise RelevanceProfileTransactionError("profile transaction journal has unknown fields")
+    if required - set(journal):
+        raise RelevanceProfileTransactionError("profile transaction journal is missing fields")
+    if journal["schema_version"] != TRANSACTION_SCHEMA_VERSION:
+        raise RelevanceProfileTransactionError("unsupported profile transaction journal schema")
+    state = journal["state"]
+    if state not in {"applying", "committed", "aborted"}:
+        raise RelevanceProfileTransactionError(f"unknown profile transaction state: {state!r}")
+    transaction_id = str(journal["transaction_id"] or "")
+    plan = journal["plan"]
+    if not isinstance(plan, Mapping) or transaction_id != str(plan.get("transaction_id") or ""):
+        raise RelevanceProfileTransactionError("profile transaction journal plan identity drift")
+    _validate_plan_identity(plan, str(journal["plan_hash"] or ""))
+    if journal_path is not None and Path(journal_path).resolve() != _journal_path(plan).resolve():
+        raise RelevanceProfileTransactionError("profile transaction journal path is not plan-bound")
+
+    preflight = journal["preflight"]
+    if not isinstance(preflight, Mapping) or set(preflight) != {
+        "planned_stale_candidates", "historical_terminal_untouched", "completed_at",
+    }:
+        raise RelevanceProfileTransactionError("profile transaction preflight shape is invalid")
+    for key in ("planned_stale_candidates", "historical_terminal_untouched"):
+        if type(preflight[key]) is not int or preflight[key] < 0:
+            raise RelevanceProfileTransactionError(f"profile transaction preflight {key} is invalid")
+
+    commit_points = journal["commit_points"]
+    expected_points = {"pages", "prepared_notebooks", "notebook_profiles_and_generation", "commit_record"}
+    if not isinstance(commit_points, Mapping) or set(commit_points) != expected_points:
+        raise RelevanceProfileTransactionError("profile transaction commit_points shape is invalid")
+    if any(type(value) is not bool for value in commit_points.values()):
+        raise RelevanceProfileTransactionError("profile transaction commit_points must be boolean")
+
+    planned_pages = {
+        str(item["path"]): item
+        for notebook in plan["notebooks"] for item in notebook["page_mutations"]
+    }
+    page_mutations = journal["page_mutations"]
+    if not isinstance(page_mutations, list):
+        raise RelevanceProfileTransactionError("profile transaction page_mutations must be a list")
+    if {str(item.get("path") or "") for item in page_mutations if isinstance(item, Mapping)} != set(planned_pages):
+        raise RelevanceProfileTransactionError("profile transaction page mutation set drift")
+    page_fields = {
+        "path", "before_sha256", "after_sha256", "candidate_count", "candidate_ids",
+        "planned_mutations", "identity", "applied",
+    }
+    for mutation in page_mutations:
+        if not isinstance(mutation, Mapping) or set(mutation) != page_fields:
+            raise RelevanceProfileTransactionError("profile transaction page mutation shape is invalid")
+        expected = planned_pages[str(mutation["path"])]
+        for key in page_fields - {"applied"}:
+            if mutation[key] != expected[key]:
+                raise RelevanceProfileTransactionError(f"profile transaction page mutation drift: {key}")
+        if type(mutation["applied"]) is not bool:
+            raise RelevanceProfileTransactionError("profile transaction page applied flag is invalid")
+
+    planned_notebooks = {str(item["notebook_path"]): item for item in plan["notebooks"]}
+    notebook_mutations = journal["notebook_mutations"]
+    if not isinstance(notebook_mutations, list):
+        raise RelevanceProfileTransactionError("profile transaction notebook_mutations must be a list")
+    if {str(item.get("path") or "") for item in notebook_mutations if isinstance(item, Mapping)} != set(planned_notebooks):
+        raise RelevanceProfileTransactionError("profile transaction notebook mutation set drift")
+    notebook_fields = {"path", "before_sha256", "after_sha256", "applied", "prepared_path"}
+    for mutation in notebook_mutations:
+        if not isinstance(mutation, Mapping) or not set(mutation).issubset(notebook_fields):
+            raise RelevanceProfileTransactionError("profile transaction notebook mutation shape is invalid")
+        if set(mutation) - {"prepared_path"} != {"path", "before_sha256", "after_sha256", "applied"}:
+            raise RelevanceProfileTransactionError("profile transaction notebook mutation fields are incomplete")
+        expected = planned_notebooks[str(mutation["path"])]
+        if mutation["before_sha256"] != expected["notebook_before_sha256"] or mutation["after_sha256"] != expected["notebook_after_sha256"]:
+            raise RelevanceProfileTransactionError("profile transaction notebook hash drift")
+        if type(mutation["applied"]) is not bool:
+            raise RelevanceProfileTransactionError("profile transaction notebook applied flag is invalid")
+        if "prepared_path" in mutation:
+            prepared = Path(str(mutation["prepared_path"]))
+            if not prepared.is_absolute() or prepared.parent != (
+                RelevanceRuntimePaths.from_plan(plan).transaction_root
+                / f"{transaction_id}.prepared"
+            ).resolve():
+                raise RelevanceProfileTransactionError("profile transaction prepared path drift")
+    if state == "committed" and not all(commit_points.values()):
+        raise RelevanceProfileTransactionError("committed profile transaction has incomplete commit points")
+    if state == "aborted" and any(item["applied"] for item in page_mutations + notebook_mutations):
+        raise RelevanceProfileTransactionError("aborted profile transaction contains applied mutations")
+    return dict(journal)
 
 
 def _preflight_plan(plan: Mapping[str, Any], *, resume: bool) -> dict[str, Any]:
     planned_stale: set[tuple[str, str]] = set()
     actual_stale: set[tuple[str, str]] = set()
     historical_terminal = 0
-    page_store = PageJournalStore(Path(str(plan["pending_pages_dir"])))
+    runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    page_store = PageJournalStore(runtime_paths.journal_root)
     for notebook in plan["notebooks"]:
         notebook_path = Path(str(notebook["notebook_path"]))
         if not notebook_path.exists():
@@ -631,7 +1124,7 @@ def _preflight_plan(plan: Mapping[str, Any], *, resume: bool) -> dict[str, Any]:
                 (str(Path(mutation["path"]).resolve()), str(cid))
                 for cid in mutation["candidate_ids"]
             )
-        for page_path in sorted(Path(str(plan["pending_pages_dir"])).glob(f"{kid}/*/*/*/*.json")):
+        for page_path in sorted(runtime_paths.journal_root.glob(f"{kid}/*/*/*/*.json")):
             page_bytes = page_path.read_bytes()
             page = page_store.read(page_path)
             mutation = mutation_by_path.get(str(page_path.resolve()))
@@ -723,7 +1216,8 @@ def _new_journal(plan: dict[str, Any], preflight: Mapping[str, Any]) -> dict[str
 def _execute_transaction(
     plan: dict[str, Any], journal_path: Path, journal: dict[str, Any],
 ) -> dict[str, Any]:
-    page_store = PageJournalStore(Path(str(plan["pending_pages_dir"])))
+    runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    page_store = PageJournalStore(runtime_paths.journal_root)
     owner_by_path = {
         mutation["path"]: notebook
         for notebook in plan["notebooks"] for mutation in notebook["page_mutations"]
@@ -761,7 +1255,8 @@ def _execute_transaction(
     journal["commit_points"]["pages"] = True
     _write_journal(journal_path, journal)
 
-    prepared_dir = Path(str(plan["transaction_root"])) / f"{plan['transaction_id']}.prepared"
+    runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    prepared_dir = runtime_paths.transaction_root / f"{plan['transaction_id']}.prepared"
     prepared_dir.mkdir(parents=True, exist_ok=True)
     manifest_entries: list[dict[str, str]] = []
     notebook_by_path = {item["notebook_path"]: item for item in plan["notebooks"]}
@@ -776,7 +1271,7 @@ def _execute_transaction(
             "target": mutation["path"], "prepared": str(prepared.resolve()),
             "after_sha256": mutation["after_sha256"],
         })
-    manifest_path = Path(str(plan["transaction_root"])) / f"{plan['transaction_id']}.manifest.json"
+    manifest_path = runtime_paths.transaction_root / f"{plan['transaction_id']}.manifest.json"
     _write_journal(manifest_path, {
         "schema_version": TRANSACTION_SCHEMA_VERSION,
         "transaction_id": plan["transaction_id"],
@@ -831,7 +1326,11 @@ def apply_relevance_profile_plan(
 ) -> dict[str, Any]:
     """Apply a new plan after a complete zero-write global preflight."""
     _validate_plan_identity(plan, expected_plan_hash)
-    lock_path = Path(str(plan.get("lock_path") or (Path(str(plan["transaction_root"])).parent / "locks" / "relevance_profiles.lock")))
+    try:
+        runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    except ValueError as exc:
+        raise RelevanceProfileTransactionError(str(exc)) from exc
+    lock_path = runtime_paths.lock_path
     journal_path = _journal_path(plan)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(lock_path)):
@@ -868,10 +1367,14 @@ def resume_relevance_profile_transaction(transaction_path: Path) -> dict[str, An
     _validate_plan_identity(plan, str(journal.get("plan_hash") or ""))
     if _journal_path(plan).resolve() != journal_path.resolve():
         raise RelevanceProfileTransactionError("transaction path is not plan-bound")
-    lock_path = Path(str(plan["lock_path"]))
+    try:
+        runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    except ValueError as exc:
+        raise RelevanceProfileTransactionError(str(exc)) from exc
+    lock_path = runtime_paths.lock_path
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(lock_path)):
-        applying = list_applying_relevance_profile_transactions(Path(str(plan["transaction_root"])))
+        applying = list_applying_relevance_profile_transactions(runtime_paths.transaction_root)
         if applying != [journal_path.resolve()]:
             raise RelevanceProfileTransactionError("resume requires the sole applying transaction")
         _preflight_plan(plan, resume=True)
@@ -895,7 +1398,11 @@ def abort_relevance_profile_transaction(transaction_path: Path) -> dict[str, Any
     ):
         raise RelevanceProfileTransactionError("transaction has mutations; resume or repair it")
     plan = journal["plan"]
-    lock_path = Path(str(plan["lock_path"]))
+    try:
+        runtime_paths = RelevanceRuntimePaths.from_plan(plan)
+    except ValueError as exc:
+        raise RelevanceProfileTransactionError(str(exc)) from exc
+    lock_path = runtime_paths.lock_path
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(lock_path)):
         for mutation in journal.get("page_mutations", []):

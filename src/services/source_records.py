@@ -231,10 +231,10 @@ def write_fetch_result(
     This is the ONLY writer for fetch results. It must never overwrite a
     metadata source record.
     """
-    from src.fetch.pdf_transport import sanitize_url_fields
+    from src.fetch.pdf_transport import sanitize_for_persistence
 
     path = resolve_safe_source_record_target(Path(folder), FETCH_RESULT_FILENAME)
-    atomic_write_json(path, {"fetch_result": sanitize_url_fields(fetch_record)}, indent=2)
+    atomic_write_json(path, {"fetch_result": sanitize_for_persistence(fetch_record)}, indent=2)
     resolve_safe_source_record_target(Path(folder), path.name)
     return path
 

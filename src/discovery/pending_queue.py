@@ -351,15 +351,15 @@ def _inspect_emitted_primary_export_cached(
         str(manifest_path.absolute()), manifest_size, manifest_mtime,
         str(jsonl_path.absolute()), jsonl_size, jsonl_mtime,
     )
-    cached = journal_index.emitted_validation_cache.get(key)
+    cached = journal_index.get_cached_emitted_validation(key)
     if cached is not None:
         return cached
     result = inspect_emitted_primary_export(item, doi, exports_dir=exports_dir)
     manifest_identity, jsonl_identity = key[0], key[3]
-    for old_key in list(journal_index.emitted_validation_cache):
-        if old_key[0] == manifest_identity and old_key[3] == jsonl_identity:
-            journal_index.emitted_validation_cache.pop(old_key, None)
-    journal_index.emitted_validation_cache[key] = result
+    journal_index.set_cached_emitted_validation(
+        key, result, manifest_identity=manifest_identity,
+        jsonl_identity=jsonl_identity,
+    )
     return result
 
 
@@ -459,8 +459,8 @@ def _drain_staging_candidate_batches(
                 lease_seconds=lease_seconds,
                 limit=len(candidate_ids),
                 candidate_ids=candidate_ids,
-                expected_profile_hash=journal_index.active_profile_hashes.get(
-                    str((journal_index.page_cache.get(page_path) or {}).get("keyword_id") or "")
+                expected_profile_hash=journal_index.get_active_profile_hash(
+                    journal_index.get_page_keyword_id(page_path)
                 ),
             )
             claims.extend(page_claims)
@@ -566,7 +566,7 @@ def _drain_staging_candidate_batches(
                 stage_records: list[dict[str, Any]] = []
                 for primary_id in primary_ids:
                     claim, current, candidate, doi = entries_by_id[primary_id]
-                    emitted_ref = journal_index.emitted_by_doi.get(doi)
+                    emitted_ref = journal_index.get_emitted_primary(doi)
                     if emitted_ref is not None and emitted_ref.candidate_id != primary_id:
                         valid, reason = _inspect_emitted_primary_export_cached(
                             journal_index, dict(emitted_ref.payload), doi,
@@ -832,9 +832,8 @@ def drain_pending_candidates(
                 claims = journal.claim_candidates_from_page(
                     page_path, worker_id=worker_id, lease_seconds=lease_seconds,
                     limit=min(16, len(candidate_ids)), candidate_ids=candidate_ids,
-                    expected_profile_hash=index.active_profile_hashes.get(
-                        str((index.page_cache.get(page_path) or {}).get("keyword_id") or "")
-                    ))
+                    expected_profile_hash=index.get_active_profile_hash(
+                        index.get_page_keyword_id(page_path)))
                 journal.commit_candidate_results(page_path, [{
                     "candidate_id": claim.candidate_id, "new_status": "failed_retryable",
                     "updates": {"last_error": reason},
@@ -929,8 +928,8 @@ def drain_pending_candidates(
         page_claims = journal.claim_candidates_from_page(
             page_path, worker_id=worker_id, lease_seconds=lease_seconds,
             limit=min(16, candidate_budget - len(claimed)), candidate_ids=candidate_ids,
-            expected_profile_hash=journal_index.active_profile_hashes.get(
-                str((journal_index.page_cache.get(page_path) or {}).get("keyword_id") or "")
+            expected_profile_hash=journal_index.get_active_profile_hash(
+                journal_index.get_page_keyword_id(page_path)
             ))
         claimed.extend(page_claims)
         if page_claims:
@@ -1014,7 +1013,7 @@ def drain_pending_candidates(
 
                 doi_lock = _lock(_doi_lock_path(locks_dir, doi))
                 with doi_lock:
-                    processing_owner = journal_index.processing_by_doi.get(doi, "")
+                    processing_owner = journal_index.get_processing_owner(doi)
                     if processing_owner and processing_owner != cid:
                         _defer(
                             page_path, candidate_id_value=cid, worker_id=worker_id,
@@ -1026,7 +1025,7 @@ def drain_pending_candidates(
                         continue
                     emitted_primary = ""
                     emitted_failure = ""
-                    emitted_ref = journal_index.emitted_by_doi.get(doi)
+                    emitted_ref = journal_index.get_emitted_primary(doi)
                     if emitted_ref is not None and emitted_ref.candidate_id != cid:
                         valid, reason = _inspect_emitted_primary_export_cached(
                             journal_index, dict(emitted_ref.payload), doi,

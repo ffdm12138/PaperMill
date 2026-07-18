@@ -275,7 +275,7 @@ def test_missing_metadata_shell_blocks_apply_before_converter(monkeypatch, tmp_p
     assert item["status"] == "failed"
     assert item["has_pdf"] is True
     assert item["has_metadata_shell"] is False
-    assert item["metadata_required_for_conversion"] is True
+    assert item["metadata_shell_required_for_conversion"] is True
     assert "missing metadata.json shell" in item["reason"]
 
 

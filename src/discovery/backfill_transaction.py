@@ -19,6 +19,7 @@ from src.discovery.keyword_notebook import (
     KeywordNotebookStore,
 )
 from src.discovery.page_journal import (
+    JournalCorruptError,
     PageJournalStore,
     backfill_page_id,
 )
@@ -60,6 +61,8 @@ class BackfillTransactionResult:
     safe_error: str | None = None
     error_type: BackfillErrorType | None = None
     stop_reason: BackfillStopReason | None = None
+    recovered_page_paths: tuple[Path, ...] = ()
+    recovered_candidates_returned: int = 0
 
 
 def _result(
@@ -77,6 +80,8 @@ def _result(
     safe_error: str | None = None,
     error_type: BackfillErrorType | None = None,
     stop_reason: BackfillStopReason | None = None,
+    recovered_page_paths: tuple[Path, ...] = (),
+    recovered_candidates_returned: int = 0,
 ) -> BackfillTransactionResult:
     if stop_reason == "page_budget_exhausted" and error_type is not None:
         raise ValueError("page budget exhaustion must not carry error_type")
@@ -96,7 +101,67 @@ def _result(
         safe_error=safe_error,
         error_type=error_type,
         stop_reason=stop_reason,
+        recovered_page_paths=tuple(recovered_page_paths),
+        recovered_candidates_returned=int(recovered_candidates_returned),
     )
+
+
+def _validate_reused_backfill_page_identity(
+    *,
+    page_data: Mapping[str, Any],
+    page_path: Path,
+    journal_store: PageJournalStore,
+    keyword_zh: str,
+    keyword_id: str,
+    query_id: str,
+    query: str,
+    query_language: str,
+    provider: str,
+    generation: int,
+    request_signature: Mapping[str, Any],
+    request_cursor: str,
+    page_id: str,
+) -> None:
+    """Bind a reused durable page to the exact lane state about to CAS."""
+    expected_path = journal_store.page_path(
+        keyword_id=keyword_id,
+        query_id=query_id,
+        provider=provider,
+        lane="backfill",
+        page_id=page_id,
+    )
+    if page_path.absolute() != expected_path.absolute():
+        raise JournalCorruptError("reused backfill page path identity mismatch")
+    expected_fields = {
+        "keyword_zh": keyword_zh,
+        "keyword_id": keyword_id,
+        "query_id": query_id,
+        "query": query,
+        "query_language": query_language,
+        "provider": provider,
+        "lane": "backfill",
+        "generation": int(generation),
+        "request_cursor": request_cursor,
+        "page_id": page_id,
+    }
+    for field_name, expected in expected_fields.items():
+        if page_data.get(field_name) != expected:
+            raise JournalCorruptError(
+                f"reused backfill page identity mismatch: {field_name}"
+            )
+    if page_data.get("request_signature") != dict(request_signature):
+        raise JournalCorruptError(
+            "reused backfill page identity mismatch: request_signature"
+        )
+    derived_page_id = backfill_page_id(
+        keyword_id=keyword_id,
+        query_id=query_id,
+        provider=provider,
+        request_signature_hash=str(request_signature.get("hash") or ""),
+        request_cursor=request_cursor,
+    )
+    if derived_page_id != page_id:
+        raise JournalCorruptError("reused backfill page_id derivation mismatch")
 
 
 def recover_last_committed_journal(
@@ -295,8 +360,28 @@ def run_backfill_page_transaction(
             # cursor_committed; the totals were already advanced pre-crash.
             recovery_pages = recovery.pages_recovered if recovery is not None else 0
             recovery_journals = recovery.journals_recovered if recovery is not None else 0
-            if notebook_store.is_backfill_exhausted(keyword_zh, query_id, provider):
+            recovered_page_paths = (
+                (recovery.page_path,)
+                if recovery is not None
+                and recovery.status == "success"
+                and recovery.page_path is not None
+                else ()
+            )
+            recovered_candidates_returned = (
+                recovery.candidates_returned
+                if recovery is not None and recovery.status == "success"
+                else 0
+            )
+
+            def result_after_recovery(**kwargs: Any) -> BackfillTransactionResult:
                 return _result(
+                    recovered_page_paths=recovered_page_paths,
+                    recovered_candidates_returned=recovered_candidates_returned,
+                    **kwargs,
+                )
+
+            if notebook_store.is_backfill_exhausted(keyword_zh, query_id, provider):
+                return result_after_recovery(
                     status="exhausted",
                     page_path=None,
                     page_id="",
@@ -305,7 +390,11 @@ def run_backfill_page_transaction(
                     journals_recovered=recovery_journals,
                     stop_reason="provider_exhausted",
                 )
-            cursor = notebook_store.get_backfill_cursor(keyword_zh, query_id, provider) or INITIAL_CURSOR
+            lane_state = notebook_store.get_backfill_state(
+                keyword_zh, query_id, provider,
+            )
+            cursor = str(lane_state.get("cursor") or INITIAL_CURSOR)
+            generation = max(1, int(lane_state.get("generation") or 1))
             page_id_value = backfill_page_id(
                 keyword_id=keyword_id,
                 query_id=query_id,
@@ -324,7 +413,39 @@ def run_backfill_page_transaction(
             pages_reused = 0
             pages_persisted = 0
             if page_path.exists():
-                page_data = journal_store.read(page_path)
+                try:
+                    page_data = journal_store.read(page_path)
+                    _validate_reused_backfill_page_identity(
+                        page_data=page_data,
+                        page_path=page_path,
+                        journal_store=journal_store,
+                        keyword_zh=keyword_zh,
+                        keyword_id=keyword_id,
+                        query_id=query_id,
+                        query=query,
+                        query_language=query_language,
+                        provider=provider,
+                        generation=generation,
+                        request_signature=request_signature,
+                        request_cursor=cursor,
+                        page_id=page_id_value,
+                    )
+                    if page_data["state"] != "fetched":
+                        raise JournalCorruptError(
+                            "reused backfill page is already cursor-committed "
+                            "for the current notebook cursor"
+                        )
+                except Exception as exc:
+                    return result_after_recovery(
+                        status="failed_retryable",
+                        page_path=page_path,
+                        page_id=page_id_value,
+                        pages_recovered=recovery_pages,
+                        journals_recovered=recovery_journals,
+                        safe_error=f"reused journal identity invalid: {exc}",
+                        error_type="journal_corruption",
+                        stop_reason="recovery_corruption",
+                    )
                 pages_reused = 1
             else:
                 page = fetch_page(
@@ -339,7 +460,7 @@ def run_backfill_page_transaction(
                 pages_requested = 1
                 if page.status == "failed":
                     if getattr(page, "error_type", None) == "page_budget_exhausted":
-                        return _result(
+                        return result_after_recovery(
                             status="stopped",
                             page_path=None,
                             page_id=page_id_value,
@@ -362,7 +483,7 @@ def run_backfill_page_transaction(
                     else:
                         _error_type = "provider_retryable"
                         _status = "failed_retryable"
-                    return _result(
+                    return result_after_recovery(
                         status=_status,
                         page_path=None,
                         page_id=page_id_value,
@@ -372,11 +493,6 @@ def run_backfill_page_transaction(
                         safe_error=page.safe_error or page.error_type or "provider failed",
                         error_type=_error_type,
                     )
-                generation = int(
-                    notebook_store.get_backfill_state(
-                        keyword_zh, query_id, provider,
-                    ).get("generation") or 1
-                )
                 page_data = journal_store.make_page(
                     page_id=page_id_value,
                     keyword_id=keyword_id,
@@ -386,7 +502,7 @@ def run_backfill_page_transaction(
                     query_language=query_language,
                     provider=provider,
                     lane="backfill",
-                    generation=max(1, generation),
+                    generation=generation,
                     request_signature_value=request_signature,
                     request_cursor=cursor,
                     next_cursor=page.next_cursor,
@@ -404,7 +520,7 @@ def run_backfill_page_transaction(
                         page_data = journal_store.finalize_relevance(page_path, decisions)
                     except Exception as exc:
                         configuration_error = "configuration" in str(exc).lower()
-                        return _result(
+                        return result_after_recovery(
                             status="failed_terminal" if configuration_error else "failed_retryable",
                             page_path=page_path,
                             page_id=page_id_value,
@@ -427,7 +543,7 @@ def run_backfill_page_transaction(
                         items_this_page=int(page_data.get("statistics", {}).get("returned", 0)),
                     )
                 except CursorConflictError as exc:
-                    return _result(
+                    return result_after_recovery(
                         status="failed_retryable",
                         page_path=page_path,
                         page_id=page_id_value,
@@ -442,7 +558,7 @@ def run_backfill_page_transaction(
                 pages_committed = 1
             else:
                 pages_committed = 1 if page_data["state"] in {"cursor_committed", "draining", "drained"} else 0
-            return _result(
+            return result_after_recovery(
                 status="success",
                 page_path=page_path,
                 page_id=page_id_value,

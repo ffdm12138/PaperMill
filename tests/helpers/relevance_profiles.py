@@ -69,3 +69,27 @@ class AlwaysVerifiedScopeVerifier:
     def verify_doi(self, doi: str, subfield_ids: list[str]):
         from src.discovery.relevance import ScopeVerification
         return ScopeVerification(status="verified")
+
+
+def finalize_all_passed(journal_store, page_path, profile_hash="test-hash"):
+    """Finalize every candidate on a page as ``passed`` for the given profile.
+
+    Returns the decisions dict so it can be used as the ``finalize_page``
+    callback of :func:`run_backfill_page_transaction`.
+    """
+    page = journal_store.read(page_path)
+    decisions = {}
+    for item in page["candidates"]:
+        cid = str(item.get("candidate_id") or "")
+        if not cid:
+            continue
+        decisions[cid] = {
+            "state": "passed",
+            "profile_hash": profile_hash,
+            "reason": "profile_match",
+            "matched_groups": {},
+            "negative_matches": [],
+            "verification": {"status": "test_fixture"},
+        }
+    journal_store.finalize_relevance(page_path, decisions)
+    return decisions

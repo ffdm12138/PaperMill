@@ -39,12 +39,5 @@ def write_paper_number_marker(
     return path
 
 
-def read_paper_number_marker(path: str | Path) -> dict:
-    marker = Path(path)
-    value = json.loads(marker.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("paper-number marker must be a JSON object")
-    number = parse_marker_number(marker)
-    if not number or value.get("paper_number") != number:
-        raise ValueError("paper-number marker identity mismatch")
-    return value
+
+

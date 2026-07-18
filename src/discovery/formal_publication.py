@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 from filelock import FileLock
 
+from config.settings import PROJECT_ROOT
 from src.file_fingerprint import compute_sha256
 from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.utils.atomic_io import atomic_write_json_unlocked
@@ -74,6 +75,8 @@ def publication_generation(entries: Mapping[str, Mapping[str, str]]) -> str:
 def _active_entries(
     items: Mapping[str, Mapping[str, Any]],
     papers_dir: Path,
+    *,
+    project_root: Path = PROJECT_ROOT,
 ) -> tuple[dict[str, dict[str, str]], list[str]]:
     entries: dict[str, dict[str, str]] = {}
     issues: list[str] = []
@@ -83,7 +86,7 @@ def _active_entries(
             continue
         number = str(number)
         stored_path = str(item.get("folder_path") or "")
-        folder = resolve_stored_path(stored_path)
+        folder = resolve_stored_path(stored_path, project_root=project_root)
         if (
             not stored_path or folder.is_symlink() or not folder.is_dir()
             or folder.parent.resolve() != papers_root
@@ -104,7 +107,7 @@ def _active_entries(
             entries[number] = {
                 "paper_number": number,
                 "paper_name": paper_name,
-                "folder_path": normalize_repo_path(folder),
+                "folder_path": normalize_repo_path(folder, project_root=project_root),
                 "asset_manifest_sha256": compute_sha256(manifest),
                 "metadata_sha256": compute_sha256(metadata),
                 "catalog_sha256": compute_sha256(catalog),
@@ -173,10 +176,13 @@ def read_publication_state_header(
 def validate_publication_state(
     *, papers_dir: str | Path, ledger_items: Mapping[str, Mapping[str, Any]],
     allow_missing_when_empty: bool = True,
+    project_root: Path = PROJECT_ROOT,
 ) -> FormalPublicationValidation:
     """Validate sidecar identity, active membership, and every bound hash."""
     papers_dir = Path(papers_dir)
-    expected, issues = _active_entries(ledger_items, papers_dir)
+    expected, issues = _active_entries(
+        ledger_items, papers_dir, project_root=project_root,
+    )
     active_numbers = {
         str(number) for number, item in ledger_items.items()
         if isinstance(item, Mapping) and str(item.get("state") or "") == "active"

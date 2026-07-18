@@ -414,7 +414,9 @@ def _pid_alive(pid: int) -> bool:
         try:
             os.kill(pid, 0)
             return True
-        except (ProcessLookupError, PermissionError):
+        except ProcessLookupError:
+            return False
+        except PermissionError:
             return True
         except OSError:
             return False
@@ -654,27 +656,6 @@ def _flatten_path(path: Path) -> str:
         resolved = resolved[2:]
     parts = [p for p in resolved.replace("\\", "/").split("/") if p]
     return "".join(parts)
-
-
-def count_stale_workspaces(temp_dir: Optional[Path] = None,
-                           repo_root: Optional[Path] = None) -> int:
-    """Count stale workspace directories under *temp_dir*."""
-    if temp_dir is None:
-        temp_dir = _system_temp_dir()
-    if repo_root is None:
-        repo_root = Path(__file__).resolve().parent.parent
-    count = 0
-    try:
-        for entry in temp_dir.iterdir():
-            if not entry.is_dir():
-                continue
-            if not entry.name.startswith("mineru_"):
-                continue
-            if is_stale_workspace(entry, repo_root=repo_root) is None:
-                count += 1
-    except PermissionError:
-        pass
-    return count
 
 
 def count_repo_pycache(repo_root: Optional[Path] = None) -> int:

@@ -1,6 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from scripts.benchmark_discovery_pipeline import run_benchmark
+
+pytestmark = pytest.mark.performance
 
 
 def test_200_raw_200_formal_500_candidates_have_batch_bounded_io(tmp_path: Path):

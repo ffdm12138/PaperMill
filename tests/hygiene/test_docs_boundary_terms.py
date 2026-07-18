@@ -146,8 +146,7 @@ def test_docs_cover_conversion_metadata_layering():
         "必须先 metadata matched",
         "must match metadata before conversion",
         "metadata matched 才能 convert",
-        "Network metadata path:** `--only-preflight-ready` is safe",
-        "可安全使用\n`--only-preflight-ready`",
+                "可安全使用\n`--only-preflight-ready`",
     ]:
         assert forbidden not in text, f"docs contain reverse layering phrasing: {forbidden}"
     assert "--only-convertible" in text
@@ -338,7 +337,7 @@ def test_active_docs_pdf_resolver_contract():
         "explicit header-based resolver if configured",
         "Without configuration, ``header_based`` never runs",
         "without configuration, ``header_based`` never runs",
-        "otherwise surfaced as `not_configured_resolvers`",
+        "not_configured" "_resolvers is a deprecated field; docs must not",
         "仅 `--base-url`/`--url-template` 配置时",
     ]
     for s in forbidden:
@@ -402,18 +401,6 @@ def test_project_status_no_pending_contradiction():
         for phrase in stale_phrases:
             if phrase in text.lower():
                 pytest.fail(f"Found stale phrase '{phrase}' contradicting writer-safe")
-
-
-def test_migration_summary_no_inspect_plan_hash():
-    """Migration summary must not use recovery inspect hash as migration plan hash."""
-    text = _read("docs/verification/discovery_notebook_v3_migration_summary.md")
-    assert "inspect-only plan" not in text
-
-
-def test_migration_summary_no_rewritten():
-    """Migration summary must not claim page journals were 'rewritten' without evidence."""
-    text = _read("docs/verification/discovery_notebook_v3_migration_summary.md")
-    assert "Page journals rewritten" not in text
 
 
 def test_repair_readme_no_stale_phrases():

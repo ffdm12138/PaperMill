@@ -200,7 +200,7 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
     )
     # A stale in-memory processing hint must not override the DOI file lock and
     # authoritative Registry transaction.
-    runtime.journal_index.processing_by_doi[doi] = "stale-owner"
+    runtime.journal_index._state.processing_by_doi[doi] = "stale-owner"
 
     stage_batch_sizes: list[int] = []
     real_stage = pending_queue_module.stage_network_metadata_records

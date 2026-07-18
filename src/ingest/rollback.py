@@ -161,6 +161,34 @@ def _raw_is_valid(target: Path, number: str, *, papers_dir: Path, paper_raw_root
     )
 
 
+def _assert_metadata_staged_marker(target: Path, number: str, paper_name: str) -> None:
+    markers = sorted(target.glob("*.paper.number"))
+    expected = target / f"{number}.paper.number"
+    if markers != [expected]:
+        raise RuntimeError(
+            "transaction_repair_required: rollback marker is not canonical"
+        )
+    try:
+        marker = json.loads(expected.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            "transaction_repair_required: rollback marker is unreadable"
+        ) from exc
+    expected_fields = {
+        "schema_version": "1.0",
+        "paper_number": number,
+        "folder_name": number,
+        "state": "metadata_staged",
+        "planned_paper_name": paper_name,
+    }
+    if not isinstance(marker, dict) or any(
+        marker.get(key) != value for key, value in expected_fields.items()
+    ):
+        raise RuntimeError(
+            "transaction_repair_required: rollback marker identity mismatch"
+        )
+
+
 def resume_rollback(
     journal: dict,
     *,
@@ -242,11 +270,22 @@ def resume_rollback(
                 state = item.get("state")
                 if state == "active":
                     ledger.rollback_active_to_metadata_staged_locked(number, target, planned_paper_name=paper_name)
-                elif state in {"reserved", "metadata_staged"}:
+                elif state == "metadata_staged":
                     if item.get("planned_paper_name") != paper_name or Path(str(item.get("folder_path") or "")).name != number:
-                        raise RuntimeError("transaction_repair_required: reserved ledger identity mismatch")
+                        raise RuntimeError("transaction_repair_required: rollback ledger identity mismatch")
+                    ledger.write_marker(
+                        target,
+                        number,
+                        state="metadata_staged",
+                        planned_paper_name=paper_name,
+                    )
+                elif state == "reserved":
+                    raise RuntimeError(
+                        "transaction_repair_required: reserved ledger state is not valid rollback evidence"
+                    )
                 else:
                     raise RuntimeError(f"transaction_repair_required: rollback ledger state {state!r}")
+                _assert_metadata_staged_marker(target, number, paper_name)
                 publish_formal_publication_state_unlocked(
                     papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
                 )

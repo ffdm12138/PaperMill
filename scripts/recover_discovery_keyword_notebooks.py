@@ -386,7 +386,6 @@ def _state_operation(
 def recover_notebooks(
     *,
     notebook_dir: Path,
-    retired_dir: Path | None = None,
     pending_pages_dir: Path | None = None,
     locks_dir: Path | None = None,
     catalog_root: Path | None = None,
@@ -399,16 +398,12 @@ def recover_notebooks(
         raise RecoveryApplyUnavailable("v3 recovery is inspect-only; no write entry point is available")
     notebook_root = Path(notebook_dir)
     pages_root = Path(pending_pages_dir) if pending_pages_dir else notebook_root.parent / "pending_pages"
-    retired_root = Path(retired_dir) if retired_dir else notebook_root.parent / "keyword_notebooks_retired"
     lock_root = Path(locks_dir) if locks_dir else notebook_root.parent / "locks"
     _ = catalog_root or CATALOG_FOLDER_ROOT
     _ = transaction_root
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     notebooks = _load_notebooks(notebook_root, errors=errors)
-    retired = _load_notebooks(retired_root, errors=errors)
-    for kid in sorted(set(notebooks) & set(retired)):
-        _issue(errors, "notebook_identity", retired[kid].get("__path__", ""), "active and retired notebook share keyword_id", keyword_id=kid)
     pages = _load_pages(pages_root, errors=errors)
     by_identity: dict[tuple[str, str, str, int, str], list[dict[str, Any]]] = defaultdict(list)
     for page in pages:
@@ -562,7 +557,6 @@ def recover_notebooks(
         "warnings": warnings,
         "summary": {
             "v3_notebooks_scanned": len(notebooks),
-            "retired_notebooks_scanned": len(retired),
             "page_journals_scanned": len(pages),
             "recovery_operations": len(planned_operations),
             "historical_generations": historical_generations,
@@ -583,7 +577,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect strict v3 discovery recovery candidates.")
     parser.add_argument("--inspect", action="store_true", help="Run the read-only recovery inspection (default).")
     parser.add_argument("--notebook-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
-    parser.add_argument("--retired-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR.parent / "keyword_notebooks_retired")
     parser.add_argument("--pending-pages-dir", type=Path, default=DISCOVERY_PENDING_PAGES_DIR)
     parser.add_argument("--locks-dir", type=Path, default=DISCOVERY_LOCKS_DIR)
     parser.add_argument("--catalog-root", type=Path, default=CATALOG_FOLDER_ROOT)
@@ -592,7 +585,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     report = recover_notebooks(
         notebook_dir=args.notebook_dir,
-        retired_dir=args.retired_dir,
         pending_pages_dir=args.pending_pages_dir,
         locks_dir=args.locks_dir,
         catalog_root=args.catalog_root,

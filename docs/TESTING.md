@@ -83,12 +83,11 @@ run, and pack evidence. A timeout is a failure, never a pass.
 
 ## Current test suite
 
-- **1812 tests collected**
-- **Unfiltered suite**: 1808 passed, 4 platform skips, 0 failed
-- **Full gate** (`not stress and not external`): 1805 passed, 4 platform skips, 3 deselected, 0 failed
-- **Contract/hygiene shards**: 218 passed / 157 passed
+- **1951 tests collected** (run `pytest --collect-only -q`)
+- **Full gate** (`not stress and not external`): last verified 2026-07 v83, 0 failed
+- **Contract/hygiene/security**: 423 passed, 1 skipped
 - **Fast gate**: all configured groups passed with clean pre/post pollution checks
-- **Snapshot**: runtime-zero, 507 ZIP members, 0 runtime files, secret scan passed
+- **Snapshot**: runtime-zero, 549 ZIP entries, 0 runtime files, secret scan passed
 
 Discovery staging acceptance additionally covers strict ledger validation,
 single-read evidence, unknown-profile failure, atomic copy-on-write refresh,
@@ -104,8 +103,9 @@ preflight, page/notebook crash-resume and abort boundaries, durable `applying`
 Discovery exclusion, immutable active-profile bindings across incremental and
 forced rebuilds, typed matcher reasons, and five resolved-profile contracts.
 Frozen comparison tests use injected providers, assert one fetch per sampling
-key, cap Crossref DOI evidence batches at 100, verify manifest hash/size/count,
-and replay identical IDs/ranks without staging or synthetic human Precision.
+key, reject actual Crossref comparison before writing files, keep Crossref
+coverage explicitly synthetic, verify manifest hash/size/count, and replay
+identical IDs/ranks without staging or synthetic human Precision.
 
 The lifecycle matrix proves every required artifact missing from
 `metadata_staged` is `repair_required`, while `reserved` stays unsettled and

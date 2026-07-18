@@ -138,55 +138,6 @@ def _notebook_row(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return raw, None
 
 
-def scan_active_notebooks(notebook_dir: Path) -> dict[str, dict[str, Any]]:
-    """Return validated v3 notebooks keyed by ``keyword_id``.
-
-    ``__errors__`` is retained for callers that want a lightweight scanner
-    result; :func:`run_audit` adds structured diagnostics and never depends on
-    a scanner silently dropping an invalid file.
-    """
-    result: dict[str, dict[str, Any]] = {}
-    errors: list[dict[str, str]] = []
-    for path in _json_files(Path(notebook_dir), recursive=False):
-        data, error = _notebook_row(path)
-        if error:
-            errors.append({"path": str(path), "message": error})
-            continue
-        assert data is not None
-        kid = str(data["keyword_id"])
-        row = dict(data)
-        row["__path__"] = str(path)
-        row["__sha256__"] = _sha256(path)
-        if kid in result:
-            result[kid].setdefault("__duplicate_paths__", []).append(str(path))
-        result[kid] = row
-    if errors:
-        result["__errors__"] = {str(index): row for index, row in enumerate(errors)}
-    return result
-
-
-def scan_retired_notebooks(retired_root: Path) -> dict[str, dict[str, Any]]:
-    """Return validated retired v3 notebooks without treating them as active."""
-    result: dict[str, dict[str, Any]] = {}
-    errors: list[dict[str, str]] = []
-    for path in _json_files(Path(retired_root)):
-        data, error = _notebook_row(path)
-        if error:
-            errors.append({"path": str(path), "message": error})
-            continue
-        assert data is not None
-        kid = str(data["keyword_id"])
-        row = dict(data)
-        row["__path__"] = str(path)
-        row["__sha256__"] = _sha256(path)
-        if kid in result:
-            result[kid].setdefault("__duplicate_paths__", []).append(str(path))
-        result[kid] = row
-    if errors:
-        result["__errors__"] = {str(index): row for index, row in enumerate(errors)}
-    return result
-
-
 def scan_pending_pages(pending_dir: Path) -> list[dict[str, Any]]:
     """Read pending page journals from the strict v3 path layout."""
     result: list[dict[str, Any]] = []
@@ -797,13 +748,6 @@ def run_audit() -> dict[str, Any]:
         else:
             disabled_drafts += 1
             _warning(warnings, "disabled_draft", path, "disabled notebook is allowed to be not ready", keyword_id=kid)
-
-    retired_rows = scan_retired_notebooks(DISCOVERY_KEYWORD_NOTEBOOK_DIR.parent / "keyword_notebooks_retired")
-    for key, row in retired_rows.items():
-        if key.startswith("__"):
-            continue
-        if key in notebook_rows:
-            _error(errors, "notebook_identity", row.get("__path__", ""), "active and retired notebook share keyword_id", keyword_id=key)
 
     page_rows = scan_pending_pages(DISCOVERY_PENDING_PAGES_DIR)
     _check_page_identity(page_rows, notebook_rows, pending_root=DISCOVERY_PENDING_PAGES_DIR, errors=errors)

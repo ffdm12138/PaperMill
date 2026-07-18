@@ -59,7 +59,7 @@ def test_bare_export_id_is_not_durable_primary(tmp_path: Path):
     primary = _write_page(store, "p1")
     secondary = _write_page(store, "p2")
     cid = store.read(primary)["candidates"][0]["candidate_id"]
-    assert store.claim_candidate(primary, candidate_id_value=cid, worker_id="owner", lease_seconds=60).claimed
+    assert store.claim_candidate(primary, candidate_id_value=cid, worker_id="owner", lease_seconds=60, expected_profile_hash=PROFILE_HASH).claimed
     store.commit_candidate(
         primary,
         candidate_id_value=cid,
@@ -88,7 +88,7 @@ def test_complete_export_artifact_is_durable_primary(tmp_path: Path):
     item["provider"] = data["provider"]
     export = export_candidate_once(tmp_path / "exports", item)
     cid = item["candidate_id"]
-    assert store.claim_candidate(primary, candidate_id_value=cid, worker_id="owner", lease_seconds=60).claimed
+    assert store.claim_candidate(primary, candidate_id_value=cid, worker_id="owner", lease_seconds=60, expected_profile_hash=PROFILE_HASH).claimed
     store.commit_candidate(
         primary,
         candidate_id_value=cid,

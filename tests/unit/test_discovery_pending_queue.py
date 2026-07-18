@@ -70,9 +70,9 @@ def test_candidate_claim_lease_renewal_and_owner_commit(tmp_path: Path):
     path = _write_page(store, "p1")
     cid = store.read(path)["candidates"][0]["candidate_id"]
 
-    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-a", lease_seconds=60)
+    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-a", lease_seconds=60, expected_profile_hash=PROFILE_HASH)
     assert claim.claimed
-    assert not store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-b", lease_seconds=60).claimed
+    assert not store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-b", lease_seconds=60, expected_profile_hash=PROFILE_HASH).claimed
     assert store.renew_candidate_lease(path, candidate_id_value=cid, worker_id="worker-a", lease_seconds=120)
     assert not store.renew_candidate_lease(path, candidate_id_value=cid, worker_id="worker-b", lease_seconds=120)
     with pytest.raises(Exception):
@@ -85,8 +85,8 @@ def test_expired_processing_lease_can_be_reclaimed(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     path = _write_page(store, "p1")
     cid = store.read(path)["candidates"][0]["candidate_id"]
-    assert store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-a", lease_seconds=-1).claimed
-    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-b", lease_seconds=60)
+    assert store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-a", lease_seconds=-1, expected_profile_hash=PROFILE_HASH).claimed
+    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="worker-b", lease_seconds=60, expected_profile_hash=PROFILE_HASH)
     assert claim.claimed
     assert claim.candidate["claimed_by"] == "worker-b"
 

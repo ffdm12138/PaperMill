@@ -27,7 +27,7 @@ needed) or `abandoned` (no recoverable artifacts).
 
 `WorkspaceEvidence` is a frozen dataclass of file-existence and parse-success
 booleans. It contains zero readiness judgments. It never computes
-`complete_for_metadata_staged`, `formalize_allowed`, or any composite gate.
+`readiness.ready`, `formalize_allowed`, or any composite gate.
 
 ## 3. Readiness evaluator uses ingest profile
 

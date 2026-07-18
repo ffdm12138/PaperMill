@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.process]
 
 def _claim_worker(root: str, path: str, cid: str, worker: str, queue) -> None:
     store = PageJournalStore(Path(root))
-    result = store.claim_candidate(Path(path), candidate_id_value=cid, worker_id=worker, lease_seconds=30)
+    result = store.claim_candidate(Path(path), candidate_id_value=cid, worker_id=worker, lease_seconds=30, expected_profile_hash="test-hash")
     queue.put((worker, result.claimed, result.reason))
 
 
@@ -60,9 +60,12 @@ def test_candidate_claim_uses_real_os_filelock_across_processes(tmp_path: Path):
         request_cursor=INITIAL_CURSOR,
         next_cursor=None,
         provider_exhausted=True,
+        relevance_profile_hash="test-hash",
         candidates=[PaperCandidate(title="T", doi="10.1234/process")],
         state="cursor_committed",
     )
+    page["candidates"][0]["relevance"]["state"] = "passed"
+    page["candidates"][0]["relevance"]["reason"] = "profile_match"
     path = store.write_page(page)
     cid = store.read(path)["candidates"][0]["candidate_id"]
 

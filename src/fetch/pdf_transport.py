@@ -161,7 +161,6 @@ def fetch_url_direct_then_proxy(
     params: Mapping[str, Any] | None = None,
     stream: bool = False,
     allow_redirects: bool = True,
-    timeout: float | tuple[float, float] | None = None,
     direct_timeout: float | tuple[float, float] | None = None,
     proxy_timeout: float | tuple[float, float] | None = None,
     config: PdfTransportConfig | None = None,
@@ -175,14 +174,8 @@ def fetch_url_direct_then_proxy(
     ``expected_content``. A direct content mismatch is proxy-retryable.
     """
     cfg = config or load_pdf_transport_config()
-    if timeout is not None:
-        warnings.warn(
-            "timeout is deprecated; use direct_timeout and proxy_timeout",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    direct_timeout = direct_timeout if direct_timeout is not None else (timeout if timeout is not None else cfg.direct_timeout)
-    proxy_timeout = proxy_timeout if proxy_timeout is not None else (timeout if timeout is not None else cfg.proxy_timeout)
+    direct_timeout = direct_timeout if direct_timeout is not None else cfg.direct_timeout
+    proxy_timeout = proxy_timeout if proxy_timeout is not None else cfg.proxy_timeout
     attempts: list[TransportAttempt] = []
 
     invalid_error = _invalid_url_error(url)
@@ -315,11 +308,6 @@ def sanitize_for_persistence(value: Any, *, parent_key: str = "") -> Any:
             return sanitize_url_for_persistence(value)
         return _redact_urls_in_text(value)
     return value
-
-
-def sanitize_url_fields(value: Any, *, parent_key: str = "") -> Any:
-    """Backward-compatible name for the persistence-wide sanitizer."""
-    return sanitize_for_persistence(value, parent_key=parent_key)
 
 
 _URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)

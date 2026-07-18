@@ -1,7 +1,11 @@
 """Ledger I/O must remain O(candidates), independent of registry size."""
 from __future__ import annotations
 
+import pytest
+
 from scripts.benchmark_discovery_staging import run_benchmark
+
+pytestmark = pytest.mark.performance
 
 
 def test_ledger_io_is_bounded_for_large_warm_registry():

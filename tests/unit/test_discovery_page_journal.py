@@ -72,12 +72,19 @@ def test_page_and_candidate_state_transitions_are_validated(tmp_path: Path):
         request_cursor=INITIAL_CURSOR,
         next_cursor="next",
         provider_exhausted=False,
+        relevance_profile_hash="test-hash",
         candidates=[_candidate()],
     )
     path = store.write_page(page)
+    store.finalize_relevance(path, {
+        page["candidates"][0]["candidate_id"]: {
+            "state": "passed", "profile_hash": "test-hash",
+            "reason": "profile_match",
+        }
+    })
     store.mark_cursor_committed(path)
     cid = store.read(path)["candidates"][0]["candidate_id"]
-    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60)
+    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60, expected_profile_hash="test-hash")
     assert claim.claimed
     store.commit_candidate(path, candidate_id_value=cid, worker_id="w1", new_status="emitted")
     assert store.read(path)["state"] == "drained"
@@ -101,14 +108,21 @@ def test_update_candidate_payload_preserves_identity_and_statistics(tmp_path: Pa
         request_cursor=INITIAL_CURSOR,
         next_cursor="next",
         provider_exhausted=False,
+        relevance_profile_hash="test-hash",
         candidates=[_candidate(doi="", title="Needs DOI")],
     )
     path = store.write_page(page)
+    store.finalize_relevance(path, {
+        page["candidates"][0]["candidate_id"]: {
+            "state": "passed", "profile_hash": "test-hash",
+            "reason": "profile_match",
+        }
+    })
     store.mark_cursor_committed(path)
     before = store.read(path)
     item = before["candidates"][0]
     cid = item["candidate_id"]
-    assert store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60).claimed
+    assert store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60, expected_profile_hash="test-hash").claimed
     claimed_stats = store.read(path)["statistics"]
 
     payload = dict(item["candidate"])

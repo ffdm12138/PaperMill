@@ -30,10 +30,11 @@ def test_claim_candidate_rejects_uncommitted_page(tmp_path: Path):
         provider_exhausted=False,
         candidates=[PaperCandidate(title="T", doi="10.1234/page-state")],
         state="fetched",
+        relevance_profile_hash="test-hash",
     ))
     cid = store.read(path)["candidates"][0]["candidate_id"]
 
-    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60)
+    claim = store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60, expected_profile_hash="test-hash")
 
     assert not claim.claimed
     assert claim.reason == "page_not_claimable:fetched"
@@ -43,7 +44,7 @@ def test_claim_candidate_rejects_uncommitted_page(tmp_path: Path):
 
 def test_defer_candidate_releases_processing_claim(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
-    path = store.write_page(store.make_page(
+    page = store.make_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -58,9 +59,14 @@ def test_defer_candidate_releases_processing_claim(tmp_path: Path):
         provider_exhausted=False,
         candidates=[PaperCandidate(title="T", doi="10.1234/defer")],
         state="cursor_committed",
-    ))
+        relevance_profile_hash="test-hash",
+    )
+    # Candidate starts as profile_unbound; must be explicitly passed to be claimable.
+    page["candidates"][0]["relevance"]["state"] = "passed"
+    page["candidates"][0]["relevance"]["reason"] = "profile_match"
+    path = store.write_page(page)
     cid = store.read(path)["candidates"][0]["candidate_id"]
-    assert store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60).claimed
+    assert store.claim_candidate(path, candidate_id_value=cid, worker_id="w1", lease_seconds=60, expected_profile_hash="test-hash").claimed
 
     item = store.defer_candidate(
         path,

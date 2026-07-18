@@ -60,7 +60,7 @@ def test_processing_primary_does_not_terminal_duplicate_secondary(tmp_path: Path
     cid_a = store.read(path_a)["candidates"][0]["candidate_id"]
     cid_b = store.read(path_b)["candidates"][0]["candidate_id"]
 
-    assert store.claim_candidate(path_a, candidate_id_value=cid_a, worker_id="worker-a", lease_seconds=60).claimed
+    assert store.claim_candidate(path_a, candidate_id_value=cid_a, worker_id="worker-a", lease_seconds=60, expected_profile_hash=PROFILE_HASH).claimed
 
     first = _drain(tmp_path, store)
     assert first.duplicate_observation == 0
@@ -82,7 +82,7 @@ def test_staged_journal_without_workspace_does_not_terminal_duplicate_secondary(
     path_b = _write_page(store, "p2", doi="10.1234/missing-workspace")
     cid_a = store.read(path_a)["candidates"][0]["candidate_id"]
 
-    assert store.claim_candidate(path_a, candidate_id_value=cid_a, worker_id="worker-a", lease_seconds=60).claimed
+    assert store.claim_candidate(path_a, candidate_id_value=cid_a, worker_id="worker-a", lease_seconds=60, expected_profile_hash=PROFILE_HASH).claimed
     store.commit_candidate(
         path_a,
         candidate_id_value=cid_a,

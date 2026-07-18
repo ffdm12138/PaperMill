@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import uuid
 from pathlib import Path
 import pytest
 
@@ -68,3 +69,53 @@ def test_commit_recovers_forward_from_durable_phase(tmp_path: Path,fault_phase: 
     result=reconcile_commits(transactions_dir=tmp_path/"transactions",paper_raw_root=raw,papers_dir=papers,ledger_path=ledger_path,catalog_root=catalog_root)
     assert result and result[0]["phase"]=="complete"
     assert read_category_members(catalog_root/"all",papers_dir=papers)[0]["paper_number"]==NUMBER
+
+
+def test_commit_reconcile_rejects_ambiguous_active_journals_before_mutation(tmp_path: Path):
+    workspace, papers, ledger_path, catalog_root = _workspace(tmp_path)
+    transaction_root = tmp_path / "transactions"
+    write_formalization_plan(workspace, papers_dir=papers)
+
+    def fail_after_prepare(phase: str) -> None:
+        if phase == "prepared":
+            raise RuntimeError("injected crash")
+
+    with pytest.raises(RuntimeError, match="injected crash"):
+        commit_paper_raw(
+            workspace,
+            paper_raw_root=tmp_path / "paper_raw",
+            papers_dir=papers,
+            ledger_path=ledger_path,
+            catalog_root=catalog_root,
+            transactions_dir=transaction_root,
+            fault_injector=fail_after_prepare,
+        )
+
+    first_path = next((transaction_root / "commit").glob("*.json"))
+    duplicate = json.loads(first_path.read_text(encoding="utf-8"))
+    second_id = str(uuid.uuid4())
+    duplicate["transaction_id"] = second_id
+    duplicate["staging_path"] = str(
+        (papers / f".{duplicate['paper_name']}.staging_{second_id}").resolve()
+    )
+    second_path = transaction_root / "commit" / f"{second_id}.json"
+    second_path.write_text(json.dumps(duplicate), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="ambiguous_active_transaction"):
+        reconcile_commits(
+            transactions_dir=transaction_root,
+            paper_raw_root=tmp_path / "paper_raw",
+            papers_dir=papers,
+            ledger_path=ledger_path,
+            catalog_root=catalog_root,
+            apply=True,
+        )
+
+    assert workspace.root.is_dir()
+    assert not (papers / duplicate["paper_name"]).exists()
+    active_journals = list((transaction_root / "commit").glob("*.json"))
+    assert len(active_journals) == 2
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["phase"]
+        for path in active_journals
+    } == {"prepared"}

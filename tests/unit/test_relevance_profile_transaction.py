@@ -25,7 +25,24 @@ def _taxonomy() -> TaxonomySnapshot:
         "field": {"id": "https://openalex.org/fields/1", "display_name": "Field"},
         "domain": {"id": "https://openalex.org/domains/1", "display_name": "Domain"},
     }
-    return TaxonomySnapshot(({"results": [entity]},), (entity,), "now", ("page",), "snapshot")
+    # Build a fully self-consistent snapshot using the same hash helpers
+    # as fetch_subfields_taxonomy so validate_taxonomy_snapshot() passes.
+    from src.discovery.relevance_profiles import (
+        _json_bytes, _canonical_hash, _rebuild_canonical_entities,
+    )
+    pages = [{"results": [entity], "meta": {"next_cursor": None}}]
+    page_hashes = tuple(_canonical_hash(p) for p in pages)
+    snapshot_sha = _canonical_hash({"pages": pages, "entities": [entity]})
+    raw_sha = hashlib.sha256(b"".join(_json_bytes(p) for p in pages)).hexdigest()
+    canonical = _rebuild_canonical_entities(pages)
+    semantic_sha = _canonical_hash({"entities": canonical})
+    return TaxonomySnapshot(
+        pages=tuple(pages), entities=(entity,), retrieved_at="2026-07-17T00:00:00+00:00",
+        page_hashes=page_hashes, snapshot_sha256=snapshot_sha,
+        schema_version="1.0",
+        raw_snapshot_sha256=raw_sha,
+        taxonomy_semantic_sha256=semantic_sha,
+    )
 
 
 def _setup(tmp_path: Path):

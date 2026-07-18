@@ -1,7 +1,11 @@
 """Performance contracts over the real staging transaction."""
 from __future__ import annotations
 
+import pytest
+
 from scripts.benchmark_discovery_staging import run_benchmark
+
+pytestmark = pytest.mark.performance
 
 
 def test_benchmark_uses_one_cold_build_and_real_transactions():

@@ -1,8 +1,8 @@
-"""Cross-module consistency: shared predicate, schema, store, audit, migration.
+"""Cross-module consistency: shared predicate, schema, store, audit.
 
 Representative matrix (not field-exhaustive).  Field-level coverage is in
 unit tests: test_backfill_state, test_keyword_notebook,
-test_discovery_keyword_audit_v3, test_keyword_notebook_v3_migration, etc.
+test_discovery_keyword_audit_v3, etc.
 """
 from __future__ import annotations
 
@@ -271,36 +271,4 @@ def test_audit_page_journal_without_sig_state_only(tmp_path):
     assert report["backfill_state_safe"] is False
 
 
-# ── Migration-specific contracts ────────────────────────────────────
 
-
-def test_v3_source_not_passed_to_legacy_normalizer(tmp_path):
-    """v3 source is NOT processed by the legacy normalizer."""
-    from src.discovery.notebook_v3_migration import _legacy_queries, _translate_legacy_provider_state as legacy_fn
-    import src.discovery.notebook_v3_migration as mig
-    import unittest.mock as mock
-    store = KeywordNotebookStore(tmp_path / "nb")
-    store.ensure_notebook("测试迁移"); store.sync_search_queries("测试迁移", add=[
-        {"query": "测试迁移", "language": "zh", "source": "pytest"},
-        {"query": "migrate test", "language": "en", "source": "pytest"},
-    ]); bind_test_relevance_profile(store, "测试迁移"); store.set_enabled("测试迁移", True)
-    nb = store.require_v3("测试迁移")
-    with mock.patch.object(mig, "_translate_legacy_provider_state", wraps=legacy_fn) as spy:
-        queries = _legacy_queries(nb, filename="test_v3.json", migration_at="2026-01-01T00:00:00Z")
-        spy.assert_not_called()
-        assert len(queries) == 2
-
-
-def test_migration_blocked_exception(tmp_path):
-    """Non-pristine unbound raises typed MigrationBlocked exception."""
-    from src.discovery.notebook_v3_migration import MigrationBlocked, _legacy_queries
-    store = KeywordNotebookStore(tmp_path / "nb")
-    store.ensure_notebook("测试迁移"); store.sync_search_queries("测试迁移", add=[
-        {"query": "测试迁移", "language": "zh", "source": "pytest"},
-        {"query": "migrate test", "language": "en", "source": "pytest"},
-    ]); bind_test_relevance_profile(store, "测试迁移"); store.set_enabled("测试迁移", True)
-    nb = store.require_v3("测试迁移")
-    qid = query_identity("en", "migrate test")
-    nb["search_queries"][qid]["providers"]["openalex"]["backfill"]["items_returned_total"] = 1
-    with pytest.raises(MigrationBlocked):
-        _legacy_queries(nb, filename="corrupt.json", migration_at="2026-01-01T00:00:00Z")

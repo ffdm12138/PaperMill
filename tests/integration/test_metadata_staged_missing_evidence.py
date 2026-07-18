@@ -92,6 +92,6 @@ def test_reserved_missing_metadata_remains_valid_unsettled(tmp_path: Path):
 
     assert result.complete
     assert result.registry is not None
-    assert number in result.registry.unsettled_paper_raw_numbers
+    assert number in result.registry.repair_backlog_numbers
     assert "metadata_staged_workspace_incomplete" not in _issue_codes(result.issues)
     assert workspace.is_dir()

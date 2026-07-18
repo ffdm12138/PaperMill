@@ -71,6 +71,6 @@ def test_durable_emitted_doi_survives_profile_rebinding(tmp_path: Path):
     index = JournalDrainIndex.build(
         store, active_profile_hashes={kid: new["profile_hash"]},
     )
-    assert "10.1/durable" in index.emitted_by_doi
-    index.bind_active_profile(kid, new["profile_hash"])
-    assert "10.1/durable" in index.emitted_by_doi
+    # Durable (emitted) DOI facts survive a profile change at build time —
+    # active profile bindings are immutable for the batch lifetime.
+    assert index.get_emitted_primary("10.1/durable") is not None

@@ -24,6 +24,7 @@ from src.services.duplicate_index import DuplicateIndex, DuplicateRef
 from src.services.ingest_ids import PAPER_NUMBER_RE
 from src.file_fingerprint import compute_sha256
 from src.discovery.staging_metrics import NullStagingMetricsObserver, StagingMetricsObserver
+from config.settings import PROJECT_ROOT
 
 
 Scope = Literal["paper_raw", "papers"]
@@ -131,11 +132,6 @@ class WorkspaceRegistrySnapshot:
     indexed_formal_numbers: frozenset[str]
     formal_generation: str | None
     formal_revision: int | None = None
-
-    @property
-    def unsettled_paper_raw_numbers(self) -> frozenset[str]:
-        """Compatibility name; the set is a backlog, never a hot-path scan list."""
-        return self.repair_backlog_numbers
 
     def replace_record(self, record: WorkspaceScanRecord, *, max_number: int) -> "WorkspaceRegistrySnapshot":
         """Replace one paper's record and every derived index projection."""
@@ -468,8 +464,11 @@ def scan_workspace_record(folder: Path, number: str, scope: Scope,
 
 
 def _target_folder(*, item: Mapping[str, Any], scope: Scope,
-                   raw_root: Path, formal_root: Path) -> tuple[Path, Path]:
-    folder = resolve_stored_path(str(item.get("folder_path") or ""))
+                   raw_root: Path, formal_root: Path,
+                   project_root: Path = PROJECT_ROOT) -> tuple[Path, Path]:
+    folder = resolve_stored_path(
+        str(item.get("folder_path") or ""), project_root=project_root
+    )
     return folder, formal_root if scope == "papers" else raw_root
 
 
@@ -573,7 +572,8 @@ def _snapshot(
 
 def build_workspace_registry(*, paper_raw_dir: str | Path, papers_dir: str | Path,
                              ledger: PaperNumberLedger,
-                             observer: StagingMetricsObserver | None = None) -> WorkspaceRegistryBuildResult:
+                             observer: StagingMetricsObserver | None = None,
+                             project_root: Path = PROJECT_ROOT) -> WorkspaceRegistryBuildResult:
     observer = observer or NullStagingMetricsObserver()
     observer.registry_full_build()
     observer.formal_publication_view_load()
@@ -586,18 +586,26 @@ def build_workspace_registry(*, paper_raw_dir: str | Path, papers_dir: str | Pat
     scanned: list[str] = []
     items: dict[str, dict[str, Any]] = data["items"]
     ledger_numbers = set(items)
-    disk_raw = {p.name for p in raw_root.iterdir() if p.is_dir() and PAPER_NUMBER_RE.fullmatch(p.name)} if raw_root.exists() else set()
+    disk_raw = {
+        p.name for p in raw_root.iterdir()
+        if p.is_dir() and not p.is_symlink() and PAPER_NUMBER_RE.fullmatch(p.name)
+    } if raw_root.exists() else set()
     for number in sorted(disk_raw - ledger_numbers):
         issues.append(RegistryIssue(
             RegistryIssueCode.LEDGER_FOLDER_MISMATCH, number, "untracked_paper_raw"))
     active_paths = {
-        resolve_stored_path(str(item.get("folder_path") or "")).resolve()
+        resolve_stored_path(
+            str(item.get("folder_path") or ""), project_root=Path(project_root)
+        ).resolve()
         for item in items.values()
         if isinstance(item, dict) and str(item.get("state") or "") == "active"
         and str(item.get("folder_path") or "")
     }
     if formal_root.exists():
-        for folder in (path for path in formal_root.iterdir() if path.is_dir() and not path.name.startswith(".")):
+        for folder in (
+            path for path in formal_root.iterdir()
+            if path.is_dir() and not path.is_symlink() and not path.name.startswith(".")
+        ):
             if folder.resolve() not in active_paths:
                 issues.append(RegistryIssue(
                     RegistryIssueCode.LEDGER_FOLDER_MISMATCH, "",
@@ -607,7 +615,21 @@ def build_workspace_registry(*, paper_raw_dir: str | Path, papers_dir: str | Pat
         if state in TERMINAL_LEDGER_STATES:
             continue
         stored = str(item.get("folder_path") or "")
-        folder = resolve_stored_path(stored)
+        folder = resolve_stored_path(stored, project_root=Path(project_root))
+        expected_root = formal_root if state == "active" else raw_root
+        try:
+            if folder.resolve(strict=False).parent != expected_root.resolve(strict=False):
+                issues.append(RegistryIssue(
+                    RegistryIssueCode.LEDGER_FOLDER_MISMATCH, number,
+                    "workspace_outside_expected_root", folder.as_posix(),
+                ))
+                continue
+        except OSError:
+            issues.append(RegistryIssue(
+                RegistryIssueCode.LEDGER_FOLDER_MISMATCH, number,
+                "workspace_path_unreadable", folder.as_posix(),
+            ))
+            continue
         scope: Scope = "papers" if state == "active" else "paper_raw"
         expected_root = formal_root if scope == "papers" else raw_root
         if folder.is_symlink() or not folder.is_dir() or folder.parent.resolve() != expected_root.resolve():
@@ -628,7 +650,7 @@ def build_workspace_registry(*, paper_raw_dir: str | Path, papers_dir: str | Pat
     # Remaining issues are per-workspace and non-fatal: build the registry
     # from successfully scanned workspaces, keeping issues for diagnostics.
     publication = validate_publication_state(
-        papers_dir=formal_root, ledger_items=items,
+        papers_dir=formal_root, ledger_items=items, project_root=Path(project_root),
     )
     for detail in publication.issues:
         issues.append(RegistryIssue(
@@ -662,7 +684,7 @@ def build_workspace_registry(*, paper_raw_dir: str | Path, papers_dir: str | Pat
                                             tuple(sorted(snapshot.repair_backlog_numbers)),
                                             tuple(issues))
     return WorkspaceRegistryBuildResult(snapshot, not bool(issues), tuple(scanned),
-                                        tuple(sorted(snapshot.unsettled_paper_raw_numbers)),
+                                        tuple(sorted(snapshot.repair_backlog_numbers)),
                                         tuple(issues))
 
 
@@ -670,7 +692,8 @@ def refresh_registry_under_write_lock(current: WorkspaceRegistrySnapshot, *,
                                       paper_raw_dir: str | Path, papers_dir: str | Path,
                                       ledger_view: Mapping[str, Any],
                                       observer: StagingMetricsObserver | None = None,
-                                      dirty_numbers: set[str] | frozenset[str] = frozenset()) -> WorkspaceRegistryRefreshResult:
+                                      dirty_numbers: set[str] | frozenset[str] = frozenset(),
+                                      project_root: Path = PROJECT_ROOT) -> WorkspaceRegistryRefreshResult:
     """Build a temporary replacement and publish only a fully valid snapshot."""
     observer = observer or NullStagingMetricsObserver()
     observer.registry_pre_refresh()
@@ -707,7 +730,7 @@ def refresh_registry_under_write_lock(current: WorkspaceRegistrySnapshot, *,
         # that supported publication event requires a full closure recheck;
         # ordinary staging epochs reuse the batch-bound formal projection.
         publication = validate_publication_state(
-            papers_dir=formal_root, ledger_items=items,
+            papers_dir=formal_root, ledger_items=items, project_root=Path(project_root),
         )
         if not publication.valid:
             return WorkspaceRegistryRefreshResult(
@@ -757,7 +780,8 @@ def refresh_registry_under_write_lock(current: WorkspaceRegistrySnapshot, *,
             continue
         projection = _lifecycle_projection(item)
         folder, expected_root = _target_folder(
-            item=item, scope=projection.scope, raw_root=raw_root, formal_root=formal_root)
+            item=item, scope=projection.scope, raw_root=raw_root,
+            formal_root=formal_root, project_root=project_root)
         if folder.is_symlink() or not folder.is_dir() or folder.parent.resolve() != expected_root.resolve():
             issues.append(RegistryIssue(
                 RegistryIssueCode.LEDGER_FOLDER_MISMATCH, number,
@@ -795,6 +819,7 @@ def revalidate_matched_records(snapshot: WorkspaceRegistrySnapshot,
                                paper_raw_dir: str | Path, papers_dir: str | Path,
                                ledger_view: Mapping[str, Any],
                                observer: StagingMetricsObserver | None = None,
+                               project_root: Path = PROJECT_ROOT,
                                ) -> MatchedRecordValidationResult:
     """Live-scan only records reached by the candidate's identity/DOI lookups."""
     observer = observer or NullStagingMetricsObserver()
@@ -817,7 +842,8 @@ def revalidate_matched_records(snapshot: WorkspaceRegistrySnapshot,
             issues.append(_ledger_issue(f"matched_item_{projection.ledger_state}", number))
             continue
         folder, expected_root = _target_folder(
-            item=item, scope=projection.scope, raw_root=raw_root, formal_root=formal_root)
+            item=item, scope=projection.scope, raw_root=raw_root,
+            formal_root=formal_root, project_root=project_root)
         if folder.is_symlink() or not folder.is_dir() or folder.parent.resolve() != expected_root.resolve():
             issues.append(RegistryIssue(
                 RegistryIssueCode.LEDGER_FOLDER_MISMATCH, number,

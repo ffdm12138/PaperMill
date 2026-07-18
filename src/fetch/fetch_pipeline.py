@@ -14,7 +14,7 @@ from config.settings import MINERU_FETCH_MAX_BYTES
 from src.discovery.models import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 from src.fetch.models import FetchResult
-from src.fetch.pdf_transport import TRANSPORT_POLICY, fetch_url_direct_then_proxy, sanitize_url_fields
+from src.fetch.pdf_transport import TRANSPORT_POLICY, fetch_url_direct_then_proxy, sanitize_for_persistence
 from src.fetch.resolver_registry import build_resolvers
 from src.fetch.resolvers.base import ResolveContext
 from src.fetch.resolvers.url_safety import is_unsafe_url, validate_pdf_bytes
@@ -24,7 +24,7 @@ _build_resolvers = build_resolvers
 
 def _make_attempt(resolver_name: str, status: str, result, *, reason: str = "") -> dict[str, Any]:
     """Build a rich per-attempt record with stable keys."""
-    return sanitize_url_fields({
+    return sanitize_for_persistence({
         "resolver": resolver_name,
         "status": status,
         "candidate_url": getattr(result, "candidate_url", "") or "",
@@ -119,6 +119,8 @@ def _download_pdf(
             url,
             expected_content="pdf",
             stream=True,
+            direct_timeout=timeout,
+            proxy_timeout=timeout,
         ) as transport:
             if transport_attempts is not None:
                 transport_attempts.extend(transport.safe_attempts)
@@ -212,10 +214,6 @@ def fetch_pdf(
     last_error = ""
     attempts: list[dict[str, Any]] = []
     transport_attempts: list[dict[str, Any]] = []
-    # Legacy not_configured_resolvers from policy (generic mechanism).  The
-    # current --resolver auto does NOT use this for header_based — it is
-    # always in the active chain, defaulting to doi.org.
-    not_configured = list((policy.extra or {}).get("not_configured_resolvers") or [])
 
     for resolver in resolvers:
         chain.append(resolver.name)
@@ -224,7 +222,7 @@ def fetch_pdf(
         result.resolver = resolver.name
         result.access_mode = policy.mode.value
         if result.transport_attempts:
-            transport_attempts.extend(sanitize_url_fields(result.transport_attempts))
+            transport_attempts.extend(sanitize_for_persistence(result.transport_attempts))
         if not result.success:
             last_error = result.error or last_error
             attempts.append(_make_attempt(resolver.name, "failed", result, reason=result.error or ""))
@@ -232,14 +230,12 @@ def fetch_pdf(
         if result.requires_user_action:
             result.output_path = ""
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="requires_user_action")]
-            result.transport_attempts = sanitize_url_fields(list(transport_attempts))
-            result.not_configured_resolvers = list(not_configured)
+            result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
             return result
         if dry_run:
             result.output_path = ""
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="dry_run")]
-            result.transport_attempts = sanitize_url_fields(list(transport_attempts))
-            result.not_configured_resolvers = list(not_configured)
+            result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
             return result
         try:
             # prefer bytes already fetched by the resolver (e.g. header_based,
@@ -278,8 +274,7 @@ def fetch_pdf(
             result.output_path = pdf_path.as_posix()
             result.sha256 = sha
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result)]
-            result.transport_attempts = sanitize_url_fields(list(transport_attempts))
-            result.not_configured_resolvers = list(not_configured)
+            result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
             return result
         except Exception as exc:
             logger.warning("download failed from {} for {!r}: {}", resolver.name, doi, exc)
@@ -300,8 +295,7 @@ def fetch_pdf(
                         result.sha256 = sha
                         result.is_direct_pdf = False
                         result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="resolved from landing page")]
-                        result.transport_attempts = sanitize_url_fields(list(transport_attempts))
-                        result.not_configured_resolvers = list(not_configured)
+                        result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
                         return result
                     except Exception as landing_exc:
                         logger.warning(
@@ -311,15 +305,11 @@ def fetch_pdf(
             attempts.append(_make_attempt(resolver.name, "failed", result, reason=str(exc)))
             continue
 
-    # not_configured_resolvers is a legacy/generic policy marker.
-    # Current fetch_pdf_for_paper_raw.py --resolver auto does not use it for
-    # header_based because header_based defaults to https://doi.org/{doi}.
     return FetchResult(
         doi=normalized,
         error=last_error or "no PDF found",
         resolver_chain=chain,
         access_mode=policy.mode.value,
         attempts=attempts,
-        transport_attempts=sanitize_url_fields(list(transport_attempts)),
-        not_configured_resolvers=not_configured,
+        transport_attempts=sanitize_for_persistence(list(transport_attempts)),
     )

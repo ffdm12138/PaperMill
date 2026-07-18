@@ -20,17 +20,6 @@ def _candidates(root: Path,args)->list[PaperRawWorkspace]:
         return out
     return []
 
-def _ready_dirs(root: Path, ledger_path: Path|None=None)->list[Path]:
-    """Compatibility query returning only active numeric commit-ready paths."""
-    out=[]
-    if not root.exists(): return out
-    for folder in sorted(p for p in root.iterdir() if p.is_dir() and PAPER_NUMBER_RE.fullmatch(p.name)):
-        try:
-            workspace=PaperRawWorkspace.from_path(folder)
-            if inspect_workspace_readiness(workspace)["ready_for_commit"]: out.append(folder)
-        except Exception: continue
-    return out
-
 def main()->int:
     parser=argparse.ArgumentParser(); parser.add_argument("--paper-dir",type=Path); parser.add_argument("--paper-number"); parser.add_argument("--all-ready",action="store_true"); parser.add_argument("--reconcile",action="store_true"); parser.add_argument("--paper-raw-dir",type=Path,default=PAPER_RAW_DIR); parser.add_argument("--papers-dir",type=Path,default=PAPERS_DIR); parser.add_argument("--ledger-path",type=Path,default=PAPER_NUMBER_LEDGER_PATH); parser.add_argument("--catalog-root",type=Path,default=CATALOG_FOLDER_ROOT); parser.add_argument("--transactions-dir",type=Path,default=None); parser.add_argument("--apply",action="store_true"); parser.add_argument("--dry-run",action="store_true"); parser.add_argument("--report",type=Path)
     args=parser.parse_args(); transactions=args.transactions_dir or args.paper_raw_dir.parent/"transactions"; write=args.apply and not args.dry_run; report=[]

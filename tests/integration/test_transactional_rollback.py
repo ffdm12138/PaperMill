@@ -121,6 +121,125 @@ def test_public_rollback_recovers_every_crash_boundary(tmp_path: Path, crash_pha
     assert not list((catalog_root / "all").iterdir())
 
 
+def test_rollback_recovers_marker_write_crash_after_ledger_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result, papers, ledger_path, catalog_root, _, _ = _committed(tmp_path)
+    transaction_root = tmp_path / "transactions"
+    paper_raw_root = tmp_path / "paper_raw"
+    original_write_marker = PaperNumberLedger.write_marker
+    crashed = False
+
+    def crash_metadata_staged_marker(
+        folder: str | Path,
+        number: str,
+        *,
+        state: str,
+        planned_paper_name: str = "",
+    ) -> None:
+        nonlocal crashed
+        if state == "metadata_staged" and not crashed:
+            crashed = True
+            raise RuntimeError("injected marker write crash")
+        original_write_marker(
+            folder,
+            number,
+            state=state,
+            planned_paper_name=planned_paper_name,
+        )
+
+    monkeypatch.setattr(
+        PaperNumberLedger,
+        "write_marker",
+        staticmethod(crash_metadata_staged_marker),
+    )
+    with pytest.raises(RuntimeError, match="injected marker write crash"):
+        rollback_formal_papers(
+            papers_dir=papers,
+            paper_raw_root=paper_raw_root,
+            transaction_root=transaction_root,
+            ledger_path=ledger_path,
+            catalog_root=catalog_root,
+            paper_number=NUMBER,
+        )
+
+    raw = paper_raw_root / NUMBER
+    marker = raw / f"{NUMBER}.paper.number"
+    assert PaperNumberLedger(ledger_path).load()["items"][NUMBER]["state"] == "metadata_staged"
+    assert json.loads(marker.read_text(encoding="utf-8"))["state"] == "reserved"
+    active_journal = next((transaction_root / "rollback").glob("*.json"))
+    assert json.loads(active_journal.read_text(encoding="utf-8"))["phase"] == "raw_installed"
+
+    monkeypatch.setattr(
+        PaperNumberLedger,
+        "write_marker",
+        staticmethod(original_write_marker),
+    )
+    assert rollback_formal_papers(
+        papers_dir=papers,
+        paper_raw_root=paper_raw_root,
+        transaction_root=transaction_root,
+        ledger_path=ledger_path,
+        catalog_root=catalog_root,
+        paper_number=NUMBER,
+    ) == NUMBER
+
+    marker_value = json.loads(marker.read_text(encoding="utf-8"))
+    assert marker_value["paper_number"] == NUMBER
+    assert marker_value["folder_name"] == NUMBER
+    assert marker_value["state"] == "metadata_staged"
+    assert marker_value["planned_paper_name"] == result["paper_name"]
+
+
+def test_rollback_recovery_rejects_reserved_ledger_as_completion_evidence(tmp_path: Path):
+    result, papers, ledger_path, catalog_root, _, _ = _committed(tmp_path)
+    transaction_root = tmp_path / "transactions"
+    paper_raw_root = tmp_path / "paper_raw"
+
+    def fail_after_raw_install(phase: str) -> None:
+        if phase == "raw_installed":
+            raise RuntimeError("injected crash")
+
+    with pytest.raises(RuntimeError, match="injected crash"):
+        rollback_formal_papers(
+            papers_dir=papers,
+            paper_raw_root=paper_raw_root,
+            transaction_root=transaction_root,
+            ledger_path=ledger_path,
+            catalog_root=catalog_root,
+            paper_number=NUMBER,
+            fault_injector=fail_after_raw_install,
+        )
+
+    raw = paper_raw_root / NUMBER
+    ledger = PaperNumberLedger(ledger_path)
+    data = ledger.load()
+    item = data["items"][NUMBER]
+    item.update({
+        "state": "reserved",
+        "folder_name": NUMBER,
+        "folder_path": str(raw.resolve()),
+        "planned_paper_name": result["paper_name"],
+    })
+    ledger.save(data)
+
+    with pytest.raises(RuntimeError, match="reserved ledger state is not valid rollback evidence"):
+        rollback_formal_papers(
+            papers_dir=papers,
+            paper_raw_root=paper_raw_root,
+            transaction_root=transaction_root,
+            ledger_path=ledger_path,
+            catalog_root=catalog_root,
+            paper_number=NUMBER,
+        )
+
+    active_journal = next((transaction_root / "rollback").glob("*.json"))
+    assert json.loads(active_journal.read_text(encoding="utf-8"))["phase"] == "raw_installed"
+    assert raw.is_dir()
+    assert list(papers.glob(".*.rollback_quarantine_*"))
+
+
 def test_rollback_fails_closed_on_active_commit_journal(tmp_path: Path):
     workspace, papers, ledger_path, catalog_root = _workspace(tmp_path)
     write_formalization_plan(workspace, papers_dir=papers)

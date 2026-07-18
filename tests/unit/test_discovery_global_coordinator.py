@@ -9,6 +9,7 @@ import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.relevance_runtime import RelevanceRuntimePaths
 from src.discovery.models import PaperCandidate
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
@@ -174,6 +175,11 @@ def test_durable_applying_profile_journal_blocks_before_provider_io(tmp_path: Pa
     transaction_path.write_text(json.dumps({
         "schema_version": "2.0", "transaction_id": "crashed", "state": "applying",
     }), encoding="utf-8")
+    runtime_paths = RelevanceRuntimePaths.resolve(
+        notebook_root=nb_dir,
+        journal_root=tmp_path / "pages",
+        transaction_root=transaction_root,
+    )
     calls = []
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, backfill_pages=1, max_candidates=0,
@@ -181,7 +187,7 @@ def test_durable_applying_profile_journal_blocks_before_provider_io(tmp_path: Pa
         locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
-        relevance_profiles_transaction_root=transaction_root,
+        relevance_runtime_paths=runtime_paths,
     )
     with pytest.raises(RuntimeError, match="durably applying") as caught:
         run_discovery_batch(
