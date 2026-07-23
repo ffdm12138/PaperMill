@@ -17,17 +17,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import (  # noqa: E402
-    DISCOVERY_KEYWORD_NOTEBOOK_DIR,
     DISCOVERY_DIR,
-    DISCOVERY_EXPORTS_DIR,
-    DISCOVERY_LOCKS_DIR,
-    DISCOVERY_PENDING_PAGES_DIR,
     PAPER_NUMBER_LEDGER_PATH,
     PAPER_RAW_DIR,
     PAPERS_DIR,
 )
 from src.discovery.cli_plan import load_keyword_plan  # noqa: E402
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch  # noqa: E402
+from src.discovery.workspace import WorkspaceResolver  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -51,12 +48,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--page-size", type=int, default=50)
     parser.add_argument("--max-candidates", type=int, default=50)
     parser.add_argument("--output-dir", type=Path, default=DISCOVERY_DIR / "doi_candidates")
-    parser.add_argument("--keyword-notebook-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
-    parser.add_argument("--pending-pages-dir", type=Path, default=DISCOVERY_PENDING_PAGES_DIR)
-    parser.add_argument("--discovery-locks-dir", type=Path, default=DISCOVERY_LOCKS_DIR)
-    parser.add_argument("--exports-dir", type=Path, default=DISCOVERY_EXPORTS_DIR)
+    parser.add_argument("--workspace-root", type=Path, default=None,
+                        help="Override workspace root directory (for tests).")
     parser.add_argument("--until-exhausted", action="store_true")
     parser.add_argument("--max-pages-total", type=int, default=None)
+    parser.add_argument(
+        "--max-provider-requests-total", type=int, default=None,
+        help="Batch-wide valve on real HTTP attempts (incl. retries/failures). "
+             "In --until-exhausted mode at least one of --max-pages-total / "
+             "--max-provider-requests-total is required (no giant-integer runs).",
+    )
     parser.add_argument("--max-pending-candidates", type=int, default=1000)
     parser.add_argument("--resume-pending-candidates", type=int, default=700)
     parser.add_argument("--doi-resolution-budget", type=int, default=10)
@@ -95,8 +96,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--skip-duplicates requires --stage-to-paper-raw")
     if args.until_exhausted and args.mode not in ("backfill", "hybrid"):
         parser.error("--until-exhausted requires --mode backfill or hybrid")
-    if args.until_exhausted and args.max_pages_total is None:
-        parser.error("--until-exhausted requires explicit --max-pages-total")
+    if args.until_exhausted and args.max_pages_total is None and args.max_provider_requests_total is None:
+        parser.error(
+            "--until-exhausted requires at least one safety valve "
+            "(--max-pages-total or --max-provider-requests-total)"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,15 +108,32 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _validate_args(parser, args)
 
+    # Resolve workspace
+    ws = None
+    if args.workspace_root:
+        from src.discovery.workspace import DiscoveryWorkspace
+        ws = DiscoveryWorkspace.from_generation_id(args.workspace_root.name)
+    else:
+        try:
+            ws = WorkspaceResolver().resolve_active()
+        except Exception:
+            pass  # Fall back to defaults for backward compat
+
+    nb_dir = ws.keyword_notebook_dir if ws else DISCOVERY_DIR / "keyword_notebooks"
+    pg_dir = ws.page_journals_dir if ws else DISCOVERY_DIR / "pending_pages"
+    lk_dir = ws.locks_dir if ws else DISCOVERY_DIR / "locks"
+    ex_dir = ws.exports_dir if ws else DISCOVERY_DIR / "exports"
+
     try:
         plan = load_keyword_plan(
             args.keyword_zh,
-            args.keyword_notebook_dir,
+            nb_dir,
             mode=args.mode,
             refresh_pages=args.refresh_pages,
             backfill_pages=args.backfill_pages,
             max_workers=2,
             max_pages_total=args.max_pages_total,
+            max_provider_requests_total=args.max_provider_requests_total,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"[ERROR] discovery preflight failed: {exc}", file=sys.stderr)
@@ -140,15 +161,17 @@ def main(argv: list[str] | None = None) -> int:
         apply=args.apply,
         skip_duplicates=args.skip_duplicates,
         hide_existing=args.hide_existing,
-        notebook_dir=args.keyword_notebook_dir,
-        pending_pages_dir=args.pending_pages_dir,
-        locks_dir=args.discovery_locks_dir,
-        exports_dir=args.exports_dir,
+        notebook_dir=nb_dir,
+        pending_pages_dir=pg_dir,
+        locks_dir=lk_dir,
+        exports_dir=ex_dir,
         until_exhausted=args.until_exhausted,
         max_pages_total=args.max_pages_total,
+        max_provider_requests_total=args.max_provider_requests_total,
         doi_resolution_budget=args.doi_resolution_budget,
         max_pending_candidates=args.max_pending_candidates,
         resume_pending_candidates=args.resume_pending_candidates,
+        title_resolution_cache_dir=DISCOVERY_DIR / "title_resolution_cache",
     )
     batch_report = run_discovery_batch([args.keyword_zh], options=options, max_workers=2)
     report = batch_report.keywords[0].to_dict() if batch_report.keywords else batch_report.to_dict()

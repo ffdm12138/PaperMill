@@ -2,12 +2,49 @@ import pytest
 
 from src.discovery import resolve_crossref, search_openalex
 from src.discovery.models import PaperCandidate
-from src.discovery.provider_models import DiscoveryPage, ProviderSearchRequest
+from src.discovery.providers.provider_models import DiscoveryPage, ProviderSearchRequest
 from src.discovery.search_openalex import parse_openalex_work
 from src.services.openalex_credentials import OpenAlexCredentials, safe_request_error_summary
 
 
 pytestmark = pytest.mark.unit
+
+
+def _install_runtime(monkeypatch, transport, *, max_retries: int = 0) -> None:
+    """Install ``transport`` as the process-wide ProviderRuntime singleton.
+
+    Replaces the legacy ``search_openalex.requests`` / ``resolve_crossref.requests``
+    mocks: both modules now route HTTP through the unified ProviderClient.
+    """
+    from src.discovery.providers.provider_client import ProviderRuntime
+    from src.services.rate_limit import default_config
+    from tests.helpers.fake_provider import FakeClock, FakeSleeper
+
+    cfg = default_config()
+    cfg["global"]["paper_interval_seconds"] = 0.0
+    cfg["global"]["jitter_seconds"] = 0.0
+    for p in cfg.get("providers", ()):
+        cfg["providers"][p]["min_interval_seconds"] = 0.0
+    runtime = ProviderRuntime(
+        config=cfg, transport=transport, max_retries=max_retries,
+        sleeper=FakeSleeper(FakeClock()), clock=FakeClock(),
+    )
+    monkeypatch.setattr(ProviderRuntime, "_instance", runtime)
+
+
+class _CapturingTransport:
+    """Records every RequestSpec seen; returns ``response`` or raises ``exc``."""
+
+    def __init__(self, response=None, exc: Exception | None = None) -> None:
+        self.response = response
+        self.exc = exc
+        self.specs: list = []
+
+    def send(self, spec, timeout_seconds):
+        self.specs.append(spec)
+        if self.exc is not None:
+            raise self.exc
+        return self.response
 
 
 def test_provider_identity_is_retained_on_request_and_page():
@@ -92,10 +129,8 @@ def test_search_openalex_loads_credentials_once(monkeypatch):
         return OpenAlexCredentials()
 
     monkeypatch.setattr(search_openalex, "load_openalex_credentials", counting_loader)
-    monkeypatch.setattr(
-        search_openalex.requests, "get",
-        lambda *a, **k: type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: {"results": []}})(),
-    )
+    from tests.helpers.fake_provider import http_response
+    _install_runtime(monkeypatch, _CapturingTransport(response=http_response(200, {"results": []})))
 
     result = search_openalex.search_openalex("snow")
     assert call_count == 1, f"Expected 1 call, got {call_count}"
@@ -108,26 +143,18 @@ def test_search_openalex_requests_passes_credentials(monkeypatch):
         search_openalex, "load_openalex_credentials",
         lambda *a, **k: creds,
     )
-
-    captured_params = None
-    captured_headers = None
-
-    def capture_get(url, **kwargs):
-        nonlocal captured_params, captured_headers
-        captured_params = kwargs.get("params", {})
-        captured_headers = kwargs.get("headers", {})
-        return type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: {"results": []}})()
-
-    monkeypatch.setattr(search_openalex.requests, "get", capture_get)
+    from tests.helpers.fake_provider import http_response
+    transport = _CapturingTransport(response=http_response(200, {"results": []}))
+    _install_runtime(monkeypatch, transport)
 
     search_openalex.search_openalex("snow")
-    assert captured_params is not None
-    assert captured_params.get("mailto") == "req@test.org"
-    assert captured_headers.get("Authorization") == "Bearer req-test-key"
+    spec = transport.specs[0]
+    assert spec.params.get("mailto") == "req@test.org"
+    assert spec.headers.get("Authorization") == "Bearer req-test-key"
 
 
 def test_search_openalex_error_does_not_leak_credentials(monkeypatch):
-    """A requests exception containing credentials in its message must not
+    """A transport exception containing credentials in its message must not
     leak them into logs or the return value."""
     creds = OpenAlexCredentials(email="leak-check@test.org", api_key="leak-check-key-99999")
 
@@ -142,10 +169,7 @@ def test_search_openalex_error_does_not_leak_credentials(monkeypatch):
         search_openalex, "load_openalex_credentials",
         lambda *a, **k: creds,
     )
-    monkeypatch.setattr(
-        search_openalex.requests, "get",
-        lambda *a, **k: (_ for _ in ()).throw(LeakyException()),
-    )
+    _install_runtime(monkeypatch, _CapturingTransport(exc=LeakyException()))
 
     # Capture log output
     log_lines = []
@@ -189,10 +213,10 @@ def test_parse_crossref_item_extracts_doi_title_year_authors():
 
 
 def test_search_crossref_network_error_returns_empty(monkeypatch):
-    def boom(*args, **kwargs):
-        raise RuntimeError("network down")
+    class Boom(Exception):
+        pass
 
-    monkeypatch.setattr(resolve_crossref.requests, "get", boom)
+    _install_runtime(monkeypatch, _CapturingTransport(exc=Boom("network down")))
     assert resolve_crossref.search_crossref("snow") == []
 
 

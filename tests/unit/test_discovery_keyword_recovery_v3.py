@@ -37,7 +37,7 @@ def _setup(tmp_path: Path, *, generation: int = 1, signature: dict | None = None
     notebook = store.require_v3("风吹雪")
     qid = query_identity("en", "blowing snow")
     journal = PageJournalStore(pages)
-    page = journal.make_page(
+    page = journal.make_synthetic_page(
         page_id="page-1",
         keyword_id=notebook["keyword_id"],
         keyword_zh="风吹雪",
@@ -65,7 +65,6 @@ def _setup(tmp_path: Path, *, generation: int = 1, signature: dict | None = None
 def _recover(notebooks: Path, pages: Path, *, tmp_path: Path) -> dict:
     return recover_notebooks(
         notebook_dir=notebooks,
-        retired_dir=tmp_path / "retired",
         pending_pages_dir=pages,
         locks_dir=tmp_path / "locks",
         catalog_root=tmp_path / "catalog",
@@ -130,7 +129,7 @@ def _setup_multiple_generations(
         ("historical-page", 1, sig1, "c1"),
         ("current-page", 2, sig2, "d1"),
     ):
-        page = journal.make_page(
+        page = journal.make_synthetic_page(
             page_id=page_id,
             keyword_id=notebook["keyword_id"],
             keyword_zh="风吹雪",
@@ -206,8 +205,11 @@ def test_generation_or_signature_mismatch_blocks(tmp_path: Path, case: str):
     payload = json.loads(path.read_text(encoding="utf-8"))
     if case == "generation":
         payload["generation"] = 2
+        payload["lane_key"]["generation"] = 2
     else:
-        payload["request_signature"] = request_signature(page_size=11)
+        signature = request_signature(page_size=11)
+        payload["request_signature"] = signature
+        payload["lane_key"]["request_signature"] = signature["hash"]
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["plan"]["operations"] == []
@@ -237,6 +239,8 @@ def test_orphan_page_is_reported_without_touching_notebook(tmp_path: Path):
     orphan["page_id"] = "orphan"
     orphan["keyword_zh"] = "雪崩动力学"
     orphan["keyword_id"] = keyword_id("雪崩动力学")
+    orphan["lane_key"] = dict(orphan["lane_key"])
+    orphan["lane_key"]["keyword_id"] = orphan["keyword_id"]
     orphan_path = pages / orphan["keyword_id"] / page["query_id"] / "openalex" / "backfill" / "orphan.json"
     orphan_path.parent.mkdir(parents=True, exist_ok=True)
     orphan_path.write_text(json.dumps(orphan, ensure_ascii=False), encoding="utf-8")
@@ -277,7 +281,7 @@ def test_recovery_blocks_current_generation_branch(tmp_path: Path):
     notebooks, pages, notebook, _, sig2 = _setup_multiple_generations(tmp_path)
     qid = query_identity("en", "blowing snow")
     journal = PageJournalStore(pages)
-    branch = journal.make_page(
+    branch = journal.make_synthetic_page(
         page_id="current-branch",
         keyword_id=notebook["keyword_id"], keyword_zh="风吹雪",
         query_id=qid, query="blowing snow", query_language="en",
@@ -301,7 +305,7 @@ def test_recovery_blocks_signature_mismatch(tmp_path: Path):
     notebooks, pages, notebook, sig1, _ = _setup_multiple_generations(tmp_path)
     qid = query_identity("en", "blowing snow")
     journal = PageJournalStore(pages)
-    bad = journal.make_page(
+    bad = journal.make_synthetic_page(
         page_id="bad-signature",
         keyword_id=notebook["keyword_id"], keyword_zh="风吹雪",
         query_id=qid, query="blowing snow", query_language="en",

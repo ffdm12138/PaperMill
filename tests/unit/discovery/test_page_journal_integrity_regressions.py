@@ -7,6 +7,7 @@ import pytest
 
 from src.discovery.backfill_transaction import run_backfill_page_transaction
 from src.discovery.constants import INITIAL_CURSOR
+from src.discovery.execution.lane_models import DiscoveryLaneKey, LaneExecutionSpec, RequestSignature
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import (
@@ -16,6 +17,7 @@ from src.discovery.page_journal import (
     backfill_page_id,
     request_signature,
 )
+from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 
 
 KEYWORD_ZH = "风沙"
@@ -23,6 +25,31 @@ KEYWORD_ID = keyword_id(KEYWORD_ZH)
 QUERY = "风沙输运"
 QUERY_ID = query_identity("zh", QUERY)
 PROVIDER = "openalex"
+
+
+def _spec(signature: dict, *, generation: int) -> LaneExecutionSpec:
+    typed_signature = RequestSignature.from_dict_strict(signature)
+    return LaneExecutionSpec(
+        key=DiscoveryLaneKey(
+            keyword_id=KEYWORD_ID,
+            query_id=QUERY_ID,
+            provider=PROVIDER,
+            mode="backfill",
+            generation=generation,
+            request_signature=typed_signature.hash,
+        ),
+        request_signature=typed_signature,
+        keyword_zh=KEYWORD_ZH,
+        query=QUERY,
+        query_language="zh",
+        relevance_profile_hash="test-profile",
+    )
+
+
+def _never_fetcher() -> CallbackProviderPageFetcher:
+    return CallbackProviderPageFetcher(
+        lambda _spec, _cursor, _client: pytest.fail("provider must not be called"),
+    )
 
 
 def _page(
@@ -41,7 +68,7 @@ def _page(
         request_signature_hash=signature["hash"],
         request_cursor=INITIAL_CURSOR,
     )
-    return store.make_page(
+    return store.make_synthetic_page(
         page_id=page_id,
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -82,6 +109,7 @@ def test_duplicate_candidate_ids_fail_before_page_is_durable(tmp_path: Path) -> 
     second = deepcopy(first)
     second["candidate"]["doi"] = "10.1000/two"
     page["candidates"] = [first, second]
+    page["returned_count"] = 2
 
     expected_path = store.page_path(
         keyword_id=KEYWORD_ID,
@@ -101,6 +129,7 @@ def test_terminal_batch_replay_is_exactly_idempotent_and_cannot_overwrite(
     store = PageJournalStore(tmp_path / "pages")
     page, _signature = _page(store)
     page["candidates"] = [_processing_candidate()]
+    page["returned_count"] = 1
     path = store.write_page(page)
     outcome = {
         "candidate_id": "candidate-1",
@@ -158,18 +187,12 @@ def test_reused_page_generation_mismatch_fails_before_cursor_cas(tmp_path: Path)
     })
 
     result = run_backfill_page_transaction(
-        keyword_zh=KEYWORD_ZH,
-        keyword_id=KEYWORD_ID,
-        query_id=QUERY_ID,
-        query=QUERY,
-        query_language="zh",
-        provider=PROVIDER,
+        _spec(signature, generation=2),
         notebook_store=notebook,  # type: ignore[arg-type]
         journal_store=store,
         locks_dir=tmp_path / "locks",
-        request_signature=signature,
-        page_size=25,
-        fetch_page=lambda *args, **kwargs: pytest.fail("provider must not be called"),
+        page_fetcher=_never_fetcher(),
+        client=object(),  # type: ignore[arg-type]
     )
 
     assert result.status == "failed_retryable"
@@ -196,21 +219,16 @@ def test_recovered_fetched_page_is_returned_when_lane_is_already_exhausted(
         "cursor": "next",
         "exhausted": True,
         "last_committed_page_id": page["page_id"],
+        "exhaustion_evidence": page["exhaustion_evidence"],
     })
 
     result = run_backfill_page_transaction(
-        keyword_zh=KEYWORD_ZH,
-        keyword_id=KEYWORD_ID,
-        query_id=QUERY_ID,
-        query=QUERY,
-        query_language="zh",
-        provider=PROVIDER,
+        _spec(signature, generation=1),
         notebook_store=notebook,  # type: ignore[arg-type]
         journal_store=store,
         locks_dir=tmp_path / "locks",
-        request_signature=signature,
-        page_size=25,
-        fetch_page=lambda *args, **kwargs: pytest.fail("provider must not be called"),
+        page_fetcher=_never_fetcher(),
+        client=object(),  # type: ignore[arg-type]
     )
 
     assert result.status == "exhausted"
@@ -223,7 +241,7 @@ def test_recovered_fetched_page_is_returned_when_lane_is_already_exhausted(
 
 def test_profile_unbound_not_claimable(tmp_path: Path) -> None:
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1", keyword_id=KEYWORD_ID, keyword_zh=KEYWORD_ZH,
         query_id=QUERY_ID, query=QUERY, query_language="zh",
         provider=PROVIDER, lane="backfill",
@@ -246,7 +264,7 @@ def test_profile_unbound_not_claimable(tmp_path: Path) -> None:
 
 def test_passed_wrong_hash_not_claimable(tmp_path: Path) -> None:
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1", keyword_id=KEYWORD_ID, keyword_zh=KEYWORD_ZH,
         query_id=QUERY_ID, query=QUERY, query_language="zh",
         provider=PROVIDER, lane="backfill",
@@ -270,7 +288,7 @@ def test_passed_wrong_hash_not_claimable(tmp_path: Path) -> None:
 
 def test_passed_correct_hash_claimable(tmp_path: Path) -> None:
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1", keyword_id=KEYWORD_ID, keyword_zh=KEYWORD_ZH,
         query_id=QUERY_ID, query=QUERY, query_language="zh",
         provider=PROVIDER, lane="backfill",
@@ -293,7 +311,7 @@ def test_passed_correct_hash_claimable(tmp_path: Path) -> None:
 
 def test_new_page_profile_unbound_rejects_cursor_commit(tmp_path: Path) -> None:
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1", keyword_id=KEYWORD_ID, keyword_zh=KEYWORD_ZH,
         query_id=QUERY_ID, query=QUERY, query_language="zh",
         provider=PROVIDER, lane="backfill",
@@ -310,7 +328,7 @@ def test_new_page_profile_unbound_rejects_cursor_commit(tmp_path: Path) -> None:
 
 def test_relevance_finalize_then_cursor_commit_succeeds(tmp_path: Path) -> None:
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1", keyword_id=KEYWORD_ID, keyword_zh=KEYWORD_ZH,
         query_id=QUERY_ID, query=QUERY, query_language="zh",
         provider=PROVIDER, lane="backfill",
@@ -332,7 +350,7 @@ def test_legacy_page_no_relevance_blocked_from_cursor_commit(
 ) -> None:
     store = PageJournalStore(tmp_path / "pages")
     # Create a page WITHOUT relevance_profile_hash — no relevance record
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1", keyword_id=KEYWORD_ID, keyword_zh=KEYWORD_ZH,
         query_id=QUERY_ID, query=QUERY, query_language="zh",
         provider=PROVIDER, lane="backfill",

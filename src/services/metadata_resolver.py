@@ -50,6 +50,7 @@ from filelock import FileLock
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.discovery.providers.provider_errors import ProviderRateLimited
 from src.discovery.resolve_crossref import (
     get_crossref_work_by_doi,
     resolve_crossref_by_title,
@@ -1217,7 +1218,12 @@ def _resolve_metadata_candidates_impl(
         if rate_limiter is None:
             raise ValueError("allow_network=True requires a ProviderRateLimiter")
         rate_limiter.wait("crossref")
-        result = resolve_crossref_by_title(title, year=year, limit=limit)
+        try:
+            result = resolve_crossref_by_title(title, year=year, limit=limit)
+        except ProviderRateLimited:
+            # 429 from the unified ProviderClient: preserve the legacy
+            # "network error -> empty list" contract for the metadata resolver.
+            result = []
         rate_limiter.record_response("crossref", {}, 200)
         return result
 

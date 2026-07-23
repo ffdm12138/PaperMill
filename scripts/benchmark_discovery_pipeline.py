@@ -13,11 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
+from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.formal_publication import publish_formal_publication_state
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
+from src.discovery.page_journal import PageJournalStore, request_signature
 from src.discovery.pending_queue import drain_pending_candidates
 from src.library.paper_number_ledger import PaperNumberLedger
 from tests.factories.paper_raw_factory import (
@@ -85,12 +85,12 @@ def run_benchmark(*, raw_workspaces: int, formal_workspaces: int,
                 page_size = base_page_size + (1 if page_number < extra else 0)
                 chunk = candidates[offset:offset + page_size]
                 offset += page_size
-                page = journal.make_page(
+                page = journal.make_synthetic_page(
                     page_id=f"benchmark-{page_number}", keyword_id=kid,
                     keyword_zh="性能基准", query_id=query_identity("zh", "性能基准"),
                     query="性能基准", query_language="zh", provider="crossref",
                     lane="refresh", request_signature_value=request_signature(page_size=len(chunk)),
-                    request_cursor=INITIAL_CURSOR, next_cursor=None,
+                    request_cursor=None, next_cursor=None,
                     provider_exhausted=offset >= pending_candidates,
                     candidates=chunk, state="cursor_committed",
                     relevance_profile_hash=profile_hash,

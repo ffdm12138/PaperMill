@@ -98,6 +98,67 @@ class _FakeResp:
         return json.dumps(self._payload)
 
 
+def _zero_provider_runtime_config() -> dict:
+    """ProviderRuntime config with all intervals zeroed (no real waits)."""
+    cfg = default_config()
+    cfg["global"]["paper_interval_seconds"] = 0.0
+    cfg["global"]["jitter_seconds"] = 0.0
+    for p in cfg.get("providers", ()):
+        cfg["providers"][p]["min_interval_seconds"] = 0.0
+    return cfg
+
+
+def _install_provider_runtime(monkeypatch, transport) -> None:
+    """Install ``transport`` as the process-wide ProviderRuntime singleton.
+
+    Uses ``monkeypatch.setattr`` on the class-level ``_instance`` so pytest
+    auto-restores the previous value on teardown.
+    """
+    from src.discovery.providers.provider_client import ProviderRuntime
+    from tests.helpers.fake_provider import FakeClock, FakeSleeper
+
+    runtime = ProviderRuntime(
+        config=_zero_provider_runtime_config(),
+        transport=transport,
+        sleeper=FakeSleeper(FakeClock()),
+        clock=FakeClock(),
+    )
+    monkeypatch.setattr(ProviderRuntime, "_instance", runtime)
+
+
+def _patch_crossref_title_search(monkeypatch, items) -> None:
+    """Install a fake ProviderRuntime whose Crossref transport always returns
+    a 200 /works response carrying ``items``.
+
+    Replaces the legacy ``rc.requests.get`` mock: ``resolve_crossref`` no
+    longer imports ``requests`` - all HTTP goes through the unified
+    ``ProviderClient`` / ``ProviderRuntime`` singleton.
+    """
+    from src.discovery.providers.provider_client import RawResponse
+
+    body = json.dumps({"message": {"items": items}}).encode("utf-8")
+
+    class _StaticTransport:
+        def send(self, spec, timeout_seconds):
+            return RawResponse(status_code=200, headers={}, body=body)
+
+    _install_provider_runtime(monkeypatch, _StaticTransport())
+
+
+def _patch_crossref_no_network(monkeypatch) -> None:
+    """Install a ProviderRuntime whose transport raises if any HTTP is attempted.
+
+    Safety net for "no-network" tests: the resolver must never reach the
+    provider when ``allow_network=False``.
+    """
+
+    class _BoomTransport:
+        def send(self, spec, timeout_seconds):
+            raise AssertionError("network call attempted with default no-network")
+
+    _install_provider_runtime(monkeypatch, _BoomTransport())
+
+
 def _patch_crossref_doi(monkeypatch, message: dict | None):
     """Patch mes.query_crossref_by_doi to return `message` (or None)."""
     monkeypatch.setattr(mes, "query_crossref_by_doi", lambda doi, timeout=15: message)
@@ -314,8 +375,7 @@ def test_title_search_candidate_never_auto_matched(tmp_path, monkeypatch):
         "URL": "https://doi.org/10.5194/tc-8-395-2014",
     }
     from src.discovery import resolve_crossref as rc
-    monkeypatch.setattr(rc.requests, "get",
-                        lambda *a, **k: _FakeResp({"message": {"items": [item]}}))
+    _patch_crossref_title_search(monkeypatch, [item])
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
@@ -433,8 +493,7 @@ def test_title_search_manual_band_stays_unmatched(tmp_path, monkeypatch):
         "URL": "https://doi.org/10.9999/obscure",
     }
     from src.discovery import resolve_crossref as rc
-    monkeypatch.setattr(rc.requests, "get",
-                        lambda *a, **k: _FakeResp({"message": {"items": [item]}}))
+    _patch_crossref_title_search(monkeypatch, [item])
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
@@ -458,8 +517,7 @@ def test_no_doi_candidates_resolve_failed(tmp_path, monkeypatch):
     item = {"title": ["Some title"], "author": [{"family": "Author"}],
             "container-title": ["J"], "issued": {"date-parts": [[2020]]}}
     from src.discovery import resolve_crossref as rc
-    monkeypatch.setattr(rc.requests, "get",
-                        lambda *a, **k: _FakeResp({"message": {"items": [item]}}))
+    _patch_crossref_title_search(monkeypatch, [item])
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
@@ -605,8 +663,7 @@ def test_manual_confirm_rejects_incomplete(tmp_path, monkeypatch):
     item = {"DOI": "10.9999/x", "title": ["Some title"], "author": [{"family": "Author"}],
             "container-title": [], "issued": {"date-parts": [[2020]]}}
     from src.discovery import resolve_crossref as rc
-    monkeypatch.setattr(rc.requests, "get",
-                        lambda *a, **k: _FakeResp({"message": {"items": [item]}}))
+    _patch_crossref_title_search(monkeypatch, [item])
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
@@ -629,8 +686,7 @@ def test_candidate_id_chooses_specified(tmp_path, monkeypatch):
              "author": [{"given": "V.", "family": "Vionnet"}], "container-title": ["The Cryosphere"],
              "issued": {"date-parts": [[2014]]}}
     from src.discovery import resolve_crossref as rc
-    monkeypatch.setattr(rc.requests, "get",
-                        lambda *a, **k: _FakeResp({"message": {"items": [item1, item2]}}))
+    _patch_crossref_title_search(monkeypatch, [item1, item2])
     cat = _empty_catalog(tmp_path)
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
@@ -790,10 +846,7 @@ def test_cli_default_no_network_no_call(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
     # make any network call explode if attempted
-    from src.discovery import resolve_crossref as rc
-    def _boom(*a, **k):
-        raise AssertionError("network call attempted with default no-network")
-    monkeypatch.setattr(rc.requests, "get", _boom)
+    _patch_crossref_no_network(monkeypatch)
     rc2 = _run_cli([
         "resolve_paper_raw_metadata.py", "--paper-number", "0000000000000001",
         "--paper-raw-dir", str(tmp_path / "paper_raw"),

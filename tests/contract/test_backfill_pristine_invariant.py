@@ -255,7 +255,7 @@ def test_audit_page_journal_without_sig_state_only(tmp_path):
     qid = query_identity("en", "audit test")
     sig = request_signature(page_size=10)
     journal = PageJournalStore(pending)
-    page = journal.make_page(page_id="p1", keyword_id=nb["keyword_id"],
+    page = journal.make_synthetic_page(page_id="p1", keyword_id=nb["keyword_id"],
         keyword_zh="测试审计", query_id=qid, query="audit test",
         query_language="en", provider="openalex", lane="backfill", generation=1,
         request_signature_value=sig, request_cursor=None,

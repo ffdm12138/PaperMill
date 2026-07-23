@@ -33,6 +33,7 @@ from src.discovery.cli_plan import (  # noqa: E402
     load_keyword_plan,
 )
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch  # noqa: E402
+from src.discovery.workspace import WorkspaceResolver  # noqa: E402
 
 
 def _normalize_keyword(keyword: str) -> str:
@@ -54,7 +55,13 @@ def _dedupe_keywords(keywords: list[str]) -> list[str]:
     return result
 
 
-def _parse_args(argv: list[str]) -> argparse.Namespace:
+def _parse_args(
+    argv: list[str],
+    notebook_dir: Path = DISCOVERY_KEYWORD_NOTEBOOK_DIR,
+    pending_pages_dir: Path = DISCOVERY_PENDING_PAGES_DIR,
+    locks_dir: Path = DISCOVERY_LOCKS_DIR,
+    exports_dir: Path = DISCOVERY_EXPORTS_DIR,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run 3--8 Chinese classification notebooks with 3--4 shared workers.",
     )
@@ -74,7 +81,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--from-enabled-notebooks",
         action="store_true",
-        help="Select every enabled schema-v3 notebook from --keyword-notebook-dir.",
+        help="Select every enabled v4 notebook from --keyword-notebook-dir.",
     )
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--max-candidates", type=int, default=50)
@@ -82,12 +89,22 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--mode", choices=["hybrid", "refresh", "backfill"], default="hybrid")
     parser.add_argument("--refresh-pages", type=int, default=2)
     parser.add_argument("--backfill-pages", type=int, default=5)
-    parser.add_argument("--keyword-notebook-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
-    parser.add_argument("--pending-pages-dir", type=Path, default=DISCOVERY_PENDING_PAGES_DIR)
-    parser.add_argument("--discovery-locks-dir", type=Path, default=DISCOVERY_LOCKS_DIR)
-    parser.add_argument("--exports-dir", type=Path, default=DISCOVERY_EXPORTS_DIR)
+    parser.add_argument("--keyword-notebook-dir", type=Path, default=notebook_dir,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--pending-pages-dir", type=Path, default=pending_pages_dir,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--discovery-locks-dir", type=Path, default=locks_dir,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--exports-dir", type=Path, default=exports_dir,
+                        help=argparse.SUPPRESS)
     parser.add_argument("--until-exhausted", action="store_true")
     parser.add_argument("--max-pages-total", type=int, default=None)
+    parser.add_argument(
+        "--max-provider-requests-total", type=int, default=None,
+        help="Batch-wide valve on real HTTP attempts (incl. retries/failures). "
+             "In --until-exhausted mode at least one of --max-pages-total / "
+             "--max-provider-requests-total is required (no giant-integer runs).",
+    )
     parser.add_argument("--max-pending-candidates", type=int, default=1000)
     parser.add_argument("--resume-pending-candidates", type=int, default=700)
     parser.add_argument("--doi-resolution-budget", type=int, default=10)
@@ -100,6 +117,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
     parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
     parser.add_argument("--report-dir", type=Path, default=DISCOVERY_DIR / "reports")
+    parser.add_argument(
+        "--migration-mode", action="store_true",
+        help="Run with a staging workspace (requires --staging-workspace-root). "
+             "Production users should never use this flag.",
+    )
+    parser.add_argument(
+        "--staging-workspace-root", type=Path, default=None,
+        help="Path to staging workspace root (only valid with --migration-mode).",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -143,13 +169,42 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--skip-duplicates requires --stage-to-paper-raw")
     if args.until_exhausted and args.mode not in ("backfill", "hybrid"):
         parser.error("--until-exhausted requires --mode backfill or hybrid")
-    if args.until_exhausted and args.max_pages_total is None:
-        parser.error("--until-exhausted requires explicit --max-pages-total")
+    if args.until_exhausted and args.max_pages_total is None and args.max_provider_requests_total is None:
+        parser.error(
+            "--until-exhausted requires at least one safety valve "
+            "(--max-pages-total or --max-provider-requests-total)"
+        )
     return args
 
 
+def _resolve_active_workspace_defaults() -> tuple[Path, Path, Path, Path]:
+    """Auto-resolve active workspace paths for notebook, pending, locks, exports dirs.
+    Returns (notebook_dir, pending_dir, locks_dir, exports_dir) or defaults.
+    """
+    try:
+        active_ws = WorkspaceResolver().resolve_active()
+        if active_ws is not None and active_ws.keyword_notebook_dir.is_dir():
+            return (
+                active_ws.keyword_notebook_dir,
+                active_ws.page_journals_dir,
+                active_ws.locks_dir,
+                active_ws.exports_dir,
+            )
+    except Exception:
+        pass
+    return (
+        DISCOVERY_KEYWORD_NOTEBOOK_DIR,
+        DISCOVERY_PENDING_PAGES_DIR,
+        DISCOVERY_LOCKS_DIR,
+        DISCOVERY_EXPORTS_DIR,
+    )
+
+
 def main_internal(argv: list[str]) -> int:
-    args = _parse_args(argv)
+    # v4: auto-resolve active workspace BEFORE parsing args so that
+    # --from-enabled-notebooks uses the correct notebook directory.
+    _nb_dir, _pp_dir, _lk_dir, _ex_dir = _resolve_active_workspace_defaults()
+    args = _parse_args(argv, _nb_dir, _pp_dir, _lk_dir, _ex_dir)
 
     try:
         plans = [
@@ -161,6 +216,7 @@ def main_internal(argv: list[str]) -> int:
                 backfill_pages=args.backfill_pages,
                 max_workers=args.max_workers,
                 max_pages_total=args.max_pages_total,
+                max_provider_requests_total=args.max_provider_requests_total,
             )
             for keyword in args.keywords
         ]
@@ -184,10 +240,6 @@ def main_internal(argv: list[str]) -> int:
         page_size=args.page_size,
         max_candidates=args.max_candidates,
         output_dir=args.output_dir / f"concurrent_{batch_stamp}",
-        notebook_dir=args.keyword_notebook_dir,
-        pending_pages_dir=args.pending_pages_dir,
-        locks_dir=args.discovery_locks_dir,
-        exports_dir=args.exports_dir,
         stage_to_paper_raw=args.stage_to_paper_raw,
         apply=args.apply,
         skip_duplicates=args.skip_duplicates,
@@ -197,9 +249,11 @@ def main_internal(argv: list[str]) -> int:
         ledger_path=args.ledger_path,
         until_exhausted=args.until_exhausted,
         max_pages_total=args.max_pages_total,
+        max_provider_requests_total=args.max_provider_requests_total,
         doi_resolution_budget=args.doi_resolution_budget,
         max_pending_candidates=args.max_pending_candidates,
         resume_pending_candidates=args.resume_pending_candidates,
+        title_resolution_cache_dir=DISCOVERY_DIR / "title_resolution_cache",
     )
     batch = run_discovery_batch(args.keywords, options=options, max_workers=args.max_workers)
     ended_at = datetime.now(timezone.utc).isoformat()

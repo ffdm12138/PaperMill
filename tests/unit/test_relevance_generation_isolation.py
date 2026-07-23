@@ -12,7 +12,7 @@ def test_old_profile_passed_candidate_is_not_claimable_after_profile_binding(tmp
     old = relevance_profile(object_term="old sand")
     new = relevance_profile(object_term="new sand")
     kid = keyword_id("风沙动力学")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="old-profile", keyword_id=kid, keyword_zh="风沙动力学",
         query_id=query_identity("en", "sand"), query="sand", query_language="en",
         provider="crossref", lane="backfill", generation=37,
@@ -54,7 +54,7 @@ def test_durable_emitted_doi_survives_profile_rebinding(tmp_path: Path):
     old = relevance_profile(object_term="old sand")
     new = relevance_profile(object_term="new sand")
     kid = keyword_id("风沙动力学")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="historical", keyword_id=kid, keyword_zh="风沙动力学",
         query_id=query_identity("en", "sand"), query="sand", query_language="en",
         provider="crossref", lane="refresh",

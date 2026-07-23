@@ -83,7 +83,8 @@ def test_download_pdf_propagates_caller_timeout(tmp_path, monkeypatch):
     )
 
     assert target.is_file()
-    assert captured["timeout"] == 7
+    assert captured["direct_timeout"] == 7
+    assert captured["proxy_timeout"] == 7
 
 
 def test_fetch_candidate_fails_closed_on_malformed_metadata(tmp_path):

@@ -19,7 +19,7 @@ from src.discovery.relevance_comparison import (  # noqa: E402,F401
     replay_frozen_corpus,
     resolve_provider_sort,
 )
-from src.discovery.provider_models import DiscoveryPage  # noqa: E402
+from src.discovery.providers.provider_models import DiscoveryPage  # noqa: E402
 from src.discovery.search_openalex import search_openalex_page  # noqa: E402
 
 

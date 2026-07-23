@@ -27,6 +27,7 @@ from src.discovery.keyword_notebook import (
     validate_notebook,
     validate_discovery_readiness,
 )
+from src.discovery.execution.lane_models import ExhaustionEvidence, ProviderResponseMetadata
 from tests.fixtures.legacy.notebook_v2 import (
     RETIRED_QUERY_CONTAINER_FIELD,
     inject_retired_query_container,
@@ -427,7 +428,7 @@ class TestCursorOps:
         _seed_queries(store, "主题乙", ["query B"], sig)
         query_a = _query_id("query A")
         query_b = _query_id("query B")
-        store.advance_backfill("主题甲", query_a, "openalex", next_cursor="A2", items_this_page=10)
+        store.commit_backfill_cursor("主题甲", query_a, "openalex", expected_cursor="*", next_cursor="A2", committed_page_id="test-page", items_this_page=10, exhausted=False)
         assert store.get_backfill_cursor("主题甲", query_a, "openalex") == "A2"
         assert store.get_backfill_cursor("主题乙", query_b, "openalex") == INITIAL_CURSOR
 
@@ -436,7 +437,7 @@ class TestCursorOps:
         sig = pagination_signature()
         _seed_queries(store, "测试主题", ["query A", "query B"], sig)
         query_a = _query_id("query A")
-        store.advance_backfill("测试主题", query_a, "openalex", next_cursor="A99", items_this_page=5)
+        store.commit_backfill_cursor("测试主题", query_a, "openalex", expected_cursor="*", next_cursor="A99", committed_page_id="test-page", items_this_page=5, exhausted=False)
         _seed_queries(store, "测试主题", ["query C"], sig)
         assert store.get_backfill_cursor("测试主题", query_a, "openalex") == "A99"
         query_c = _query_id("query C")
@@ -447,7 +448,7 @@ class TestCursorOps:
         sig = pagination_signature()
         _seed_queries(store, "测试主题", ["query A", "query B"], sig)
         query_b = _query_id("query B")
-        store.advance_backfill("测试主题", query_b, "crossref", next_cursor="B5", items_this_page=3)
+        store.commit_backfill_cursor("测试主题", query_b, "crossref", expected_cursor="*", next_cursor="B5", committed_page_id="test-page", items_this_page=3, exhausted=False)
         store.sync_search_queries("测试主题", disable=["query B"])
         nb = store.require_v3("测试主题")
         assert query_b in nb["search_queries"]
@@ -459,7 +460,7 @@ class TestCursorOps:
         sig = pagination_signature()
         _seed_queries(store, "测试主题", ["query A"], sig)
         query_id_value = _query_id("query A")
-        store.advance_backfill("测试主题", query_id_value, "openalex", next_cursor="BACKFILL42", items_this_page=8)
+        store.commit_backfill_cursor("测试主题", query_id_value, "openalex", expected_cursor="*", next_cursor="BACKFILL42", committed_page_id="test-page", items_this_page=8, exhausted=False)
         store.complete_refresh("测试主题", query_id_value, "openalex", status="success", pages_scanned=2, items_returned=100)
         assert store.get_backfill_cursor("测试主题", query_id_value, "openalex") == "BACKFILL42"
 
@@ -469,7 +470,7 @@ class TestCursorOps:
         _seed_queries(store, "测试主题", ["query A"], sig)
         query_id_value = _query_id("query A")
         store.complete_refresh("测试主题", query_id_value, "openalex", status="success", pages_scanned=3, items_returned=150)
-        store.advance_backfill("测试主题", query_id_value, "openalex", next_cursor="X1", items_this_page=5)
+        store.commit_backfill_cursor("测试主题", query_id_value, "openalex", expected_cursor="*", next_cursor="X1", committed_page_id="test-page", items_this_page=5, exhausted=False)
         nb = store.require_v3("测试主题")
         r = nb["search_queries"][query_id_value]["providers"]["openalex"]["refresh"]
         assert r["pages_scanned_last_run"] == 3
@@ -481,7 +482,7 @@ class TestCursorOps:
         sig = pagination_signature()
         _seed_queries(store, "测试主题", ["query A"], sig)
         query_id_value = _query_id("query A")
-        store.advance_backfill("测试主题", query_id_value, "openalex", next_cursor="C3", items_this_page=5)
+        store.commit_backfill_cursor("测试主题", query_id_value, "openalex", expected_cursor="*", next_cursor="C3", committed_page_id="test-page", items_this_page=5, exhausted=False)
         store.record_backfill_error("测试主题", query_id_value, "openalex", error="timeout")
         assert store.get_backfill_cursor("测试主题", query_id_value, "openalex") == "C3"
         nb = store.require_v3("测试主题")
@@ -492,7 +493,28 @@ class TestCursorOps:
         sig = pagination_signature()
         _seed_queries(store, "测试主题", ["query A"], sig)
         query_id_value = _query_id("query A")
-        store.advance_backfill("测试主题", query_id_value, "openalex", next_cursor=None, items_this_page=0, exhausted=True)
+        observed_at = "2026-01-01T00:00:00Z"
+        evidence = ExhaustionEvidence(
+            provider="openalex",
+            query_id=query_id_value,
+            request_signature=sig,
+            generation=1,
+            cursor_before="*",
+            response_metadata=ProviderResponseMetadata(
+                http_status=200,
+                total_results=0,
+                next_cursor_present=False,
+                response_fingerprint="0" * 64,
+                observed_at=observed_at,
+            ),
+            observed_at=observed_at,
+        )
+        store.commit_backfill_cursor(
+            "测试主题", query_id_value, "openalex",
+            expected_cursor="*", next_cursor=None,
+            committed_page_id="test-page-exhausted", items_this_page=0,
+            exhausted=True, exhaustion_evidence=evidence.to_dict(),
+        )
         assert store.is_backfill_exhausted("测试主题", query_id_value, "openalex") is True
 
     def test_corrupt_json_fails_closed(self, tmp_path: Path):
@@ -552,8 +574,8 @@ class TestReset:
         sig = pagination_signature()
         _seed_queries(store, "测试主题", ["query A"], sig)
         query_id_value = _query_id("query A")
-        store.advance_backfill("测试主题", query_id_value, "openalex", next_cursor="Z9", items_this_page=5)
-        store.advance_backfill("测试主题", query_id_value, "crossref", next_cursor="Y8", items_this_page=5)
+        store.commit_backfill_cursor("测试主题", query_id_value, "openalex", expected_cursor="*", next_cursor="Z9", committed_page_id="test-page", items_this_page=5, exhausted=False)
+        store.commit_backfill_cursor("测试主题", query_id_value, "crossref", expected_cursor="*", next_cursor="Y8", committed_page_id="test-page", items_this_page=5, exhausted=False)
         store.reset_backfill("测试主题", reason="test", pag_sig=sig)
         assert store.get_backfill_cursor("测试主题", query_id_value, "openalex") == INITIAL_CURSOR
         assert store.get_backfill_cursor("测试主题", query_id_value, "crossref") == INITIAL_CURSOR
@@ -567,8 +589,8 @@ class TestReset:
         _seed_queries(store, "主题乙", ["query B"], sig)
         query_a = _query_id("query A")
         query_b = _query_id("query B")
-        store.advance_backfill("主题甲", query_a, "openalex", next_cursor="A5", items_this_page=5)
-        store.advance_backfill("主题乙", query_b, "openalex", next_cursor="B5", items_this_page=5)
+        store.commit_backfill_cursor("主题甲", query_a, "openalex", expected_cursor="*", next_cursor="A5", committed_page_id="test-page", items_this_page=5, exhausted=False)
+        store.commit_backfill_cursor("主题乙", query_b, "openalex", expected_cursor="*", next_cursor="B5", committed_page_id="test-page", items_this_page=5, exhausted=False)
         store.reset_backfill("主题甲", reason="test", pag_sig=sig)
         assert store.get_backfill_cursor("主题甲", query_a, "openalex") == INITIAL_CURSOR
         assert store.get_backfill_cursor("主题乙", query_b, "openalex") == "B5"
@@ -596,7 +618,7 @@ class TestPaginationSignature:
         sig1 = pagination_signature(sort="relevance")
         _seed_queries(store, "测试主题", ["query A"], sig1)
         query_id_value = _query_id("query A")
-        store.advance_backfill("测试主题", query_id_value, "openalex", next_cursor="CURSOR1", items_this_page=5)
+        store.commit_backfill_cursor("测试主题", query_id_value, "openalex", expected_cursor="*", next_cursor="CURSOR1", committed_page_id="test-page", items_this_page=5, exhausted=False)
         sig2 = pagination_signature(sort="date")
         state = store.ensure_backfill_generation(
             "测试主题", query_id_value, "openalex", request_signature_hash=sig2,

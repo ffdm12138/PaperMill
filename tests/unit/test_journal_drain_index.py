@@ -19,7 +19,7 @@ PROFILE_HASH = "test-active-profile"
 
 
 def _page(store: PageJournalStore, page_id: str, count: int = 4) -> Path:
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id=page_id, keyword_id=keyword_id("关键词"), keyword_zh="关键词",
         query_id=query_identity("en", "keyword"),
         query="keyword", query_language="en", provider="crossref", lane="refresh",
@@ -112,7 +112,7 @@ def test_build_and_add_page_agree_on_emitted_owner(tmp_path: Path):
     sig = request_signature(page_size=10)
 
     # Two pages with the same DOI but different candidate_ids.
-    p1 = store.make_page(
+    p1 = store.make_synthetic_page(
         page_id="p1", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -120,7 +120,7 @@ def test_build_and_add_page_agree_on_emitted_owner(tmp_path: Path):
         next_cursor=None, provider_exhausted=True,
         candidates=[PaperCandidate(title="T", doi="10.1000/shared")],
         state="fetched", relevance_profile_hash=PROFILE_HASH)
-    p2 = store.make_page(
+    p2 = store.make_synthetic_page(
         page_id="p2", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -172,7 +172,7 @@ def test_fetched_page_candidates_not_claimable(tmp_path: Path):
     """Candidates in a fetched page must not enter the claimable queue."""
     store = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("测试")
-    page_data = store.make_page(
+    page_data = store.make_synthetic_page(
         page_id="pg", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -202,7 +202,7 @@ def test_cursor_committed_page_candidates_are_claimable(tmp_path: Path):
     """Candidates in a cursor_committed page enter the claimable queue."""
     store = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("测试")
-    page = store.write_page(store.make_page(
+    page = store.write_page(store.make_synthetic_page(
         page_id="pg", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -240,7 +240,7 @@ def test_page_replacement_removes_old_and_inserts_new(tmp_path: Path):
     kid = keyword_id("测试")
     sig = request_signature(page_size=10)
 
-    page = store.write_page(store.make_page(
+    page = store.write_page(store.make_synthetic_page(
         page_id="pg", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -276,7 +276,7 @@ def test_cross_page_candidate_id_collision_fail_closed(tmp_path: Path):
     kid = keyword_id("测试")
     sig = request_signature(page_size=10)
 
-    p1 = store.write_page(store.make_page(
+    p1 = store.write_page(store.make_synthetic_page(
         page_id="p1", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -284,7 +284,7 @@ def test_cross_page_candidate_id_collision_fail_closed(tmp_path: Path):
         next_cursor=None, provider_exhausted=True,
         candidates=[PaperCandidate(title="A", doi="10.1000/a")],
         state="cursor_committed", relevance_profile_hash=PROFILE_HASH))
-    p2 = store.write_page(store.make_page(
+    p2 = store.write_page(store.make_synthetic_page(
         page_id="p2", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -313,7 +313,7 @@ def test_failed_add_page_delta_zero_pollution(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("测试")
 
-    p1 = store.write_page(store.make_page(
+    p1 = store.write_page(store.make_synthetic_page(
         page_id="p1", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -348,7 +348,7 @@ def test_concurrent_readers_see_consistent_snapshots(tmp_path: Path):
 
     store = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("测试")
-    page = store.write_page(store.make_page(
+    page = store.write_page(store.make_synthetic_page(
         page_id="pg", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",
@@ -398,7 +398,7 @@ def test_concurrent_readers_see_consistent_snapshots(tmp_path: Path):
 def test_validate_clean_index_passes(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("测试")
-    store.write_page(store.make_page(
+    store.write_page(store.make_synthetic_page(
         page_id="pg", keyword_id=kid, keyword_zh="测试",
         query_id=query_identity("en", "test"), query="test",
         query_language="en", provider="crossref", lane="refresh",

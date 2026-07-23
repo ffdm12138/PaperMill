@@ -1042,17 +1042,18 @@ class OpenAlexDoiVerifier:
         *,
         cache: RawOpenAlexWorkCache | None = None,
         fetch_batch: Callable[[list[str]], Mapping[str, Any] | ScopeVerification] | None = None,
+        client: Any | None = None,
         batch_size: int = 100,
-        rate_limiter: Any | None = None,
-        limiter_lock: Any | None = None,
     ) -> None:
         if batch_size < 1 or batch_size > 100:
             raise ValueError("OpenAlex DOI batch_size must be between 1 and 100")
         self.cache = cache
-        self.fetch_batch = fetch_batch or self._fetch_batch_http
+        if fetch_batch is None and client is None:
+            raise ValueError(
+                "OpenAlexDoiVerifier requires a batch ProviderClient or explicit fetch_batch"
+            )
+        self.fetch_batch = fetch_batch or (lambda dois: self._fetch_batch_http(dois, client))
         self.batch_size = batch_size
-        self.rate_limiter = rate_limiter
-        self.limiter_lock = limiter_lock
 
     def verify_doi(self, doi: str, subfield_ids: list[str]) -> ScopeVerification:
         return self.verify_many([doi], subfield_ids).get(
@@ -1110,10 +1111,16 @@ class OpenAlexDoiVerifier:
             raw_work=work,
         )
 
-    def _fetch_batch_http(self, dois: list[str]) -> Mapping[str, Any] | ScopeVerification:
-        import requests
-
-        from src.fetch.proxy import get_fetch_proxies
+    def _fetch_batch_http(
+        self, dois: list[str], client: Any,
+    ) -> Mapping[str, Any] | ScopeVerification:
+        from src.discovery.providers.provider_client import RequestSpec
+        from src.discovery.providers.provider_errors import (
+            ProviderAuthError,
+            ProviderError,
+            ProviderPermanentError,
+            ProviderRequestBudgetExhausted,
+        )
         from src.services.openalex_credentials import load_openalex_credentials
 
         credentials = load_openalex_credentials()
@@ -1126,36 +1133,36 @@ class OpenAlexDoiVerifier:
         headers = {"User-Agent": "mineru-literature-library/0.1"}
         if credentials.api_key:
             headers["Authorization"] = f"Bearer {credentials.api_key}"
+        spec = RequestSpec(
+            provider="openalex",
+            purpose="metadata_resolution",
+            url="https://api.openalex.org/works",
+            params=params,
+            headers=headers,
+            timeout_seconds=20,
+        )
         try:
-            lock_ctx = self.limiter_lock if self.limiter_lock is not None else nullcontext()
-            if self.rate_limiter is not None:
-                with lock_ctx:
-                    self.rate_limiter.wait("openalex")
-            response = requests.get(
-                "https://api.openalex.org/works",
-                params=params,
-                headers=headers,
-                timeout=20,
-                proxies=get_fetch_proxies(),
-            )
-            if self.rate_limiter is not None:
-                with lock_ctx:
-                    self.rate_limiter.record_response(
-                        "openalex", dict(response.headers), response.status_code
-                    )
-            response.raise_for_status()
-            payload = response.json()
-        except requests.HTTPError as exc:
-            status = getattr(exc.response, "status_code", None)
+            outcome = client.execute(spec)
+            payload = outcome.json()
+        except (ProviderAuthError, ProviderPermanentError) as exc:
+            status = getattr(exc, "http_status", None)
             if status == 404:
                 return ScopeVerification(status="not_found", http_status=status)
-            if status in {401, 403, 400, 422}:
-                return ScopeVerification(status="invalid", error_class="provider_configuration", http_status=status)
-            return ScopeVerification(status="deferred", error_class=type(exc).__name__, http_status=status)
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            return ScopeVerification(status="deferred", error_class=type(exc).__name__)
-        except Exception as exc:
-            return ScopeVerification(status="invalid", error_class=type(exc).__name__)
+            return ScopeVerification(
+                status="invalid", error_class="provider_configuration", http_status=status,
+            )
+        except ProviderRequestBudgetExhausted:
+            # This is a batch-wide clean valve, not a deferred scope result.
+            # Let the active lane translate it to BUDGET_STOPPED so no adapter
+            # can misreport a budget boundary as a provider failure.
+            raise
+        except ProviderError as exc:
+            # Transient/rate-limit/timeout/connection/protocol: retry later.
+            return ScopeVerification(
+                status="deferred",
+                error_class=type(exc).__name__,
+                http_status=getattr(exc, "http_status", None),
+            )
         results = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(results, list):
             return ScopeVerification(status="invalid", error_class="invalid_response")

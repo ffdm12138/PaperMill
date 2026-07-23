@@ -22,8 +22,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
-from src.discovery.provider_models import DiscoveryPage
-from src.discovery.provider_request_evidence import (
+from src.discovery.providers.provider_models import DiscoveryPage
+from src.discovery.providers.provider_request_evidence import (
     ActualRequestEvidence,
     RequestEvidenceError,
     scan_safe_signature_for_credentials,

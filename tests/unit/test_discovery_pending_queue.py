@@ -24,7 +24,7 @@ PROFILE_HASH = "test-active-profile"
 
 
 def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/item") -> Path:
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id=page_id,
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -45,7 +45,7 @@ def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/item"
 
 
 def _write_no_doi_page(store: PageJournalStore, page_id: str, title: str = "same unresolved title") -> Path:
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id=page_id,
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -121,7 +121,7 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
     _write_no_doi_page(store, "p1")
     _write_no_doi_page(store, "p2")
 
-    def fake_resolve(title, year=None, domain_id=None):
+    def fake_resolve(title, year=None, domain_id=None, *, client=None):
         return ResolvedDoiMatch(
             doi="10.1234/resolved",
             provider="crossref",
@@ -130,7 +130,7 @@ def test_resolved_doi_is_persisted_and_deduped_across_runs(tmp_path: Path, monke
             raw_record={"DOI": "10.1234/resolved", "title": [title]},
         )
 
-    monkeypatch.setattr("src.discovery.pending_queue.resolve_doi_match_by_title", fake_resolve)
+    monkeypatch.setattr("src.discovery.title_resolution.resolve_doi_match_by_title", fake_resolve)
     first = drain_pending_candidates(
         journal=store,
         keyword_ids=[KEYWORD_ID],

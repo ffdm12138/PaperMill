@@ -24,9 +24,10 @@ from src.discovery.coordinator import (
     run_discovery_batch,
 )
 from src.discovery.models import PaperCandidate
-from src.discovery.provider_models import DiscoveryPage
 from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from src.metadata.schema import empty_metadata
+from tests.helpers.fake_provider import discovery_page
 from tests.helpers.relevance_profiles import bind_test_relevance_profile, relevance_candidate
 
 
@@ -55,11 +56,10 @@ def _seed_ready(
     bind_test_relevance_profile(store, keyword_zh)
     store.set_enabled(keyword_zh, True)
     notebook = store.require_v3(keyword_zh)
-    options = DiscoveryOptions(page_size=10)
     for entry in notebook["search_queries"].values():
         for provider in ("openalex", "crossref"):
-            sort = _profile_sort(notebook, provider, "backfill", options)
-            order = _profile_order(notebook, "backfill") if provider == "crossref" else None
+            sort = _profile_sort(notebook, provider, "backfill")
+            order = _profile_order(notebook, provider, "backfill")
             signature = request_signature(
                 sort=sort,
                 filters=_profile_filters(notebook, provider, "backfill", sort, order),
@@ -72,26 +72,27 @@ def _seed_ready(
     return query_identity("zh", keyword_zh)
 
 
-def _page(works, next_cursor, exhausted=None):
-    """Build a real DiscoveryPage from (doi, title) pairs."""
+def _page(spec, cursor: str, works, next_cursor, exhausted=None):
+    """Build one complete typed provider page from (doi, title) pairs."""
     cands = [
-        relevance_candidate(title=f"Test candidate {title}", doi=doi, source="openalex")
+        relevance_candidate(
+            title=f"Test candidate {title}", doi=doi, source=spec.key.provider,
+        )
         for doi, title in works
     ]
     if exhausted is None:
         exhausted = not next_cursor
-    return DiscoveryPage(
-        provider="openalex",
-        keyword_zh="边界层",
-        query="边界层",
-        lane="backfill",
+    return discovery_page(
+        provider=spec.key.provider,
+        keyword_zh=spec.keyword_zh,
+        query=spec.query,
+        lane=spec.key.mode,
         candidates=cands,
-        request_cursor=None,
+        cursor=cursor,
         next_cursor=next_cursor,
-        page_size=10,
-        returned_count=len(cands),
+        query_id=spec.key.query_id,
+        query_language=spec.query_language,
         total_results=len(cands),
-        status="success",
         exhausted=exhausted,
     )
 
@@ -103,35 +104,34 @@ class _ScriptedOpenAlex:
         self.scripts = scripts
         self.calls: list[tuple[str, str]] = []
 
-    def __call__(self, query, *, keyword_zh, lane, page_size, cursor,
-                 sort=None, domain_id=None, rate_limiter=None, limiter_lock=None):
-        self.calls.append((lane, cursor))
-        key = (lane, cursor)
+    def __call__(self, spec, cursor, _client):
+        self.calls.append((spec.key.mode, cursor))
+        key = (spec.key.mode, cursor)
         if key not in self.scripts:
-            return _page([], None)
+            return _page(spec, cursor, [], None)
         works, nxt = self.scripts[key]
-        return _page(works, nxt)
+        return _page(spec, cursor, works, nxt)
 
 
-def _crossref_noop(*args, **kwargs):
-    return _page([], None)
+def _crossref_noop(spec, cursor, _client):
+    return _page(spec, cursor, [], None)
 
 
 def _provider_fetch(openalex, crossref):
-    def _fetch(provider, query, **kwargs):
-        if provider == "openalex":
-            return openalex(query, **kwargs)
-        if provider == "crossref":
-            return crossref(query, **kwargs)
-        raise AssertionError(f"unexpected provider: {provider}")
-    return _fetch
+    def _fetch(spec, cursor, client):
+        if spec.key.provider == "openalex":
+            return openalex(spec, cursor, client)
+        if spec.key.provider == "crossref":
+            return crossref(spec, cursor, client)
+        raise AssertionError(f"unexpected provider: {spec.key.provider}")
+    return CallbackProviderPageFetcher(_fetch)
 
 
 def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
                    paper_raw_dir: Path | None = None,
                    papers_dir: Path | None = None,
                    hide_existing: bool = False,
-                   fetch_page) -> tuple[SimpleNamespace, dict]:
+                   page_fetcher) -> tuple[SimpleNamespace, dict]:
     runtime_base = notebook_dir / ".discovery_runtime"
     options = DiscoveryOptions(
         mode="hybrid",
@@ -150,7 +150,7 @@ def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
         ledger_path=(paper_raw_dir.parent / "ledger.json") if paper_raw_dir else (runtime_base / "ledger.json"),
     )
     batch_report = run_discovery_batch(
-        [keyword_zh], options=options, max_workers=2, fetch_page=fetch_page,
+        [keyword_zh], options=options, max_workers=2, page_fetcher=page_fetcher,
     )
     report_obj = batch_report.keywords[0]
     candidates = []
@@ -180,7 +180,7 @@ class TestKeywordDiscoveryResume:
         fake = _ScriptedOpenAlex(scripts_run1)
         batch1, report1 = _run_discovery(
             keyword_zh, notebook_dir=notebook_dir, paper_raw_dir=paper_raw,
-            papers_dir=papers, fetch_page=_provider_fetch(fake, _crossref_noop),
+            papers_dir=papers, page_fetcher=_provider_fetch(fake, _crossref_noop),
         )
         assert report1["status"] == "success"
         dois1 = {c.doi for c in batch1.candidates}
@@ -202,7 +202,7 @@ class TestKeywordDiscoveryResume:
         fake2 = _ScriptedOpenAlex(scripts_run2)
         batch2, report2 = _run_discovery(
             keyword_zh, notebook_dir=notebook_dir, paper_raw_dir=paper_raw,
-            papers_dir=papers, fetch_page=_provider_fetch(fake2, _crossref_noop),
+            papers_dir=papers, page_fetcher=_provider_fetch(fake2, _crossref_noop),
         )
         refresh_cursors = [c for (lane, c) in fake2.calls if lane == "refresh"]
         backfill_cursors = [c for (lane, c) in fake2.calls if lane == "backfill"]
@@ -239,7 +239,7 @@ class TestKeywordDiscoveryResume:
         batch, report = _run_discovery(
             keyword_zh, notebook_dir=notebook_dir, paper_raw_dir=paper_raw,
             papers_dir=papers, hide_existing=True,
-            fetch_page=_provider_fetch(fake, _crossref_noop),
+            page_fetcher=_provider_fetch(fake, _crossref_noop),
         )
         dois = {c.doi for c in batch.candidates}
         assert "10.1/new" in dois
@@ -255,12 +255,34 @@ class TestKeywordDiscoveryResume:
         keyword_b = "关键词乙"
         keyword_c = "关键词丙"
 
-        # Pre-seed all definitions; A and B alone have saved cursors.
-        query_a = _seed_ready(store, keyword_a, "keyword A")
-        query_b = _seed_ready(store, keyword_b, "keyword B")
+        # Pre-seed all definitions; A and B obtain saved cursors through the
+        # real journal-first path.  A hand-written notebook cursor without a
+        # matching durable page is intentionally repair-required in v3.
+        _seed_ready(store, keyword_a, "keyword A")
+        _seed_ready(store, keyword_b, "keyword B")
         _seed_ready(store, keyword_c, "keyword C")
-        store.advance_backfill(keyword_a, query_a, "openalex", next_cursor="A5", items_this_page=5)
-        store.advance_backfill(keyword_b, query_b, "openalex", next_cursor="B9", items_this_page=5)
+        _run_discovery(
+            keyword_a,
+            notebook_dir=notebook_dir,
+            page_fetcher=_provider_fetch(
+                _ScriptedOpenAlex({
+                    ("refresh", INITIAL_CURSOR): ([('10.1/a_seed', 'A seed')], None),
+                    ("backfill", INITIAL_CURSOR): ([('10.1/a_seed_b', 'A seed B')], 'A5'),
+                }),
+                _crossref_noop,
+            ),
+        )
+        _run_discovery(
+            keyword_b,
+            notebook_dir=notebook_dir,
+            page_fetcher=_provider_fetch(
+                _ScriptedOpenAlex({
+                    ("refresh", INITIAL_CURSOR): ([('10.1/b_seed', 'B seed')], None),
+                    ("backfill", INITIAL_CURSOR): ([('10.1/b_seed_b', 'B seed B')], 'B9'),
+                }),
+                _crossref_noop,
+            ),
+        )
 
         # Run all three (C is new).
         def _make_fake(scripts):
@@ -284,15 +306,17 @@ class TestKeywordDiscoveryResume:
         fake_c = _make_fake(scripts_c)
         fakes = {keyword_a: fake_a, keyword_b: fake_b, keyword_c: fake_c}
 
-        def _dispatch(provider, query, **kwargs):
+        def _dispatch(spec, cursor, client):
             # Route by the Chinese notebook identity.
-            ok = kwargs.get("keyword_zh", "")
-            if provider == "crossref":
-                return _crossref_noop(query, **kwargs)
-            return fakes.get(ok, _ScriptedOpenAlex({}))(query, **kwargs)
+            if spec.key.provider == "crossref":
+                return _crossref_noop(spec, cursor, client)
+            return fakes.get(spec.keyword_zh, _ScriptedOpenAlex({}))(spec, cursor, client)
 
         for kw in (keyword_a, keyword_b, keyword_c):
-            _run_discovery(kw, notebook_dir=notebook_dir, fetch_page=_dispatch)
+            _run_discovery(
+                kw, notebook_dir=notebook_dir,
+                page_fetcher=CallbackProviderPageFetcher(_dispatch),
+            )
 
         # A resumed from A5 → A6; B from B9 → B10; C from * → C1.
         nb_a = store.load(keyword_a)

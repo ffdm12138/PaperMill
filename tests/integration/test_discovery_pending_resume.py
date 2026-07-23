@@ -20,7 +20,7 @@ PROFILE_HASH = "test-active-profile"
 
 
 def _page(store: PageJournalStore, tmp_path: Path, doi: str = "10.1234/resume") -> Path:
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -121,7 +121,7 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
     assert receipt.exists()
     receipt.unlink()
     # Reset the journal candidate so the drain loop re-processes it.
-    path = store.write_page(store.make_page(
+    path = store.write_page(store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,

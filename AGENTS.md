@@ -188,6 +188,25 @@ provider I/O, cursor or page-journal writes, paper allocation, notebook
 mutation, or Catalog mutation; real network search requires an explicit user
 command after the read-only checks.
 
+Discovery execution contract: refresh and backfill page budgets are
+independent -- refresh is bounded by its own window (`refresh_pages`) and
+never consumes the backfill page budget (`max_pages_total`), so a hybrid
+refresh lane cannot starve backfill. `--until-exhausted` is decoupled from
+`--max-pages-total`: it requires at least one safety valve
+(`--max-pages-total` OR `--max-provider-requests-total`); giant-integer
+simulation of unbounded runs is forbidden. Reaching either valve is a clean
+`budget_reached` stop (resumable from the same cursor), never a provider
+failure or `exhausted`. All OpenAlex/Crossref HTTP -- discovery pages, title
+resolution, metadata resolution, DOI scope verification, and taxonomy fetch --
+goes through the unified `ProviderClient` (shared per-provider limiter,
+retry/backoff/Retry-After, circuit breaker, batch-wide request budget,
+telemetry); no business module may call `requests.get`/`httpx.get` directly.
+Lane stop reasons use the frozen `STOP_REASONS` vocabulary; `exhausted=True`
+requires `exhaustion_evidence` and is never written on transient failure,
+timeout, 429, 5xx, SSL, budget, or interrupt. The batch report carries
+`provider_requests` telemetry (attempted/retried/succeeded/failed) and
+aggregate section totals are conservation-checked against lane counters.
+
 Successful final acceptance must include the literal output lines
 `[OK] agent acceptance passed` and `[OK] Packed: mineru_snapshot.zip`.
 

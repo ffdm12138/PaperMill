@@ -59,7 +59,7 @@ def test_candidate_id_priority_is_stable_and_namespaced_by_page():
 def test_page_and_candidate_state_transitions_are_validated(tmp_path: Path):
     store = PageJournalStore(tmp_path)
     sig = request_signature(page_size=10)
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -95,7 +95,7 @@ def test_page_and_candidate_state_transitions_are_validated(tmp_path: Path):
 def test_update_candidate_payload_preserves_identity_and_statistics(tmp_path: Path):
     store = PageJournalStore(tmp_path)
     sig = request_signature(page_size=10)
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -154,7 +154,7 @@ def test_corrupt_journal_fails_closed(tmp_path: Path):
 
 
 def _valid_page(store: PageJournalStore, **overrides: Any) -> dict[str, Any]:
-    return store.make_page(
+    return store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,

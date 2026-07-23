@@ -44,18 +44,20 @@ from typing import Any, Callable
 
 from filelock import FileLock
 
-from src.discovery.constants import BACKFILL_STATE_FIELDS, INITIAL_CURSOR
+from src.discovery.constants import (
+    BACKFILL_STATE_ACCEPTED_FIELDS,
+    BACKFILL_STATE_FIELDS,
+    INITIAL_CURSOR,
+)
 from src.utils.atomic_io import _fsync_dir as _fsync_dir_if_posix
 
 
-SCHEMA_VERSION = "3.0"
+SCHEMA_VERSION = "4.0"
 PAGINATION_SCHEMA_VERSION = "2.0"
 
 # Lane / provider literals (kept as plain strings for JSON readability).
 LANES = ("refresh", "backfill")
 PROVIDERS = ("openalex", "crossref")
-
-_REJECTED_SCHEMA_VERSIONS = {"1.0", "2.0"}
 
 
 class NotebookCorruptError(RuntimeError):
@@ -393,6 +395,12 @@ def _now_iso() -> str:
 
 
 def _empty_refresh_state() -> dict[str, Any]:
+    """Fresh refresh lane state (repeated-head-window model).
+
+    The window fields are additive extensions: notebooks written before the
+    execution contract freeze lack them and remain readable (validators use
+    ``_require_keys`` for refresh state); the migration tool backfills them.
+    """
     return {
         "last_started_at": None,
         "last_success_at": None,
@@ -400,6 +408,13 @@ def _empty_refresh_state() -> dict[str, Any]:
         "pages_scanned_last_run": 0,
         "items_returned_last_run": 0,
         "last_error": None,
+        # Repeated-head-window extension (discovery execution contract):
+        "last_window_completed_at": None,
+        "last_window_pages": 0,
+        "last_window_signature": "",
+        "last_window_page_ids": [],
+        "consecutive_failures": 0,
+        "next_retry_at": None,
     }
 
 
@@ -599,42 +614,127 @@ def _validate_string_list(value: Any, path: str) -> None:
         raise NotebookCorruptError(f"{path} must be a list of non-blank strings")
 
 
+_REFRESH_WINDOW_ALLOWED = {
+    "last_window_completed_at", "last_window_pages", "last_window_signature",
+    "last_window_page_ids", "consecutive_failures", "next_retry_at",
+}
+
+
 def _validate_refresh_state(value: Any, path: str) -> None:
     state = _require_dict(value, path)
     _require_keys(state, _REFRESH_REQUIRED, path)
+    unknown = sorted(set(state) - _REFRESH_REQUIRED - _REFRESH_WINDOW_ALLOWED)
+    if unknown:
+        raise NotebookCorruptError(f"{path} has unexpected keys: {unknown}")
     for key in ("last_started_at", "last_success_at", "last_error"):
         _require_optional_text(state[key], f"{path}.{key}")
     if state["last_status"] not in {None, "success", "partial_success", "failed"}:
         raise NotebookCorruptError(f"{path}.last_status is invalid")
     for key in ("pages_scanned_last_run", "items_returned_last_run"):
         _require_nonnegative_int(state[key], f"{path}.{key}")
+    # Window extension fields: optional (absent in pre-contract notebooks),
+    # but well-formed when present.
+    if "last_window_completed_at" in state:
+        _require_optional_text(
+            state["last_window_completed_at"], f"{path}.last_window_completed_at"
+        )
+    if "last_window_pages" in state:
+        _require_nonnegative_int(state["last_window_pages"], f"{path}.last_window_pages")
+    if "last_window_signature" in state:
+        sig = state["last_window_signature"]
+        if not isinstance(sig, str) or (sig and not _HEX16.fullmatch(sig)):
+            raise NotebookCorruptError(
+                f"{path}.last_window_signature must be empty or 16 lowercase hex"
+            )
+    if "last_window_page_ids" in state:
+        ids = state["last_window_page_ids"]
+        if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids):
+            raise NotebookCorruptError(
+                f"{path}.last_window_page_ids must be a list of strings"
+            )
+    if "consecutive_failures" in state:
+        _require_nonnegative_int(
+            state["consecutive_failures"], f"{path}.consecutive_failures"
+        )
+    if "next_retry_at" in state:
+        _require_optional_text(state["next_retry_at"], f"{path}.next_retry_at")
 
 
 def _validate_generation_history(value: Any, path: str) -> None:
+    """Validate generation history entries using strict typed parsing.
+
+    Each entry is validated through ``GenerationHistoryEntry.from_dict_strict``,
+    which checks all 10 fields for correct types, missing keys, and unknown extras.
+    Additional invariants (strictly increasing generations, hex signatures,
+    non-blank closed_at/reason) are checked after the typed parse.
+    """
+    from src.discovery.execution.lane_models import GenerationHistoryEntry
+
     if not isinstance(value, list):
         raise NotebookCorruptError(f"{path} must be a list")
     previous = -1
     for index, item in enumerate(value):
         entry_path = f"{path}[{index}]"
-        entry = _require_dict(item, entry_path)
-        _require_keys(entry, {"generation", "request_signature", "closed_at", "reason"}, entry_path)
-        generation = _require_nonnegative_int(entry["generation"], f"{entry_path}.generation")
-        if generation < 1 or generation <= previous:
+        if not isinstance(item, dict):
+            raise NotebookCorruptError(f"{entry_path} must be a dict")
+        try:
+            entry = GenerationHistoryEntry.from_dict_strict(item)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise NotebookCorruptError(f"{entry_path} invalid: {exc}") from exc
+        if entry.generation < 1 or entry.generation <= previous:
             raise NotebookCorruptError(f"{path} generations must be strictly increasing")
-        previous = generation
-        signature = entry["request_signature"]
+        previous = entry.generation
+        signature = item["request_signature"]
         if not isinstance(signature, str) or (signature and not _HEX16.fullmatch(signature)):
             raise NotebookCorruptError(
                 f"{entry_path}.request_signature must be empty or 16 lowercase hex"
             )
         for key in ("closed_at", "reason"):
-            if not isinstance(entry[key], str) or not entry[key].strip():
+            if not isinstance(item[key], str) or not item[key].strip():
                 raise NotebookCorruptError(f"{entry_path}.{key} must be a non-blank string")
+
+
+def _validate_exhaustion_evidence(value: Any, path: str) -> None:
+    """Validate the mandatory exhaustion evidence payload.
+
+    Required whenever ``exhausted=True`` is committed.  ``None`` is only
+    acceptable while ``exhausted`` is False.
+    """
+    evidence = _require_dict(value, path)
+    from src.discovery.execution.lane_models import ExhaustionEvidence
+    try:
+        ExhaustionEvidence.from_dict_strict(evidence)
+    except (TypeError, ValueError) as exc:
+        raise NotebookCorruptError(f"{path} is invalid: {exc}") from exc
 
 
 def _validate_backfill_state(value: Any, path: str) -> None:
     state = _require_dict(value, path)
-    _require_exact_keys(state, BACKFILL_STATE_FIELDS, path)
+    missing = sorted(BACKFILL_STATE_FIELDS - set(state))
+    if missing:
+        raise NotebookCorruptError(f"{path} missing keys: {missing}")
+    extra = sorted(set(state) - BACKFILL_STATE_ACCEPTED_FIELDS)
+    if extra:
+        raise NotebookCorruptError(f"{path} has unexpected keys: {extra}")
+    # Optional extension fields are not required to be present, but when
+    # present they must be well-formed.  ``exhausted=True`` REQUIRES
+    # exhaustion_evidence (invariant: exhaustion must carry evidence).
+    if "exhaustion_evidence" in state:
+        evidence = state["exhaustion_evidence"]
+        if evidence is not None:
+            _validate_exhaustion_evidence(
+                evidence, f"{path}.exhaustion_evidence"
+            )
+    # NOTE: ``exhausted=True`` without ``exhaustion_evidence`` is flagged as
+    # ``repair_required`` by the migration tool (legacy state must never be
+    # silently reopened), but the notebook *reader* stays tolerant: existing
+    # notebooks remain loadable, and the write site (commit_backfill_cursor)
+    # is where evidence becomes mandatory.
+    if "repair_required" in state and not isinstance(state["repair_required"], bool):
+        raise NotebookCorruptError(f"{path}.repair_required must be boolean")
+    for opt_key in ("repair_reason", "repair_flagged_at"):
+        if opt_key in state:
+            _require_optional_text(state[opt_key], f"{path}.{opt_key}")
     if not isinstance(state["cursor"], str) or not state["cursor"]:
         raise NotebookCorruptError(f"{path}.cursor must be a non-blank string")
     for key in ("exhausted", "terminal_failure"):
@@ -729,11 +829,11 @@ def validate_notebook(data: Any) -> dict[str, Any]:
             f"notebook root is {type(data).__name__}, expected dict"
         )
     version = str(data.get("schema_version") or "")
-    if version in _REJECTED_SCHEMA_VERSIONS:
+    if version in ("1.0", "2.0", "3.0"):
         raise LegacyNotebookSchemaError(
-            f"notebook schema {version} must be migrated to v3"
+            f"notebook schema {version} must be migrated to v4"
         )
-    if version != SCHEMA_VERSION:
+    if version != "4.0":
         raise UnsupportedNotebookSchemaError(
             f"unsupported notebook schema_version: {version!r}"
         )
@@ -936,12 +1036,15 @@ class KeywordNotebookStore:
                 raise NotebookCorruptError(f"notebook JSON corrupt: {path}: {exc}") from exc
             return validate_notebook(data)
 
-    def require_v3(self, keyword: str) -> dict[str, Any]:
-        """Load a v3 notebook or raise.  v1/v2 → LegacyNotebookSchemaError."""
+    def require_v4(self, keyword: str) -> dict[str, Any]:
+        """Load a v4 notebook or raise FileNotFoundError."""
         nb = self.load(keyword)
         if nb is None:
             raise FileNotFoundError(f"no notebook for keyword: {keyword!r}")
         return nb
+
+    # Deprecated — use require_v4 instead
+    require_v3 = require_v4
 
     def require(self, keyword: str) -> dict[str, Any]:
         """Load a notebook or raise FileNotFoundError."""
@@ -1090,13 +1193,13 @@ class KeywordNotebookStore:
             self._save(path, nb)
             return nb
 
-    def require_v3_ready(self, keyword_zh: str) -> dict[str, Any]:
-        """Load a v3 notebook and validate discovery readiness.
+    def require_v4_ready(self, keyword_zh: str) -> dict[str, Any]:
+        """Load a v4 notebook and validate discovery readiness.
 
         Raises ``DiscoveryNotReadyError`` if the notebook lacks required
         bilingual queries.
         """
-        nb = self.require_v3(keyword_zh)
+        nb = self.require_v4(keyword_zh)
         if nb["enabled"] is False:
             raise DiscoveryNotReadyError(f"notebook {keyword_zh!r} is disabled")
         readiness = validate_discovery_readiness(nb)
@@ -1289,6 +1392,9 @@ class KeywordNotebookStore:
         self, keyword: str, query_id: str, provider: str, *,
         status: str, pages_scanned: int, items_returned: int,
         error: str | None = None,
+        window_signature: str | None = None,
+        window_pages: int | None = None,
+        window_page_ids: list[str] | None = None,
     ) -> None:
         def m(nb: dict[str, Any]) -> None:
             entry = nb["search_queries"].get(query_id)
@@ -1302,7 +1408,19 @@ class KeywordNotebookStore:
             r["items_returned_last_run"] = items_returned
             r["last_error"] = error
             if status in ("success", "partial_success"):
-                r["last_success_at"] = _now_iso()
+                now = _now_iso()
+                r["last_success_at"] = now
+                r["consecutive_failures"] = 0
+                r["next_retry_at"] = None
+                if window_signature is not None:
+                    r["last_window_completed_at"] = now
+                    r["last_window_signature"] = window_signature
+                    if window_pages is not None:
+                        r["last_window_pages"] = int(window_pages)
+                    if window_page_ids is not None:
+                        r["last_window_page_ids"] = list(window_page_ids)
+            else:
+                r["consecutive_failures"] = int(r.get("consecutive_failures", 0)) + 1
             nb["lifetime_statistics"]["refresh_lane_runs"] = (
                 int(nb["lifetime_statistics"].get("refresh_lane_runs", 0)) + 1
             )
@@ -1411,34 +1529,20 @@ class KeywordNotebookStore:
         bf = entry["providers"].get(provider, {}).get("backfill", {})
         return bool(bf.get("exhausted"))
 
-    def advance_backfill(
-        self, keyword: str, query_id: str, provider: str, *,
-        next_cursor: str | None, items_this_page: int,
-        exhausted: bool = False,
-    ) -> None:
-        def m(nb: dict[str, Any]) -> None:
-            entry = nb["search_queries"].get(query_id)
-            if not entry:
-                return
-            bf = entry["providers"].get(provider, {}).get("backfill")
-            if bf is None:
-                return
-            if next_cursor is not None:
-                bf["cursor"] = next_cursor
-            bf["exhausted"] = bool(bf.get("exhausted") or exhausted)
-            bf["pages_succeeded"] = int(bf.get("pages_succeeded", 0)) + 1
-            bf["items_returned_total"] = int(bf.get("items_returned_total", 0)) + items_this_page
-            bf["last_page_count"] = items_this_page
-            bf["last_success_at"] = _now_iso()
-            bf["last_error"] = None
-        self._mutate(keyword, m)
-
     def commit_backfill_cursor(
         self, keyword: str, query_id: str, provider: str, *,
         expected_cursor: str, next_cursor: str | None,
         committed_page_id: str, exhausted: bool,
         items_this_page: int = 0,
+        exhaustion_evidence: dict[str, Any] | None = None,
     ) -> "CursorCommitResult":
+        # Invariant: exhaustion must carry evidence.  Enforced here, at the
+        # only write site, so transient failure paths (which never build
+        # evidence) structurally cannot mark a lane exhausted.
+        if exhausted and exhaustion_evidence is None:
+            raise ValueError(
+                "commit_backfill_cursor: exhausted=True requires exhaustion_evidence"
+            )
         result: CursorCommitResult | None = None
         conflict_occurred = False
         conflict_msg = ""
@@ -1473,6 +1577,8 @@ class KeywordNotebookStore:
             if next_cursor is not None:
                 bf["cursor"] = next_cursor
             bf["exhausted"] = bool(bf.get("exhausted") or exhausted)
+            if exhausted and exhaustion_evidence is not None:
+                bf["exhaustion_evidence"] = dict(exhaustion_evidence)
             bf["pages_succeeded"] = int(bf.get("pages_succeeded", 0)) + 1
             bf["pages_committed"] = int(bf.get("pages_committed", 0)) + 1
             bf["items_returned_total"] = int(bf.get("items_returned_total", 0)) + int(items_this_page)
@@ -1480,6 +1586,11 @@ class KeywordNotebookStore:
             bf["last_committed_page_id"] = committed_page_id
             bf["last_success_at"] = _now_iso()
             bf["last_error"] = None
+            # A successful durable commit clears the backoff schedule.
+            bf["consecutive_failures"] = 0
+            bf["last_failure_at"] = None
+            bf["last_error_type"] = None
+            bf["next_retry_at"] = None
             result = CursorCommitResult(committed=True, previous_cursor=expected_cursor,
                                         current_cursor=bf.get("cursor") or INITIAL_CURSOR, conflict=False)
 
@@ -1489,7 +1600,24 @@ class KeywordNotebookStore:
             raise CursorConflictError(conflict_msg)
         return result
 
-    def record_backfill_error(self, keyword: str, query_id: str, provider: str, *, error: str) -> None:
+    def record_backfill_error(
+        self,
+        keyword: str,
+        query_id: str,
+        provider: str,
+        *,
+        error: str,
+        error_type: str | None = None,
+        terminal: bool = False,
+        backoff_seconds: float | None = None,
+    ) -> None:
+        """Record a provider/lane failure with the full backoff schedule.
+
+        This is the only write path for the backoff fields
+        (``consecutive_failures`` / ``last_failure_at`` / ``last_error_type``
+        / ``next_retry_at`` / ``terminal_failure(_at)``), which were
+        previously validated but never written.
+        """
         def m(nb: dict[str, Any]) -> None:
             entry = nb["search_queries"].get(query_id)
             if not entry:
@@ -1497,7 +1625,18 @@ class KeywordNotebookStore:
             bf = entry["providers"].get(provider, {}).get("backfill")
             if bf is None:
                 return
+            now = _now_iso()
             bf["last_error"] = error
+            bf["consecutive_failures"] = int(bf.get("consecutive_failures", 0)) + 1
+            bf["last_failure_at"] = now
+            bf["last_error_type"] = error_type
+            if backoff_seconds is not None:
+                from datetime import timedelta
+                retry_at = datetime.now(timezone.utc) + timedelta(seconds=float(backoff_seconds))
+                bf["next_retry_at"] = retry_at.isoformat()
+            if terminal:
+                bf["terminal_failure"] = True
+                bf["terminal_failure_at"] = now
         self._mutate(keyword, m)
 
     def record_backfill_run(self, keyword: str, *, items_returned: int) -> None:

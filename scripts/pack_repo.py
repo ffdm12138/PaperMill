@@ -776,6 +776,38 @@ def _verify_snapshot_self_check(zip_path: Path) -> list[str]:
         for key, value in {"runtime_zero": not runtime, "secret_scan": "passed", "archive_member_check": "passed"}.items():
             if verification.get(key) != value:
                 errors.append(f"snapshot manifest verification.{key} mismatch")
+    # ── import-closure check ──
+    _SRC_IMPORT_RE = re.compile(
+        r"^\s*from\s+(src\.[a-z_][a-z0-9_.]*)\s+import|^\s*import\s+(src\.[a-z_][a-z0-9_.]*)",
+        re.MULTILINE,
+    )
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zip_py_files: set[str] = {
+            name for name in payload if name.endswith(".py")
+        }
+        zip_modules: set[str] = {
+            name[:-3].replace("/", ".").replace("\\", ".")
+            for name in zip_py_files
+        }
+        for name in sorted(zip_py_files):
+            try:
+                source = zf.read(name).decode("utf-8")
+            except Exception:
+                continue
+            for match in _SRC_IMPORT_RE.finditer(source):
+                imported = match.group(1) or match.group(2)
+                if imported is None:
+                    continue
+                # Convert module path to expected ZIP path
+                expected_zip = imported.replace(".", "/") + ".py"
+                if expected_zip not in zip_py_files:
+                    # Check if it's a package __init__.py
+                    expected_init = imported.replace(".", "/") + "/__init__.py"
+                    if expected_init not in zip_py_files:
+                        errors.append(
+                            f"missing import target: {name} imports {imported} "
+                            f"but {expected_zip} is not in snapshot"
+                        )
     return errors
 
 

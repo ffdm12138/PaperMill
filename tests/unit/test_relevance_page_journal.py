@@ -11,7 +11,7 @@ def test_profile_change_closes_passed_deferred_and_unbound_without_using_lane_ge
     store = PageJournalStore(tmp_path / "pages")
     old = relevance_profile(object_term="old sand")
     new = relevance_profile(object_term="new sand")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="mixed", keyword_id=keyword_id("风沙动力学"), keyword_zh="风沙动力学",
         query_id=query_identity("en", "sand"), query="sand", query_language="en",
         provider="crossref", lane="backfill", generation=99,

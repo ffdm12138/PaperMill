@@ -146,7 +146,7 @@ def _write_page(root: Path, *, keyword_zh: str, keyword_id_value: str, query_id_
                 provider_exhausted: bool = False,
                 state: str = "fetched") -> None:
     journal = PageJournalStore(root)
-    value = journal.make_page(
+    value = journal.make_synthetic_page(
         page_id=page_id,
         keyword_id=keyword_id_value,
         keyword_zh=keyword_zh,

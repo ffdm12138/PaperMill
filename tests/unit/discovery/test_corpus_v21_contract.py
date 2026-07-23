@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from src.discovery.models import PaperCandidate
-from src.discovery.provider_models import DiscoveryPage
-from src.discovery.provider_request_evidence import (
+from src.discovery.providers.provider_models import DiscoveryPage
+from src.discovery.providers.provider_request_evidence import (
     ActualRequestEvidence,
     build_safe_signature,
     safe_response_hash,

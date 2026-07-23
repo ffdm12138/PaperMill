@@ -1,17 +1,29 @@
-"""Crossref DOI and BibTeX verification."""
+"""Crossref DOI and bibliographic search.
+
+All HTTP goes through the unified :class:`~src.discovery.provider_client.ProviderClient`
+(limiter + retry + backoff + circuit breaker + telemetry).  This module only
+builds request specs and parses responses — it never imports ``requests``.
+"""
 from __future__ import annotations
 
-from contextlib import nullcontext
+import hashlib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from typing import Any, Literal
+from typing import Any
 
-import requests
 from loguru import logger
 
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
-from src.discovery.provider_models import DiscoveryPage, classify_http_error, failed_page
-from src.fetch.proxy import get_fetch_proxies
+from src.discovery.execution.lane_models import LaneExecutionSpec
+from src.discovery.providers.provider_client import ProviderClient, ProviderRuntime, RequestSpec
+from src.discovery.providers.provider_errors import (
+    ProviderError,
+    ProviderProtocolError,
+    ProviderRateLimited,
+    ProviderRequestBudgetExhausted,
+)
+from src.discovery.providers.provider_models import DiscoveryPage, failed_page
 
 
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
@@ -86,18 +98,41 @@ def parse_crossref_item(item: dict, query: str = "", domain_id: str | None = Non
     )
 
 
-def search_crossref(query: str, domain_id: str | None = None, limit: int = 5) -> list[PaperCandidate]:
+def _runtime_client(client: ProviderClient | None) -> ProviderClient:
+    """Return the injected client or the process-wide shared one."""
+    if client is not None:
+        return client
+    return ProviderRuntime.get().client(CROSSREF_PROVIDER)
+
+
+def search_crossref(
+    query: str,
+    domain_id: str | None = None,
+    limit: int = 5,
+    *,
+    client: ProviderClient | None = None,
+) -> list[PaperCandidate]:
+    spec = RequestSpec(
+        provider=CROSSREF_PROVIDER,
+        purpose="title_resolution",
+        url=CROSSREF_WORKS_URL,
+        params={"query.bibliographic": query, "rows": limit},
+        timeout_seconds=20,
+    )
     try:
-        response = requests.get(
-            CROSSREF_WORKS_URL,
-            params={"query.bibliographic": query, "rows": limit},
-            timeout=20,
-            proxies=get_fetch_proxies(),
-        )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        logger.warning(f"Crossref search failed for {query!r}: {exc}")
+        outcome = _runtime_client(client).execute(spec)
+        data = outcome.json()
+    except ProviderRateLimited:
+        # Re-raise so the batch-level TitleResolutionService can freeze
+        # dispatch for the rest of the batch (429 must not be swallowed
+        # into an empty result, otherwise every worker keeps hammering).
+        raise
+    except ProviderRequestBudgetExhausted:
+        # The executor must map the shared request valve directly to a clean
+        # BUDGET_STOPPED outcome instead of receiving a failed provider page.
+        raise
+    except ProviderError as exc:
+        logger.warning("Crossref search failed for {!r}: {}", query, type(exc).__name__)
         return []
     items = (data.get("message") or {}).get("items") or []
     return [parse_crossref_item(item, query=query, domain_id=domain_id) for item in items]
@@ -108,13 +143,15 @@ def resolve_crossref_by_title(
     year: int | None = None,
     limit: int = 5,
     domain_id: str | None = None,
+    *,
+    client: ProviderClient | None = None,
 ) -> list[PaperCandidate]:
     """按标题相似度 + 年份接近度对 Crossref 候选排序，返回完整候选列表。
 
     网络错误时返回空列表（由 ``search_crossref`` 吞咽）。不做阈值过滤——
     阈值过滤由 ``resolve_doi_by_title`` 负责。
     """
-    candidates = search_crossref(title, domain_id=domain_id, limit=limit)
+    candidates = search_crossref(title, domain_id=domain_id, limit=limit, client=client)
     title_norm = normalize_title(title)
     scored: list[tuple[float, PaperCandidate]] = []
     for candidate in candidates:
@@ -127,8 +164,14 @@ def resolve_crossref_by_title(
     return [candidate for _, candidate in scored]
 
 
-def resolve_doi_by_title(title: str, year: int | None = None, domain_id: str | None = None) -> PaperCandidate | None:
-    candidates = resolve_crossref_by_title(title, year=year, limit=5, domain_id=domain_id)
+def resolve_doi_by_title(
+    title: str,
+    year: int | None = None,
+    domain_id: str | None = None,
+    *,
+    client: ProviderClient | None = None,
+) -> PaperCandidate | None:
+    candidates = resolve_crossref_by_title(title, year=year, limit=5, domain_id=domain_id, client=client)
     if not candidates:
         return None
     best = candidates[0]
@@ -137,8 +180,14 @@ def resolve_doi_by_title(title: str, year: int | None = None, domain_id: str | N
     return None
 
 
-def resolve_doi_match_by_title(title: str, year: int | None = None, domain_id: str | None = None) -> ResolvedDoiMatch | None:
-    best = resolve_doi_by_title(title, year=year, domain_id=domain_id)
+def resolve_doi_match_by_title(
+    title: str,
+    year: int | None = None,
+    domain_id: str | None = None,
+    *,
+    client: ProviderClient | None = None,
+) -> ResolvedDoiMatch | None:
+    best = resolve_doi_by_title(title, year=year, domain_id=domain_id, client=client)
     if best is None:
         return None
     return ResolvedDoiMatch(
@@ -150,17 +199,22 @@ def resolve_doi_match_by_title(title: str, year: int | None = None, domain_id: s
     )
 
 
-def get_crossref_work_by_doi(doi: str) -> dict | None:
+def get_crossref_work_by_doi(doi: str, *, client: ProviderClient | None = None) -> dict | None:
     """按 DOI 取 Crossref work 的 message dict，网络错误返回 None。"""
     doi = normalize_doi(doi)
     if not doi:
         return None
+    spec = RequestSpec(
+        provider=CROSSREF_PROVIDER,
+        purpose="metadata_resolution",
+        url=f"{CROSSREF_WORKS_URL}/{doi}",
+        timeout_seconds=20,
+    )
     try:
-        response = requests.get(f"{CROSSREF_WORKS_URL}/{doi}", timeout=20, proxies=get_fetch_proxies())
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        logger.warning(f"Crossref work lookup failed for {doi!r}: {exc}")
+        outcome = _runtime_client(client).execute(spec)
+        data = outcome.json()
+    except ProviderError as exc:
+        logger.warning("Crossref work lookup failed for {!r}: {}", doi, type(exc).__name__)
         return None
     return data.get("message") if isinstance(data, dict) else None
 
@@ -170,25 +224,14 @@ def get_crossref_work_by_doi(doi: str) -> dict | None:
 
 
 def search_crossref_page(
-    query: str,
-    *,
-    keyword_zh: str,
-    query_id: str = "",
-    query_language: str = "",
-    lane: Literal["refresh", "backfill"],
-    page_size: int,
-    cursor: str = "*",
-    sort: str | None = None,
-    order: str | None = None,
-    from_date: str = "",
-    to_date: str = "",
-    rate_limiter: Any | None = None,
-    limiter_lock: Any | None = None,
-    request_observer: Any | None = None,
+    lane_spec: LaneExecutionSpec,
+    cursor: str,
+    client: ProviderClient,
 ) -> DiscoveryPage:
     """Fetch one Crossref works page via deep-paging cursor.
 
-    Crossref cursor pagination: first request uses ``cursor="*"`` and
+    The immutable execution spec is the sole request identity.  Crossref
+    cursor pagination: first request uses ``cursor="*"`` and
     the response carries ``message.next-cursor`` for the next page. When
     the returned item count is below ``page_size`` (or ``next-cursor``
     is empty) the page is marked ``exhausted=True``.
@@ -196,6 +239,17 @@ def search_crossref_page(
     On HTTP failure the page has ``status="failed"`` and
     ``next_cursor=None`` so the backfill cursor is NOT advanced.
     """
+    if lane_spec.key.provider != CROSSREF_PROVIDER:
+        raise ValueError("search_crossref_page requires a Crossref LaneExecutionSpec")
+    query = lane_spec.query
+    keyword_zh = lane_spec.keyword_zh
+    query_id = lane_spec.key.query_id
+    query_language = lane_spec.query_language
+    lane = lane_spec.key.mode
+    stable_lane_id = lane_spec.key.stable_id()
+    page_size = lane_spec.page_size
+    sort = lane_spec.sort or None
+    order = lane_spec.order
     params: dict[str, str | int] = {
         "query.bibliographic": query,
         "rows": page_size,
@@ -209,39 +263,24 @@ def search_crossref_page(
         if order not in {"asc", "desc"}:
             raise ValueError(f"invalid Crossref order: {order!r}")
         params["order"] = order
-    # ── Apply time window to actual request ─────────────────────────
-    if from_date:
-        params["from-pub-date"] = from_date
-    if to_date:
-        params["until-pub-date"] = to_date
-
-    lock_ctx = limiter_lock if limiter_lock is not None else nullcontext()
+    spec = RequestSpec(
+        provider=CROSSREF_PROVIDER,
+        purpose="discovery_page",
+        url=CROSSREF_WORKS_URL,
+        params=params,
+        timeout_seconds=20,
+        telemetry_tags={
+            "lane_id": stable_lane_id,
+            "query_id": query_id,
+            "keyword_id": lane_spec.key.keyword_id,
+            "mode": lane,
+        },
+    )
     try:
-        if rate_limiter is not None:
-            with lock_ctx:
-                rate_limiter.wait(CROSSREF_PROVIDER)
-        response = requests.get(
-            CROSSREF_WORKS_URL,
-            params=params,
-            timeout=20,
-            proxies=get_fetch_proxies(),
-        )
-        if rate_limiter is not None:
-            with lock_ctx:
-                rate_limiter.record_response(
-                    CROSSREF_PROVIDER,
-                    dict(response.headers),
-                    response.status_code,
-                )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        safe_error = _safe_crossref_error(exc)
-        logger.warning(
-            "Crossref page failed for {!r} (cursor={!r}): {}",
-            query, cursor, safe_error,
-        )
-        _error_type, failure_class, http_status, retry_after = classify_http_error(exc)
+        outcome = client.execute(spec)
+        data = outcome.json()
+    except ProviderProtocolError as exc:
+        logger.warning("Crossref page protocol error for {!r}: {}", query, exc)
         return failed_page(
             provider=CROSSREF_PROVIDER,
             keyword_zh=keyword_zh,
@@ -251,40 +290,37 @@ def search_crossref_page(
             lane=lane,
             request_cursor=cursor,
             page_size=page_size,
-            error_type=_error_type,
+            error_type="protocol_error",
+            safe_error=str(exc)[:200],
+            failure_class="retryable",
+        )
+    except ProviderRequestBudgetExhausted:
+        raise
+    except ProviderError as exc:
+        safe_error = _safe_crossref_error(exc)
+        logger.warning(
+            "Crossref page failed for {!r} (cursor={!r}): {}",
+            query, cursor, safe_error,
+        )
+        failure_class = "retryable" if exc.retryable else "terminal"
+        http_status = getattr(exc, "http_status", None)
+        retry_after = getattr(exc, "retry_after_seconds", None)
+        return failed_page(
+            provider=CROSSREF_PROVIDER,
+            keyword_zh=keyword_zh,
+            query_id=query_id,
+            query=query,
+            query_language=query_language,
+            lane=lane,
+            request_cursor=cursor,
+            page_size=page_size,
+            error_type=type(exc).__name__,
             safe_error=safe_error,
             failure_class=failure_class,
             http_status=http_status,
             retry_after_seconds=retry_after,
         )
-
-    # Keep local evidence failures out of the provider failure path.
-    if request_observer is not None:
-        from src.discovery.provider_request_evidence import (
-            ActualRequestEvidence, RequestEvidenceError, build_safe_signature,
-            safe_response_hash,
-        )
-        evidence = ActualRequestEvidence(
-            safe_signature=build_safe_signature(
-                provider=CROSSREF_PROVIDER, query=query,
-                sort=sort or "", order=order or "", page_size=page_size,
-                lane=lane, pagination_schema_version="2.0",
-                time_window={"from": from_date, "to": to_date},
-            ),
-            cursor_in=cursor,
-            cursor_out=str(data.get("message", {}).get("next-cursor") or ""),
-            response_hash=safe_response_hash(response.content),
-            observation_count=len(data.get("message", {}).get("items", []) or []),
-            response_bytes=response.content,
-        )
-        try:
-            request_observer(evidence)
-        except RequestEvidenceError:
-            raise
-        except Exception as exc:
-            raise RequestEvidenceError(
-                f"Crossref request evidence observer failed: {type(exc).__name__}: {exc}"
-            ) from exc
+    response_body = outcome.body
 
     message = data.get("message") or {}
     items = message.get("items") or []
@@ -324,4 +360,17 @@ def search_crossref_page(
         total_results=total_results,
         status="success",
         exhausted=exhausted,
+        response_metadata={
+            "http_status": outcome.status_code,
+            "provider_request_id": next(
+                (str(value) for key, value in outcome.headers.items()
+                 if str(key).lower() in {"x-request-id", "x-amzn-requestid", "x-correlation-id"}),
+                None,
+            ),
+            "retry_after_observed": outcome.retry_after_observed,
+            "total_results": total_results,
+            "next_cursor_present": bool(next_cursor),
+            "response_fingerprint": hashlib.sha256(response_body).hexdigest()[:16],
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        },
     )

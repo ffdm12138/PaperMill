@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import src.discovery.pending_queue as pending_queue_module
-from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
+from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import PageJournalStore, request_signature
@@ -81,7 +81,7 @@ def test_pending_drain_stages_one_claim_batch_in_one_transaction_and_page_commit
 ):
     journal = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("关键词")
-    page = _bind_page(journal.make_page(
+    page = _bind_page(journal.make_synthetic_page(
         page_id="stage-batch",
         keyword_id=kid,
         keyword_zh="关键词",
@@ -169,7 +169,7 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
     journal = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("关键词")
     doi = "10.9200/same-batch"
-    page = _bind_page(journal.make_page(
+    page = _bind_page(journal.make_synthetic_page(
         page_id="same-batch",
         keyword_id=kid,
         keyword_zh="关键词",
@@ -251,7 +251,7 @@ def test_pending_drain_renews_only_after_half_lease_threshold(
 ):
     journal = PageJournalStore(tmp_path / "pages")
     kid = keyword_id("关键词")
-    page = _bind_page(journal.make_page(
+    page = _bind_page(journal.make_synthetic_page(
         page_id="slow-lease",
         keyword_id=kid,
         keyword_zh="关键词",

@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-import requests
 from filelock import FileLock
 
 from src.discovery.keyword_notebook import KeywordNotebookStore, resolve_existing_notebook, validate_notebook
@@ -126,6 +125,35 @@ class TaxonomySnapshot:
         }
 
 
+def _provider_taxonomy_getter(url: str, *, params: dict[str, Any] | None = None,
+                              timeout: float = 20.0, **_unused: Any) -> Any:
+    """Default taxonomy HTTP getter routed through the unified ProviderClient.
+
+    Replaces the legacy ``requests.get`` default so taxonomy fetches share the
+    provider limiter, retry/backoff, circuit breaker and request budget.  The
+    ``http_get`` injection seam remains for tests.
+    """
+    from src.discovery.providers.provider_client import ProviderRuntime, RequestSpec
+
+    spec = RequestSpec(
+        provider="openalex",
+        purpose="metadata_resolution",
+        url=url,
+        params=params or {},
+        timeout_seconds=timeout,
+    )
+    outcome = ProviderRuntime.get().client("openalex").execute(spec)
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None  # ProviderClient already raised on non-2xx
+
+        def json(self) -> Any:
+            return outcome.json()
+
+    return _Resp()
+
+
 def fetch_subfields_taxonomy(
     *,
     http_get: Callable[..., Any] | None = None,
@@ -135,7 +163,7 @@ def fetch_subfields_taxonomy(
     """Read every OpenAlex ``/subfields`` page and retain raw responses."""
     if per_page < 1 or per_page > 200:
         raise ValueError("per_page must be between 1 and 200")
-    getter = http_get or requests.get
+    getter = http_get or _provider_taxonomy_getter
     cursor = "*"
     pages: list[dict[str, Any]] = []
     entities: list[dict[str, Any]] = []

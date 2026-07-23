@@ -1,6 +1,7 @@
 import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
+from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 
 
 pytestmark = pytest.mark.unit
@@ -25,6 +26,12 @@ def _options(tmp_path, **overrides):
     return DiscoveryOptions(**data)
 
 
+def _unused_fetcher() -> CallbackProviderPageFetcher:
+    return CallbackProviderPageFetcher(
+        lambda _spec, _cursor, _client: pytest.fail("validation must run before fetching"),
+    )
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -38,14 +45,23 @@ def _options(tmp_path, **overrides):
 )
 def test_run_discovery_batch_validates_service_options(tmp_path, kwargs, message):
     with pytest.raises(ValueError, match=message):
-        run_discovery_batch(["kw"], options=_options(tmp_path, **kwargs), max_workers=1, fetch_page=lambda *a, **k: None)
+        run_discovery_batch(
+            ["kw"], options=_options(tmp_path, **kwargs), max_workers=1,
+            page_fetcher=_unused_fetcher(),
+        )
 
 
 def test_run_discovery_batch_rejects_blank_keywords(tmp_path):
     with pytest.raises(ValueError, match="keywords"):
-        run_discovery_batch(["  "], options=_options(tmp_path), max_workers=1, fetch_page=lambda *a, **k: None)
+        run_discovery_batch(
+            ["  "], options=_options(tmp_path), max_workers=1,
+            page_fetcher=_unused_fetcher(),
+        )
 
 
 def test_run_discovery_batch_rejects_zero_workers(tmp_path):
     with pytest.raises(ValueError, match="max_workers"):
-        run_discovery_batch(["kw"], options=_options(tmp_path), max_workers=0, fetch_page=lambda *a, **k: None)
+        run_discovery_batch(
+            ["kw"], options=_options(tmp_path), max_workers=0,
+            page_fetcher=_unused_fetcher(),
+        )

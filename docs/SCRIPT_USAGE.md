@@ -3,6 +3,7 @@
 | Script | Role | Mutates state |
 |---|---|---|
 | `audit_discovery_workspace_registry.py` | read-only raw/formal Registry, conflict, generation, and repair-backlog audit | no |
+| `verify_discovery_final_architecture.py` | strict static and dynamic verification of the single-path Discovery execution architecture | no |
 | `repair_discovery_workspaces.py` | explicit reserved-workspace repair planning/promotion | `--apply` |
 | `repair_formal_publications.py` | audit or identity-only repair of legacy active formal sidecars; unsafe closures emit rollback/recommit plans | `--apply` |
 | `migrate_quarantined_duplicate_ledger_state.py` | explicit retired-state migration to abandoned quarantine facts | `--apply` |
@@ -53,15 +54,17 @@ not source snapshot artifacts. The migration inventory, strict audit, and
 
 ## Discovery / Metadata discovery
 
-`discover_papers.py`, `discover_papers_concurrent.py`, and
-`manage_discovery_keywords.py` manage the schema-v3 concurrent Refresh/Backfill
-discovery queue. Each notebook has one Chinese `keyword_zh` identity and
-curated Chinese/English `search_queries`. An enabled notebook must be
-bilingual-ready; a disabled draft may be incomplete. The concurrent wrapper
-executes every active query in both providers while Catalog classification
-reads only `keyword_zh`. The strict audit is read-only, and v3 recovery is
-currently inspect-only because no unsafe legacy write path is retained. The
-retired v2 notebook migration script is not an active entry point.
+`discover_papers.py`, `discover_papers_concurrent.py`,
+`manage_discovery_keywords.py`, and `migrate_discovery_v4.py` manage the
+schema-v4 concurrent Refresh/Backfill discovery queue. Each notebook has one
+Chinese `keyword_zh` identity and curated Chinese/English `search_queries`.
+An enabled notebook must be bilingual-ready; a disabled draft may be
+incomplete. The concurrent wrapper executes every active query in both
+providers while Catalog classification reads only `keyword_zh`. The strict
+audit is read-only. `migrate_discovery_v4.py` handles one-time migration from
+v2/v3 discovery state to v4; it supports `--plan`, `--apply`, `--resume`,
+`--inspect`, `--cutover`, and `--abort`. Only v4 schema notebooks are accepted
+in production; v1/v2/v3 notebooks must be migrated first.
 
 Each enabled notebook also carries its own strict relevance profile. Resolve
 the complete OpenAlex subfield taxonomy and create a plan before applying it:
@@ -120,10 +123,33 @@ python scripts/discover_papers_concurrent.py --from-enabled-notebooks --dry-run
 ```
 
 The output must list, per notebook and provider lane, the active Chinese and
-English queries, `query_id`, lane, generation, request signature, refresh pages,
-backfill pages, worker count, and page budget. Dry-run does not contact a
+English queries, `query_id`, lane, generation, request signature, cursor,
+`exhausted` state, refresh pages, backfill pages, worker count, and page
+budget (including `max_provider_requests_total`). Dry-run does not contact a
 provider, advance cursors, write page journals, allocate paper numbers, modify
 notebooks, or modify Catalog state.
+
+Discovery execution contract: refresh and backfill page budgets are
+independent (refresh is bounded by `--refresh-pages` and never consumes the
+backfill `--max-pages-total`). `--until-exhausted` is decoupled from
+`--max-pages-total`: it requires at least one safety valve
+(`--max-pages-total` OR `--max-provider-requests-total`); giant-integer
+simulation of unbounded runs is rejected. Reaching a valve is a clean,
+resumable stop with one exact reason: `lane_page_budget_reached`,
+`batch_page_budget_reached`, or `provider_request_budget_reached`. It is never
+a provider failure or `exhausted`. Lane stop reasons use the frozen
+`STOP_REASONS` vocabulary (`provider_exhausted`, `refresh_window_complete`,
+the three budget reasons, `candidate_backpressure`, `skipped_by_mode`, etc.);
+`exhausted=True` requires
+`exhaustion_evidence` and is never written on transient failure, timeout, 429,
+5xx, SSL, budget, or interrupt.
+
+Provider-page journals use the complete v3 evidence record only: full lane key,
+complete request signature, response metadata, and (when exhausted) matching
+exhaustion evidence. A legacy/hash-only page is `repair_required`; discovery
+does not invent evidence, migrate it during execution, advance its cursor, or
+contact a provider first. A 429 registers the shared provider gate and the next
+attempt waits through that gate; non-429 failures use normal retry backoff.
 
 Use `manage_discovery_keywords.py --add-query-zh --query-zh ...` or
 `--add-query-en --query-en ...` for one-language query edits. The removed
@@ -159,6 +185,7 @@ create_write_job.py
 curate_paper_raw.py
 discover_papers.py
 discover_papers_concurrent.py
+migrate_discovery_v4.py
 configure_relevance_profiles.py
 compare_discovery_relevance.py
 doctor_ingest_pipeline.py

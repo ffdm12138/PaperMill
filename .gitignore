@@ -31,6 +31,12 @@ data/discovery/locks/**
 data/discovery/exports/**
 data/discovery/logs/**
 data/discovery/reports/**
+data/discovery/active_generation.json
+data/discovery/generations/**
+data/discovery/legacy_inventory_report.json
+data/discovery/legacy_archive/**
+data/discovery/migrations/**
+data/discovery/title_resolution_cache/**
 data/catalog/*
 data/catalog/.*
 data/catalog/metadata_quality_report.json
@@ -66,6 +72,12 @@ _test_batch/
 !data/discovery/pending_pages/.gitkeep
 !data/discovery/locks/.gitkeep
 !data/discovery/exports/.gitkeep
+# v4 workspace directories (runtime state, never commit)
+data/discovery/generations/**
+data/discovery/migrations/**
+data/discovery/legacy_archive/**
+data/discovery/active_generation.json
+data/discovery/legacy_inventory_report.json
 
 # ===== 写作任务产物（可重新生成，不入库）=====
 write/jobs/**
@@ -112,3 +124,5 @@ mineru_snapshot*.zip
 .idea/
 .workbuddy/
 *.swp
+data/discovery/relevance_profile_plan.json
+data/discovery/relevance_raw_work_cache/

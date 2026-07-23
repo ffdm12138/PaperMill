@@ -11,7 +11,7 @@ pytestmark = pytest.mark.integration
 
 def test_claim_carries_page_context_without_second_read(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="page", keyword_id=keyword_id("关键词"), keyword_zh="关键词",
         query_id=query_identity("en", "keyword"),
         query="keyword", query_language="en", provider="openalex", lane="refresh",

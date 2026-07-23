@@ -1,15 +1,26 @@
-"""OpenAlex works search."""
+"""OpenAlex works search.
+
+All HTTP goes through the unified :class:`~src.discovery.provider_client.ProviderClient`
+(limiter + retry + backoff + circuit breaker + telemetry).  This module only
+builds request specs and parses responses — it never imports ``requests``.
+"""
 from __future__ import annotations
 
-from contextlib import nullcontext
-from typing import Any, Literal
+import hashlib
+from datetime import datetime, timezone
 
-import requests
 from loguru import logger
 
 from src.discovery.models import PaperCandidate, normalize_doi
-from src.discovery.provider_models import DiscoveryPage, classify_http_error, failed_page
-from src.fetch.proxy import get_fetch_proxies
+from src.discovery.execution.lane_models import LaneExecutionSpec
+from src.discovery.providers.provider_client import ProviderClient, ProviderRuntime, RequestSpec
+from src.discovery.providers.provider_errors import (
+    ProviderError,
+    ProviderPermanentError,
+    ProviderProtocolError,
+    ProviderRequestBudgetExhausted,
+)
+from src.discovery.providers.provider_models import DiscoveryPage, failed_page
 from src.services.openalex_credentials import (
     OpenAlexCredentials,
     load_openalex_credentials,
@@ -92,22 +103,44 @@ def parse_openalex_work(work: dict, query: str = "", domain_id: str | None = Non
     )
 
 
-def search_openalex(query: str, domain_id: str | None = None, limit: int = 25) -> list[PaperCandidate]:
+def _runtime_client(client: ProviderClient | None) -> ProviderClient:
+    """Return the injected client or the process-wide shared one.
+
+    Batch execution paths MUST inject a client via ``runtime.provider_client()``
+    so that telemetry and request budgets are batch-scoped.  The singleton
+    fallback is retained for standalone operations (metadata resolution,
+    profile building) that are not part of a discovery batch.
+    """
+    if client is not None:
+        return client
+    return ProviderRuntime.get().client(OPENALEX_PROVIDER)
+
+
+def search_openalex(
+    query: str,
+    domain_id: str | None = None,
+    limit: int = 25,
+    *,
+    client: ProviderClient | None = None,
+) -> list[PaperCandidate]:
+    credentials = load_openalex_credentials()
+    logger.debug(credentials.safe_summary())
+    spec = RequestSpec(
+        provider=OPENALEX_PROVIDER,
+        purpose="metadata_resolution",
+        url=OPENALEX_WORKS_URL,
+        params=_params(query, limit, credentials),
+        headers=_headers(credentials),
+        timeout_seconds=20,
+    )
     try:
-        credentials = load_openalex_credentials()
-        logger.debug(credentials.safe_summary())
-        response = requests.get(
-            OPENALEX_WORKS_URL,
-            params=_params(query, limit, credentials),
-            headers=_headers(credentials),
-            timeout=20,
-            proxies=get_fetch_proxies(),
-        )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        safe_error = safe_request_error_summary(exc)
-        logger.warning("OpenAlex search failed for {!r}: {}", query, safe_error)
+        outcome = _runtime_client(client).execute(spec)
+        data = outcome.json()
+    except ProviderRequestBudgetExhausted:
+        # This is a clean batch valve, never a provider failure page.
+        raise
+    except ProviderError as exc:
+        logger.warning("OpenAlex search failed for {!r}: {}", query, type(exc).__name__)
         return []
     return [
         parse_openalex_work(work, query=query, domain_id=domain_id)
@@ -135,32 +168,34 @@ def _page_params(
 
 
 def search_openalex_page(
-    query: str,
-    *,
-    keyword_zh: str,
-    query_id: str = "",
-    query_language: str = "",
-    lane: Literal["refresh", "backfill"],
-    page_size: int,
-    cursor: str = "*",
-    sort: str | None = None,
-    topic_filter: str = "",
-    from_date: str = "",
-    to_date: str = "",
-    rate_limiter: Any | None = None,
-    limiter_lock: Any | None = None,
-    request_observer: Any | None = None,
+    lane_spec: LaneExecutionSpec,
+    cursor: str,
+    client: ProviderClient,
 ) -> DiscoveryPage:
     """Fetch one OpenAlex works page via cursor pagination.
 
-    - Refresh lane: caller passes ``cursor="*"`` (first page).
-    - Backfill lane: caller passes the saved cursor.
+    The immutable execution spec is the sole request identity.  This adapter
+    accepts no loose query/filter/generation parameters and cannot silently
+    fall back to a process-global client during a discovery batch.
 
-    On HTTP failure the returned page has ``status="failed"`` and
-    ``next_cursor=None`` so the caller does NOT advance the backfill
-    cursor. On success with a null/empty ``next_cursor`` the page is
-    marked ``exhausted=True``.
+    All HTTP goes through the unified :class:`ProviderClient` (limiter,
+    retry, backoff, circuit breaker, telemetry).  On provider failure the
+    returned page has ``status="failed"`` and ``next_cursor=None`` so the
+    caller does NOT advance the backfill cursor. On success with a
+    null/empty ``next_cursor`` the page is marked ``exhausted=True``.
+
     """
+    if lane_spec.key.provider != OPENALEX_PROVIDER:
+        raise ValueError("search_openalex_page requires an OpenAlex LaneExecutionSpec")
+    query = lane_spec.query
+    keyword_zh = lane_spec.keyword_zh
+    query_id = lane_spec.key.query_id
+    query_language = lane_spec.query_language
+    lane = lane_spec.key.mode
+    stable_lane_id = lane_spec.key.stable_id()
+    page_size = lane_spec.page_size
+    sort = lane_spec.sort or None
+    topic_filter = lane_spec.topic_filter
     credentials = load_openalex_credentials()
     if sort and "relevance" + "_score:" in sort and not str(query or "").strip():
         raise ValueError("OpenAlex relevance" + "_score sort requires a non-empty search query")
@@ -173,49 +208,28 @@ def search_openalex_page(
         if any(token.strip() not in allowed_sorts for token in sort.split(",")):
             raise ValueError(f"invalid OpenAlex sort: {sort!r}")
     params = _page_params(query, page_size, cursor, credentials, combined_filter=topic_filter)
-    # ── Apply time window to actual request filter ──────────────────
-    date_filters: list[str] = []
-    if from_date:
-        date_filters.append(f"from_publication_date:{from_date}")
-    if to_date:
-        date_filters.append(f"to_publication_date:{to_date}")
-    if date_filters:
-        existing_filter = params.get("filter", "")
-        params["filter"] = (
-            existing_filter + "," + ",".join(date_filters)
-            if existing_filter else ",".join(date_filters)
-        )
     if sort:
         params["sort"] = sort
 
-    lock_ctx = limiter_lock if limiter_lock is not None else nullcontext()
+    spec = RequestSpec(
+        provider=OPENALEX_PROVIDER,
+        purpose="discovery_page",
+        url=OPENALEX_WORKS_URL,
+        params=params,
+        headers=_headers(credentials),
+        timeout_seconds=20,
+        telemetry_tags={
+            "lane_id": stable_lane_id,
+            "query_id": query_id,
+            "keyword_id": lane_spec.key.keyword_id,
+            "mode": lane,
+        },
+    )
     try:
-        if rate_limiter is not None:
-            with lock_ctx:
-                rate_limiter.wait(OPENALEX_PROVIDER)
-        response = requests.get(
-            OPENALEX_WORKS_URL,
-            params=params,
-            headers=_headers(credentials),
-            timeout=20,
-            proxies=get_fetch_proxies(),
-        )
-        if rate_limiter is not None:
-            with lock_ctx:
-                rate_limiter.record_response(
-                    OPENALEX_PROVIDER,
-                    dict(response.headers),
-                    response.status_code,
-                )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        safe_error = safe_request_error_summary(exc)
-        logger.warning(
-            "OpenAlex page failed for {!r} (cursor={!r}): {}",
-            query, cursor, safe_error,
-        )
-        _error_type, failure_class, http_status, retry_after = classify_http_error(exc)
+        outcome = client.execute(spec)
+        data = outcome.json()
+    except ProviderProtocolError as exc:
+        logger.warning("OpenAlex page protocol error for {!r}: {}", query, exc)
         return failed_page(
             provider=OPENALEX_PROVIDER,
             keyword_zh=keyword_zh,
@@ -225,42 +239,37 @@ def search_openalex_page(
             lane=lane,
             request_cursor=cursor,
             page_size=page_size,
-            error_type=_error_type,
+            error_type="protocol_error",
+            safe_error=str(exc)[:200],
+            failure_class="retryable",
+        )
+    except ProviderRequestBudgetExhausted:
+        raise
+    except ProviderError as exc:
+        safe_error = f"{type(exc).__name__}: {exc}"[:200]
+        logger.warning(
+            "OpenAlex page failed for {!r} (cursor={!r}): {}",
+            query, cursor, safe_error,
+        )
+        failure_class = "retryable" if exc.retryable else "terminal"
+        http_status = getattr(exc, "http_status", None)
+        retry_after = getattr(exc, "retry_after_seconds", None)
+        return failed_page(
+            provider=OPENALEX_PROVIDER,
+            keyword_zh=keyword_zh,
+            query_id=query_id,
+            query=query,
+            query_language=query_language,
+            lane=lane,
+            request_cursor=cursor,
+            page_size=page_size,
+            error_type=type(exc).__name__,
             safe_error=safe_error,
             failure_class=failure_class,
             http_status=http_status,
             retry_after_seconds=retry_after,
         )
-
-    # Evidence observation is deliberately outside the broad HTTP/JSON
-    # exception boundary.  A local observer bug is not a provider failure.
-    if request_observer is not None:
-        from src.discovery.provider_request_evidence import (
-            ActualRequestEvidence, RequestEvidenceError, build_safe_signature,
-            safe_response_hash,
-        )
-        evidence = ActualRequestEvidence(
-            safe_signature=build_safe_signature(
-                provider=OPENALEX_PROVIDER, query=query,
-                sort=sort or "", filter=params.get("filter", ""),
-                topic_filter=topic_filter, page_size=page_size, lane=lane,
-                pagination_schema_version="2.0",
-                time_window={"from": from_date, "to": to_date},
-            ),
-            cursor_in=cursor,
-            cursor_out=str(data.get("meta", {}).get("next_cursor") or ""),
-            response_hash=safe_response_hash(response.content),
-            observation_count=len(data.get("results", []) or []),
-            response_bytes=response.content,
-        )
-        try:
-            request_observer(evidence)
-        except RequestEvidenceError:
-            raise
-        except Exception as exc:
-            raise RequestEvidenceError(
-                f"OpenAlex request evidence observer failed: {type(exc).__name__}: {exc}"
-            ) from exc
+    response_body = outcome.body
 
     results = data.get("results", []) or []
     meta = data.get("meta") or {}
@@ -297,4 +306,17 @@ def search_openalex_page(
         total_results=total_results,
         status="success",
         exhausted=exhausted,
+        response_metadata={
+            "http_status": outcome.status_code,
+            "provider_request_id": next(
+                (str(value) for key, value in outcome.headers.items()
+                 if str(key).lower() in {"x-request-id", "x-amzn-requestid", "x-correlation-id"}),
+                None,
+            ),
+            "retry_after_observed": outcome.retry_after_observed,
+            "total_results": total_results,
+            "next_cursor_present": bool(next_cursor),
+            "response_fingerprint": hashlib.sha256(response_body).hexdigest()[:16],
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        },
     )

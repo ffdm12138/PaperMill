@@ -62,7 +62,7 @@ def _setup(tmp_path: Path):
     store.set_enabled("风沙动力学", True)
     nb = store.require_v3("风沙动力学")
     journal = PageJournalStore(pages)
-    page = journal.make_page(
+    page = journal.make_synthetic_page(
         page_id="old", keyword_id=nb["keyword_id"], keyword_zh=nb["keyword_zh"],
         query_id=query_identity("en", "aeolian dynamics"), query="aeolian dynamics",
         query_language="en", provider="crossref", lane="backfill", generation=41,

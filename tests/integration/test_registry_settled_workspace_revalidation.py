@@ -9,7 +9,7 @@ import pytest
 from src.discovery.keyword_notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
-from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
+from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.pending_queue import drain_pending_candidates
 from src.discovery.staging_context import DiscoveryStagingContext
 from src.library.paper_number_ledger import PaperNumberLedger
@@ -92,7 +92,7 @@ def test_hide_existing_defers_candidate_when_primary_is_damaged(
     (folder / f"{folder.name}.metadata.json").unlink()
     keyword_zh = "损坏主记录"
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="page-stale", keyword_id=keyword_id(keyword_zh),
         keyword_zh=keyword_zh, query_id=query_identity("zh", keyword_zh),
         query=keyword_zh, query_language="zh", provider="openalex",
@@ -104,15 +104,18 @@ def test_hide_existing_defers_candidate_when_primary_is_damaged(
     page["candidates"][0]["relevance"]["state"] = "passed"
     page_path = store.write_page(page)
 
-    from src.discovery.batch_runtime import (
+    from src.discovery.runtime.batch_runtime import (
         DiscoveryBatchRuntime, DiscoveryPipelineMetrics, RepairBacklog)
     from src.discovery.page_journal import JournalDrainIndex
     runtime = DiscoveryBatchRuntime(
-        context, JournalDrainIndex.build(
+        staging_context=context,
+        journal_index=JournalDrainIndex.build(
             store, active_profile_hashes={keyword_id(keyword_zh): PROFILE_HASH}),
-        DiscoveryPipelineMetrics(),
-        RepairBacklog(set(context.registry.repair_backlog_numbers)),
-        ActiveRelevanceProfiles.build({keyword_id(keyword_zh): PROFILE_HASH}))
+        metrics=DiscoveryPipelineMetrics(),
+        repair_backlog=RepairBacklog(set(context.registry.repair_backlog_numbers)),
+        active_relevance_profiles=ActiveRelevanceProfiles.build(
+            {keyword_id(keyword_zh): PROFILE_HASH}),
+    )
     report = drain_pending_candidates(
         journal=store, keyword_ids=[keyword_id(keyword_zh)], candidate_budget=1,
         stage_to_paper_raw=False, apply=False, hide_existing=True,

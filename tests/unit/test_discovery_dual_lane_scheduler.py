@@ -15,8 +15,12 @@ from src.discovery.coordinator import (
     DiscoveryOptions, _profile_filters, _profile_order, _profile_sort,
     run_discovery_batch,
 )
+from src.discovery.execution.lane_models import LaneExecutionSpec
 from src.discovery.models import PaperCandidate
 from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.providers.provider_client import ProviderClient
+from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
+from tests.helpers.fake_provider import discovery_page
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )
@@ -43,11 +47,10 @@ def _seed_ready(root: Path, *, page_size: int) -> KeywordNotebookStore:
     bind_test_relevance_profile(store, KEYWORD_ZH)
     store.set_enabled(KEYWORD_ZH, True)
     notebook = store.require_v3(KEYWORD_ZH)
-    options = DiscoveryOptions(page_size=page_size)
     for entry in notebook["search_queries"].values():
         for provider in ("openalex", "crossref"):
-            sort = _profile_sort(notebook, provider, "backfill", options)
-            order = _profile_order(notebook, "backfill") if provider == "crossref" else None
+            sort = _profile_sort(notebook, provider, "backfill")
+            order = _profile_order(notebook, provider, "backfill")
             signature = request_signature(
                 sort=sort,
                 filters=_profile_filters(notebook, provider, "backfill", sort, order),
@@ -68,18 +71,19 @@ class _FakePage:
     """Minimal stand-in for DiscoveryPage used by the scheduler."""
 
     def __init__(self, candidates, next_cursor, exhausted=False, status="success",
-                 safe_error=None, error_type=None, returned_count=None):
+                 safe_error=None, error_type=None, failure_class=None, returned_count=None):
         self.candidates = candidates
         self.next_cursor = next_cursor
         self.exhausted = exhausted
         self.status = status
         self.safe_error = safe_error
         self.error_type = error_type
+        self.failure_class = failure_class
         self.returned_count = returned_count if returned_count is not None else len(candidates)
 
 
 def _install_fake_fetch(monkeypatch, openalex_pages, crossref_pages):
-    """Route provider page calls through scripted page lists.
+    """Install one typed fake page fetcher for the official entry point.
 
     ``openalex_pages`` / ``crossref_pages`` are dicts keyed by cursor
     (or ``"*"`` for refresh) → _FakePage. Each scripted page is consumed
@@ -87,30 +91,36 @@ def _install_fake_fetch(monkeypatch, openalex_pages, crossref_pages):
     """
     calls: list[dict] = []
 
-    def _fake_openalex(query, *, keyword_zh, lane, page_size, cursor, sort=None,
-                       domain_id=None, rate_limiter=None, limiter_lock=None):
-        calls.append({"provider": "openalex", "lane": lane, "cursor": cursor})
-        pages = openalex_pages.get((lane, cursor))
-        if pages is None:
-            return _FakePage([], next_cursor=None, exhausted=True)
-        return pages
+    def _fetch(spec: LaneExecutionSpec, cursor: str, _client: ProviderClient):
+        calls.append({
+            "provider": spec.key.provider,
+            "lane": spec.key.mode,
+            "cursor": cursor,
+        })
+        pages = (
+            openalex_pages if spec.key.provider == "openalex" else crossref_pages
+        )
+        scripted = pages.get((spec.key.mode, cursor))
+        scenario = scripted or _FakePage([], next_cursor=None, exhausted=True)
+        return discovery_page(
+            provider=spec.key.provider,
+            keyword_zh=spec.keyword_zh,
+            query=spec.query,
+            lane=spec.key.mode,
+            cursor=cursor,
+            query_id=spec.key.query_id,
+            query_language=spec.query_language,
+            candidates=scenario.candidates,
+            next_cursor=scenario.next_cursor,
+            exhausted=scenario.exhausted,
+            status=scenario.status,
+            safe_error=scenario.safe_error,
+            error_type=scenario.error_type,
+            failure_class=scenario.failure_class,
+        )
 
-    def _fake_crossref(query, *, keyword_zh, lane, page_size, cursor, sort=None,
-                       order=None, domain_id=None, rate_limiter=None, limiter_lock=None):
-        calls.append({"provider": "crossref", "lane": lane, "cursor": cursor})
-        pages = crossref_pages.get((lane, cursor))
-        if pages is None:
-            return _FakePage([], next_cursor=None, exhausted=True)
-        return pages
-
-    def _fetch(provider, query, **kwargs):
-        if provider == "openalex":
-            return _fake_openalex(query, **kwargs)
-        if provider == "crossref":
-            return _fake_crossref(query, **kwargs)
-        raise AssertionError(f"unexpected provider: {provider}")
-
-    monkeypatch.setattr("src.discovery.coordinator._default_fetch_page", _fetch)
+    fetcher = CallbackProviderPageFetcher(_fetch)
+    monkeypatch.setattr("src.discovery.coordinator.ProviderPageFetcher", lambda: fetcher)
     return calls
 
 
@@ -150,7 +160,7 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
 
 class TestDualLaneScheduling:
     def test_hybrid_runs_both_refresh_and_backfill(self, monkeypatch, tmp_path: Path):
-        _seed_ready(tmp_path, page_size=10)
+        store = _seed_ready(tmp_path, page_size=10)
         calls = _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -179,7 +189,7 @@ class TestDualLaneScheduling:
     def test_refresh_always_starts_from_star(self, monkeypatch, tmp_path: Path):
         store = _seed_ready(tmp_path, page_size=10)
         # Advance backfill cursor so refresh could (incorrectly) pick it up.
-        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="DEEP", items_this_page=5)
+        store.commit_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex", expected_cursor="*", next_cursor="DEEP", committed_page_id="test-page", items_this_page=5, exhausted=False)
         calls = _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -197,17 +207,31 @@ class TestDualLaneScheduling:
 
     def test_backfill_resumes_from_saved_cursor(self, monkeypatch, tmp_path: Path):
         store = _seed_ready(tmp_path, page_size=10)
-        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="RESUME_HERE", items_this_page=5)
+        # First run creates the durable v3 page and cursor receipt.  A raw
+        # notebook cursor without its committed durable page is intentionally
+        # repair-required and must not be used as a resume fixture.
+        _install_fake_fetch(
+            monkeypatch,
+            openalex_pages={
+                ("backfill", INITIAL_CURSOR): _FakePage(
+                    [_cand("10.1/seed")], next_cursor="RESUME_HERE",
+                ),
+            },
+            crossref_pages={},
+        )
+        _run_discovery(
+            KEYWORD_ZH, mode="backfill", refresh_pages=1, backfill_pages=1,
+            page_size=10, notebook_dir=tmp_path,
+        )
         calls = _install_fake_fetch(
             monkeypatch,
             openalex_pages={
-                ("refresh", INITIAL_CURSOR): _FakePage([], next_cursor=None, exhausted=True),
                 ("backfill", "RESUME_HERE"): _FakePage([_cand("10.1/x")], next_cursor="RESUME2"),
             },
             crossref_pages={},
         )
         _run_discovery(
-            KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
+            KEYWORD_ZH, mode="backfill", refresh_pages=1, backfill_pages=1,
             page_size=10, notebook_dir=tmp_path,
         )
         backfill_calls = [c for c in calls if c["lane"] == "backfill" and c["provider"] == "openalex"]
@@ -217,7 +241,7 @@ class TestDualLaneScheduling:
 
     def test_refresh_failure_does_not_reset_backfill_cursor(self, monkeypatch, tmp_path: Path):
         store = _seed_ready(tmp_path, page_size=10)
-        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="KEEPME", items_this_page=5)
+        store.commit_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex", expected_cursor="*", next_cursor="KEEPME", committed_page_id="test-page", items_this_page=5, exhausted=False)
         _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -234,7 +258,7 @@ class TestDualLaneScheduling:
 
     def test_backfill_failure_does_not_advance_cursor(self, monkeypatch, tmp_path: Path):
         store = _seed_ready(tmp_path, page_size=10)
-        store.advance_backfill(KEYWORD_ZH, ZH_QUERY_ID, "openalex", next_cursor="BEFORE_FAIL", items_this_page=5)
+        store.commit_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex", expected_cursor="*", next_cursor="BEFORE_FAIL", committed_page_id="test-page", items_this_page=5, exhausted=False)
         _install_fake_fetch(
             monkeypatch,
             openalex_pages={

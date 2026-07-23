@@ -46,19 +46,28 @@ def test_scihub_never_in_any_access_mode():
 
 
 def test_discovery_resolve_crossref_uses_proxy():
-    """resolve_crossref 的 3 处 requests.get 都必须传 proxies。"""
+    """resolve_crossref HTTP now goes through the unified ProviderClient; the
+    shared proxy is wired on RequestsTransport in provider_client (not per
+    module).  Asserts the module has no direct requests/proxy usage and that
+    the transport carries the proxy."""
     src = (ROOT / "src" / "discovery" / "resolve_crossref.py").read_text(encoding="utf-8")
-    assert "from src.fetch.proxy import get_fetch_proxies" in src
-    assert "proxies=get_fetch_proxies()" in src
-    # 3 处请求
-    assert src.count("proxies=get_fetch_proxies()") >= 3
+    assert "from src.fetch.proxy import get_fetch_proxies" not in src
+    assert "proxies=get_fetch_proxies()" not in src
+    assert "import requests" not in src
+    transport_src = (ROOT / "src" / "discovery" / "provider_client.py").read_text(encoding="utf-8")
+    assert "from src.fetch.proxy import get_fetch_proxies" in transport_src
+    assert "RequestsTransport(proxies=get_fetch_proxies())" in transport_src
 
 
 def test_discovery_search_openalex_uses_proxy():
-    """search_openalex 的 requests.get 必须传 proxies。"""
+    """search_openalex HTTP goes through the unified ProviderClient; the
+    shared proxy lives on RequestsTransport in provider_client."""
     src = (ROOT / "src" / "discovery" / "search_openalex.py").read_text(encoding="utf-8")
-    assert "from src.fetch.proxy import get_fetch_proxies" in src
-    assert "proxies=get_fetch_proxies()" in src
+    assert "from src.fetch.proxy import get_fetch_proxies" not in src
+    assert "proxies=get_fetch_proxies()" not in src
+    assert "import requests" not in src
+    transport_src = (ROOT / "src" / "discovery" / "provider_client.py").read_text(encoding="utf-8")
+    assert "RequestsTransport(proxies=get_fetch_proxies())" in transport_src
 
 
 def test_metadata_resolver_uses_proxy():

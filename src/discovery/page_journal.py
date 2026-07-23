@@ -27,6 +27,13 @@ from src.discovery.keyword_notebook import (
     normalize_keyword,
     query_identity,
 )
+from src.discovery.execution.lane_models import (
+    DiscoveryLaneKey,
+    DurableProviderPage,
+    ExhaustionEvidence,
+    ProviderResponseMetadata,
+    RequestSignature,
+)
 from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
 from src.discovery.relevance import (
     RELEVANCE_REASON_VALUES,
@@ -40,17 +47,19 @@ from src.utils.atomic_io import atomic_replace_bytes_unlocked
 from src.discovery.constants import INITIAL_CURSOR
 
 
-PAGE_SCHEMA_VERSION = "2.0"
+PAGE_SCHEMA_VERSION = "4.0"
 
-# ── Exact field set for v2 page journals ───────────────────────────
-# ALL_V2_FIELDS is used to reject unknown fields.
-# REQUIRED_V2_FIELDS (a subset) is used to reject missing critical fields.
-PAGE_V2_FIELDS: frozenset[str] = frozenset({
+# The v4 journal is the active provider-page format.  V4 adds 'checksum'
+# and 'lane_key' typed fields vs v3.  Old PAGE_V3_FIELDS retained for
+# compatibility with legacy page journals that predate checksum support.
+# See contracts/page_journal.py for the strict canonical PAGE_V4_FIELDS.
+PAGE_V3_FIELDS: frozenset[str] = frozenset({
     "schema_version", "page_id", "keyword_id", "keyword_zh",
     "query_id", "query", "query_language", "provider", "lane",
     "generation", "request_signature",
     "request_cursor", "next_cursor",
-    "provider_exhausted", "state",
+    "provider_exhausted", "returned_count", "lane_key",
+    "response_metadata", "exhaustion_evidence", "state",
     "fetched_at", "cursor_committed_at", "drained_at",
     "candidates", "statistics",
     "refresh_run_id", "page_sequence",
@@ -243,19 +252,20 @@ def request_signature(
     page_size: int,
     pagination_schema_version: str = "2.0",
 ) -> dict[str, Any]:
-    return {
-        "sort": sort or "",
-        "filters": filters or {},
-        "page_size": int(page_size),
-        "pagination_schema_version": pagination_schema_version,
-        "hash": stable_hash(
-            sort or "",
-            json.dumps(filters or {}, ensure_ascii=False, sort_keys=True),
-            int(page_size),
-            pagination_schema_version,
-            length=16,
-        ),
-    }
+    """Return the canonical complete request signature dictionary.
+
+    ``RequestSignature`` is the single authority for the digest and exact
+    field set.  The journal keeps this small dict representation solely for
+    JSON persistence.
+    """
+    from src.discovery.execution.lane_models import RequestSignature
+
+    return RequestSignature.create(
+        sort=sort,
+        filters=filters,
+        page_size=page_size,
+        pagination_schema_version=pagination_schema_version,
+    ).to_dict()
 
 
 def backfill_page_id(
@@ -387,13 +397,13 @@ def _atomic_write_json_unlocked(path: Path, data: dict[str, Any]) -> None:
 
 
 def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
-    """Strictly validate one active schema-v2 provider-page journal."""
+    """Strictly validate one active complete schema-v3 provider-page journal."""
     if not isinstance(data, dict):
         raise JournalCorruptError(f"journal root is not object: {path or ''}")
-    missing = sorted(PAGE_V2_FIELDS - set(data))
+    missing = sorted(PAGE_V3_FIELDS - set(data))
     if missing:
         raise JournalCorruptError(f"journal missing keys {missing}: {path or ''}")
-    unexpected = sorted(set(data) - PAGE_V2_FIELDS)
+    unexpected = sorted(set(data) - PAGE_V3_FIELDS)
     if unexpected:
         raise JournalCorruptError(f"journal contains unexpected fields {unexpected}: {path or ''}")
     if data.get("schema_version") != PAGE_SCHEMA_VERSION:
@@ -430,36 +440,76 @@ def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
     signature = data.get("request_signature")
     if not isinstance(signature, dict):
         raise JournalCorruptError(f"journal request_signature must be object: {path or ''}")
-    signature_required = {
-        "sort", "filters", "page_size", "pagination_schema_version", "hash",
-    }
-    if not signature_required.issubset(signature):
-        raise JournalCorruptError(f"journal request_signature is incomplete: {path or ''}")
-    if not isinstance(signature.get("filters"), dict):
-        raise JournalCorruptError(f"journal request_signature.filters must be object: {path or ''}")
     try:
-        expected_signature = request_signature(
-            sort=str(signature.get("sort") or ""),
-            filters=signature.get("filters"),
-            page_size=int(signature["page_size"]),
-            pagination_schema_version=str(signature["pagination_schema_version"]),
-        )
+        typed_signature = RequestSignature.from_dict_strict(signature)
     except (TypeError, ValueError) as exc:
         raise JournalCorruptError(f"journal request_signature is invalid: {path or ''}") from exc
-    if signature != expected_signature:
+    if signature != typed_signature.to_dict():
         raise JournalCorruptError(f"journal request_signature hash/content mismatch: {path or ''}")
-    if data.get("request_cursor") is not None and not isinstance(data.get("request_cursor"), str):
-        raise JournalCorruptError(f"journal request_cursor must be string or null: {path or ''}")
+    lane_key_data = data.get("lane_key")
+    if not isinstance(lane_key_data, dict):
+        raise JournalCorruptError(f"journal lane_key must be object: {path or ''}")
+    try:
+        lane_key = DiscoveryLaneKey.from_dict_strict(lane_key_data)
+    except (TypeError, ValueError) as exc:
+        raise JournalCorruptError(f"journal lane_key is invalid: {path or ''}") from exc
+    expected_lane_key = {
+        "keyword_id": data["keyword_id"],
+        "query_id": data["query_id"],
+        "provider": data["provider"],
+        "mode": data["lane"],
+        "generation": generation,
+        "request_signature": typed_signature.hash,
+    }
+    if lane_key.to_dict() != expected_lane_key:
+        raise JournalCorruptError(f"journal lane_key does not match page identity: {path or ''}")
+    if not isinstance(data.get("request_cursor"), str):
+        raise JournalCorruptError(
+            f"journal request_cursor must be a concrete string: {path or ''}"
+        )
     if data.get("next_cursor") is not None and not isinstance(data.get("next_cursor"), str):
         raise JournalCorruptError(f"journal next_cursor must be string or null: {path or ''}")
     if not isinstance(data.get("provider_exhausted"), bool):
         raise JournalCorruptError(f"journal provider_exhausted must be boolean: {path or ''}")
+    returned_count = data.get("returned_count")
+    if isinstance(returned_count, bool) or not isinstance(returned_count, int) or returned_count < 0:
+        raise JournalCorruptError(f"journal returned_count must be a non-negative integer: {path or ''}")
+    response_metadata = data.get("response_metadata")
+    if not isinstance(response_metadata, dict):
+        raise JournalCorruptError(f"journal response_metadata must be object: {path or ''}")
+    try:
+        typed_metadata = ProviderResponseMetadata.from_dict_strict(response_metadata)
+    except (TypeError, ValueError) as exc:
+        raise JournalCorruptError(f"journal response_metadata is incomplete or invalid: {path or ''}") from exc
+    if typed_metadata.next_cursor_present != bool(data.get("next_cursor")):
+        raise JournalCorruptError(f"journal response_metadata next_cursor mismatch: {path or ''}")
+    evidence_data = data.get("exhaustion_evidence")
+    if data["provider_exhausted"]:
+        if not isinstance(evidence_data, dict):
+            raise JournalCorruptError(f"exhausted journal lacks durable exhaustion_evidence: {path or ''}")
+        try:
+            evidence = ExhaustionEvidence.from_dict_strict(evidence_data)
+        except (TypeError, ValueError) as exc:
+            raise JournalCorruptError(f"journal exhaustion_evidence is invalid: {path or ''}") from exc
+        if (
+            evidence.provider != data["provider"]
+            or evidence.query_id != data["query_id"]
+            or evidence.request_signature != typed_signature.hash
+            or evidence.generation != generation
+            or evidence.cursor_before != data["request_cursor"]
+            or evidence.response_metadata != typed_metadata
+        ):
+            raise JournalCorruptError(f"journal exhaustion_evidence does not bind page identity: {path or ''}")
+    elif evidence_data is not None:
+        raise JournalCorruptError(f"non-exhausted journal must not carry exhaustion_evidence: {path or ''}")
     for field_name in ("fetched_at", "cursor_committed_at", "drained_at"):
         value = data.get(field_name)
         if value is not None and not isinstance(value, str):
             raise JournalCorruptError(f"journal {field_name} must be string or null: {path or ''}")
     if not isinstance(data.get("candidates"), list):
         raise JournalCorruptError(f"journal candidates must be list: {path or ''}")
+    if returned_count != len(data["candidates"]):
+        raise JournalCorruptError(f"journal returned_count does not match candidates: {path or ''}")
     seen_candidate_ids: set[str] = set()
     for item in data["candidates"]:
         if not isinstance(item, dict) or not isinstance(item.get("candidate_id"), str) or not item.get("candidate_id"):
@@ -1325,10 +1375,13 @@ class PageJournalStore:
         query_language: str,
         provider: str,
         lane: PageLane,
+        lane_key: DiscoveryLaneKey,
         request_signature_value: dict[str, Any],
         request_cursor: str | None,
         next_cursor: str | None,
         provider_exhausted: bool,
+        response_metadata: ProviderResponseMetadata,
+        exhaustion_evidence: ExhaustionEvidence | None,
         candidates: list[PaperCandidate],
         generation: int = 1,
         refresh_run_id: str | None = None,
@@ -1343,6 +1396,21 @@ class PageJournalStore:
             )
             for idx, cand in enumerate(candidates)
         ]
+        if request_cursor is None:
+            raise ValueError("durable provider pages require a concrete request_cursor")
+        if lane_key.to_dict() != {
+            "keyword_id": keyword_id,
+            "query_id": query_id,
+            "provider": provider,
+            "mode": lane,
+            "generation": int(generation),
+            "request_signature": str(request_signature_value.get("hash") or ""),
+        }:
+            raise ValueError("lane_key does not match durable page identity")
+        if provider_exhausted and exhaustion_evidence is None:
+            raise ValueError("exhausted durable provider page requires exhaustion_evidence")
+        if not provider_exhausted and exhaustion_evidence is not None:
+            raise ValueError("non-exhausted durable provider page must not carry exhaustion_evidence")
         return {
             "schema_version": PAGE_SCHEMA_VERSION,
             "page_id": page_id,
@@ -1354,12 +1422,18 @@ class PageJournalStore:
             "provider": provider,
             "lane": lane,
             "generation": int(generation),
+            "lane_key": lane_key.to_dict(),
             "refresh_run_id": refresh_run_id,
             "page_sequence": page_sequence,
             "request_signature": request_signature_value,
             "request_cursor": request_cursor,
             "next_cursor": next_cursor,
             "provider_exhausted": bool(provider_exhausted),
+            "returned_count": len(records),
+            "response_metadata": response_metadata.to_dict(),
+            "exhaustion_evidence": (
+                None if exhaustion_evidence is None else exhaustion_evidence.to_dict()
+            ),
             "state": state,
             "fetched_at": now,
             "cursor_committed_at": now if state == "cursor_committed" else None,
@@ -1367,6 +1441,89 @@ class PageJournalStore:
             "candidates": records,
             "statistics": _statistics(records),
         }
+
+    def make_synthetic_page(self, **kwargs: Any) -> dict[str, Any]:
+        """Build a complete v3 page for an isolated test fixture.
+
+        Production code must call :meth:`make_page` with the real response
+        metadata supplied by ``ProviderPageFetcher``.  Tests sometimes need a
+        durable page without making a provider request; this explicit helper
+        creates *synthetic but complete* evidence rather than reviving the
+        removed v2/hash-only journal shape.  No runtime path calls it.
+        """
+        values = dict(kwargs)
+        page_id = str(values["page_id"])
+        keyword_id_value = str(values["keyword_id"])
+        query_id_value = str(values["query_id"])
+        provider = str(values["provider"])
+        lane = str(values["lane"])
+        generation = int(values.get("generation", 1))
+        signature_value = values.get("request_signature_value")
+        if signature_value is None:
+            signature_value = request_signature(page_size=50)
+        if not isinstance(signature_value, dict):
+            raise TypeError("synthetic request_signature_value must be object")
+        signature = RequestSignature.from_dict_strict(signature_value)
+        values["request_signature_value"] = signature.to_dict()
+        values.setdefault("generation", generation)
+        # Older test fixtures commonly expressed the first request as None.
+        # The synthetic helper turns that into the explicit durable sentinel;
+        # production pages remain strict and never receive this normalization.
+        if values.get("request_cursor") is None:
+            values["request_cursor"] = INITIAL_CURSOR
+        values.setdefault(
+            "lane_key",
+            DiscoveryLaneKey(
+                keyword_id=keyword_id_value,
+                query_id=query_id_value,
+                provider=provider,  # type: ignore[arg-type]
+                mode=lane,  # type: ignore[arg-type]
+                generation=generation,
+                request_signature=signature.hash,
+            ),
+        )
+        candidates = values.get("candidates") or []
+        metadata_value = values.get("response_metadata")
+        if metadata_value is None:
+            metadata = ProviderResponseMetadata(
+                http_status=200,
+                total_results=len(candidates),
+                next_cursor_present=values.get("next_cursor") is not None,
+                response_fingerprint=stable_hash(
+                    "synthetic-provider-page",
+                    page_id,
+                    signature.hash,
+                    values.get("request_cursor"),
+                    values.get("next_cursor"),
+                    len(candidates),
+                    length=64,
+                ),
+                observed_at=now_iso(),
+            )
+        elif isinstance(metadata_value, ProviderResponseMetadata):
+            metadata = metadata_value
+        elif isinstance(metadata_value, Mapping):
+            metadata = ProviderResponseMetadata.from_dict_strict(metadata_value)
+        else:
+            raise TypeError("synthetic response_metadata must be metadata object")
+        values["response_metadata"] = metadata
+        exhausted = bool(values.get("provider_exhausted", False))
+        evidence_value = values.get("exhaustion_evidence")
+        if exhausted and evidence_value is None:
+            values["exhaustion_evidence"] = ExhaustionEvidence(
+                provider=provider,
+                query_id=query_id_value,
+                request_signature=signature.hash,
+                generation=generation,
+                cursor_before=str(values["request_cursor"]),
+                response_metadata=metadata,
+                observed_at=metadata.observed_at,
+            )
+        elif isinstance(evidence_value, Mapping):
+            values["exhaustion_evidence"] = ExhaustionEvidence.from_dict_strict(evidence_value)
+        elif evidence_value is None:
+            values["exhaustion_evidence"] = None
+        return self.make_page(**values)
 
     def transition_page(self, path: Path, new_state: PageState) -> dict[str, Any]:
         with self.lock_for(path):

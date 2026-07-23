@@ -12,6 +12,7 @@ import hashlib
 import os
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from enum import Enum
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -30,14 +31,27 @@ from src.discovery.page_journal import (
     stable_hash,
     title_resolution_key,
 )
-from src.discovery.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
-from src.discovery.resolve_crossref import resolve_doi_match_by_title
+from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
+from src.discovery.runtime.budgets import BatchDoiResolutionBudget
+from src.discovery.providers.provider_errors import ProviderRequestBudgetExhausted
+from src.discovery.title_resolution import DurableTitleCache, TitleResolutionService
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.network_metadata_staging import stage_network_metadata_records
 
 
 DISCOVERY_LEASE_SECONDS = 300
 DISCOVERY_LOCK_TIMEOUT = 30
+
+
+class DrainOutcome(str, Enum):
+    """Terminal result of one consumer/final-drain invocation."""
+
+    COMPLETED = "completed"
+    BUDGET_STOPPED = "budget_stopped"
+    RETRYABLE_FAILED = "retryable_failed"
+    PERMANENT_FAILED = "permanent_failed"
+    REPAIR_REQUIRED = "repair_required"
+    INTERRUPTED = "interrupted"
 
 
 @dataclass
@@ -57,12 +71,78 @@ class DrainReport:
     planned: int = 0
     backpressure: bool = False
     errors: list[str] = field(default_factory=list)
+    outcome: DrainOutcome = DrainOutcome.COMPLETED
+    stop_reason: str | None = None
 
     @property
     def status(self) -> str:
+        """Derive keyword-facing status from typed drain outcome.
+
+        v98: no generic FAILED; every drain has a specific typed outcome.
+        """
+        if self.outcome == DrainOutcome.BUDGET_STOPPED:
+            return DrainOutcome.BUDGET_STOPPED.value
+        if self.outcome == DrainOutcome.REPAIR_REQUIRED:
+            return "repair_required"
+        if self.outcome == DrainOutcome.INTERRUPTED:
+            return "interrupted"
+        if self.outcome in {DrainOutcome.RETRYABLE_FAILED, DrainOutcome.PERMANENT_FAILED}:
+            return "partial_success" if self.processed else "failed"
         if self.errors or self.retryable_failures or self.terminal_failures:
             return "partial_success" if self.processed else "failed"
         return "success"
+
+    @classmethod
+    def failed(cls, exc: Exception, *, phase: str) -> "DrainReport":
+        """Legacy generic failure — maps to retryable.
+
+        v98: prefer typed constructors (retryable_failed, permanent_failed,
+        repair_required, interrupted). This method exists only for backward
+        compatibility during migration.
+        """
+        return cls(
+            retryable_failures=1,
+            errors=[f"{phase}_drain_failed:{type(exc).__name__}:{str(exc)[:400]}"],
+            outcome=DrainOutcome.RETRYABLE_FAILED,
+        )
+
+    @classmethod
+    def retryable_failed(cls, exc: Exception, *, phase: str) -> "DrainReport":
+        """Typed retryable drain failure."""
+        return cls(
+            retryable_failures=1,
+            errors=[f"{phase}_drain_retryable:{type(exc).__name__}:{str(exc)[:400]}"],
+            outcome=DrainOutcome.RETRYABLE_FAILED,
+        )
+
+    @classmethod
+    def permanent_failed(cls, exc: Exception, *, phase: str) -> "DrainReport":
+        """Typed permanent (terminal) drain failure."""
+        return cls(
+            terminal_failures=1,
+            errors=[f"{phase}_drain_permanent:{type(exc).__name__}:{str(exc)[:400]}"],
+            outcome=DrainOutcome.PERMANENT_FAILED,
+        )
+
+    @classmethod
+    def repair_required(cls, reason: str) -> "DrainReport":
+        """Local consistency error requiring repair."""
+        return cls(
+            errors=[reason],
+            outcome=DrainOutcome.REPAIR_REQUIRED,
+        )
+
+    @classmethod
+    def interrupted(cls, reason: str = "user interrupted") -> "DrainReport":
+        """User interrupted drain."""
+        return cls(
+            errors=[reason],
+            outcome=DrainOutcome.INTERRUPTED,
+        )
+
+    @classmethod
+    def budget_stopped(cls, *, reason: str) -> "DrainReport":
+        return cls(outcome=DrainOutcome.BUDGET_STOPPED, stop_reason=reason)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +161,8 @@ class DrainReport:
             "planned": self.planned,
             "backpressure": self.backpressure,
             "errors": list(self.errors),
+            "outcome": self.outcome.value,
+            "stop_reason": self.stop_reason,
             "status": self.status,
         }
 
@@ -363,17 +445,25 @@ def _inspect_emitted_primary_export_cached(
     return result
 
 
-def _resolve_missing_doi(candidate: PaperCandidate, budget_left: int) -> tuple[PaperCandidate, int, bool]:
-    if candidate.doi or budget_left <= 0 or not candidate.title:
-        return candidate, budget_left, False
-    match = resolve_doi_match_by_title(candidate.title, year=candidate.year, domain_id=candidate.domain_id)
-    budget_left -= 1
+def _resolve_missing_doi_with_service(
+    candidate: PaperCandidate,
+    service: Any,
+) -> tuple[PaperCandidate, bool]:
+    """Resolve a DOI through the batch-level TitleResolutionService.
+
+    The service owns the batch budget, in-batch dedup, durable cache, and
+    the shared Crossref limiter (via the unified ProviderClient).  It never
+    raises for provider failures; unresolved candidates stay unresolved.
+    """
+    if candidate.doi or not candidate.title:
+        return candidate, False
+    match = service.resolve(candidate.title, year=candidate.year, domain_id=candidate.domain_id)
     if match and match.doi:
         candidate.doi = match.doi
         candidate.doi_resolution = match.to_dict()
         candidate.raw.setdefault("crossref_resolution", match.to_dict())
-        return candidate, budget_left, True
-    return candidate, budget_left, False
+        return candidate, True
+    return candidate, False
 
 
 def _drain_staging_candidate_batches(
@@ -409,7 +499,10 @@ def _drain_staging_candidate_batches(
         report.errors.append("registry_configuration_failed:missing_staging_context")
         return report
 
-    remaining_resolution_budget = doi_resolution_budget
+    # The public drain entry creates this service when necessary; staging is
+    # never permitted to fall back to an unscoped direct resolver.
+    title_service = runtime.title_resolution_service
+    assert title_service is not None
     drain_generation = f"drain-{worker_id}-{datetime.now(timezone.utc).timestamp():.6f}"
     attempted_candidate_ids: set[str] = set()
     claimed_total = 0
@@ -490,9 +583,12 @@ def _drain_staging_candidate_batches(
             try:
                 if not candidate.doi:
                     with _lock(_resolution_lock_path(locks_dir, current)):
-                        candidate, remaining_resolution_budget, _resolved = _resolve_missing_doi(
-                            candidate, remaining_resolution_budget)
+                        candidate, _resolved = _resolve_missing_doi_with_service(
+                            candidate, title_service,
+                        )
                 doi = normalize_doi(candidate.doi)
+            except ProviderRequestBudgetExhausted:
+                raise
             except Exception as exc:
                 set_outcome(
                     outcomes,
@@ -677,6 +773,8 @@ def _drain_staging_candidate_batches(
                                 },
                                 counter="terminal_failures",
                             )
+        except ProviderRequestBudgetExhausted:
+            raise
         except Exception as exc:
             detail = f"{type(exc).__name__}:{exc}"
             report.errors.append(detail)
@@ -817,6 +915,8 @@ def drain_pending_candidates(
                 journal=journal, paper_raw_dir=paper_raw_dir, papers_dir=papers_dir,
                 ledger_path=ledger_path, needs_staging=bool(stage_to_paper_raw or hide_existing),
                 active_relevance_profiles=active_profiles)
+        except ProviderRequestBudgetExhausted:
+            raise
         except Exception as exc:
             index = JournalDrainIndex.build(
                 journal, active_profile_hashes=active_profiles.by_keyword_id,
@@ -842,6 +942,22 @@ def drain_pending_candidates(
                 failed.retryable_failures += len(claims)
             failed.errors.append(reason)
             return failed
+
+    # ``drain_pending_candidates`` is also a public entry point.  Give an
+    # externally created runtime the same batch-bound title resolver as the
+    # coordinator instead of reviving the retired direct
+    # ``ProviderRuntime.client()`` fallback.  Every title request now shares
+    # this runtime's telemetry and request budget.
+    if runtime.title_resolution_service is None:
+        title_budget = runtime.doi_resolution_budget
+        if title_budget is None:
+            title_budget = BatchDoiResolutionBudget(limit=max(0, int(doi_resolution_budget)))
+            runtime.doi_resolution_budget = title_budget
+        runtime.title_resolution_service = TitleResolutionService(
+            client=runtime.provider_client("crossref"),
+            budget=title_budget,
+            cache=DurableTitleCache(None),
+        )
     journal_index = runtime.journal_index
     report = DrainReport(before=journal_index.pending_count(keyword_ids))
     if candidate_budget <= 0:
@@ -849,7 +965,6 @@ def drain_pending_candidates(
         return report
     if not stage_to_paper_raw and candidate_budget > 16:
         remaining_budget = candidate_budget
-        remaining_resolution_budget = doi_resolution_budget
         while remaining_budget > 0:
             current = drain_pending_candidates(
                 journal=journal, keyword_ids=keyword_ids,
@@ -858,7 +973,7 @@ def drain_pending_candidates(
                 paper_raw_dir=paper_raw_dir, papers_dir=papers_dir,
                 ledger_path=ledger_path, locks_dir=locks_dir,
                 exports_dir=exports_dir, worker_id=worker_id,
-                doi_resolution_budget=remaining_resolution_budget,
+                doi_resolution_budget=doi_resolution_budget,
                 lease_seconds=lease_seconds, skip_duplicates=skip_duplicates,
                 hide_existing=hide_existing, runtime=runtime,
             )
@@ -873,11 +988,11 @@ def drain_pending_candidates(
             report.remaining = current.remaining
             if current.processed <= 0:
                 break
-            remaining_resolution_budget = 0
             remaining_budget -= current.processed
         return report
 
-    remaining_resolution_budget = doi_resolution_budget
+    title_service = runtime.title_resolution_service
+    assert title_service is not None
     # Build the shared DOI duplicate index ONCE for this drain and thread it
     # through staging so the per-candidate hot path does O(1) lookups instead
     # of O(N) full-library rescans. The index is refreshed under the paper_raw
@@ -966,7 +1081,9 @@ def drain_pending_candidates(
                 lock_context = _Noop()
             with lock_context:
                 if not candidate.doi:
-                    candidate, remaining_resolution_budget, resolved = _resolve_missing_doi(candidate, remaining_resolution_budget)
+                    candidate, resolved = _resolve_missing_doi_with_service(
+                        candidate, title_service,
+                    )
                     current["candidate"] = candidate.to_dict()
                     if resolved:
                         journal.update_candidate_payload(
@@ -1090,6 +1207,8 @@ def drain_pending_candidates(
                     )
                     report.emitted += 1
                     report.processed += 1
+        except ProviderRequestBudgetExhausted:
+            raise
         except Timeout as exc:
             report.retryable_failures += 1
             report.errors.append(str(exc))

@@ -75,14 +75,18 @@ not exposed until a plan-bound writer can be independently verified.
 - Classification complete: true
 - Writer category safe: true
 
-## Notebook v3 delivery status
+## Notebook v4 delivery status
 
-The five production notebooks are enabled, schema v3, bilingual-ready, and
-covered by the reviewed migration mapping and the committed v3 transaction.
-Provider generation, request signatures, cursors, generation history, and page
-journals remain attached to their query/provider identities. The mapping and
-fixed-plan evidence is kept in ignored operator state; it is not part of the
-active source tree or runtime-zero snapshot.
+The five production notebooks are enabled, schema v4, bilingual-ready, and
+migrated from v3 via `scripts/migrate_discovery_v4.py`.  All cursors, exhausted
+states, and generation counters were reset on migration.  Provider page journals
+now use the strict v4 schema (`"4.0"`) with complete lane key, response metadata,
+and exhaustion evidence records.
+
+The active v4 workspace lives under `data/discovery/generations/<id>/` and is
+activated by `data/discovery/active_generation.json`.  Legacy v2/v3 journals
+remain in `data/discovery/pending_pages/` (not read by v4 production code) and
+may be archived to `data/discovery/legacy_archive/`.
 
 ## Test suite status
 

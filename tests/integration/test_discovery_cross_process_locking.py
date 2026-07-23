@@ -47,7 +47,7 @@ def _stage_worker(
 def test_candidate_claim_uses_real_os_filelock_across_processes(tmp_path: Path):
     ctx = mp.get_context("spawn")
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,

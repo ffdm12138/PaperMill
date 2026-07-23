@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.discovery.provider_models import (
+from src.discovery.providers.provider_models import (
     DiscoveryPage,
     FailureClass,
     classify_http_error,

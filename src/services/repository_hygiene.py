@@ -15,11 +15,16 @@ RUNTIME_DATA_PREFIXES = (
     "data/discovery/pending_pages/", "data/discovery/locks/",
     "data/discovery/exports/", "data/discovery/queries/",
     "data/discovery/reports/", "data/discovery/logs/",
+    "data/discovery/relevance_raw_work_cache/",
+    "data/discovery/generations/", "data/discovery/legacy_archive/",
+    "data/discovery/migrations/", "data/discovery/title_resolution_cache/",
+    "data/discovery/active_generation.json",
     "data/catalog/",
     "write/jobs/", "output/", "reports/", "logs/", "tmp/", "temp/",
 )
 RUNTIME_REPORT_PATHS = (
     "data/cleanup_report.json",
+    "data/discovery/relevance_profile_plan.json",
 )
 LOCAL_CREDENTIAL_NAMES = frozenset({
     ".env", ".env.local", "credentials.json", "token.json", "secrets.json",

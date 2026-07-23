@@ -15,7 +15,7 @@ QUERY_ID = query_identity("zh", KEYWORD_ZH)
 
 def test_claim_candidate_rejects_uncommitted_page(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
-    path = store.write_page(store.make_page(
+    path = store.write_page(store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,
@@ -44,7 +44,7 @@ def test_claim_candidate_rejects_uncommitted_page(tmp_path: Path):
 
 def test_defer_candidate_releases_processing_claim(tmp_path: Path):
     store = PageJournalStore(tmp_path / "pages")
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id="p1",
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,

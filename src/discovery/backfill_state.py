@@ -29,7 +29,11 @@ from collections.abc import Mapping, Set
 import re
 from typing import Any
 
-from src.discovery.constants import BACKFILL_STATE_FIELDS, INITIAL_CURSOR
+from src.discovery.constants import (
+    BACKFILL_STATE_ACCEPTED_FIELDS,
+    BACKFILL_STATE_FIELDS,
+    INITIAL_CURSOR,
+)
 
 
 # Regex for valid 16-hex signature.
@@ -151,8 +155,8 @@ def _nonpristine_reasons(state: Mapping[str, Any]) -> list[str]:
     for field in missing:
         reasons.append(f"{MISSING_FIELD_PREFIX}{field}")
 
-    # Unknown fields
-    unknown = sorted(state_keys - BACKFILL_STATE_FIELDS)
+    # Unknown fields (optional execution-contract extension fields accepted)
+    unknown = sorted(state_keys - BACKFILL_STATE_ACCEPTED_FIELDS)
     for field in unknown:
         reasons.append(f"{UNKNOWN_FIELD_PREFIX}{field}")
 
@@ -362,7 +366,7 @@ def validate_backfill_state_exact(
     if missing:
         raise BackfillBindError(f"backfill missing fields: {' '.join(missing)}")
 
-    extra = sorted(state_keys - BACKFILL_STATE_FIELDS)
+    extra = sorted(state_keys - BACKFILL_STATE_ACCEPTED_FIELDS)
     if extra:
         raise BackfillBindError(f"backfill has unknown fields: {' '.join(extra)}")
 
@@ -446,7 +450,15 @@ def _validate_generation_history_exact(history: list[Any]) -> None:
                 f"generation_history[{index}] must be a mapping, got {type(item).__name__}"
             )
         entry_keys = set(item)
-        required_history_keys = {"generation", "request_signature", "closed_at", "reason"}
+        # Must match the writer in keyword_notebook.ensure_backfill_generation
+        # (which emits generation, request_signature, closed_at, reason,
+        # cursor, exhausted, pages_succeeded, pages_committed,
+        # items_returned_total, last_committed_page_id).
+        required_history_keys = {
+            "generation", "request_signature", "closed_at", "reason",
+            "cursor", "exhausted", "pages_succeeded", "pages_committed",
+            "items_returned_total", "last_committed_page_id",
+        }
         missing = sorted(required_history_keys - entry_keys)
         if missing:
             raise BackfillBindError(

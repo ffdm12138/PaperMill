@@ -41,6 +41,7 @@ def load_keyword_plan(
     backfill_pages: int = 5,
     max_workers: int = 4,
     max_pages_total: int | None = None,
+    max_provider_requests_total: int | None = None,
 ) -> dict[str, Any]:
     """Return a validated, mutation-free execution plan for one notebook."""
     path = resolve_existing_notebook(keyword_zh, Path(notebook_dir))
@@ -75,6 +76,7 @@ def load_keyword_plan(
     queries: list[dict[str, str]] = []
     page_budget = {
         "max_pages_total": max_pages_total,
+        "max_provider_requests_total": max_provider_requests_total,
         "refresh_pages_per_lane": refresh_pages,
         "backfill_pages_per_lane": backfill_pages,
     }
@@ -98,6 +100,7 @@ def load_keyword_plan(
                     "generation": lane_state["generation"],
                     "request_signature": lane_state["request_signature"],
                     "cursor": lane_state["cursor"],
+                    "exhausted": bool(lane_state.get("exhausted")),
                     "refresh_pages": refresh_pages,
                     "backfill_pages": backfill_pages,
                     "worker_count": max_workers,

@@ -1,38 +1,20 @@
-from dataclasses import dataclass
+"""Provider client wiring tests for the typed discovery fetch boundary."""
 
 import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.models import PaperCandidate
+from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 from src.discovery.keyword_notebook import KeywordNotebookStore
+from tests.helpers.fake_provider import discovery_page
 
 
 pytestmark = pytest.mark.unit
 
 
-@dataclass
-class _Page:
-    candidates: list[PaperCandidate]
-    next_cursor: str | None = None
-    exhausted: bool = True
-    status: str = "success"
-    safe_error: str | None = None
-    error_type: str | None = None
-
-    @property
-    def returned_count(self) -> int:
-        return len(self.candidates)
-
-
-def test_provider_limiters_use_provider_scoped_locks(tmp_path):
-    seen_lock_ids: dict[str, set[int]] = {"openalex": set(), "crossref": set()}
-
-    def fetch(provider: str, query: str, **kwargs):
-        seen_lock_ids[provider].add(id(kwargs["limiter_lock"]))
-        return _Page([PaperCandidate(title=f"{provider} {query}", doi=f"10.1234/{provider}-{query}")])
-
-    options = DiscoveryOptions(
+def _options(tmp_path):
+    return DiscoveryOptions(
         mode="refresh",
         refresh_pages=1,
         backfill_pages=1,
@@ -46,7 +28,10 @@ def test_provider_limiters_use_provider_scoped_locks(tmp_path):
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
     )
-    store = KeywordNotebookStore(options.notebook_dir)
+
+
+def _seed(notebook_dir):
+    store = KeywordNotebookStore(notebook_dir)
     for keyword, english in (("主题甲", "alpha"), ("主题乙", "beta")):
         store.create_notebook(keyword, enabled=False, search_queries=[
             {"query": keyword, "language": "zh", "source": "pytest"},
@@ -55,8 +40,66 @@ def test_provider_limiters_use_provider_scoped_locks(tmp_path):
         bind_test_relevance_profile(store, keyword)
         store.set_enabled(keyword, True)
 
-    run_discovery_batch(["主题甲", "主题乙"], options=options, max_workers=2, fetch_page=fetch)
 
-    assert len(seen_lock_ids["openalex"]) == 1
-    assert len(seen_lock_ids["crossref"]) == 1
-    assert seen_lock_ids["openalex"] != seen_lock_ids["crossref"]
+def test_typed_fetcher_receives_one_shared_provider_limiter_per_batch(tmp_path):
+    """Every physical lane gets the batch client supplied by the runtime."""
+    seen_limiter_ids: dict[str, set[int]] = {"openalex": set(), "crossref": set()}
+
+    def fetch(spec, cursor, client):
+        seen_limiter_ids[spec.key.provider].add(id(client._limiter))
+        return discovery_page(
+            provider=spec.key.provider,
+            keyword_zh=spec.keyword_zh,
+            query=spec.query,
+            lane=spec.key.mode,
+            cursor=cursor,
+            candidates=[PaperCandidate(title=f"{spec.key.provider} {spec.query}")],
+            query_id=spec.key.query_id,
+            query_language=spec.query_language,
+            exhausted=True,
+        )
+
+    options = _options(tmp_path)
+    _seed(options.notebook_dir)
+    run_discovery_batch(
+        ["主题甲", "主题乙"], options=options, max_workers=2,
+        page_fetcher=CallbackProviderPageFetcher(fetch),
+    )
+
+    assert len(seen_limiter_ids["openalex"]) == 1
+    assert len(seen_limiter_ids["crossref"]) == 1
+    assert seen_limiter_ids["openalex"] != seen_limiter_ids["crossref"]
+
+
+def test_typed_fetcher_receives_batch_bound_clients(tmp_path):
+    """The coordinator no longer accepts loose callback/client arguments."""
+    seen_clients: list[object] = []
+
+    def fetch(spec, cursor, client):
+        seen_clients.append(client)
+        return discovery_page(
+            provider=spec.key.provider,
+            keyword_zh=spec.keyword_zh,
+            query=spec.query,
+            lane=spec.key.mode,
+            cursor=cursor,
+            candidates=[PaperCandidate(title=f"{spec.key.provider} {spec.query}")],
+            query_id=spec.key.query_id,
+            query_language=spec.query_language,
+            exhausted=True,
+        )
+
+    options = _options(tmp_path)
+    _seed(options.notebook_dir)
+
+    run_discovery_batch(
+        ["主题甲", "主题乙"], options=options, max_workers=2,
+        page_fetcher=CallbackProviderPageFetcher(fetch),
+    )
+
+    assert seen_clients, "expected batch-bound provider clients"
+    openalex_limiters = {id(c._limiter) for c in seen_clients if c.provider == "openalex"}
+    crossref_limiters = {id(c._limiter) for c in seen_clients if c.provider == "crossref"}
+    assert len(openalex_limiters) == 1
+    assert len(crossref_limiters) == 1
+    assert openalex_limiters != crossref_limiters

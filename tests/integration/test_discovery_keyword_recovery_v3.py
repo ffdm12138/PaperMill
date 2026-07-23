@@ -20,9 +20,8 @@ def test_recovery_cli_inspect_is_explicitly_read_only(
 ):
     notebooks = tmp_path / "notebooks"
     pages = tmp_path / "pages"
-    retired = tmp_path / "retired"
     locks = tmp_path / "locks"
-    for path in (notebooks, pages, retired, locks):
+    for path in (notebooks, pages, locks):
         path.mkdir()
     store = KeywordNotebookStore(notebooks)
     store.ensure_notebook("风吹雪")
@@ -34,7 +33,7 @@ def test_recovery_cli_inspect_is_explicitly_read_only(
     notebook = store.require_v3("风吹雪")
     qid = query_identity("en", "blowing snow")
     journal = PageJournalStore(pages)
-    page = journal.make_page(
+    page = journal.make_synthetic_page(
         page_id="page-1", keyword_id=notebook["keyword_id"], keyword_zh="风吹雪",
         query_id=qid, query="blowing snow", query_language="en", provider="openalex",
         lane="backfill", generation=1, request_signature_value=signature,
@@ -58,7 +57,7 @@ def test_recovery_cli_inspect_is_explicitly_read_only(
     }
     assert recovery.main([
         "--inspect", "--notebook-dir", str(notebooks),
-        "--retired-dir", str(retired), "--pending-pages-dir", str(pages),
+        "--pending-pages-dir", str(pages),
         "--locks-dir", str(locks), "--catalog-root", str(tmp_path / "catalog"),
     ]) == 0
     payload = json.loads(capsys.readouterr().out)

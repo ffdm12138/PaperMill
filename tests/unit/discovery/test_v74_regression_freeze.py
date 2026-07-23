@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from src.discovery.provider_request_evidence import (
+from src.discovery.providers.provider_request_evidence import (
     ActualRequestEvidence,
     build_safe_signature,
     scan_safe_signature_for_credentials,

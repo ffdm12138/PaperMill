@@ -16,7 +16,7 @@ PROFILE_HASH = "test-active-profile"
 
 
 def _write_page(store: PageJournalStore, page_id: str, doi: str = "10.1234/same") -> Path:
-    page = store.make_page(
+    page = store.make_synthetic_page(
         page_id=page_id,
         keyword_id=KEYWORD_ID,
         keyword_zh=KEYWORD_ZH,

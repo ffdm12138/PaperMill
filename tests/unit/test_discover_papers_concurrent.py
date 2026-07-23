@@ -96,6 +96,27 @@ def test_parse_args_enforces_three_or_four_workers():
     assert exc.value.code == 2
 
 
+def test_until_exhausted_decoupled_from_max_pages_total():
+    """--until-exhausted no longer requires --max-pages-total specifically;
+    it accepts --max-provider-requests-total as the safety valve, but still
+    requires AT LEAST one valve (no giant-integer unbounded runs)."""
+    argv = sum((["--keyword-zh", value] for value in ["甲类", "乙类", "丙类"]), [])
+    # No valve at all -> rejected.
+    with pytest.raises(SystemExit) as exc:
+        mod._parse_args([*argv, "--mode", "backfill", "--until-exhausted"])
+    assert exc.value.code == 2
+    # provider-request valve only -> accepted (decoupled from max-pages-total).
+    args = mod._parse_args([*argv, "--mode", "backfill", "--until-exhausted",
+                            "--max-provider-requests-total", "50"])
+    assert args.until_exhausted is True
+    assert args.max_pages_total is None
+    assert args.max_provider_requests_total == 50
+    # page valve only -> still accepted.
+    args = mod._parse_args([*argv, "--mode", "backfill", "--until-exhausted",
+                            "--max-pages-total", "10"])
+    assert args.max_pages_total == 10
+
+
 def test_dry_run_is_read_only_and_lists_all_bilingual_provider_lanes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
@@ -130,12 +151,14 @@ def test_dry_run_is_read_only_and_lists_all_bilingual_provider_lanes(
     assert plan["worker_count"] == 4
     assert plan["page_budget"] == {
         "max_pages_total": None,
+        "max_provider_requests_total": None,
         "refresh_pages_per_lane": 2,
         "backfill_pages_per_lane": 5,
     }
     lane = plan["provider_lanes"][0]
     assert lane["generation"] == 1
     assert lane["request_signature"] == ""
+    assert lane["exhausted"] is False
     assert lane["refresh_pages"] == 2
     assert lane["backfill_pages"] == 5
     assert lane["worker_count"] == 4
