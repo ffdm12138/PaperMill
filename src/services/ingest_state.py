@@ -91,6 +91,7 @@ def write_import_status(
     errors: list[str] | None = None,
     warnings: list[str] | None = None,
     extra: dict | None = None,
+    fsync: bool = True,
 ) -> dict:
     """Write ``<folder>/.import_status.json`` with the canonical field shape.
 
@@ -126,7 +127,7 @@ def write_import_status(
             ) from exc
         fields={"reason":reason,"errors":errors or [],"warnings":warnings or []}
         if extra: fields.update(extra)
-        payload=update_status(workspace,dimension,target,**fields)
+        payload=update_status(workspace,dimension,target,fsync=fsync,**fields)
         return {**payload,"status":status}
     path = folder / ".import_status.json"
     lock = FileLock(str(folder / ".import_status.lock"))
@@ -151,7 +152,7 @@ def write_import_status(
         if extra:
             for key, value in extra.items():
                 payload[key] = value
-        atomic_write_json_unlocked(path, payload, indent=2)
+        atomic_write_json_unlocked(path, payload, indent=2, fsync=fsync)
         return payload
 
 

@@ -105,7 +105,14 @@ def create_reserved_partial_workspace(tmp_path: Path) -> Path:
 
 def create_network_metadata_workspaces_bulk(tmp_path: Path, *, count: int,
                                             unsettled: int = 0) -> None:
-    """Fast canonical benchmark setup using only production artifact writers."""
+    """Fast canonical benchmark setup using only production artifact writers.
+
+    Fixture seeding passes ``fsync=False``: durability is not what the
+    benchmarks assert, and at thousands of workspaces the per-file
+    ``FlushFileBuffers`` calls dominate wall clock.  The measured pipeline
+    under test still runs with production defaults; only this setup differs.
+    The final ``ledger.save`` stays durable.
+    """
     raw = tmp_path / "paper_raw"
     ledger = PaperNumberLedger(tmp_path / "ledger.json")
     data = ledger.empty_data()
@@ -116,7 +123,7 @@ def create_network_metadata_workspaces_bulk(tmp_path: Path, *, count: int,
         folder = raw / number
         folder.mkdir(parents=True, exist_ok=True)
         state = "metadata_staged" if n <= count else "reserved"
-        PaperNumberLedger.write_marker(folder, number, state=state)
+        PaperNumberLedger.write_marker(folder, number, state=state, fsync=False)
         data["items"][number] = {
             "folder_name": number, "folder_path": str(folder), "state": state,
             "created_at": "2026-01-01T00:00:00+00:00",
@@ -130,18 +137,19 @@ def create_network_metadata_workspaces_bulk(tmp_path: Path, *, count: int,
         context = {"candidate_id": f"candidate-{n}", "page_id": f"page-{n}",
                    "keyword_id": "benchmark", "provider": "crossref", "normalized_doi": doi}
         source = {**_source_record_payload(metadata, record), "discovery_context": context}
-        write_metadata_source_record(folder, "crossref", source)
-        atomic_write_json(folder / f"{number}.metadata.json", metadata, indent=2)
+        write_metadata_source_record(folder, "crossref", source, fsync=False)
+        atomic_write_json(folder / f"{number}.metadata.json", metadata, indent=2,
+                          fsync=False)
         receipt = build_receipt_payload(paper_number=number, **context)
         write_or_validate_discovery_receipt(folder / f"{number}.discovery_receipt.json",
-                                            receipt, workspace_root=raw)
+                                            receipt, workspace_root=raw, fsync=False)
         write_stage_manifest(folder, paper_number=number, paper_raw_id=number,
                              workflow_path="network_metadata", source_type="network_search",
-                             pdf_source=None, staged_pdf=None)
+                             pdf_source=None, staged_pdf=None, fsync=False)
         write_import_status(folder, "staged_metadata", extra={
             "paper_number": number, "paper_raw_id": number, "source_type": "network_search",
             "source_provider": "crossref", "doi": doi,
-        })
+        }, fsync=False)
     ledger.save(data)
 
 

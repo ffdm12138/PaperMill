@@ -515,6 +515,7 @@ class TestRuntimeWorkspace:
             raise RuntimeError("Workspace not entered")
         env = os.environ.copy()
         env.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         # Prevent bytecode writes into the source tree.  PYTHONDONTWRITEBYTECODE
         # is the primary guard; PYTHONPYCACHEPREFIX provides an isolated target
         # for subprocesses that genuinely need caching.
@@ -658,31 +659,47 @@ def _flatten_path(path: Path) -> str:
     return "".join(parts)
 
 
-def count_repo_pycache(repo_root: Optional[Path] = None) -> int:
-    """Count ``__pycache__`` directories inside the repository."""
+# Top-level directories pruned from bytecode-pollution scans.  Only the
+# TOP-LEVEL entries are skipped (a nested ``src/data/`` is still scanned),
+# matching the historical rglob-then-filter semantics.  ``.git`` was never
+# reportable (no .pyc/__pycache__ live there) but rglob used to descend its
+# entire object store; pruning it is a pure walk-cost saving.
+_SCAN_SKIP_TOPS = ("data", "output", "reports", "write", ".git")
+
+
+def scan_repo_bytecode(repo_root: Optional[Path] = None) -> tuple[list[str], list[str]]:
+    """Single pruned walk for bytecode pollution.
+
+    Returns ``(pycache_dirs, pyc_files)`` as repo-relative POSIX paths.
+    Unlike a naive ``rglob`` (which visits every entry under ``data/`` and
+    ``output/`` before filtering), runtime directories are pruned at walk
+    time, so the scan touches only source trees.  ``__pycache__`` directories
+    are still descended so the ``.pyc`` files inside them are listed
+    individually, matching the historical output.
+    """
     if repo_root is None:
         repo_root = Path(__file__).resolve().parent.parent
-    count = 0
-    for p in repo_root.rglob("__pycache__"):
-        if p.is_dir():
-            # Skip temp/data directories
-            rel = p.relative_to(repo_root)
-            parts = rel.parts
-            if parts and parts[0] in ("data", "output", "reports", "write"):
-                continue
-            count += 1
-    return count
+    root_str = str(repo_root)
+    pycache: list[str] = []
+    pyc: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root_str):
+        if dirpath == root_str:
+            dirnames[:] = [d for d in dirnames if d not in _SCAN_SKIP_TOPS]
+        rel_dir = os.path.relpath(dirpath, root_str).replace("\\", "/")
+        for d in dirnames:
+            if d == "__pycache__":
+                pycache.append(d if rel_dir == "." else f"{rel_dir}/{d}")
+        for f in filenames:
+            if f.endswith(".pyc"):
+                pyc.append(f if rel_dir == "." else f"{rel_dir}/{f}")
+    return pycache, pyc
+
+
+def count_repo_pycache(repo_root: Optional[Path] = None) -> int:
+    """Count ``__pycache__`` directories inside the repository."""
+    return len(scan_repo_bytecode(repo_root)[0])
 
 
 def count_repo_pyc(repo_root: Optional[Path] = None) -> int:
     """Count ``.pyc`` files inside the repository (excluding runtime dirs)."""
-    if repo_root is None:
-        repo_root = Path(__file__).resolve().parent.parent
-    count = 0
-    for p in repo_root.rglob("*.pyc"):
-        rel = p.relative_to(repo_root)
-        parts = rel.parts
-        if parts and parts[0] in ("data", "output", "reports", "write"):
-            continue
-        count += 1
-    return count
+    return len(scan_repo_bytecode(repo_root)[1])

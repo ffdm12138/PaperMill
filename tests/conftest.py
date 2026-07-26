@@ -12,6 +12,10 @@ _LAYER_MARKERS = {
     "hygiene": ("hygiene",), "e2e": ("e2e",),
     "process": ("process", "slow"), "slow": ("slow",),
     "stress": ("stress", "slow"),
+    # performance benchmarks are slow by construction (bulk fixtures); the
+    # slow marker routes them into the full gate's sequential residue so
+    # their I/O counters never share cores with xdist workers.
+    "performance": ("performance", "slow"),
 }
 _PROCESS_MODULES = {
     "tests/unit/test_acceptance_runner.py",

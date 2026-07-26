@@ -22,6 +22,10 @@ orjson>=3.10.0
 
 # 测试
 pytest>=8.0.0
+pytest-xdist>=3.8       # 并行验收(agent_acceptance --jobs);带 execnet
 jsonschema>=4.0.0
+
+# 运行支撑(agent_acceptance 进程树清理已直接使用,显式声明)
+psutil>=7.0
 
 # 注：重构后已移除 chromadb / sentence-transformers（不再做向量检索）

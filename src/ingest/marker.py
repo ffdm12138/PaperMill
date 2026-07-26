@@ -23,6 +23,7 @@ def write_paper_number_marker(
     *,
     state: str,
     planned_paper_name: str = "",
+    fsync: bool = True,
 ) -> Path:
     if not PAPER_NUMBER_RE.fullmatch(str(paper_number)):
         raise ValueError(f"invalid paper_number: {paper_number}")
@@ -35,7 +36,7 @@ def write_paper_number_marker(
         "schema_version": "1.0", "paper_number": paper_number,
         "folder_name": root.name, "state": state,
         "planned_paper_name": planned_paper_name,
-    }, indent=2)
+    }, indent=2, fsync=fsync)
     return path
 
 

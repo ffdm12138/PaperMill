@@ -120,6 +120,7 @@ def write_stage_manifest(
     source_type: str,
     pdf_source: dict[str, Any] | None = None,
     staged_pdf: dict[str, Any] | None = None,
+    fsync: bool = True,
 ) -> dict[str, Any]:
     """Write a unified ``stage_manifest.json``.
 
@@ -142,7 +143,7 @@ def write_stage_manifest(
         "created_at": created_at,
         "updated_at": updated_at,
     }
-    atomic_write_json(folder / "stage_manifest.json", manifest, indent=2)
+    atomic_write_json(folder / "stage_manifest.json", manifest, indent=2, fsync=fsync)
     return manifest
 
 

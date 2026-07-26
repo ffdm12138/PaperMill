@@ -25,7 +25,9 @@ is covered by the repository license boundary.
 | filelock | File-based locking | MIT. |
 | orjson | Fast ledger JSON encoding and validation | Apache-2.0 OR MIT. |
 | pytest | Test runner | MIT. |
+| pytest-xdist | Parallel test execution for acceptance gates | MIT. |
 | jsonschema | Schema validation used by tests/checks | MIT. |
+| psutil | Process-tree inspection/cleanup in acceptance runner | BSD-3-Clause. |
 
 ## External Integrations And Services
 

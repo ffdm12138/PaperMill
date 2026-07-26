@@ -33,6 +33,8 @@ The root `tests/conftest.py` applies directory markers during collection:
   port behavior; process tests are also `slow`.
 - `slow` identifies tests with materially higher routine cost.
 - `stress` identifies high-iteration race amplification and is also `slow`.
+- `performance` identifies counter-based benchmarks with bulk fixtures and is
+  also `slow`.
 - `external` requires a non-hermetic local or remote service and is excluded
   from normal gates.
 
@@ -54,14 +56,31 @@ python scripts/agent_acceptance.py --area discovery
 python scripts/agent_acceptance.py --area security
 ```
 
+Routine changes require the fast gate. The full gate is required before
+releases, broad refactors, and final delivery.
+
 Fast uses `not process and not slow and not stress and not external` over
-contract, security, hygiene, selected unit tests, and two integration smoke
-workflows. Full uses `not stress and not external` over the complete suite.
-Full-groups applies the same selection in isolated groups with separate
+contract, security, hygiene, selected unit tests, and selected integration
+smoke workflows. Full uses `not stress and not external` over the complete
+suite. Full-groups applies the same selection in isolated groups with separate
 temporary roots, pytest caches, environments, process trees, and timeouts.
 Process uses `process and not stress and not external`. Stress uses `stress`
 and prints the fixed `MINERU_STRESS_SEED` (default `20260711`). Area gates are
 explicit paths and work without `.git` metadata.
+
+Acceptance is parallel by default; `--jobs N` caps the parallelism (0 = auto,
+`min(12, cpus - 2)`) and `--no-parallel` forces the legacy sequential paths.
+The fast gate runs its groups as concurrent subprocesses — every group keeps
+its own isolated workspace, `--basetemp`, environment, process tree, and
+per-group timeout — and replays buffered output in declaration order.
+`--full` splits into one pytest-xdist invocation over
+`not process and not slow and not stress and not external` plus one
+sequential invocation over `(process or slow) and not stress and not
+external`; the two selections partition the full suite exactly. Because
+plugin autoload is disabled, acceptance loads xdist explicitly via `-p xdist`;
+if pytest-xdist is not installed, `--full` falls back to the sequential
+single invocation. `--full-groups` remains a sequential hang-bisection
+diagnostic. A group or invocation timeout is a failure, never a pass.
 
 Real subprocess tests require a process marker, bounded timeout, and complete
 process-tree cleanup. Prefer direct `main(argv)` or domain API calls for CLI
@@ -83,11 +102,13 @@ run, and pack evidence. A timeout is a failure, never a pass.
 
 ## Current test suite
 
-- **1951 tests collected** (run `pytest --collect-only -q`)
-- **Full gate** (`not stress and not external`): last verified 2026-07 v83, 0 failed
-- **Contract/hygiene/security**: 423 passed, 1 skipped
-- **Fast gate**: all configured groups passed with clean pre/post pollution checks
-- **Snapshot**: runtime-zero, 549 ZIP entries, 0 runtime files, secret scan passed
+- **2693 tests collected** (run `pytest --collect-only -q`)
+- **Full gate** (`not stress and not external`): last verified 2026-07-26 —
+  parallel chunk 2611 passed + 1 skipped in ~57s (`-n 12`), sequential
+  residue 74 passed + 4 skipped in ~6m; ~7m20s wall end to end, 0 failed
+- **Fast gate**: all 9 groups passed concurrently in ~52s wall (9 workers)
+  with clean pre/post pollution checks (sequential baseline: ~3m)
+- **Snapshot**: runtime-zero, 683 ZIP members, 0 runtime files, secret scan passed
 
 Discovery staging acceptance additionally covers strict ledger validation,
 single-read evidence, unknown-profile failure, atomic copy-on-write refresh,

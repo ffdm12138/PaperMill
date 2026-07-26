@@ -25,7 +25,9 @@ EXPECTED_DIRECT_LICENSES: dict[str, set[str]] = {
     "pymupdf": {"AGPL-3.0-or-commercial", "GNU AFFERO GPL"},
     "filelock": {"MIT"},
     "pytest": {"MIT"},
+    "pytest-xdist": {"MIT"},
     "jsonschema": {"MIT"},
+    "psutil": {"BSD-3-Clause"},
 }
 
 PACKAGE_OVERRIDES = {

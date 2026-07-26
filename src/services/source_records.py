@@ -204,6 +204,8 @@ def write_metadata_source_record(
     folder: str | Path,
     provider: str,
     record: dict[str, Any],
+    *,
+    fsync: bool = True,
 ) -> Path:
     """Write a metadata source record to ``source_records/metadata_source.<provider>.json``.
 
@@ -217,7 +219,7 @@ def write_metadata_source_record(
     target = resolve_safe_source_record_target(
         Path(folder), f"{METADATA_SOURCE_PREFIX}.{provider_slug}.json"
     )
-    atomic_write_json(target, record, indent=2)
+    atomic_write_json(target, record, indent=2, fsync=fsync)
     resolve_safe_source_record_target(Path(folder), target.name)
     return target
 

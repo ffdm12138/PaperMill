@@ -165,8 +165,10 @@ class PaperNumberLedger:
         *,
         state: str,
         planned_paper_name: str = "",
+        fsync: bool = True,
     ) -> None:
-        write_paper_number_marker(folder, number, state=state, planned_paper_name=planned_paper_name)
+        write_paper_number_marker(folder, number, state=state,
+                                  planned_paper_name=planned_paper_name, fsync=fsync)
 
     @staticmethod
     def assert_papers_empty(papers_dir: str | Path) -> None:

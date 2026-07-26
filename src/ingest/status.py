@@ -40,6 +40,7 @@ def update_import_status(
     *,
     mutator: Callable[[dict], dict],
     timeout: float | None = None,
+    fsync: bool = True,
 ) -> dict:
     """Atomically read, mutate, validate, and replace nested status v2."""
     lock = FileLock(str(_status_lock_path(workspace)), timeout=-1 if timeout is None else timeout)
@@ -50,7 +51,7 @@ def update_import_status(
             raise TypeError("status mutator must return a dict")
         updated["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         validate_status(updated, workspace.paper_number)
-        atomic_write_json_unlocked(workspace.status, updated, indent=2)
+        atomic_write_json_unlocked(workspace.status, updated, indent=2, fsync=fsync)
         return updated
 
 def initialize_status(workspace_root: Path, paper_number: str, value: dict) -> dict:
@@ -61,12 +62,12 @@ def initialize_status(workspace_root: Path, paper_number: str, value: dict) -> d
         atomic_write_json_unlocked(root / ".import_status.json", value, indent=2)
     return value
 
-def update_status(workspace: PaperRawWorkspace,dimension: str,state: str,**fields)->dict:
+def update_status(workspace: PaperRawWorkspace,dimension: str,state: str,*,fsync: bool = True,**fields)->dict:
     if dimension not in ALLOWED or state not in ALLOWED[dimension]: raise ValueError(f"invalid status transition target: {dimension}={state}")
     def mutate(value: dict) -> dict:
         value[dimension] = {"state": state, **fields}
         return value
-    return update_import_status(workspace, mutator=mutate)
+    return update_import_status(workspace, mutator=mutate, fsync=fsync)
 
 def migrate_flat_status(value: dict,paper_number: str)->dict:
     out=initial_status(paper_number); state=str(value.get("status") or "")

@@ -72,12 +72,23 @@ Use the Python environment at
 `C:\Users\Admin\.conda\envs\mineru\python.exe` when `python` is not on PATH.
 Set `PYTHONIOENCODING=utf-8` and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` for tests.
 
-For broad changes run targeted tests, then contract/hygiene, unit/integration,
-slow tests, compileall, and finally:
+For routine changes run targeted tests, then the fast gate:
+
+```text
+python scripts/agent_acceptance.py
+```
+
+Before releases, broad refactors, or final delivery, additionally run the
+full gate:
 
 ```text
 python scripts/agent_acceptance.py --full
 ```
+
+Acceptance runs in parallel by default (`--jobs 0` = auto): the fast gate
+executes its groups as concurrent isolated subprocesses, and `--full` uses
+pytest-xdist for the non-process chunk plus a sequential process/slow
+residue. `--no-parallel` forces the legacy sequential paths.
 
 The authoritative packer is `scripts/pack_repo.py`. Both default audit and
 source snapshots are runtime-zero. Audit may include dirty lightweight source
@@ -249,8 +260,10 @@ layer. Runtime-zero rules live in `src/services/repository_hygiene.py`;
 `source_records` and its targets must never be symlinks. After every change,
 run the packer and inspect an unpacked snapshot.
 
-For every completed code change, both the fast gate and full gate must finish,
-then `scripts/pack_repo.py` must generate a verified runtime-zero snapshot.
+For every completed code change, the fast gate must finish and
+`scripts/pack_repo.py` must generate a verified runtime-zero snapshot. The
+full gate (`--full`) is additionally required, and must finish, before
+releases, broad refactors, and final delivery.
 `AGENTS.md` and `CLAUDE.md` must remain byte-for-byte identical.
 
 ## Discovery staging ownership boundary

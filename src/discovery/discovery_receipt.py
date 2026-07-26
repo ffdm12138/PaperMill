@@ -252,6 +252,7 @@ def write_or_validate_discovery_receipt(
     receipt_payload: Mapping[str, Any],
     *,
     workspace_root: Path | None = None,
+    fsync: bool = True,
 ) -> ReceiptWriteResult:
     """Write a discovery receipt atomically, or validate an existing one.
 
@@ -289,7 +290,7 @@ def write_or_validate_discovery_receipt(
                 status="existing_match", path=path, paper_number=paper_number
             )
         # File does not exist — we hold the lock, so no race.
-        atomic_write_json_unlocked(path, dict(receipt_payload), indent=2)
+        atomic_write_json_unlocked(path, dict(receipt_payload), indent=2, fsync=fsync)
         try:
             verify = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:

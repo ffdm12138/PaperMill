@@ -17,7 +17,11 @@ Flags:
     --full-groups             Run full pytest in diagnostic groups (max 10 files each).
     --full-timeout-seconds N  Timeout for --full / fast pytest (default 600).
     --group-timeout-seconds N Per-group timeout for --full-groups (default 300).
-    --stop-on-first-failure   With --full-groups, halt on first failing group.
+    --stop-on-first-failure   With fast groups or --full-groups, halt on first failing
+                              group (forces sequential execution).
+    --jobs N                  Parallelism: fast-gate group concurrency and xdist worker
+                              count for --full. 0 = auto (default: min(12, cpus - 2)).
+    --no-parallel             Force the legacy sequential code paths everywhere.
     --process                 Run only real process and cross-process tests.
     --stress                  Run only high-iteration race/stress tests.
     --area NAME               Run a focused area without relying on Git diff.
@@ -28,21 +32,25 @@ Flags:
                               audit profile (filesystem scan fallback).
 
 All pytest subprocesses run with PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 so
-third-party plugins cannot change behavior or hang the process.
+third-party plugins cannot change behavior or hang the process; parallel runs
+load pytest-xdist explicitly via ``-p xdist`` appended after the prefix.
 
 Exit 0 on success, non-zero on failure.
 """
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass
 import fnmatch
+import importlib.util
 import json
 import os
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -53,6 +61,7 @@ from pathlib import Path
 # in the environment covers child processes (pack_repo, compileall, etc.).
 sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -62,6 +71,7 @@ from scripts.test_runtime_workspace import (
     WorkspaceStatus,
     _system_temp_dir,
     inspect_workspace,
+    scan_repo_bytecode,
 )
 
 
@@ -135,7 +145,31 @@ FAST_GROUPS: list[tuple[str, list[str]]] = [
 ]
 FAST_MARKERS = "not process and not slow and not stress and not external"
 FULL_MARKERS = "not stress and not external"
+# Full-gate split: the parallel chunk runs everything safe under pytest-xdist;
+# the sequential residue keeps load-sensitive process/slow/performance tests
+# deterministic.  The union of the two expressions selects exactly the same
+# tests as FULL_MARKERS and their intersection is empty (asserted by
+# tests/unit/test_acceptance_parallel.py).
+FULL_PARALLEL_MARKERS = "not process and not slow and not stress and not external"
+FULL_RESIDUE_MARKERS = "(process or slow) and not stress and not external"
 PYTEST_PREFIX = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
+
+
+def _effective_jobs(jobs: int, *, no_parallel: bool) -> int:
+    """Resolve the parallelism level from CLI flags.
+
+    ``jobs == 0`` means auto: ``min(12, max(2, cpu_count - 2))``.  Capped at
+    12 because pytest workers are I/O + process heavy; beyond that the wall
+    clock is dominated by the slowest group/test, not core count.
+    """
+    if no_parallel:
+        return 1
+    if jobs < 0:
+        raise SystemExit("--jobs must be >= 0")
+    if jobs == 0:
+        cpu = os.cpu_count() or 4
+        return min(12, max(2, cpu - 2))
+    return jobs
 
 
 def step(name: str) -> None:
@@ -281,6 +315,115 @@ def run(cmd: list[str], *, check: bool = True, env: dict[str, str] | None = None
     return run_command_with_timeout(cmd, timeout_seconds=timeout, env=env, check=check)
 
 
+def run_command_captured(
+    command: list[str],
+    *,
+    timeout_seconds: int | None = None,
+    cwd: Path | str = ROOT,
+    env: dict[str, str] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[int, str]:
+    """Like :func:`run_command_with_timeout` but silent: capture and return output.
+
+    Used by the concurrent fast-gate scheduler so worker threads never write
+    to the shared stdout; the orchestrator replays each group's buffered
+    output in declaration order.  Returns ``(returncode, output)`` where the
+    return code is 124 on timeout and 130 when ``cancel_event`` was set.
+    Never calls ``sys.exit``.  The child runs in its own process group and
+    the whole tree is killed on timeout/cancel, mirroring the sequential path.
+    """
+    log = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace")
+    popen_kwargs: dict = {
+        "cwd": str(cwd), "env": env or os.environ.copy(),
+        "stdout": log, "stderr": subprocess.STDOUT,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(command, **popen_kwargs)
+    except FileNotFoundError as exc:
+        log.close()
+        return 127, f"[FAIL] could not start {command[0]}: {exc}\n"
+
+    timed_out = False
+    cancelled = False
+    known_descendants: set[int] = set()
+    try:
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+        while proc.poll() is None:
+            known_descendants.update(_descendant_pids(proc.pid))
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(0.05)
+    finally:
+        if timed_out or cancelled or proc.poll() is None:
+            _kill_process_tree(proc)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+
+    residual = sorted(pid for pid in known_descendants if _pid_state(pid) == "alive")
+    if residual:
+        _terminate_pids(residual)
+    log.flush()
+    log.seek(0)
+    output = log.read()
+    log.close()
+    if cancelled:
+        return 130, output + "\n[CANCELLED] group stopped by scheduler\n"
+    if timed_out:
+        return 124, output + f"\n[TIMEOUT] command exceeded {timeout_seconds}s\n"
+    return proc.returncode, output
+
+
+def _run_groups_concurrently(
+    groups: list[tuple[str, list[str]]],
+    run_one,
+    *,
+    jobs: int,
+    on_result=None,
+) -> list[tuple[str, int, str]]:
+    """Run ``(name, paths)`` groups through ``run_one`` with bounded concurrency.
+
+    ``run_one(name, paths, cancel_event) -> (rc, output)`` executes one group.
+    Results are delivered strictly in declaration order — a group's result is
+    reported only after every earlier group's result, so replayed output never
+    interleaves even though execution overlaps.  A worker that raises is
+    recorded as rc 1 with the exception text (workspace-cleanup failures fail
+    the gate).  On KeyboardInterrupt the cancel event is set so running
+    children are killed, queued groups are cancelled, and the interrupt is
+    re-raised.
+    """
+    cancel = threading.Event()
+    results: list[tuple[str, int, str]] = []
+    pool = ThreadPoolExecutor(max_workers=max(1, jobs))
+    futures = [pool.submit(run_one, name, paths, cancel) for name, paths in groups]
+    try:
+        for (name, _paths), future in zip(groups, futures):
+            try:
+                rc, output = future.result()
+            except CancelledError:
+                rc, output = 130, "[CANCELLED] group did not start\n"
+            except Exception as exc:
+                rc, output = 1, f"[FAIL] group runner raised: {exc!r}\n"
+            results.append((name, rc, output))
+            if on_result is not None:
+                on_result(name, rc, output)
+    except BaseException:
+        cancel.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return results
+
+
 def verify_git_hygiene(root_path: Path | None = None) -> list[str]:
     """Check git tracked files for forbidden runtime assets.
 
@@ -356,7 +499,8 @@ from src.services.repository_hygiene import is_forbidden_git_member, is_forbidde
 # heavy/binary, not a secret, and not a tombstone but lives under one of these
 # dirs must still have a lightweight suffix — an unknown suffix like ``.exe``
 # must be rejected here rather than slip through on pack rules alone.
-def verify_snapshot(root_path: Path | None = None) -> list[str]:
+def verify_snapshot(root_path: Path | None = None, *,
+                    include_self_check: bool = True) -> list[str]:
     """Check mineru_snapshot.zip for runtime-zero snapshot compliance.
 
     The zip may contain source and synthetic test fixtures, but must NOT contain:
@@ -365,6 +509,12 @@ def verify_snapshot(root_path: Path | None = None) -> list[str]:
     - DENIED_NAMES (secrets)
     - Files under forbidden prefixes (tmp, discovery, data/locks, etc.)
     - Tombstone files or backup artifacts
+
+    ``include_self_check=False`` skips the packer's own full-member re-hash
+    self check.  Acceptance step 5 uses that: step 4's pack_repo run already
+    executed the identical self check on the freshly packed zip, so running
+    it a second time in the same acceptance run is pure duplication.
+    Standalone callers keep the default (True).
     """
     root = root_path or ROOT
     zip_path = root / "mineru_snapshot.zip"
@@ -462,7 +612,8 @@ def verify_snapshot(root_path: Path | None = None) -> list[str]:
     elif manifest.get("runtime_files_included") != 0:
         bad.append("snapshot manifest runtime_files_included is not zero")
 
-    bad.extend(_verify_snapshot_self_check(zip_path))
+    if include_self_check:
+        bad.extend(_verify_snapshot_self_check(zip_path))
     return list(dict.fromkeys(bad))
 
 
@@ -553,13 +704,18 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
 
 
 def _run_fast_groups(*, stop_on_first_failure: bool = False,
-                     group_timeout: int | None = None) -> int:
+                     group_timeout: int | None = None,
+                     jobs: int = 1) -> int:
     """Run fast acceptance tests in diagnostic groups.
 
-    Each group is a separate pytest invocation with its own timeout so a
-    single hung test file never consumes the full fast-gate budget.  The
-    currently-executing group is printed before pytest starts, and on timeout
-    the last file attempted is included in diagnostics.
+    Each group is a separate pytest invocation with its own isolated
+    workspace and timeout so a single hung test file never consumes the full
+    fast-gate budget.  With ``jobs > 1`` the groups run as concurrent
+    subprocesses (one thread per group, each with its own
+    ``TestRuntimeWorkspace``, ``--basetemp``, environment, and process tree);
+    buffered output is replayed in declaration order.
+    ``--stop-on-first-failure`` forces sequential execution for deterministic
+    halt semantics.
     """
     flattened = [path for _, paths in FAST_GROUPS for path in paths]
     expected = set(FAST_ACCEPTANCE_TESTS)
@@ -569,6 +725,9 @@ def _run_fast_groups(*, stop_on_first_failure: bool = False,
             f"Missing: {expected - set(flattened)}, "
             f"Extra: {set(flattened) - expected}"
         )
+
+    if jobs > 1 and not stop_on_first_failure:
+        return _run_fast_groups_parallel(group_timeout=group_timeout, jobs=jobs)
 
     all_ok = True
     for gname, gpaths in FAST_GROUPS:
@@ -622,6 +781,69 @@ def _run_fast_groups(*, stop_on_first_failure: bool = False,
         return 0
 
     print("\n  [WARN] some fast groups failed", flush=True)
+    return 1
+
+
+def _run_fast_groups_parallel(*, group_timeout: int | None, jobs: int) -> int:
+    """Concurrent fast gate: every group keeps its own workspace and timeout."""
+    worker_count = min(len(FAST_GROUPS), jobs)
+    print(f"  parallel fast gate: {len(FAST_GROUPS)} groups, {worker_count} workers",
+          flush=True)
+
+    def _group_cmd(gpaths: list[str]) -> list[str]:
+        return PYTEST_PREFIX + ["-q", "-m", FAST_MARKERS] + gpaths + ["--durations=20"]
+
+    def _run_one(gname: str, gpaths: list[str],
+                 cancel: threading.Event) -> tuple[int, str]:
+        with TestRuntimeWorkspace(group=f"fast_{gname}") as ws:
+            return run_command_captured(
+                _group_cmd(gpaths) + ["--basetemp", str(ws.pytest_dir)],
+                timeout_seconds=group_timeout,
+                env=ws.child_env(),
+                cancel_event=cancel,
+            )
+
+    failures: list[str] = []
+
+    def _report(gname: str, rc: int, output: str) -> None:
+        gpaths = dict(FAST_GROUPS)[gname]
+        cmd_display = " ".join(_group_cmd(gpaths))
+        print(f"\n{'─'*60}", flush=True)
+        print(f"  fast group: {gname}", flush=True)
+        print(f"  cmd: {cmd_display}", flush=True)
+        if group_timeout:
+            print(f"  timeout: {group_timeout}s", flush=True)
+        print(f"{'─'*60}", flush=True)
+        if output:
+            try:
+                print(output, end="" if output.endswith("\n") else "\n", flush=True)
+            except UnicodeEncodeError:
+                encoding = sys.stdout.encoding or "utf-8"
+                safe = output.encode(encoding, errors="replace").decode(
+                    encoding, errors="replace")
+                print(safe, end="" if safe.endswith("\n") else "\n", flush=True)
+        if rc == 124:
+            print(f"\n[FAIL] fast group {gname} timed out after {group_timeout}s",
+                  flush=True)
+            print(f"  reproduce: {cmd_display}", flush=True)
+            failures.append(gname)
+        elif rc != 0:
+            print(f"\n[FAIL] fast group {gname} exited {rc}", flush=True)
+            print(f"  reproduce: {cmd_display}", flush=True)
+            failures.append(gname)
+
+    try:
+        _run_groups_concurrently(
+            list(FAST_GROUPS), _run_one, jobs=worker_count, on_result=_report,
+        )
+    except KeyboardInterrupt:
+        print("\n[FAIL] fast groups interrupted", flush=True)
+        return 1
+
+    if not failures:
+        print(f"\n  [OK] all fast groups passed ({worker_count} workers)", flush=True)
+        return 0
+    print(f"\n  [WARN] fast groups failed: {', '.join(failures)}", flush=True)
     return 1
 
 
@@ -798,22 +1020,7 @@ def _collect_pollution_snapshot() -> PollutionSnapshot:
 
     Read-only — never mutates, never deletes.
     """
-    repo = ROOT
-    pycache: list[str] = []
-    pyc: list[str] = []
-    skip_tops = {"data", "output", "reports", "write"}
-    for d in repo.rglob("__pycache__"):
-        if not d.is_dir():
-            continue
-        rel = str(d.relative_to(repo)).replace("\\", "/")
-        if rel.split("/", 1)[0] in skip_tops:
-            continue
-        pycache.append(rel)
-    for f in repo.rglob("*.pyc"):
-        rel = str(f.relative_to(repo)).replace("\\", "/")
-        if rel.split("/", 1)[0] in skip_tops:
-            continue
-        pyc.append(rel)
+    pycache, pyc = scan_repo_bytecode(ROOT)
     root_pol: list[str] = []
     try:
         from scripts.test_runtime_workspace import _system_temp_dir, _flatten_path
@@ -947,7 +1154,13 @@ def main() -> int:
     parser.add_argument("--full-groups", action="store_true",
                         help="Run full pytest in groups with per-group diagnostics")
     parser.add_argument("--stop-on-first-failure", action="store_true",
-                        help="With --full-groups, halt on the first failing group")
+                        help="With fast groups or --full-groups, halt on the first "
+                             "failing group (forces sequential execution)")
+    parser.add_argument("--jobs", type=int, default=0,
+                        help="Parallelism: fast-gate group concurrency and xdist "
+                             "worker count for --full. 0 = auto (min(12, cpus-2))")
+    parser.add_argument("--no-parallel", action="store_true",
+                        help="Force the legacy sequential code paths everywhere")
     parser.add_argument("--group-timeout-seconds", type=int, default=300,
                         help="Per-group timeout in seconds for --full-groups (default 300)")
     parser.add_argument("--full-timeout-seconds", type=int, default=600,
@@ -1026,16 +1239,38 @@ def main() -> int:
         if rc != 0:
             return rc
     elif args.full:
-        step("2/6 pytest --full")
-        with TestRuntimeWorkspace(group="full") as ws:
-            run(PYTEST_PREFIX + ["-q", "-m", FULL_MARKERS,
-                 "--durations=30", "--durations-min=0.5",
-                 "--basetemp", str(ws.pytest_dir)],
-                env=ws.child_env(), timeout=args.full_timeout_seconds)
+        jobs = _effective_jobs(args.jobs, no_parallel=args.no_parallel)
+        xdist_available = importlib.util.find_spec("xdist") is not None
+        if jobs > 1 and not xdist_available:
+            print("\n  [WARN] pytest-xdist not installed — falling back to the "
+                  "sequential full gate", flush=True)
+        if jobs > 1 and xdist_available:
+            step(f"2/6 pytest --full (parallel chunk, -n {jobs})")
+            with TestRuntimeWorkspace(group="full_parallel") as ws:
+                run(PYTEST_PREFIX + ["-p", "xdist", "-n", str(jobs),
+                     "-q", "-m", FULL_PARALLEL_MARKERS,
+                     "--durations=30", "--durations-min=0.5",
+                     "--basetemp", str(ws.pytest_dir)],
+                    env=ws.child_env(), timeout=args.full_timeout_seconds)
+            step("2/6 pytest --full (sequential residue: process/slow)")
+            with TestRuntimeWorkspace(group="full_residue") as ws:
+                run(PYTEST_PREFIX + ["-q", "-m", FULL_RESIDUE_MARKERS,
+                     "--durations=30", "--durations-min=0.5",
+                     "--basetemp", str(ws.pytest_dir)],
+                    env=ws.child_env(), timeout=args.full_timeout_seconds)
+        else:
+            step("2/6 pytest --full")
+            with TestRuntimeWorkspace(group="full") as ws:
+                run(PYTEST_PREFIX + ["-q", "-m", FULL_MARKERS,
+                     "--durations=30", "--durations-min=0.5",
+                     "--basetemp", str(ws.pytest_dir)],
+                    env=ws.child_env(), timeout=args.full_timeout_seconds)
     else:
         step("2/6 pytest (fast acceptance — groups)")
         rc = _run_fast_groups(stop_on_first_failure=args.stop_on_first_failure,
-                              group_timeout=args.group_timeout_seconds)
+                              group_timeout=args.group_timeout_seconds,
+                              jobs=_effective_jobs(args.jobs,
+                                                   no_parallel=args.no_parallel))
         if rc != 0:
             return rc
 
@@ -1070,9 +1305,10 @@ def main() -> int:
     step("4/6 pack_repo")
     run([sys.executable, "scripts/pack_repo.py", "--profile", args.profile])
 
-    # 5. Verify snapshot
+    # 5. Verify snapshot (structural checks only — step 4's pack_repo already
+    # ran the full self check on this exact zip immediately before install).
     step("5/6 verify snapshot")
-    bad = verify_snapshot()
+    bad = verify_snapshot(include_self_check=False)
     if bad:
         print("\n[FAIL] Snapshot contains forbidden content:")
         for b in bad:
