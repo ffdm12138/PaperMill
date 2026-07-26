@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from filelock import FileLock
+from src.ingest.locking import paper_raw_write_lock
 from src.discovery.stage_transaction import DiscoveryStageTransaction, StageTransactionConfigurationError
 from src.discovery.workspace_registry import WorkspaceRegistrySnapshot, build_workspace_registry
 from src.library.paper_number_ledger import PaperNumberLedger
@@ -45,7 +46,7 @@ class DiscoveryStagingContext:
         ledger = PaperNumberLedger(ledger_path)
         raw_root = Path(paper_raw_dir)
         raw_root.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(raw_root / ".paper_raw_write.lock")):
+        with paper_raw_write_lock(raw_root):
             built = build_workspace_registry(
                 paper_raw_dir=raw_root, papers_dir=papers_dir, ledger=ledger, observer=observer,
             )

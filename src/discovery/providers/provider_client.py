@@ -560,6 +560,12 @@ class ProviderRuntime:
             cls._instance = runtime or cls()
             return cls._instance
 
+    def limiter(self, provider: str) -> ProviderRateLimiter:
+        """Return the shared per-provider limiter (e.g. for CLI overrides)."""
+        if provider not in KNOWN_PROVIDERS:
+            raise ValueError(f"unknown provider: {provider!r}")
+        return self._limiters[provider]
+
     # ── client factory ────────────────────────────────────────────────
 
     def client(self, provider: str) -> ProviderClient:

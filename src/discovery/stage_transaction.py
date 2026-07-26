@@ -10,6 +10,7 @@ import time
 
 from filelock import FileLock
 
+from src.ingest.locking import paper_raw_write_lock
 from src.utils.identifiers import normalize_doi
 from src.discovery.workspace_index import DiscoveryIdentityRef
 from src.discovery.workspace_registry import (
@@ -166,7 +167,7 @@ class DiscoveryStageTransaction:
         numbers = rotated[:budget] if budget is not None else rotated
         ledger = PaperNumberLedger(self.ledger_path)
         wait_started = time.monotonic()
-        with FileLock(str(self.paper_raw_dir / ".paper_raw_write.lock")):
+        with paper_raw_write_lock(self.paper_raw_dir):
             acquired = time.monotonic()
             self.observer.write_lock_acquired(wait_ms=(acquired - wait_started) * 1000)
             repaired: list[str] = []
@@ -222,7 +223,7 @@ class DiscoveryStageTransaction:
         ledger = PaperNumberLedger(self.ledger_path)
         allocator = PaperRawAllocator(self.paper_raw_dir, ledger_path=self.ledger_path, papers_dir=self.papers_dir)
         wait_started = time.monotonic()
-        with FileLock(str(self.paper_raw_dir / ".paper_raw_write.lock")):
+        with paper_raw_write_lock(self.paper_raw_dir):
             acquired = time.monotonic()
             self.observer.write_lock_acquired(wait_ms=(acquired - wait_started) * 1000)
             try:
@@ -459,7 +460,7 @@ class DiscoveryStageTransaction:
         doi = normalize_doi(normalized_doi)
         ledger = PaperNumberLedger(self.ledger_path)
         self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self.paper_raw_dir / ".paper_raw_write.lock")):
+        with paper_raw_write_lock(self.paper_raw_dir):
           with LockedLedgerSession(ledger, observer=self.observer) as ledger_session:
             refreshed = refresh_registry_under_write_lock(
                 self._snapshot, paper_raw_dir=self.paper_raw_dir,

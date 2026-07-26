@@ -60,7 +60,7 @@ class LockedLedgerSession:
         self.observer = observer
         self.data: dict[str, Any] = {}
         self.dirty = False
-        self._lock = FileLock(str(ledger._lock_path))
+        self._lock = FileLock(str(ledger.lock_path))
 
     def __enter__(self) -> "LockedLedgerSession":
         self._lock.acquire()
@@ -134,7 +134,7 @@ class LockedLedgerSession:
     def save_checkpoint(self) -> None:
         if not self.dirty:
             return
-        self.ledger._save_unlocked(self.data)
+        self.ledger.save_unlocked(self.data)
         self.dirty = False
         if self.observer is not None:
             self.observer.ledger_save()
@@ -145,7 +145,8 @@ class PaperNumberLedger:
         self.path = Path(path)
 
     @property
-    def _lock_path(self) -> Path:
+    def lock_path(self) -> Path:
+        """Sidecar lock path; callers may pass it to ranked lock requests."""
         return self.path.with_suffix(self.path.suffix + ".lock")
 
     @staticmethod
@@ -193,10 +194,11 @@ class PaperNumberLedger:
         return base
 
     def save(self, data: dict) -> None:
-        with FileLock(str(self._lock_path)):
-            self._save_unlocked(data)
+        with FileLock(str(self.lock_path)):
+            self.save_unlocked(data)
 
-    def _save_unlocked(self, data: dict) -> None:
+    def save_unlocked(self, data: dict) -> None:
+        """Durable save; the caller MUST already hold the ledger lock."""
         """Write ledger JSON atomically with fsync (caller holds lock)."""
         from src.utils.atomic_io import _fsync_dir
 
@@ -239,7 +241,7 @@ class PaperNumberLedger:
 
     def reset_empty_ledger(self, *, reason: str = "", reset_at: str | None = None) -> dict:
         """Reset the allocator ledger to an empty monotonic state."""
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             reset_at = reset_at or now_iso()
             history = list(data.get("reset_history") or [])
@@ -248,7 +250,7 @@ class PaperNumberLedger:
             new_data = self.empty_data()
             if history:
                 new_data["reset_history"] = history
-            self._save_unlocked(new_data)
+            self.save_unlocked(new_data)
             return new_data
 
     @staticmethod
@@ -424,7 +426,7 @@ class PaperNumberLedger:
         """
         paper_raw_dir = Path(paper_raw_dir)
         paper_raw_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             self._recover_allocating_items_unlocked(data, paper_raw_dir)
             number = f"{self.scan_paper_raw_number_floor(paper_raw_dir, data) + 1:016d}"
@@ -437,7 +439,7 @@ class PaperNumberLedger:
                 "state": LEDGER_ALLOCATING,
                 "created_at": now_iso(),
             }
-            self._save_unlocked(data)
+            self.save_unlocked(data)
 
         try:
             folder.mkdir(parents=False, exist_ok=False)
@@ -457,7 +459,7 @@ class PaperNumberLedger:
             self.mark_abandoned(number, str(exc), folder=folder)
             raise
 
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             existing = items.get(number) or {}
@@ -469,7 +471,7 @@ class PaperNumberLedger:
                 "created_at": existing.get("created_at") or now_iso(),
                 "reserved_at": now_iso(),
             }
-            self._save_unlocked(data)
+            self.save_unlocked(data)
         return number, folder
 
     def peek_next_numbers(self, count: int) -> list[str]:
@@ -497,7 +499,7 @@ class PaperNumberLedger:
         existing = self.paper_number_from_marker(source_folder)
         if existing:
             return existing
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             paper_raw_root = source_folder.parent
             number_floor = self.scan_paper_raw_number_floor(paper_raw_root, data)
@@ -510,7 +512,7 @@ class PaperNumberLedger:
                 "state": "reserved",
                 "created_at": now_iso(),
             }
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             self.write_marker(source_folder, number, state="reserved", planned_paper_name=planned_paper_name)
             return number
 
@@ -532,7 +534,7 @@ class PaperNumberLedger:
             raise ValueError(f"invalid paper_number: {number}")
         folder = Path(folder)
         folder_norm = normalize_repo_path(folder)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             existing = items.get(number)
@@ -562,7 +564,7 @@ class PaperNumberLedger:
                 "state": "reserved",
                 "created_at": created_at,
             }
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             self.write_marker(folder, number, state="reserved", planned_paper_name=planned)
             return number
 
@@ -578,7 +580,7 @@ class PaperNumberLedger:
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
         folder = Path(folder)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             existing = items.get(number) or {}
@@ -597,7 +599,7 @@ class PaperNumberLedger:
                 "quarantined_duplicate_of": duplicate_of,
                 "duplicate_reasons": list(duplicate_reasons or []),
             }
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             self.write_marker(
                 folder,
                 number,
@@ -610,7 +612,7 @@ class PaperNumberLedger:
         """Explicitly replace the retired temporary state with ``abandoned``."""
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             existing = (data.get("items") or {}).get(number)
             if not isinstance(existing, dict):
@@ -626,7 +628,7 @@ class PaperNumberLedger:
                 "quarantine_path": str(existing.get("folder_path") or ""),
             })
             data["items"][number] = migrated
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             return number
 
     def mark_abandoned(
@@ -640,7 +642,7 @@ class PaperNumberLedger:
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
         folder_path = Path(folder) if folder is not None else Path("")
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             existing = items.get(number) or {}
@@ -658,7 +660,7 @@ class PaperNumberLedger:
                 "abandoned_at": now_iso(),
                 "abandoned_reason": reason,
             }
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             if str(target_folder) and target_folder.exists() and any(target_folder.iterdir()):
                 try:
                     self.write_marker(
@@ -689,7 +691,7 @@ class PaperNumberLedger:
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
         folder = Path(folder)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             existing = items.get(number) or {}
@@ -729,7 +731,7 @@ class PaperNumberLedger:
                 planned_paper_name=existing.get("planned_paper_name", ""),
                 now_iso=now_iso(),
             )
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             if folder.exists():
                 self.write_marker(
                     folder,
@@ -752,7 +754,7 @@ class PaperNumberLedger:
         folder = Path(folder)
         if not folder.is_dir() or folder.name != str(number):
             raise ValueError("repair workspace must be the numeric paper_raw folder")
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             existing = items.get(number) or {}
@@ -775,7 +777,7 @@ class PaperNumberLedger:
             patched["repair_reason"] = reason
             patched["repaired_at"] = now_iso()
             items[number] = patched
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             self.write_marker(
                 folder, number, state=LEDGER_RESERVED,
                 planned_paper_name=str(existing.get("planned_paper_name") or ""),
@@ -802,7 +804,7 @@ class PaperNumberLedger:
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
         final_folder = Path(final_folder)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             if number not in items:
@@ -838,7 +840,7 @@ class PaperNumberLedger:
                 paper_name=paper_name,
                 now_iso=now_iso(),
             )
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             self.write_marker(
                 final_folder,
                 number,
@@ -898,7 +900,7 @@ class PaperNumberLedger:
             paper_name=paper_name,
             now_iso=now_iso(),
         )
-        self._save_unlocked(data)
+        self.save_unlocked(data)
         self.write_marker(
             final_folder,
             number,
@@ -927,7 +929,7 @@ class PaperNumberLedger:
         if not _PAPER_NUMBER_RE.match(str(number or "")):
             raise ValueError(f"invalid paper_number: {number}")
         raw_folder = Path(raw_folder)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self.lock_path)):
             data = self.load()
             items = data.setdefault("items", {})
             if number not in items:
@@ -955,7 +957,7 @@ class PaperNumberLedger:
                 planned_paper_name=planned,
                 now_iso=now_iso(),
             )
-            self._save_unlocked(data)
+            self.save_unlocked(data)
             self.write_marker(raw_folder, number, state=LEDGER_METADATA_STAGED, planned_paper_name=planned)
             # The public rollback API may be used outside the transaction
             # coordinator by recovery tooling.  If a publication sidecar is
@@ -1022,7 +1024,7 @@ class PaperNumberLedger:
             planned_paper_name=planned,
             now_iso=now_iso(),
         )
-        self._save_unlocked(data)
+        self.save_unlocked(data)
         self.write_marker(raw_folder, number, state=LEDGER_METADATA_STAGED, planned_paper_name=planned)
         return number
 

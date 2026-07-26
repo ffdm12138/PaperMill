@@ -115,14 +115,14 @@ class JournalDrainIndex:
                     )
                 cid_page_tracker[cid] = path
                 state.candidate_by_id[cid] = CandidateRef(cid, keyword_id, path, dict(item))
-                doi = _candidate_doi(item)
+                doi = candidate_doi(item)
                 status = str(item.get("status") or "")
                 expires = parse_iso(item.get("lease_expires_at"))
                 next_attempt = parse_iso(item.get("next_attempt_at"))
                 claimable = (not next_attempt or next_attempt <= now_dt) and (
                     status in {"pending", "ready", "failed_retryable"}
                     or status == "processing" and (not expires or expires <= now_dt))
-                claimable = bool(expected_profile_hash) and claimable and _relevance_claimable(
+                claimable = bool(expected_profile_hash) and claimable and relevance_claimable(
                     item, expected_profile_hash,
                 )
                 drain_visible = page_is_drain_visible(page)
@@ -131,13 +131,13 @@ class JournalDrainIndex:
                 elif (next_attempt and next_attempt > now_dt
                       and status in {"pending", "ready", "failed_retryable"}
                       and bool(expected_profile_hash)
-                      and _relevance_claimable(item, expected_profile_hash)
+                      and relevance_claimable(item, expected_profile_hash)
                       and drain_visible):
                     state.delayed_candidate_ids.add(cid)
                 if (
                     status == "processing" and doi and expires and expires > now_dt
                     and bool(expected_profile_hash)
-                    and _relevance_claimable(item, expected_profile_hash)
+                    and relevance_claimable(item, expected_profile_hash)
                 ):
                     state.processing_by_doi.setdefault(doi, cid)
                 elif status == "emitted" and doi:
@@ -158,7 +158,7 @@ class JournalDrainIndex:
                 self._state.candidate_by_id[cid]
                 for keyword in sorted(wanted)
                 for cid in self._state.claimable_by_keyword.get(keyword, ())
-                if _relevance_claimable(
+                if relevance_claimable(
                     self._state.candidate_by_id[cid].payload,
                     self.active_profile_hashes.get(keyword),
                 )
@@ -239,7 +239,7 @@ class JournalDrainIndex:
         swap only happens after all validation passes.
         """
         materialized = dict(page)
-        materialized["checksum"] = _compute_checksum(materialized)
+        materialized["checksum"] = compute_checksum(materialized)
         validate_page(materialized, path)
         with self._lock:
             keyword_id = str(page["keyword_id"])
@@ -304,7 +304,7 @@ class JournalDrainIndex:
                         and (not expires or expires <= now_dt)
                     )
                     and bool(expected_profile_hash)
-                    and _relevance_claimable(item, expected_profile_hash)
+                    and relevance_claimable(item, expected_profile_hash)
                 ):
                     new_queue.append(cid)
                 elif (
@@ -312,10 +312,10 @@ class JournalDrainIndex:
                     and next_attempt and next_attempt > now_dt
                     and status in {"pending", "ready", "failed_retryable"}
                     and bool(expected_profile_hash)
-                    and _relevance_claimable(item, expected_profile_hash)
+                    and relevance_claimable(item, expected_profile_hash)
                 ):
                     new_state.delayed_candidate_ids.add(cid)
-                doi = _candidate_doi(item)
+                doi = candidate_doi(item)
                 if status == "emitted" and doi:
                     ref = EmittedPrimaryRef(cid, path, dict(item))
                     new_state.emitted_by_doi[doi] = select_stable_emitted_primary(
@@ -337,7 +337,7 @@ class JournalDrainIndex:
                 1
                 for keyword in wanted
                 for cid in self._state.claimable_by_keyword.get(keyword, ())
-                if _relevance_claimable(
+                if relevance_claimable(
                     self._state.candidate_by_id[cid].payload,
                     self.active_profile_hashes.get(keyword),
                 )
@@ -374,7 +374,7 @@ class JournalDrainIndex:
                         owner for owner in owners if owner != cid]
                     if not new_state.terminal_by_doi[doi]:
                         new_state.terminal_by_doi.pop(doi, None)
-            doi = _candidate_doi(materialized)
+            doi = candidate_doi(materialized)
             status = str(item.get("status") or "")
             expires = parse_iso(item.get("lease_expires_at"))
             next_attempt = parse_iso(item.get("next_attempt_at"))
@@ -384,7 +384,7 @@ class JournalDrainIndex:
             if (
                 status == "processing" and doi and expires and expires > now_dt
                 and bool(expected_profile_hash)
-                and _relevance_claimable(materialized, expected_profile_hash)
+                and relevance_claimable(materialized, expected_profile_hash)
             ):
                 new_state.processing_by_doi.setdefault(doi, cid)
             elif status == "emitted" and doi:
@@ -401,7 +401,7 @@ class JournalDrainIndex:
                     or status == "processing" and (not expires or expires <= now_dt)
                 )
                 and bool(expected_profile_hash)
-                and _relevance_claimable(materialized, expected_profile_hash)
+                and relevance_claimable(materialized, expected_profile_hash)
             ):
                 if not next_attempt or next_attempt <= now_dt:
                     new_state.claimable_by_keyword.setdefault(
@@ -429,7 +429,7 @@ class JournalDrainIndex:
                 expected_profile_hash = self.active_profile_hashes.get(ref.keyword_id)
                 if (
                     expected_profile_hash
-                    and _relevance_claimable(ref.payload, expected_profile_hash)
+                    and relevance_claimable(ref.payload, expected_profile_hash)
                     and cid not in queue
                 ):
                     queue.append(cid)
@@ -454,11 +454,11 @@ from src.discovery.contracts.page_journal import (
     DURABLE_DOI_CANDIDATE_STATES,
     EmittedPrimaryRef,
     JournalCorruptError,
-    _candidate_doi,
-    _compute_checksum,
-    _relevance_claimable,
+    candidate_doi,
+    compute_checksum,
     page_is_drain_visible,
     parse_iso,
+    relevance_claimable,
     select_stable_emitted_primary,
     validate_page,
 )

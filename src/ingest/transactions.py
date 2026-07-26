@@ -197,9 +197,9 @@ class CommitJournalStore:
                 raise RuntimeError(
                     f"active_journal_conflict: unfinished commit transaction exists for {paper_number}"
                 )
-            return self._create_unlocked(**kwargs)
+            return self.create_unlocked(**kwargs)
 
-    def _create_unlocked(
+    def create_unlocked(
         self,
         *,
         paper_number: str,

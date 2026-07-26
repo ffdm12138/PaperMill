@@ -389,7 +389,7 @@ def resume_commit(
             with acquire_locks(
                 LockRequest.path_lock(
                     LEDGER_RANK,
-                    ledger._lock_path,
+                    ledger.lock_path,
                 ),
                 LockRequest.path_lock(
                     PAPERS_INSTALL_RANK,
@@ -472,7 +472,7 @@ def resume_commit(
             if _ledger_state(ledger, number) != "active":
                 # Edge case: final installed, ledger still reserved.
                 with acquire_locks(
-                    LockRequest.path_lock(LEDGER_RANK, ledger._lock_path),
+                    LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
                     LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
                     LockRequest.path_lock(
                         INDEX_PUBLISH_RANK,
@@ -499,7 +499,7 @@ def resume_commit(
                     )
             else:
                 with acquire_locks(
-                    LockRequest.path_lock(LEDGER_RANK, ledger._lock_path),
+                    LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
                     LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
                     LockRequest.path_lock(
                         INDEX_PUBLISH_RANK,
@@ -613,7 +613,7 @@ def commit_paper_raw(
             transaction_id = str(uuid.uuid4())
             staging = papers_dir / f".{paper_name}.staging_{transaction_id}"
             final = papers_dir / paper_name
-            journal = store._create_unlocked(
+            journal = store.create_unlocked(
                 paper_number=workspace.paper_number,
                 paper_name=paper_name,
                 source=workspace.root,

@@ -10,7 +10,7 @@ from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebo
 from src.discovery.models import PaperCandidate
 from src.discovery.contracts.page_journal import request_signature
 from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
-from src.discovery.contracts.page_journal import _compute_checksum
+from src.discovery.contracts.page_journal import compute_checksum
 from src.discovery.relevance_profiles import (
     RelevanceProfilePlanError,
     RelevanceProfileTransactionError,
@@ -28,7 +28,7 @@ def _write_page_dict(page_path: Path, page: dict) -> None:
     Tests mutate page dictionaries in-place; any rewrite must keep the
     checksum consistent with ``PageJournalStore.read`` validation.
     """
-    page["checksum"] = _compute_checksum(page)
+    page["checksum"] = compute_checksum(page)
     page_path.write_text(json.dumps(page, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 

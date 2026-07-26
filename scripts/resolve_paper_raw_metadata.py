@@ -214,7 +214,18 @@ def _build_rate_limiter(args) -> ProviderRateLimiter | None:
     if args.paper_interval_seconds is not None:
         rl.set_paper_interval(args.paper_interval_seconds)
     for provider, seconds in (args.provider_min_interval or []):
+        # The resolver-held limiter only paces papers; per-request min
+        # intervals are enforced by the authoritative ProviderClient stack,
+        # so the CLI override must land there.
         rl.set_provider_min_interval(provider, seconds)
+        try:
+            from src.discovery.providers.provider_client import ProviderRuntime
+            ProviderRuntime.get().limiter(provider).set_provider_min_interval(
+                provider, seconds
+            )
+        except Exception as exc:
+            print(f"[WARN] could not forward --provider-min-interval to "
+                  f"ProviderClient runtime for {provider}: {exc}")
     return rl
 
 

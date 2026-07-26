@@ -217,66 +217,6 @@ def test_jitter_zero_when_disabled():
     assert rl._jitter() == 0.0
 
 
-# ── 4. 429 reads Retry-After ───────────────────────────────────────────
-
-def test_429_reads_retry_after():
-    rl = ProviderRateLimiter(default_config())
-    rl.set_paper_interval(0.0)
-    rl.set_provider_min_interval("crossref", 0.0)
-    # Patch sleep to capture the duration without actually sleeping
-    slept = []
-    with patch("src.services.rate_limit.time.sleep", lambda s: slept.append(s)):
-        rl.wait("crossref")  # initial request (no sleep since first)
-        slept.clear()
-        rl.backoff("crossref", "429", retry_after=42)
-    assert any(abs(s - 42.0) < 0.01 for s in slept), f"expected 42s retry-after sleep, got {slept}"
-    assert rl.stats.http_429_count == 1
-
-
-# ── 5. 429 without Retry-After exponential backoff ─────────────────────
-
-def test_429_exponential_backoff_without_retry_after():
-    cfg = default_config()
-    cfg["backoff"]["on_429_initial_sleep_seconds"] = 10
-    cfg["backoff"]["multiplier"] = 2.0
-    rl = ProviderRateLimiter(cfg)
-    rl.set_paper_interval(0.0)
-    rl.set_provider_min_interval("crossref", 0.0)
-    slept = []
-    with patch("src.services.rate_limit.time.sleep", lambda s: slept.append(s)):
-        rl.wait("crossref")
-        slept.clear()
-        rl.backoff("crossref", "429")  # level 1: 10s
-        rl.backoff("crossref", "429")  # level 2: 20s
-        rl.backoff("crossref", "429")  # level 3: 40s
-    assert len(slept) == 3
-    assert slept[0] == pytest.approx(10.0)
-    assert slept[1] == pytest.approx(20.0)
-    assert slept[2] == pytest.approx(40.0)
-
-
-# ── 6. 403 triggers long backoff / stop ────────────────────────────────
-
-def test_403_long_backoff_and_stop():
-    cfg = default_config()
-    cfg["backoff"]["on_403_initial_sleep_seconds"] = 100
-    cfg["backoff"]["multiplier"] = 2.0
-    rl = ProviderRateLimiter(cfg)
-    rl.set_paper_interval(0.0)
-    rl.set_provider_min_interval("crossref", 0.0)
-    slept = []
-    with patch("src.services.rate_limit.time.sleep", lambda s: slept.append(s)):
-        rl.wait("crossref")
-        slept.clear()
-        rl.backoff("crossref", "403")  # consecutive_403=1, sleep 100
-        rl.backoff("crossref", "403")  # consecutive_403=2, sleep 200
-    assert rl.stats.http_403_count == 2
-    assert slept[0] == pytest.approx(100.0)
-    assert slept[1] == pytest.approx(200.0)
-    # After 2 consecutive 403s, should_stop returns True
-    assert rl.should_stop("crossref")
-
-
 # ── 7. checkpoint resume ───────────────────────────────────────────────
 
 def test_checkpoint_resume(tmp_path):
@@ -452,12 +392,36 @@ def test_stats_accumulate():
     with patch("src.services.rate_limit.time.sleep", lambda s: None):
         rl.wait("crossref")
         rl.wait("openalex")
-        rl.backoff("crossref", "429", retry_after=1)
     stats = rl.stats_dict()
     assert stats["total_requests"] == 2
     assert stats["requests_by_provider"]["crossref"] == 1
     assert stats["requests_by_provider"]["openalex"] == 1
-    assert stats["http_429_count"] == 1
+
+
+# ── 14b. pace_paper: paper interval + jitter, never provider min interval ──
+
+def test_pace_paper_skips_provider_min_interval():
+    """pace_paper must enforce the paper interval but never the per-provider
+    min interval — that layer belongs exclusively to ProviderClient, so each
+    network call sleeps in exactly one place."""
+    cfg = default_config()
+    cfg["global"]["paper_interval_seconds"] = 5.0
+    cfg["global"]["jitter_seconds"] = 0.0
+    rl = ProviderRateLimiter(cfg)
+    rl.set_provider_min_interval("crossref", 99.0)
+    slept: list[float] = []
+    with patch("src.services.rate_limit.time.sleep", lambda s: slept.append(s)):
+        rl.begin_paper()
+        rl.pace_paper("crossref")   # first paper: no previous -> no sleep
+        rl.pace_paper("crossref")   # same paper again: still no sleep
+        assert slept == []
+        rl.begin_paper()
+        rl.pace_paper("crossref")   # second paper: paper interval fires
+    assert len(slept) == 1
+    assert slept[0] == pytest.approx(5.0, abs=0.2)
+    # The 99s provider min interval never slept anywhere.
+    assert all(s < 90 for s in slept)
+    assert rl.stats.total_requests == 3
 
 
 # ── 15. MINERU_METADATA_CONTACT_EMAIL env var override ────────────────

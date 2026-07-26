@@ -257,7 +257,7 @@ def resume_rollback(
         elif phase == "raw_installed":
             _raw_is_valid(target, number, papers_dir=papers_dir, paper_raw_root=paper_raw_root)
             with acquire_locks(
-                LockRequest.path_lock(LEDGER_RANK, ledger._lock_path),
+                LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
                 LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
                 LockRequest.path_lock(
                     INDEX_PUBLISH_RANK,

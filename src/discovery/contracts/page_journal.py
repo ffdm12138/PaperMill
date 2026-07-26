@@ -8,12 +8,14 @@ profile-closure page transformation.  The validator and helper logic
 previously lived in ``src/discovery/page_journal.py``; that retired alias
 shell is deleted and this contract module is the sole implementation.  All
 fields are required by ``PAGE_V4_FIELDS`` and validated at construction time.
+
+This module is data + pure validation only.  Mutation-applying, protocol,
+and filesystem helpers live in ``src.discovery.stores.page_journal_ops``.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -78,7 +80,7 @@ def _check_non_blank(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must be non-blank str, got {value!r}")
 
 
-def _compute_checksum(data: dict[str, Any]) -> str:
+def compute_checksum(data: dict[str, Any]) -> str:
     """Canonical checksum over the serialized payload (excluding checksum field)."""
     payload = {k: v for k, v in sorted(data.items()) if k != "checksum"}
     raw = _canonical_json_bytes(payload)
@@ -230,7 +232,7 @@ class ProviderPageJournalV4:
             raise TypeError(f"generation must be int, got {type(gen).__name__}")
 
         # Compute checksum from canonical form
-        expected_checksum = _compute_checksum(dict(data))
+        expected_checksum = compute_checksum(dict(data))
         stored_checksum = data.get("checksum", "")
         if stored_checksum and stored_checksum != expected_checksum:
             raise ValueError(
@@ -364,11 +366,11 @@ def is_profile_closeable_candidate(
     return bool(
         classify_candidate_lifecycle(candidate.get("status"))
         is CandidateLifecycleClass.PRE_STAGING_CLOSEABLE
-        and _relevance_state(candidate) in RELEVANCE_PROFILE_CHANGE_CLOSEABLE_STATES
+        and relevance_state(candidate) in RELEVANCE_PROFILE_CHANGE_CLOSEABLE_STATES
         and old_hash != target_profile_hash
     )
 
-_PAGE_TRANSITIONS = {
+PAGE_TRANSITIONS = {
     "fetched": {"cursor_committed", "failed"},
     "cursor_committed": {"draining", "drained"},
     "draining": {"cursor_committed", "drained"},
@@ -376,7 +378,7 @@ _PAGE_TRANSITIONS = {
     "failed": set(),
 }
 
-_CANDIDATE_TRANSITIONS = {
+CANDIDATE_TRANSITIONS = {
     "pending": {
         "resolution_pending",
         "ready",
@@ -429,21 +431,6 @@ class JournalCorruptError(RuntimeError):
 
 class InvalidStateTransition(RuntimeError):
     """Raised when code attempts a forbidden page/candidate transition."""
-
-
-def _path_is_reparse(path: Path) -> bool:
-    """Detect symlinks and Windows reparse points without following them."""
-    try:
-        info = path.lstat()
-    except OSError:
-        return True  # cannot stat → treat as unsafe
-    if hasattr(os.path, 'islink') and os.path.islink(path):  # noqa: PTH111
-        return True
-    import stat as _stat_mod
-    attrs = getattr(info, "st_file_attributes", 0)
-    reparse_flag = getattr(_stat_mod, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return bool(attrs & reparse_flag)
-
 
 
 def parse_iso(value: str | None) -> datetime | None:
@@ -557,7 +544,7 @@ def title_resolution_key(candidate: dict[str, Any] | PaperCandidate) -> str:
     return stable_hash("resolution", normalize_title(title), year or "", first_author.lower(), length=40)
 
 
-def _candidate_record(
+def make_candidate_record(
     page_id_value: str,
     candidate: PaperCandidate,
     index: int,
@@ -597,18 +584,6 @@ def _candidate_record(
             "last_http_status": None,
         }
     return record
-
-
-def _atomic_write_json_unlocked(path: Path, data: dict[str, Any]) -> None:
-    """Write JSON atomically (caller holds lock) with fsync durability.
-
-    Delegates to :func:`src.utils.atomic_io.atomic_write_json_unlocked`
-    so that all durable writers share the same fsync + tmp + os.replace
-    + parent-dir-fsync implementation.
-    """
-    from src.utils.atomic_io import atomic_write_json_unlocked as _unlocked
-
-    _unlocked(path, data, indent=2)
 
 
 def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
@@ -656,7 +631,7 @@ def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
     generation = data.get("generation")
     if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
         raise JournalCorruptError(f"journal generation must be a positive integer: {path or ''}")
-    if data.get("state") not in _PAGE_TRANSITIONS:
+    if data.get("state") not in PAGE_TRANSITIONS:
         raise JournalCorruptError(f"invalid page state: {data.get('state')}: {path or ''}")
     signature = data.get("request_signature")
     if not isinstance(signature, dict):
@@ -742,7 +717,7 @@ def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
             )
         seen_candidate_ids.add(candidate_id_value)
         status = item.get("status")
-        if status not in _CANDIDATE_TRANSITIONS:
+        if status not in CANDIDATE_TRANSITIONS:
             raise JournalCorruptError(f"invalid candidate state {status}: {path or ''}")
         relevance = item.get("relevance")
         if relevance is not None:
@@ -771,16 +746,13 @@ def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
     # Checksum is the final integrity gate — after all field-level checks pass.
     stored_checksum = data.get("checksum", "")
     if stored_checksum:
-        expected = _compute_checksum(data)
+        expected = compute_checksum(data)
         if stored_checksum != expected:
             raise JournalCorruptError(
                 f"journal checksum mismatch: stored={stored_checksum[:16]}..., "
                 f"computed={expected[:16]}...: {path or ''}"
             )
     return data
-
-
-_validate_page = validate_page
 
 
 @dataclass(frozen=True)
@@ -916,7 +888,7 @@ def validate_journal_drain_index(index: JournalDrainIndex) -> list[str]:
             # emitted candidates for this DOI across all pages.
             candidates_for_doi: list[tuple[str, EmittedPrimaryRef]] = []
             for cid, candidate_ref in by_id.items():
-                if _candidate_doi(candidate_ref.payload) == doi:
+                if candidate_doi(candidate_ref.payload) == doi:
                     status = str(candidate_ref.payload.get("status") or "")
                     if status == "emitted":
                         candidates_for_doi.append(
@@ -944,7 +916,7 @@ def validate_journal_drain_index(index: JournalDrainIndex) -> list[str]:
                 if not page_is_drain_visible(page):
                     violations.append(
                         f"claimable {cid}: page state {page.get('state')!r} is not drain-visible")
-                if expected_hash and not _relevance_claimable(ref.payload, expected_hash):
+                if expected_hash and not relevance_claimable(ref.payload, expected_hash):
                     violations.append(
                         f"claimable {cid}: relevance not passed for active profile hash")
 
@@ -956,12 +928,12 @@ def validate_journal_drain_index(index: JournalDrainIndex) -> list[str]:
     return violations
 
 
-def _candidate_doi(item: Mapping[str, Any]) -> str:
+def candidate_doi(item: Mapping[str, Any]) -> str:
     payload = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
     return normalize_doi(payload.get("doi") or "")
 
 
-def _relevance_state(item: Mapping[str, Any]) -> str:
+def relevance_state(item: Mapping[str, Any]) -> str:
     """Return the orthogonal relevance state for one candidate.
 
     Journals written before relevance was introduced lack an explicit
@@ -974,10 +946,10 @@ def _relevance_state(item: Mapping[str, Any]) -> str:
     return "profile_unbound"
 
 
-def _relevance_claimable(
+def relevance_claimable(
     item: Mapping[str, Any], expected_profile_hash: str | None,
 ) -> bool:
-    if _relevance_state(item) not in RELEVANCE_CLAIMABLE_STATES:
+    if relevance_state(item) not in RELEVANCE_CLAIMABLE_STATES:
         return False
     if expected_profile_hash is None:
         return False  # fail closed — every call site must supply the active hash
@@ -1056,92 +1028,26 @@ def transform_page_for_profile_closure(
     missing = sorted(set(by_id) - seen)
     if missing:
         raise KeyError("planned profile candidates missing: " + ",".join(missing))
-    if _all_terminal(data["candidates"]) and data["state"] in {
+    if all_terminal(data["candidates"]) and data["state"] in {
         "cursor_committed", "draining",
     }:
         data["state"] = "drained"
         data["drained_at"] = data.get("drained_at") or closure_timestamp
-    data["statistics"] = _statistics(data["candidates"])
-    data["checksum"] = _compute_checksum(data)
+    data["statistics"] = compute_statistics(data["candidates"])
+    data["checksum"] = compute_checksum(data)
     validate_page(data)
     return _serialized_page_bytes(data)
 
 
-def _assert_terminal_replay_equivalent(
-    item: Mapping[str, Any],
-    *,
-    new_status: str,
-    updates: Mapping[str, Any] | None,
-) -> bool:
-    """Allow terminal replay only when it is a byte-preserving no-op."""
-    old_status = str(item.get("status") or "")
-    if old_status not in TERMINAL_CANDIDATE_STATES:
-        return False
-    if new_status != old_status:
-        raise InvalidStateTransition(
-            f"terminal candidate replay cannot change status {old_status} -> {new_status}"
-        )
-    mismatched = sorted(
-        key
-        for key, value in (updates or {}).items()
-        if key not in item or item[key] != value
-    )
-    if mismatched:
-        raise InvalidStateTransition(
-            "terminal candidate replay cannot overwrite fields: "
-            + ",".join(mismatched)
-        )
-    return True
-
-
-def _transition_candidate(item: dict[str, Any], new_state: CandidateState) -> None:
-    old = item.get("status")
-    if new_state not in _CANDIDATE_TRANSITIONS.get(old, set()):
-        if old == new_state:
-            return
-        raise InvalidStateTransition(f"candidate {old} -> {new_state} is not allowed")
-    item["status"] = new_state
-
-
-def _assert_relevance_finalized(data: dict[str, Any], path: Path) -> None:
-    """Every candidate must carry an explicit, non-profile_unbound relevance record.
-
-    Called before ``mark_cursor_committed`` transitions the page state.
-    This covers both the normal path and the all-terminal fast-path to
-    ``drained``.  ``profile_unbound`` or a missing relevance record are
-    always rejected: a new page must be evaluated before its cursor can
-    advance.
-    """
-    allowed = RELEVANCE_STATES - {RelevanceState.PROFILE_UNBOUND}
-    for item in data.get("candidates", []):
-        relevance = item.get("relevance")
-        if not isinstance(relevance, Mapping):
-            raise InvalidStateTransition(
-                f"candidate {item.get('candidate_id')!r} is missing a "
-                f"relevance record and cannot be cursor-committed: {path}"
-            )
-        state = str(relevance.get("state") or "")
-        if state == RelevanceState.PROFILE_UNBOUND:
-            raise InvalidStateTransition(
-                f"candidate {item.get('candidate_id')!r} is still "
-                f"profile_unbound and cannot be cursor-committed: {path}"
-            )
-        if state not in allowed:
-            raise InvalidStateTransition(
-                f"candidate {item.get('candidate_id')!r} has unknown "
-                f"relevance state {state!r}: {path}"
-            )
-
-
-def _all_terminal(candidates: list[dict[str, Any]]) -> bool:
+def all_terminal(candidates: list[dict[str, Any]]) -> bool:
     return all(
         item.get("status") in TERMINAL_CANDIDATE_STATES
-        or _relevance_state(item) in RELEVANCE_TERMINAL_STATES
+        or relevance_state(item) in RELEVANCE_TERMINAL_STATES
         for item in candidates
     )
 
 
-def _statistics(candidates: list[dict[str, Any]]) -> dict[str, int]:
+def compute_statistics(candidates: list[dict[str, Any]]) -> dict[str, int]:
     stats = {
         "returned": len(candidates),
         "pending": 0,
@@ -1162,14 +1068,14 @@ def _statistics(candidates: list[dict[str, Any]]) -> dict[str, int]:
     }
     for item in candidates:
         status = str(item.get("status") or "")
-        relevance_state = _relevance_state(item)
-        relevance_key = f"relevance_{relevance_state}"
+        relevance_state_value = relevance_state(item)
+        relevance_key = f"relevance_{relevance_state_value}"
         if relevance_key in stats:
             stats[relevance_key] += 1
-        if status in TERMINAL_CANDIDATE_STATES or relevance_state in RELEVANCE_TERMINAL_STATES:
+        if status in TERMINAL_CANDIDATE_STATES or relevance_state_value in RELEVANCE_TERMINAL_STATES:
             stats["terminal"] += 1
         else:
-            if relevance_state == "passed":
+            if relevance_state_value == "passed":
                 stats["pending"] += 1
         if status in stats:
             stats[status] += 1

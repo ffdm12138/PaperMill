@@ -15,6 +15,7 @@ from typing import Any
 from filelock import FileLock
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from src.ingest.locking import paper_raw_write_lock
 from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.services.ingest_duplicate_guard import is_paper_raw_workspace
 from src.utils.jsonio import read_json
@@ -583,7 +584,7 @@ class PaperNumberAdminService:
         if apply and not reason:
             report["errors"].append("--reason is required with --apply")
         if apply and not report["errors"]:
-            with FileLock(str(self.paper_raw_dir / ".paper_raw_write.lock")):
+            with paper_raw_write_lock(self.paper_raw_dir):
                 for target in targets:
                     if not target.exists() or not target.is_dir():
                         continue
@@ -641,7 +642,7 @@ class PaperNumberAdminService:
             _write_json(tx_dir / "renumber_report.json", report)
             return report
         if apply:
-            with FileLock(str(self.ledger._lock_path)):
+            with FileLock(str(self.ledger.lock_path)):
                 if purge_empty_invalid:
                     for target in purge_targets:
                         shutil.rmtree(target)
@@ -651,7 +652,7 @@ class PaperNumberAdminService:
                     history.append({"reset_at": now_iso(), "reason": reason})
                 if history:
                     after["reset_history"] = history
-                self.ledger._save_unlocked(after)
+                self.ledger.save_unlocked(after)
             _write_json(tx_dir / "paper_number_ledger.after.json", after)
             report["applied"] = True
             report["post_audit"] = self.audit(strict=True)
@@ -899,7 +900,7 @@ class PaperNumberAdminService:
             return report
 
         try:
-            with FileLock(str(self.ledger._lock_path)):
+            with FileLock(str(self.ledger.lock_path)):
                 if purge_empty_invalid:
                     for target in purge_targets:
                         shutil.rmtree(target)
@@ -965,7 +966,7 @@ class PaperNumberAdminService:
 
                 _write_json(tx_dir / "rollback_manifest.json", rollback)
                 new_ledger = self._new_ledger_from_mapping(mapping, reason=reason)
-                self.ledger._save_unlocked(new_ledger)
+                self.ledger.save_unlocked(new_ledger)
                 _write_json(tx_dir / "paper_number_ledger.after.json", new_ledger)
                 report["applied"] = True
         except Exception as exc:

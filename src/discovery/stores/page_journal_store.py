@@ -15,6 +15,7 @@ from filelock import FileLock
 from src.discovery.contracts.page_journal import (
     INITIAL_CURSOR,
     PAGE_SCHEMA_VERSION,
+    PAGE_TRANSITIONS,
     RELEVANCE_STATES,
     TERMINAL_CANDIDATE_STATES,
     CandidateClaim,
@@ -25,28 +26,28 @@ from src.discovery.contracts.page_journal import (
     PageLane,
     PageRef,
     PageState,
-    _all_terminal,
-    _assert_relevance_finalized,
-    _assert_terminal_replay_equivalent,
-    _atomic_write_json_unlocked,
-    _candidate_doi,
-    _candidate_record,
-    _path_is_reparse,
-    _relevance_claimable,
-    _relevance_state,
-    _statistics,
-    _transition_candidate,
-    _validate_page,
-    _PAGE_TRANSITIONS,
+    all_terminal,
+    candidate_doi,
+    compute_checksum,
+    compute_statistics,
+    make_candidate_record,
     now_iso,
     page_is_drain_visible,
     parse_iso,
+    relevance_claimable,
+    relevance_state,
     request_signature,
     stable_hash,
     transform_page_for_profile_closure,
     validate_page,
 )
-from src.discovery.contracts.page_journal import _compute_checksum
+from src.discovery.stores.page_journal_ops import (
+    assert_relevance_finalized,
+    assert_terminal_replay_equivalent,
+    path_is_reparse,
+    transition_candidate,
+    write_page_json_unlocked,
+)
 from src.discovery.execution.lane_models import (
     DiscoveryLaneKey,
     ExhaustionEvidence,
@@ -131,7 +132,7 @@ class PageJournalStoreV4:
                 break  # walked past root boundary
             if current == self.root_dir or current == self.root_dir.resolve():
                 break
-            if _path_is_reparse(current):
+            if path_is_reparse(current):
                 raise JournalCorruptError(f"symlink/reparse in journal path: {current}")
             current = current.parent
         # 3. The path must match the canonical identity derived from content.
@@ -152,12 +153,12 @@ class PageJournalStoreV4:
             data = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise JournalCorruptError(f"journal JSON corrupt: {path}: {exc}") from exc
-        result = _validate_page(data, path)
+        result = validate_page(data, path)
         self._validate_page_path_identity(result, path)
         return result
 
     def write_page(self, page: dict[str, Any]) -> Path:
-        page["checksum"] = _compute_checksum(page)
+        page["checksum"] = compute_checksum(page)
         page = validate_page(page)
         path = self.page_path(
             keyword_id=page["keyword_id"],
@@ -172,7 +173,7 @@ class PageJournalStoreV4:
                 if existing.get("request_signature") != page.get("request_signature"):
                     raise JournalCorruptError(f"page_id collision with different signature: {path}")
                 return path
-            _atomic_write_json_unlocked(path, _validate_page(page, path))
+            write_page_json_unlocked(path, validate_page(page, path))
         return path
 
     def make_page(
@@ -202,7 +203,7 @@ class PageJournalStoreV4:
     ) -> dict[str, Any]:
         now = now_iso()
         records = [
-            _candidate_record(
+            make_candidate_record(
                 page_id, cand, idx, relevance_profile_hash=relevance_profile_hash
             )
             for idx, cand in enumerate(candidates)
@@ -250,10 +251,10 @@ class PageJournalStoreV4:
             "cursor_committed_at": now if state == "cursor_committed" else None,
             "drained_at": None,
             "candidates": records,
-            "statistics": _statistics(records),
+            "statistics": compute_statistics(records),
             "checksum": "",  # placeholder for computation
         }
-        page_dict["checksum"] = _compute_checksum(page_dict)
+        page_dict["checksum"] = compute_checksum(page_dict)
         return page_dict
 
     def make_synthetic_page(self, **kwargs: Any) -> dict[str, Any]:
@@ -343,16 +344,16 @@ class PageJournalStoreV4:
         with self.lock_for(path):
             data = self.read(path)
             old = data["state"]
-            if new_state not in _PAGE_TRANSITIONS[old]:
+            if new_state not in PAGE_TRANSITIONS[old]:
                 raise InvalidStateTransition(f"page {old} -> {new_state} is not allowed")
             data["state"] = new_state
             if new_state == "cursor_committed":
                 data["cursor_committed_at"] = now_iso()
             if new_state == "drained":
                 data["drained_at"] = now_iso()
-            data["statistics"] = _statistics(data["candidates"])
-            data["checksum"] = _compute_checksum(data)
-            _atomic_write_json_unlocked(path, data)
+            data["statistics"] = compute_statistics(data["candidates"])
+            data["checksum"] = compute_checksum(data)
+            write_page_json_unlocked(path, data)
             return data
 
     def mark_cursor_committed(self, path: Path) -> dict[str, Any]:
@@ -366,7 +367,7 @@ class PageJournalStoreV4:
             #     explicit, non-profile_unbound relevance record BEFORE the
             #     cursor advances.  This covers the all-terminal fast-path
             #     below as well as the normal cursor-commit path.
-            _assert_relevance_finalized(data, path)
+            assert_relevance_finalized(data, path)
             data["state"] = "cursor_committed"
             data["cursor_committed_at"] = now_iso()
             # A profile-bound page with only rejected/invalid relevance
@@ -376,13 +377,13 @@ class PageJournalStoreV4:
             if (
                 data["candidates"]
                 and all(isinstance(item.get("relevance"), Mapping) for item in data["candidates"])
-                and _all_terminal(data["candidates"])
+                and all_terminal(data["candidates"])
             ):
                 data["state"] = "drained"
                 data["drained_at"] = data.get("drained_at") or now_iso()
-            data["statistics"] = _statistics(data["candidates"])
-            data["checksum"] = _compute_checksum(data)
-            _atomic_write_json_unlocked(path, data)
+            data["statistics"] = compute_statistics(data["candidates"])
+            data["checksum"] = compute_checksum(data)
+            write_page_json_unlocked(path, data)
             return data
 
     def finalize_relevance(
@@ -418,7 +419,7 @@ class PageJournalStoreV4:
                 if new_state not in RELEVANCE_STATES or new_state == "profile_unbound":
                     raise InvalidStateTransition(f"invalid relevance decision {new_state!r}")
                 old_state = (
-                    _relevance_state(item)
+                    relevance_state(item)
                     if isinstance(item.get("relevance"), Mapping)
                     else "profile_unbound"
                 )
@@ -462,16 +463,16 @@ class PageJournalStoreV4:
             still_unbound = sorted(
                 str(item.get("candidate_id") or "")
                 for item in data["candidates"]
-                if _relevance_state(item) == "profile_unbound"
+                if relevance_state(item) == "profile_unbound"
             )
             if still_unbound:
                 raise InvalidStateTransition(
                     "relevance finalization left profile_unbound candidates: "
                     + ",".join(still_unbound)
                 )
-            data["statistics"] = _statistics(data["candidates"])
-            data["checksum"] = _compute_checksum(data)
-            _atomic_write_json_unlocked(path, data)
+            data["statistics"] = compute_statistics(data["candidates"])
+            data["checksum"] = compute_checksum(data)
+            write_page_json_unlocked(path, data)
             return data
 
     def close_stale_profile_candidates(
@@ -516,7 +517,7 @@ class PageJournalStoreV4:
                 cid = str(item.get("candidate_id") or "")
                 if cid not in by_id:
                     continue
-                if _relevance_state(item) != "verification_deferred":
+                if relevance_state(item) != "verification_deferred":
                     continue
                 decision = by_id[cid]
                 state = str(decision.get("state") or "")
@@ -529,12 +530,12 @@ class PageJournalStoreV4:
                         f"deferred relevance profile hash changed for candidate {cid}"
                     )
                 item["relevance"] = dict(decision)
-            data["statistics"] = _statistics(data["candidates"])
-            if _all_terminal(data["candidates"]) and data["state"] in {"cursor_committed", "draining"}:
+            data["statistics"] = compute_statistics(data["candidates"])
+            if all_terminal(data["candidates"]) and data["state"] in {"cursor_committed", "draining"}:
                 data["state"] = "drained"
                 data["drained_at"] = data.get("drained_at") or now_iso()
-            data["checksum"] = _compute_checksum(data)
-            _atomic_write_json_unlocked(path, data)
+            data["checksum"] = compute_checksum(data)
+            write_page_json_unlocked(path, data)
             return data
 
     def list_pages(self, keyword_ids: Iterable[str] | None = None) -> list[PageRef]:
@@ -600,18 +601,18 @@ class PageJournalStoreV4:
                     return ClaimResult(False, page_path, candidate_id_value, reason="deferred_until_next_attempt")
                 if status == "processing" and expires and expires > now_dt:
                     return ClaimResult(False, page_path, candidate_id_value, reason="lease_active")
-                if not _relevance_claimable(item, expected_profile_hash):
+                if not relevance_claimable(item, expected_profile_hash):
                     return ClaimResult(False, page_path, candidate_id_value, reason="relevance_not_passed")
                 if status not in {"pending", "ready", "failed_retryable", "processing"}:
                     return ClaimResult(False, page_path, candidate_id_value, reason=f"not_claimable:{status}")
-                _transition_candidate(item, "processing")
+                transition_candidate(item, "processing")
                 item["claimed_by"] = worker_id
                 item["claimed_at"] = now_iso()
                 item["lease_expires_at"] = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
                 item["attempts"] = int(item.get("attempts") or 0) + 1
-                data["statistics"] = _statistics(data["candidates"])
-                data["checksum"] = _compute_checksum(data)
-                _atomic_write_json_unlocked(page_path, data)
+                data["statistics"] = compute_statistics(data["candidates"])
+                data["checksum"] = compute_checksum(data)
+                write_page_json_unlocked(page_path, data)
                 return ClaimResult(True, page_path, candidate_id_value, candidate=dict(item))
         return ClaimResult(False, page_path, candidate_id_value, reason="candidate_not_found")
 
@@ -640,7 +641,7 @@ class PageJournalStoreV4:
                 expires = parse_iso(item.get("lease_expires_at"))
                 next_attempt = parse_iso(item.get("next_attempt_at"))
                 status = item.get("status")
-                if not _relevance_claimable(item, expected_profile_hash):
+                if not relevance_claimable(item, expected_profile_hash):
                     continue
                 if next_attempt and next_attempt > now_dt:
                     continue
@@ -648,19 +649,19 @@ class PageJournalStoreV4:
                     continue
                 if status not in {"pending", "ready", "failed_retryable", "processing"}:
                     continue
-                _transition_candidate(item, "processing")
+                transition_candidate(item, "processing")
                 item["claimed_by"] = worker_id
                 item["claimed_at"] = now_iso()
                 item["lease_expires_at"] = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
                 item["attempts"] = int(item.get("attempts") or 0) + 1
                 claims.append(CandidateClaim(
                     cid, str(data["keyword_id"]), str(data["page_id"]),
-                    str(data["provider"]), _candidate_doi(item), page_path,
+                    str(data["provider"]), candidate_doi(item), page_path,
                     dict(item), str(item["lease_expires_at"])))
             if claims:
-                data["statistics"] = _statistics(data["candidates"])
-                data["checksum"] = _compute_checksum(data)
-                _atomic_write_json_unlocked(page_path, data)
+                data["statistics"] = compute_statistics(data["candidates"])
+                data["checksum"] = compute_checksum(data)
+                write_page_json_unlocked(page_path, data)
         return claims
 
     def renew_candidate_lease(
@@ -680,8 +681,8 @@ class PageJournalStoreV4:
                     item["lease_expires_at"] = (
                         datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
                     ).isoformat()
-                    data["checksum"] = _compute_checksum(data)
-                    _atomic_write_json_unlocked(page_path, data)
+                    data["checksum"] = compute_checksum(data)
+                    write_page_json_unlocked(page_path, data)
                     return True
         return False
 
@@ -710,7 +711,7 @@ class PageJournalStoreV4:
                     continue
                 if item.get("status") != "processing" or item.get("claimed_by") != worker_id:
                     raise InvalidStateTransition("only claim owner may defer processing candidate")
-                _transition_candidate(item, "failed_retryable")
+                transition_candidate(item, "failed_retryable")
                 item["claimed_by"] = None
                 item["claimed_at"] = None
                 item["lease_expires_at"] = None
@@ -723,9 +724,9 @@ class PageJournalStoreV4:
                     item.pop("next_attempt_at", None)
                 if updates:
                     item.update(updates)
-                data["statistics"] = _statistics(data["candidates"])
-                data["checksum"] = _compute_checksum(data)
-                _atomic_write_json_unlocked(page_path, data)
+                data["statistics"] = compute_statistics(data["candidates"])
+                data["checksum"] = compute_checksum(data)
+                write_page_json_unlocked(page_path, data)
                 return dict(item)
         raise KeyError(f"candidate not found: {candidate_id_value}")
 
@@ -743,28 +744,28 @@ class PageJournalStoreV4:
             for item in data["candidates"]:
                 if item.get("candidate_id") != candidate_id_value:
                     continue
-                if _assert_terminal_replay_equivalent(
+                if assert_terminal_replay_equivalent(
                     item, new_status=new_status, updates=updates,
                 ):
                     return dict(item)
                 if item.get("status") == "processing" and item.get("claimed_by") != worker_id:
                     raise InvalidStateTransition("only claim owner may commit processing result")
-                _transition_candidate(item, new_status)
+                transition_candidate(item, new_status)
                 if updates:
                     item.update(updates)
                 if new_status in TERMINAL_CANDIDATE_STATES or new_status == "failed_retryable":
                     item["claimed_by"] = None
                     item["claimed_at"] = None
                     item["lease_expires_at"] = None
-                data["statistics"] = _statistics(data["candidates"])
-                if _all_terminal(data["candidates"]):
+                data["statistics"] = compute_statistics(data["candidates"])
+                if all_terminal(data["candidates"]):
                     if data["state"] != "drained":
                         if data["state"] not in {"cursor_committed", "draining"}:
                             raise InvalidStateTransition(f"cannot drain page from {data['state']}")
                         data["state"] = "drained"
                         data["drained_at"] = now_iso()
-                data["checksum"] = _compute_checksum(data)
-                _atomic_write_json_unlocked(page_path, data)
+                data["checksum"] = compute_checksum(data)
+                write_page_json_unlocked(page_path, data)
                 return dict(item)
         raise KeyError(f"candidate not found: {candidate_id_value}")
 
@@ -784,7 +785,7 @@ class PageJournalStoreV4:
                     continue
                 new_status = str(result["new_status"])
                 updates = result.get("updates")
-                if _assert_terminal_replay_equivalent(
+                if assert_terminal_replay_equivalent(
                     item,
                     new_status=new_status,
                     updates=updates if isinstance(updates, Mapping) else None,
@@ -793,7 +794,7 @@ class PageJournalStoreV4:
                     continue
                 if item.get("status") == "processing" and item.get("claimed_by") != worker_id:
                     raise InvalidStateTransition("only claim owner may commit processing result")
-                _transition_candidate(item, new_status)  # type: ignore[arg-type]
+                transition_candidate(item, new_status)  # type: ignore[arg-type]
                 if isinstance(updates, Mapping):
                     item.update(updates)
                 if new_status in TERMINAL_CANDIDATE_STATES or new_status == "failed_retryable":
@@ -806,14 +807,14 @@ class PageJournalStoreV4:
                 missing = sorted(set(by_id) - {str(item["candidate_id"]) for item in committed})
                 raise KeyError(f"candidates not found: {','.join(missing)}")
             if changed:
-                data["statistics"] = _statistics(data["candidates"])
-                if _all_terminal(data["candidates"]):
+                data["statistics"] = compute_statistics(data["candidates"])
+                if all_terminal(data["candidates"]):
                     if data["state"] not in {"cursor_committed", "draining", "drained"}:
                         raise InvalidStateTransition(f"cannot drain page from {data['state']}")
                     data["state"] = "drained"
                     data["drained_at"] = data.get("drained_at") or now_iso()
-                data["checksum"] = _compute_checksum(data)
-                _atomic_write_json_unlocked(page_path, data)
+                data["checksum"] = compute_checksum(data)
+                write_page_json_unlocked(page_path, data)
         return committed
 
     def update_candidate_payload(
@@ -838,9 +839,9 @@ class PageJournalStoreV4:
                 if item.get("status") != "processing" or item.get("claimed_by") != worker_id:
                     raise InvalidStateTransition("only claim owner may update candidate payload")
                 item["candidate"] = dict(candidate_payload)
-                data["checksum"] = _compute_checksum(data)
-                _validate_page(data, page_path)
-                _atomic_write_json_unlocked(page_path, data)
+                data["checksum"] = compute_checksum(data)
+                validate_page(data, page_path)
+                write_page_json_unlocked(page_path, data)
                 return dict(item)
         raise KeyError(f"candidate not found: {candidate_id_value}")
 

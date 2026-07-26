@@ -68,6 +68,22 @@ def acquire_locks(*requests: LockRequest, timeout: float = -1) -> Iterator[None]
         _HELD.reset(token)
 
 
+@contextmanager
+def paper_raw_write_lock(paper_raw_dir: Path | str, *, timeout: float = -1) -> Iterator[None]:
+    """Acquire ``<paper_raw>/.paper_raw_write.lock`` at its canonical rank.
+
+    The single sanctioned acquisition point for the workspace write lock
+    (rank ``PAPER_RAW_GLOBAL_RANK``).  Modules must use this instead of
+    constructing a raw ``FileLock`` so the ContextVar rank bookkeeping can
+    fail fast on lock-order inversions.
+    """
+    lock_path = Path(paper_raw_dir) / ".paper_raw_write.lock"
+    with acquire_locks(
+        LockRequest.path_lock(PAPER_RAW_GLOBAL_RANK, lock_path), timeout=timeout
+    ):
+        yield
+
+
 def transaction_requests(lock_root: Path, paper_numbers: Sequence[str]) -> list[LockRequest]:
     unique = sorted(set(paper_numbers), key=int)
     if len(unique) != len(paper_numbers):

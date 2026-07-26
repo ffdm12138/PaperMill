@@ -45,16 +45,15 @@ class CatalogCategoryClassifier(Protocol):
 # ── Production guard ──────────────────────────────────────────────────
 
 def _is_real_catalog_root(root: Path) -> bool:
-    """Heuristic: is *root* the real project data/catalog/?"""
-    root = Path(root).resolve()
-    # If it's under a pytest tmp dir, it's a test
-    parts = root.parts
-    if any("pytest" in p.lower() for p in parts):
-        return False
-    if "tmp" in parts[-3:]:
-        return False
-    # If the ledger has real active papers, it's production
-    ledger_path = root / "paper_number_ledger.json"
+    """Production signal: does the ledger at *root* hold active papers?
+
+    No path sniffing: production code must not inspect path strings for
+    test-runner names.  A root whose ledger has at least one active paper is
+    production; anything else (fresh roots, isolated test roots) is not.
+    Tests that seed active papers and still need the fake classifier opt in
+    explicitly via ``MINERU_ALLOW_FAKE_CLASSIFIER``.
+    """
+    ledger_path = Path(root).resolve() / "paper_number_ledger.json"
     if ledger_path.is_file():
         try:
             data = json.loads(ledger_path.read_text(encoding="utf-8"))

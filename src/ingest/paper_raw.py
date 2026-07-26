@@ -13,6 +13,7 @@ from config.settings import (
     MINERU_OUTPUT_CACHE_DIR, MINERU_OUTPUT_CACHE_ENABLED,
     PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR,
 )
+from src.ingest.locking import paper_raw_write_lock
 from src.cleaner import MinerUOutputCleaner
 from src.converter import MinerUConverter
 from src.file_fingerprint import compute_file_hashes, compute_sha256
@@ -68,7 +69,7 @@ class PaperRawAllocator:
     def allocate_workspace(self, *, planned_paper_name: str = "") -> dict:
         """Reserve a 16-digit paper_number and create its paper_raw workspace."""
         self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
+        with paper_raw_write_lock(self.paper_raw_dir):
             return self._allocate_workspace_unlocked(planned_paper_name=planned_paper_name)
 
     def _allocate_workspace_unlocked(self, *, planned_paper_name: str = "") -> dict:
@@ -134,7 +135,7 @@ class PaperRawAllocator:
         if not source_pdf.exists():
             raise FileNotFoundError(f"PDF not found: {source_pdf}")
         self.paper_raw_dir.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
+        with paper_raw_write_lock(self.paper_raw_dir):
             dup = check_pdf_duplicate(source_pdf, paper_raw_dir=self.paper_raw_dir, papers_dir=self.papers_dir)
             if dup.blocking:
                 raise DuplicateIngestError(dup)
@@ -223,7 +224,7 @@ class PaperRawAllocator:
         if not folder.is_dir():
             raise FileNotFoundError(f"paper_raw folder not found: {folder}")
         source_pdf = Path(source_pdf)
-        with FileLock(str(self._lock_path)):
+        with paper_raw_write_lock(self.paper_raw_dir):
             dest_pdf = folder / f"{paper_number}.pdf"
             freeze_path = folder / f"{paper_number}.metadata_freeze.json"
             if replace and freeze_path.exists():

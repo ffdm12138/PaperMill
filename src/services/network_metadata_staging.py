@@ -187,14 +187,9 @@ def stage_network_metadata_records(
         remaining = prepared[start:start + 16]
         assert transaction is not None
         while remaining:
-            if hasattr(transaction, "stage_candidates_batch"):
-                results = transaction.stage_candidates_batch(
-                    [entry for _, entry in remaining], apply=True, max_batch_size=16,
-                    max_lock_seconds=max_lock_seconds)
-            else:  # Narrow compatibility for injected transaction test doubles.
-                results = tuple(transaction.stage_candidate(
-                    entry.candidate, source_record=entry.source_record, apply=True)
-                    for _, entry in remaining)
+            results = transaction.stage_candidates_batch(
+                [entry for _, entry in remaining], apply=True, max_batch_size=16,
+                max_lock_seconds=max_lock_seconds)
             retry_after_fair_release: list[tuple[int, PreparedCandidate]] = []
             for (offset, _prepared), result in zip(remaining, results, strict=True):
                 if (result.status == "failed_retryable" and result.error is not None

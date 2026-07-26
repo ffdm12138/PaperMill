@@ -10,9 +10,11 @@ Single-threaded by default. Enforces:
 - Accumulated statistics for the resolve report.
 
 This module does NOT make HTTP requests itself — it is a pure timing/coordination
-helper. Callers call ``wait(provider)`` before a request, ``record_response(...)``
-after, and ``backoff(...)`` when they hit 429/403/timeout. The caller is
-responsible for retrying.
+helper. The unified ``ProviderClient`` owns per-request pacing: it calls
+``wait(provider)`` before a request and ``record_response(...)`` after (429
+retry/backoff lives in ProviderClient's retry loop). Callers that delegate to
+ProviderClient-backed helpers pace with ``pace_paper(provider)`` instead, so
+each request sleeps in exactly one layer.
 """
 from __future__ import annotations
 
@@ -271,6 +273,31 @@ class ProviderRateLimiter:
         self.stats.total_requests += 1
         self.stats.requests_by_provider[provider] = self.stats.requests_by_provider.get(provider, 0) + 1
 
+    def pace_paper(self, provider: str) -> None:
+        """Paper-level pacing only: paper interval + jitter + request counters.
+
+        The per-provider min interval is enforced exclusively by the unified
+        ``ProviderClient`` limiter on the actual HTTP request.  Resolver
+        helpers that delegate to ProviderClient-backed calls use this instead
+        of :meth:`wait`, so every request sleeps in exactly one layer
+        (historically both layers waited — double pacing per request).
+        """
+        state = self._state_for(provider)
+        if self._paper_wait_pending and self._last_paper_time > 0:
+            elapsed = time.monotonic() - self._last_paper_time
+            need = self.paper_interval - elapsed
+            if need > 0:
+                self._sleep(need, f"paper_interval {self.paper_interval:.1f}s", provider)
+        if self._paper_wait_pending:
+            self._last_paper_time = time.monotonic()
+            self._paper_wait_pending = False
+        jitter = self._jitter()
+        if jitter > 0:
+            self._sleep(jitter, "jitter", provider)
+        state.request_count += 1
+        self.stats.total_requests += 1
+        self.stats.requests_by_provider[provider] = self.stats.requests_by_provider.get(provider, 0) + 1
+
     # ── Response handling ────────────────────────────────────────────────
 
     def record_response(self, provider: str, response_headers: dict, status_code: int) -> None:
@@ -307,54 +334,6 @@ class ProviderRateLimiter:
             state.consecutive_429 = 0
             state.consecutive_403 = 0
             state.backoff_level = 0
-
-    def backoff(self, provider: str, reason: str, retry_after: int | None = None) -> float:
-        """Sleep for a backoff duration and return the seconds slept.
-
-        reason: "429" | "403" | "timeout" | other
-        retry_after: seconds from a Retry-After header (429/503)
-        """
-        state = self._state_for(provider)
-        initial = float(self._backoff.get("on_429_initial_sleep_seconds", 60))
-        on_403 = float(self._backoff.get("on_403_initial_sleep_seconds", 300))
-        multiplier = float(self._backoff.get("multiplier", 2.0))
-        max_sleep = float(self._backoff.get("max_sleep_seconds", 1800))
-
-        if reason == "429":
-            self.stats.http_429_count += 1
-            state.consecutive_429 += 1
-            state.backoff_level += 1
-            if self.retry_after_respected and retry_after is not None and retry_after > 0:
-                sleep = float(retry_after)
-                self._sleep(sleep, f"429 retry_after={retry_after}s", provider)
-                return sleep
-            level = max(1, state.backoff_level)
-            sleep = min(initial * (multiplier ** (level - 1)), max_sleep)
-            self._sleep(sleep, f"429 exponential backoff level={level}", provider)
-            return sleep
-        if reason == "403":
-            self.stats.http_403_count += 1
-            state.consecutive_403 += 1
-            sleep = min(on_403 * (multiplier ** max(0, state.consecutive_403 - 1)), max_sleep)
-            self._sleep(sleep, f"403 long backoff consecutive={state.consecutive_403}", provider)
-            return sleep
-        if reason == "timeout":
-            self.stats.timeout_count += 1
-            state.backoff_level += 1
-            level = max(1, state.backoff_level)
-            sleep = min(initial * (multiplier ** (level - 1)), max_sleep)
-            self._sleep(sleep, f"timeout backoff level={level}", provider)
-            return sleep
-        # generic
-        state.backoff_level += 1
-        sleep = min(initial * (multiplier ** max(0, state.backoff_level - 1)), max_sleep)
-        self._sleep(sleep, f"backoff reason={reason}", provider)
-        return sleep
-
-    def should_stop(self, provider: str) -> bool:
-        """True when a provider has hit too many consecutive 403s (stop)."""
-        state = self._state_for(provider)
-        return state.consecutive_403 >= max(2, self.max_retries // 2)
 
     def stats_dict(self) -> dict[str, Any]:
         return self.stats.to_dict()

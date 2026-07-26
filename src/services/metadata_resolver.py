@@ -49,6 +49,7 @@ from loguru import logger
 from filelock import FileLock
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
+from src.ingest.locking import paper_raw_write_lock
 from src.discovery.models import PaperCandidate
 from src.utils.jsonio import read_json
 from src.utils.identifiers import collect_dois_from_text, normalize_doi, normalize_title
@@ -1041,46 +1042,39 @@ def _resolve_metadata_candidates_impl(
 
         When ``allow_network=False`` the enrichment is purely local (no HTTP).
         When ``allow_network=True`` a ``rate_limiter`` is required; the call
-        goes through ``rate_limiter.wait(provider)`` for timing control and
-        then delegates to the monkeypatchable ``enrich_from_doi``.
+        goes through ``rate_limiter.pace_paper(provider)`` for paper-level
+        pacing (the ProviderClient layer owns the per-request min interval)
+        and then delegates to the monkeypatchable ``enrich_from_doi``.
         """
         if not allow_network:
             return enrich_from_doi(doi, query_crossref=False)
         if rate_limiter is None:
             raise ValueError("allow_network=True requires a ProviderRateLimiter")
-        rate_limiter.wait("crossref")
-        result = enrich_from_doi(doi, query_crossref=True)
-        rate_limiter.record_response("crossref", {}, 200)
-        return result
+        rate_limiter.pace_paper("crossref")
+        return enrich_from_doi(doi, query_crossref=True)
 
     def _title_search_crossref(title: str, year, limit: int) -> list[PaperCandidate]:
         if rate_limiter is None:
             raise ValueError("allow_network=True requires a ProviderRateLimiter")
-        rate_limiter.wait("crossref")
+        rate_limiter.pace_paper("crossref")
         try:
-            result = resolve_crossref_by_title(title, year=year, limit=limit)
+            return resolve_crossref_by_title(title, year=year, limit=limit)
         except ProviderRateLimited:
             # 429 from the unified ProviderClient: preserve the legacy
             # "network error -> empty list" contract for the metadata resolver.
-            result = []
-        rate_limiter.record_response("crossref", {}, 200)
-        return result
+            return []
 
     def _title_search_openalex(title: str, limit: int) -> list[PaperCandidate]:
         if rate_limiter is None:
             raise ValueError("allow_network=True requires a ProviderRateLimiter")
-        rate_limiter.wait("openalex")
-        result = search_openalex(title, limit=limit)
-        rate_limiter.record_response("openalex", {}, 200)
-        return result
+        rate_limiter.pace_paper("openalex")
+        return search_openalex(title, limit=limit)
 
     def _crossref_doi_resolvable(doi: str) -> bool:
         if rate_limiter is None:
             raise ValueError("allow_network=True requires a ProviderRateLimiter")
-        rate_limiter.wait("crossref")
-        result = get_crossref_work_by_doi(doi) is not None
-        rate_limiter.record_response("crossref", {}, 200)
-        return result
+        rate_limiter.pace_paper("crossref")
+        return get_crossref_work_by_doi(doi) is not None
 
     # ── Branch 1: existing metadata DOI ──
     if existing_doi:
@@ -1296,7 +1290,7 @@ def apply_resolution(
 ) -> dict:
     folder_path = Path(folder)
     paper_raw_root = Path(paper_raw_dir) if paper_raw_dir is not None else folder_path.parent
-    with FileLock(str(paper_raw_root / ".paper_raw_write.lock")):
+    with paper_raw_write_lock(paper_raw_root):
         return _apply_resolution_unlocked(
             folder_path,
             report,
