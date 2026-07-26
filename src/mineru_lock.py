@@ -223,53 +223,6 @@ class MinerULock:
         return False
 
 
-def read_mineru_lock_status() -> dict:
-    """读取当前锁状态（不获取锁）。"""
-    if not LOCK_PATH.exists():
-        return {
-            "locked": False,
-            "lock_path": str(LOCK_PATH),
-            "owner_pid": None,
-            "command": None,
-            "started_at": None,
-            "age_seconds": None,
-            "stale": False,
-        }
-    try:
-        data = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
-        owner_pid = data.get("pid")
-        started_at = data.get("started_at")
-        # 计算存续时间
-        try:
-            start_dt = datetime.fromisoformat(started_at)
-            age = (datetime.now() - start_dt).total_seconds()
-        except (ValueError, TypeError):
-            age = None
-        # 检查 PID 是否存活
-        stale = False
-        if owner_pid is not None:
-            stale = not _is_pid_alive(owner_pid)
-        return {
-            "locked": not stale,
-            "lock_path": str(LOCK_PATH),
-            "owner_pid": owner_pid,
-            "command": data.get("command"),
-            "started_at": started_at,
-            "age_seconds": round(age, 1) if age is not None else None,
-            "stale": stale,
-        }
-    except Exception:
-        return {
-            "locked": False,
-            "lock_path": str(LOCK_PATH),
-            "owner_pid": None,
-            "command": None,
-            "started_at": None,
-            "age_seconds": None,
-            "stale": True,
-        }
-
-
 def clear_stale_mineru_lock() -> bool:
     """清理 stale lock（锁文件存在但 PID 已死）。"""
     status = read_mineru_lock_status()

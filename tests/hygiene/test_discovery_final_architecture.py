@@ -15,35 +15,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import scripts.verify_discovery_final_architecture as verifier
 
 
-# ── Phase D migration-hardening gates: positive + negative coverage ──────
+# ── Post-migration hardening gates: positive + negative coverage ─────────
 
-
-_HEALTHY_MIGRATE = '''
-smoke_args = [
-    "--paper-raw-dir", str(smoke_paper_raw_dir),
-    "--papers-dir", str(smoke_papers_dir),
-    "--ledger-path", str(smoke_ledger_path),
-]
-allowed_cutover_states = {MigrationState.SMOKE_PASSED}
-group.add_argument("--post-cutover-validate")
-group.add_argument("--rollback")
-group.add_argument("--clean-legacy")
-group.add_argument("--finalize")
-def _step_smoke(journal, staging_ws, args):
-    with TemporaryDirectory() as tmp:
-        smoke_ws = _clone_workspace_for_smoke(staging_ws, tmp)
-        hash_before = hash_tree(staging_ws.root)
-        smoke_args = [
-            "--paper-raw-dir", str(smoke_paper_raw_dir),
-            "--papers-dir", str(smoke_papers_dir),
-            "--ledger-path", str(smoke_ledger_path),
-            "--workspace-root", str(smoke_ws.root),
-        ]
-        run(smoke_args)
-        hash_after = hash_tree(staging_ws.root)
-        if hash_after != hash_before:
-            raise RuntimeError("staging drift")
-'''
 
 _HEALTHY_WORKSPACE = '''
 from filelock import FileLock
@@ -58,30 +31,18 @@ if verify_tree:
 
 
 def _build_healthy_tree(root: Path) -> dict[str, Path]:
-    """Minimal src/scripts tree satisfying every migration-hardening gate."""
+    """Minimal src/scripts tree satisfying every kept hardening gate."""
     src_root = root / "src"
     src = src_root / "discovery"
     scripts = root / "scripts"
     files = {
-        (scripts / "migrate_discovery_v4.py"): _HEALTHY_MIGRATE,
         (src / "workspace.py"): _HEALTHY_WORKSPACE,
         (src / "contracts" / "manifest.py"): "previous_generation_id = None\n",
-        (src_root / "migrations" / "discovery_v4" / "archive_builder.py"): (
-            "def _verify_archive_copies():\n"
-            "    raise ArchiveVerificationError('x')\n"
-        ),
-        (src / "pending_queue.py"): (
-            "from x import PendingCandidateStoreV4\n"
-            "def _drain_pending_store_candidates():\n"
-            "    pass\n"
-        ),
-        (src / "coordinator.py"): (
-            "drain = CandidateDrainCoordinator(pending_store=deps.bundle.pending)\n"
-        ),
     }
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    scripts.mkdir(parents=True, exist_ok=True)
     return {"SRC_ROOT": src_root, "SRC": src, "SCRIPTS": scripts}
 
 
@@ -101,7 +62,7 @@ def _gate_errors(dirs) -> list:
 
 
 class TestMigrationHardeningGates:
-    """Each Phase D gate must catch its violation (and pass on a clean tree)."""
+    """Each kept hardening gate must catch its violation (and pass clean)."""
 
     def test_healthy_tree_passes(self, healthy_tree):
         assert _gate_errors(healthy_tree) == []
@@ -113,14 +74,6 @@ class TestMigrationHardeningGates:
         )
         errors = _gate_errors(healthy_tree)
         assert any("src.discovery.page_journal" in e.message for e in errors)
-
-    def test_gate2_missing_isolated_smoke_arg_caught(self, healthy_tree):
-        mig = healthy_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_MIGRATE.replace('"--ledger-path", ', ""), encoding="utf-8"
-        )
-        errors = _gate_errors(healthy_tree)
-        assert any("--ledger-path" in e.message for e in errors)
 
     def test_gate3_missing_cutover_lock_caught(self, healthy_tree):
         ws = healthy_tree["SRC"] / "workspace.py"
@@ -144,124 +97,23 @@ class TestMigrationHardeningGates:
         errors = _gate_errors(healthy_tree)
         assert any("workspace_tree_sha256" in e.message for e in errors)
 
-    def test_gate5_preflight_cutover_branch_caught(self, healthy_tree):
-        mig = healthy_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_MIGRATE.replace(
-                "{MigrationState.SMOKE_PASSED}",
-                "{MigrationState.SMOKE_PASSED, MigrationState.PREFLIGHT_VALIDATED}",
-            ),
-            encoding="utf-8",
-        )
-        errors = _gate_errors(healthy_tree)
-        assert any("allowed_cutover_states" in e.message for e in errors)
-
     def test_gate6_legacy_candidate_seeds_caught(self, healthy_tree):
         evil = healthy_tree["SCRIPTS"] / "evil.py"
         evil.write_text("x = 'legacy_candidate_seeds'\n", encoding="utf-8")
         errors = _gate_errors(healthy_tree)
         assert any("legacy_candidate_seeds" in e.message for e in errors)
 
-    def test_gate7_missing_archive_rehash_caught(self, healthy_tree):
-        ab = (
-            healthy_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
-            / "archive_builder.py"
-        )
-        ab.write_text("def archive_pending_pages():\n    pass\n", encoding="utf-8")
-        errors = _gate_errors(healthy_tree)
-        assert any("_verify_archive_copies" in e.message for e in errors)
-
-    def test_gate8_missing_pending_store_drain_caught(self, healthy_tree):
-        pq = healthy_tree["SRC"] / "pending_queue.py"
-        pq.write_text("def drain():\n    pass\n", encoding="utf-8")
-        errors = _gate_errors(healthy_tree)
-        assert any("_drain_pending_store_candidates" in e.message for e in errors)
-
-    def test_gate8_missing_coordinator_injection_caught(self, healthy_tree):
-        coord = healthy_tree["SRC"] / "coordinator.py"
-        coord.write_text("drain = CandidateDrainCoordinator()\n", encoding="utf-8")
-        errors = _gate_errors(healthy_tree)
-        assert any("bundle.pending" in e.message for e in errors)
-
-    def test_gate9_missing_cli_flag_caught(self, healthy_tree):
-        mig = healthy_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_MIGRATE.replace('group.add_argument("--finalize")\n', ""),
-            encoding="utf-8",
+    def test_gate6_pending_store_reintroduction_caught(self, healthy_tree):
+        evil = healthy_tree["SRC"] / "evil_store.py"
+        evil.write_text(
+            "from y import PendingCandidateStoreV4\n", encoding="utf-8"
         )
         errors = _gate_errors(healthy_tree)
-        assert any("--finalize" in e.message for e in errors)
+        assert any("PendingCandidateStoreV4" in e.message for e in errors)
 
 
-# ── Phase 7a migration-final gates (11-16): positive + negative coverage ──
+# ── Post-migration final-state gates (12, 15, 16): coverage ──────────────
 
-
-_HEALTHY_FINAL_MIGRATE = '''
-def _step_extract_candidates(journal, staging_ws, args):
-    report = extract()
-    _quarantine_record(record)
-    assert_conservation(report)
-    return report
-
-def _quarantine_path(migration_id):
-    return MIGRATIONS_DIR / f"{migration_id}.candidate_quarantine.jsonl"
-
-def _step_preflight(journal, staging_ws, nb_results, args):
-    stats = journal.metadata.get("candidate_stats")
-    if stats.get("quarantined"):
-        raise MigrationStepError("quarantined")
-    return None
-
-def cmd_post_cutover_validate(args):
-    report = MIGRATIONS_DIR / f"{mid}.post_cutover_reconciliation.json"
-    receipts = MIGRATIONS_DIR / f"{mid}.receipts"
-    return 0
-
-def cmd_apply(args):
-    with MigrationMaintenanceLock("apply"):
-        return 0
-
-def cmd_resume(args):
-    with MigrationMaintenanceLock("resume"):
-        return 0
-
-def cmd_cutover(args):
-    with MigrationMaintenanceLock("cutover"):
-        return 0
-
-def cmd_rollback(args):
-    with MigrationMaintenanceLock("rollback"):
-        return 0
-
-def cmd_abort(args):
-    with MigrationMaintenanceLock("abort"):
-        return 0
-
-def cmd_clean_legacy(args):
-    with MigrationMaintenanceLock("clean-legacy"):
-        return 0
-
-def cmd_finalize(args):
-    with MigrationMaintenanceLock("finalize"):
-        return 0
-
-def _step_smoke(journal, staging_ws, args):
-    smoke_args = ["--report-dir", str(rep), "--output-dir", str(out)]
-    return 0
-'''
-
-_HEALTHY_NOTEBOOK_MIGRATION = '''
-from src.migrations.discovery_v4.legacy_contracts.notebook_v3 import (
-    LegacyNotebookV3,
-    convert_notebook_v3_to_v4,
-)
-
-def migrate_all_notebooks(notebook_dir, output_dir):
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    legacy = LegacyNotebookV3.from_dict_strict(raw)
-    v4 = convert_notebook_v3_to_v4(legacy)
-    return [v4]
-'''
 
 _HEALTHY_FINAL_COORDINATOR = '''
 def run_batch():
@@ -294,42 +146,16 @@ def validate_notebook(data):
 
 
 def _build_healthy_final_tree(root: Path) -> dict[str, Path]:
-    """Minimal tree satisfying every Phase 7a migration-final gate."""
+    """Minimal tree satisfying every kept final-state gate."""
     src_root = root / "src"
     src = src_root / "discovery"
     scripts = root / "scripts"
-    mig_layer = src_root / "migrations" / "discovery_v4"
     files = {
-        (scripts / "migrate_discovery_v4.py"): _HEALTHY_FINAL_MIGRATE,
         (scripts / "discover_papers.py"): (
             "assert_discovery_write_allowed()\n"
         ),
         (scripts / "discover_papers_concurrent.py"): (
             "assert_discovery_write_allowed()\n"
-        ),
-        (mig_layer / "notebook_migration.py"): _HEALTHY_NOTEBOOK_MIGRATION,
-        (mig_layer / "candidate_extraction.py"): (
-            "def assert_conservation(report):\n"
-            "    raise CandidateConservationError('x')\n"
-        ),
-        (src / "stores" / "pending_candidate_store.py"): (
-            "class CandidateIdentityCollisionError(RuntimeError):\n"
-            "    pass\n"
-            "class PendingCandidateCorruptError(RuntimeError):\n"
-            "    pass\n"
-            "def write(candidate):\n"
-            "    os.link(str(tmp), str(path))\n"
-        ),
-        (src / "pending_queue.py"): (
-            "def drain(receipt_store=None):\n"
-            "    write_migration_receipt(cid, 'imported', pn)\n"
-        ),
-        (src / "stores" / "bundle.py"): (
-            "def from_workspace(cls, workspace, *, migration_receipts_dir=None):\n"
-            "    pass\n"
-        ),
-        (scripts / "reconcile_discovery_v4_migration.py"): (
-            "def main():\n    return 0\n"
         ),
         (src / "coordinator.py"): _HEALTHY_FINAL_COORDINATOR,
         (src / "maintenance_gate.py"): (
@@ -362,35 +188,10 @@ def _final_gate_errors(dirs) -> list:
 
 
 class TestMigrationFinalGates:
-    """Each Phase 7a gate (11-16) must catch its violation on a clean tree."""
+    """Each kept final-state gate (12, 15, 16) must catch its violation."""
 
     def test_healthy_tree_passes(self, healthy_final_tree):
         assert _final_gate_errors(healthy_final_tree) == []
-
-    # ── Gate 11 ──
-
-    def test_gate11_validate_notebook_call_caught(self, healthy_final_tree):
-        nm = (
-            healthy_final_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
-            / "notebook_migration.py"
-        )
-        nm.write_text(
-            _HEALTHY_NOTEBOOK_MIGRATION
-            + "\ndef evil(raw):\n    return validate_notebook(raw)\n",
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("validate_notebook" in e.message for e in errors)
-
-    def test_gate11_missing_from_dict_strict_caught(self, healthy_final_tree):
-        nm = (
-            healthy_final_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
-            / "notebook_migration.py"
-        )
-        nm.write_text("def migrate_all_notebooks(a, b):\n    return []\n",
-                      encoding="utf-8")
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("from_dict_strict" in e.message for e in errors)
 
     # ── Gate 12 ──
 
@@ -433,126 +234,7 @@ class TestMigrationFinalGates:
         errors = _final_gate_errors(healthy_final_tree)
         assert any("PageJournalStore" in e.message for e in errors)
 
-    # ── Gate 13 ──
-
-    def test_gate13_skip_flag_caught(self, healthy_final_tree):
-        retired_flag = "--skip-" + "candidate-extraction"
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE
-            + '\ngroup.add_argument("' + retired_flag + '")\n',
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        needle = "skip-" + "candidate-extraction"
-        assert any(needle in e.message for e in errors)
-
-    # ── Gate 14 ──
-
-    def test_gate14_missing_assert_conservation_def_caught(self, healthy_final_tree):
-        ce = (
-            healthy_final_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
-            / "candidate_extraction.py"
-        )
-        ce.write_text("def extract():\n    pass\n", encoding="utf-8")
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("assert_conservation" in e.message for e in errors)
-
-    def test_gate14_step_not_calling_conservation_caught(self, healthy_final_tree):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace("    assert_conservation(report)\n", ""),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("assert_conservation" in e.message for e in errors)
-
-    def test_gate14_missing_quarantine_write_caught(self, healthy_final_tree):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace(
-                "    _quarantine_record(record)\n", ""
-            ).replace(
-                '''def _quarantine_path(migration_id):
-    return MIGRATIONS_DIR / f"{migration_id}.candidate_quarantine.jsonl"
-''', ""
-            ),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("quarantine" in e.message for e in errors)
-
-    def test_gate14_accumulating_containers_caught(self, healthy_final_tree):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace(
-                "    report = extract()\n",
-                "    seeds: list[LegacyCandidateSeedV4] = []\n"
-                "    report = extract()\n",
-            ),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("streaming" in e.message for e in errors)
-
-    def test_gate14_preflight_without_quarantine_gate_caught(
-        self, healthy_final_tree
-    ):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace(
-                '''def _step_preflight(journal, staging_ws, nb_results, args):
-    stats = journal.metadata.get("candidate_stats")
-    if stats.get("quarantined"):
-        raise MigrationStepError("quarantined")
-    return None
-''',
-                "def _step_preflight(journal, staging_ws, nb_results, args):\n"
-                "    return None\n",
-            ),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("_step_preflight" in e.message for e in errors)
-
-    def test_gate14_validate_without_receipts_caught(self, healthy_final_tree):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace(
-                '''def cmd_post_cutover_validate(args):
-    report = MIGRATIONS_DIR / f"{mid}.post_cutover_reconciliation.json"
-    receipts = MIGRATIONS_DIR / f"{mid}.receipts"
-    return 0
-''',
-                "def cmd_post_cutover_validate(args):\n    return 0\n",
-            ),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("receipts" in e.message for e in errors)
-
-    def test_gate14_store_silent_overwrite_caught(self, healthy_final_tree):
-        pcs = healthy_final_tree["SRC"] / "stores" / "pending_candidate_store.py"
-        pcs.write_text(
-            "def write(candidate):\n"
-            "    os.replace(str(tmp), str(path))\n",
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("create-if-absent" in e.message for e in errors)
-
     # ── Gate 15 ──
-
-    def test_gate15_unlocked_command_caught(self, healthy_final_tree):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace(
-                'with MigrationMaintenanceLock("rollback"):', "with nullcontext():"
-            ),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("cmd_rollback" in e.message for e in errors)
 
     def test_gate15_writer_without_block_check_caught(self, healthy_final_tree):
         writer = healthy_final_tree["SCRIPTS"] / "discover_papers_concurrent.py"
@@ -574,17 +256,6 @@ class TestMigrationFinalGates:
                    and "--workspace-root" in e.message
                    for e in errors)
 
-    def test_gate15_unlocked_abort_caught(self, healthy_final_tree):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace(
-                'with MigrationMaintenanceLock("abort"):', "with nullcontext():"
-            ),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("cmd_abort" in e.message for e in errors)
-
     def test_gate15_production_importing_migrations_caught(self, healthy_final_tree):
         evil = healthy_final_tree["SRC"] / "evil_import.py"
         evil.write_text(
@@ -605,21 +276,6 @@ class TestMigrationFinalGates:
         assert any("manage_discovery_keywords.py" in e.file
                    and "DISCOVERY_KEYWORD_NOTEBOOK_DIR" in e.message
                    for e in errors)
-
-    def test_gate15_smoke_without_report_isolation_caught(self, healthy_final_tree):
-        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
-        mig.write_text(
-            _HEALTHY_FINAL_MIGRATE.replace(
-                '''def _step_smoke(journal, staging_ws, args):
-    smoke_args = ["--report-dir", str(rep), "--output-dir", str(out)]
-    return 0
-''',
-                "def _step_smoke(journal, staging_ws, args):\n    return 0\n",
-            ),
-            encoding="utf-8",
-        )
-        errors = _final_gate_errors(healthy_final_tree)
-        assert any("_step_smoke" in e.message for e in errors)
 
     # ── Gate 16 ──
 
@@ -716,7 +372,6 @@ def test_official_entrypoint_dispatches_typed_lanes_and_builds_once(
         keyword_notebook_dir=tmp_path / "workspace" / "keyword_notebooks",
         lane_states_dir=tmp_path / "workspace" / "lane_states",
         page_journals_dir=tmp_path / "workspace" / "page_journals",
-        pending_candidates_dir=tmp_path / "workspace" / "pending_candidates",
         indexes_dir=tmp_path / "workspace" / "indexes",
         exports_dir=tmp_path / "workspace" / "exports",
         reports_dir=tmp_path / "workspace" / "reports",

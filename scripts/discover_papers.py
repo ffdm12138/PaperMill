@@ -84,15 +84,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--hide-existing", action="store_true")
-    parser.add_argument(
-        "--migration-receipts-dir",
-        type=Path,
-        default=None,
-        help="Migration-only: directory for durable legacy-seed receipts written "
-             "when pending candidates with origin 'legacy_candidate_seed' are "
-             "consumed. Must live outside the generation workspace tree. "
-             "Normal production runs leave this unset.",
-    )
     return parser
 
 
@@ -135,7 +126,6 @@ def _workspace_from_path(root: Path) -> DiscoveryWorkspace:
         keyword_notebook_dir=root / "keyword_notebooks",
         lane_states_dir=root / "lane_states",
         page_journals_dir=root / "page_journals",
-        pending_candidates_dir=root / "pending_candidates",
         indexes_dir=root / "indexes",
         exports_dir=root / "exports",
         reports_dir=root / "reports",
@@ -219,9 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         title_resolution_cache_dir=DISCOVERY_DIR / "title_resolution_cache",
     )
     deps = DiscoveryRuntimeDependencies(
-        bundle=DiscoveryStoreBundleV4.from_workspace(
-            ws, migration_receipts_dir=args.migration_receipts_dir
-        ),
+        bundle=DiscoveryStoreBundleV4.from_workspace(ws),
         paper_raw_dir=args.paper_raw_dir,
         papers_dir=args.papers_dir,
         ledger_path=args.ledger_path,

@@ -867,33 +867,7 @@ def _check_single_stack_rules(report: VerifierReport) -> None:
                 message="report_builder must emit schema_version '4.0' (REPORT_SCHEMA_VERSION = \"4.0\")",
             ))
 
-    # 5. Migration CLI must support --cutover and --abort, and cutover must not
-    #    allow transitions from SMOKE_FAILED.
-    mig_path = SCRIPTS / "migrate_discovery_v4.py"
-    if mig_path.exists():
-        mig_text = mig_path.read_text(encoding="utf-8")
-        if 'add_argument("--cutover"' not in mig_text:
-            report.findings.append(Finding(
-                level="error", category="missing_required",
-                file="scripts/migrate_discovery_v4.py", line=0,
-                message="migration CLI must expose --cutover",
-            ))
-        if 'add_argument("--abort"' not in mig_text:
-            report.findings.append(Finding(
-                level="error", category="missing_required",
-                file="scripts/migrate_discovery_v4.py", line=0,
-                message="migration CLI must expose --abort",
-            ))
-        if "allowed_cutover_states = {" in mig_text:
-            block = mig_text.split("allowed_cutover_states = {")[1].split("}")[0]
-            if "MigrationState.SMOKE_FAILED" in block:
-                report.findings.append(Finding(
-                    level="error", category="forbidden",
-                    file="scripts/migrate_discovery_v4.py", line=0,
-                    message="cutover must not be allowed from SMOKE_FAILED",
-                ))
-
-    # 6. No duplicate legacy module copies or retired alias shells left at the
+    # 5. No duplicate legacy module copies or retired alias shells left at the
     #    top level.
     for dead_path in [
         SRC / "batch_runtime.py",
@@ -934,18 +908,14 @@ def _file_label(pyfile: Path) -> str:
 
 
 def _check_migration_hardening_rules(report: VerifierReport) -> None:
-    """Phase D structural gates for the v4 migration / cutover hardening.
+    """Structural gates that outlive the retired v3->v4 migration.
 
     These complement ``_check_single_stack_rules``: they pin the crash-safe
-    cutover contract, the isolated smoke targets, the pending-candidate
-    drain wiring, and the migration CLI surface so regressions fail closed.
+    generation-cutover contract in workspace.py and the retired-token
+    reintroduction tombstones so regressions fail closed.  The one-time
+    v3->v4 migration toolchain is deleted; no gate here may require it to
+    exist.
     """
-    mig_path = SCRIPTS / "migrate_discovery_v4.py"
-    mig_rel = "scripts/migrate_discovery_v4.py"
-    mig_text = mig_path.read_text(encoding="utf-8") if mig_path.exists() else ""
-    _require(report, mig_rel, mig_path.exists(),
-             "migration CLI scripts/migrate_discovery_v4.py is missing")
-
     ws_path = SRC / "workspace.py"
     ws_rel = "src/discovery/workspace.py"
     ws_text = ws_path.read_text(encoding="utf-8") if ws_path.exists() else ""
@@ -954,7 +924,7 @@ def _check_migration_hardening_rules(report: VerifierReport) -> None:
 
     # ── Gate 1: retired alias shells gone; no old module-path imports
     #    anywhere under src/ or scripts/.  (File non-existence is already
-    #    enforced by _check_single_stack_rules rule 6; this is the import
+    #    enforced by _check_single_stack_rules rule 5; this is the import
     #    guard across the full src/scripts tree.)
     verifier_self = (SCRIPTS / "verify_discovery_final_architecture.py").resolve()
     for base in (SRC_ROOT, SCRIPTS):
@@ -976,19 +946,6 @@ def _check_migration_hardening_rules(report: VerifierReport) -> None:
                         message=f"reference to retired module path {retired_module} — "
                                 "use src.discovery.contracts.* / src.discovery.stores.*",
                     ))
-
-    # ── Gate 2: smoke run must target the three isolated directories.
-    if mig_text:
-        smoke_ok = False
-        if "smoke_args = [" in mig_text:
-            block = mig_text.split("smoke_args = [", 1)[1].split("]", 1)[0]
-            smoke_ok = all(
-                flag in block
-                for flag in ('"--paper-raw-dir"', '"--papers-dir"', '"--ledger-path"')
-            )
-        _require(report, mig_rel, smoke_ok,
-                 "_step_smoke smoke_args must pass --paper-raw-dir, --papers-dir, "
-                 "and --ledger-path (staging-isolated smoke targets)")
 
     # ── Gate 3: cutover is lock-guarded, snapshots the previous pointer,
     #    and reconciles crashed attempts; the pointer records the previous
@@ -1020,19 +977,9 @@ def _check_migration_hardening_rules(report: VerifierReport) -> None:
              "resolve_active(verify_tree=True) must recompute hash_workspace_tree "
              "and compare it with manifest.workspace_tree_sha256")
 
-    # ── Gate 5: cutover is only ever allowed from SMOKE_PASSED.
-    if mig_text and "allowed_cutover_states = {" in mig_text:
-        block = mig_text.split("allowed_cutover_states = {", 1)[1].split("}", 1)[0]
-        members = set(re.findall(r"MigrationState\.(\w+)", block))
-        _require(report, mig_rel, members == {"SMOKE_PASSED"},
-                 "allowed_cutover_states must be exactly {SMOKE_PASSED} "
-                 f"(no PREFLIGHT_VALIDATED branch), got {sorted(members)}",
-                 category="forbidden")
-    elif mig_text:
-        _require(report, mig_rel, False,
-                 "cmd_cutover must define allowed_cutover_states")
-
-    # ── Gate 6: no legacy_candidate_seeds references in src/scripts.
+    # ── Gate 6: retired migration drain tokens never reappear in
+    #    src/scripts (reintroduction tombstone for the deleted v3->v4
+    #    migration toolchain and its pending-candidate drain channel).
     for base in (SRC_ROOT, SCRIPTS):
         if not base.is_dir():
             continue
@@ -1040,138 +987,16 @@ def _check_migration_hardening_rules(report: VerifierReport) -> None:
             if pyfile.resolve() == verifier_self:
                 continue
             fp = _file_label(pyfile)
-            if "legacy_candidate_seeds" in pyfile.read_text(encoding="utf-8"):
-                report.findings.append(Finding(
-                    level="error", category="forbidden",
-                    file=fp, line=0,
-                    message="retired 'legacy_candidate_seeds' reference — legacy "
-                            "candidates live in PendingCandidateStoreV4",
-                ))
-
-    # ── Gate 7: archive copies are re-hashed at the destination.
-    ab_path = SRC_ROOT / "migrations" / "discovery_v4" / "archive_builder.py"
-    ab_text = ab_path.read_text(encoding="utf-8") if ab_path.exists() else ""
-    _require(report, "src/migrations/discovery_v4/archive_builder.py",
-             "def _verify_archive_copies" in ab_text
-             and "ArchiveVerificationError" in ab_text,
-             "archive_builder must re-hash destination copies "
-             "(_verify_archive_copies raising ArchiveVerificationError)")
-
-    # ── Gate 8: production drains PendingCandidateStoreV4 and the
-    #    coordinator injects the bundle's pending store.
-    pq_path = SRC / "pending_queue.py"
-    pq_text = pq_path.read_text(encoding="utf-8") if pq_path.exists() else ""
-    _require(report, "src/discovery/pending_queue.py",
-             "PendingCandidateStoreV4" in pq_text
-             and "_drain_pending_store_candidates" in pq_text,
-             "pending_queue must consume PendingCandidateStoreV4 via "
-             "_drain_pending_store_candidates")
-    coord_path = SRC / "coordinator.py"
-    coord_text = coord_path.read_text(encoding="utf-8") if coord_path.exists() else ""
-    _require(report, "src/discovery/coordinator.py",
-             "pending_store=" in coord_text and "bundle.pending" in coord_text,
-             "coordinator must inject pending_store=deps.bundle.pending into "
-             "the drain coordinator")
-
-    # ── Gate 9: migration CLI exposes the post-cutover chain.
-    if mig_text:
-        for flag in ("--post-cutover-validate", "--rollback",
-                     "--clean-legacy", "--finalize"):
-            _require(report, mig_rel,
-                     f'add_argument("{flag}"' in mig_text,
-                     f"migration CLI must expose {flag}")
-
-    # ── Gate 10: smoke runs against an ephemeral clone of the staging
-    #    workspace and proves zero side effects via tree-hash equality.
-    if mig_text and "def _step_smoke" in mig_text:
-        smoke_block = mig_text.split("def _step_smoke", 1)[1]
-        if "def _run_apply_from_state" in smoke_block:
-            smoke_block = smoke_block.split("def _run_apply_from_state", 1)[0]
-        smoke_args_region = ""
-        if "smoke_args = [" in smoke_block:
-            smoke_args_region = smoke_block.split("smoke_args = [", 1)[1].split("]", 1)[0]
-        _require(report, mig_rel,
-                 "TemporaryDirectory" in smoke_block
-                 and "_clone_workspace_for_smoke" in mig_text,
-                 "_step_smoke must run against an ephemeral clone of the staging "
-                 "workspace (TemporaryDirectory + _clone_workspace_for_smoke)")
-        _require(report, mig_rel,
-                 '"--workspace-root"' in smoke_args_region
-                 and "smoke_ws.root" in smoke_args_region
-                 and "staging_ws.root" not in smoke_args_region,
-                 "smoke --workspace-root must point at the ephemeral clone "
-                 "(smoke_ws.root), never the real staging workspace")
-        _require(report, mig_rel,
-                 "hash_before" in smoke_block
-                 and "hash_after" in smoke_block
-                 and "hash_after != hash_before" in smoke_block,
-                 "_step_smoke must hash the staging workspace before/after the "
-                 "smoke run and fail on drift (hash_after != hash_before)")
-    elif mig_text:
-        _require(report, mig_rel, False,
-                 "migration CLI must define _step_smoke")
-
-
-def _function_region(text: str, func_name: str) -> str:
-    """Return the source region of one top-level ``def func_name(...)``.
-
-    The region runs from the ``def`` line to the next top-level ``def`` /
-    ``class`` (or EOF); nested definitions are indented and never terminate
-    the region.  Returns "" when the function is absent.
-    """
-    marker = f"def {func_name}("
-    idx = text.find(marker)
-    if idx == -1:
-        return ""
-    rest = text[idx:]
-    match = re.search(r"\n(def |class )", rest)
-    return rest[: match.start()] if match else rest
-
-
-class _MigrationLayerVisitor(ast.NodeVisitor):
-    """Gate 11 AST visitor for notebook_migration.py.
-
-    The migration layer parses legacy input exclusively through the strict
-    ``LegacyNotebookV3`` contract; the production ``validate_notebook`` /
-    ``validate_discovery_readiness`` validators may only run on the
-    converted v4 *product* inside ``legacy_contracts/notebook_v3.py``.
-    """
-
-    FORBIDDEN_CALLS = {"validate_notebook", "validate_discovery_readiness"}
-
-    def __init__(self, filepath: str, report: VerifierReport):
-        self.filepath = filepath
-        self.report = report
-        self.calls_from_dict_strict = False
-
-    def _error(self, line: int, message: str) -> None:
-        self.report.findings.append(Finding(
-            level="error", category="forbidden",
-            file=self.filepath, line=line, message=message,
-        ))
-
-    def visit_Call(self, node: ast.Call) -> None:
-        func = node.func
-        if isinstance(func, ast.Name) and func.id in self.FORBIDDEN_CALLS:
-            self._error(
-                node.lineno,
-                f"migration layer must not call {func.id} on legacy input — "
-                "only legacy_contracts/notebook_v3.py validates the v4 product",
-            )
-        if isinstance(func, ast.Attribute) and func.attr in self.FORBIDDEN_CALLS:
-            self._error(
-                node.lineno,
-                f"migration layer must not call {func.attr} on legacy input — "
-                "only legacy_contracts/notebook_v3.py validates the v4 product",
-            )
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "from_dict_strict"
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "LegacyNotebookV3"
-        ):
-            self.calls_from_dict_strict = True
-        self.generic_visit(node)
+            text = pyfile.read_text(encoding="utf-8")
+            for token in ("legacy_candidate_seeds", "PendingCandidateStoreV4"):
+                if token in text:
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=0,
+                        message=f"retired migration drain token '{token}' — the "
+                                "one-time v3->v4 migration toolchain is deleted "
+                                "and must not be reintroduced",
+                    ))
 
 
 class _ProductionLegacyVisitor(ast.NodeVisitor):
@@ -1222,45 +1047,22 @@ class _ProductionLegacyVisitor(ast.NodeVisitor):
 
 
 def _check_v4_migration_final_rules(report: VerifierReport) -> None:
-    """Phase 7a gates (11-16) for the Discovery v4 migration final state.
+    """Final-state gates (12, 15, 15b, 15c, 16) for Discovery v4.
 
-    These pin the post-migration invariants: the migration layer never runs
-    production validators on legacy input, production carries zero legacy
-    symbols/parsers, the retired skip flag stays deleted, candidate
-    conservation + quarantine stay hard gates, and every mutating migration
-    command runs under the maintenance lock while production writers check it.
+    These pin the post-migration invariants that outlive the deleted
+    one-time migration toolchain: production carries zero legacy
+    symbols/parsers, both production discovery writers check the shared
+    maintenance gate unconditionally, nothing imports the retired
+    ``src.migrations`` package, production tools resolve the active v4
+    workspace instead of retired flat constants, and no production parser
+    accepts legacy notebook schemas.
     """
-    mig_path = SCRIPTS / "migrate_discovery_v4.py"
-    mig_rel = "scripts/migrate_discovery_v4.py"
-    mig_text = mig_path.read_text(encoding="utf-8") if mig_path.exists() else ""
-    _require(report, mig_rel, mig_path.exists(),
-             "migration CLI scripts/migrate_discovery_v4.py is missing")
-
-    mig_layer_dir = SRC_ROOT / "migrations" / "discovery_v4"
-
-    # ── Gate 11: the migration layer never validates legacy input with the
-    #    production validators; it must parse through
-    #    LegacyNotebookV3.from_dict_strict.
-    nm_path = mig_layer_dir / "notebook_migration.py"
-    nm_rel = "src/migrations/discovery_v4/notebook_migration.py"
-    _require(report, nm_rel, nm_path.exists(),
-             "src/migrations/discovery_v4/notebook_migration.py is missing")
-    if nm_path.exists():
-        tree = _scan_file(nm_path, report, nm_rel)
-        if tree is not None:
-            visitor = _MigrationLayerVisitor(nm_rel, report)
-            visitor.visit(tree)
-            _require(report, nm_rel, visitor.calls_from_dict_strict,
-                     "notebook_migration must parse legacy input through "
-                     "LegacyNotebookV3.from_dict_strict")
-
     # ── Gate 12: production carries zero legacy symbols / compat shells.
     legacy_tokens = (
         "legacy_unbound_profile",
         "is_legacy_unbound_profile",
         "LEGACY_UNBOUND",
     )
-    coord_path = SRC / "coordinator.py"
     batch_runtime_path = SRC / "runtime" / "batch_runtime.py"
     if SRC.is_dir():
         for pyfile in sorted(SRC.rglob("*.py")):
@@ -1298,125 +1100,8 @@ def _check_v4_migration_final_rules(report: VerifierReport) -> None:
         _require(report, "src/discovery", False,
                  "src/discovery is missing")
 
-    # ── Gate 13: the retired skip-extraction operator flag stays deleted.
-    #    (Needles are built at runtime so the zero-hit hygiene invariant in
-    #    tests/unit/test_discovery_v4_candidate_extraction.py keeps passing.)
-    if mig_text:
-        retired_dash = "skip-" + "candidate-extraction"
-        retired_snake = "skip_" + "candidate_extraction"
-        for token in (retired_dash, retired_snake):
-            _require(report, mig_rel, token not in mig_text,
-                     f"retired flag {token!r} must not reappear in the "
-                     "migration CLI — candidate extraction is mandatory",
-                     category="forbidden")
-
-    # ── Gate 14: candidate conservation + quarantine are hard gates, and
-    #    extraction is truly streaming (no candidate list accumulation).
-    ce_path = mig_layer_dir / "candidate_extraction.py"
-    ce_rel = "src/migrations/discovery_v4/candidate_extraction.py"
-    ce_text = ce_path.read_text(encoding="utf-8") if ce_path.exists() else ""
-    _require(report, ce_rel,
-             ce_path.exists() and "def assert_conservation" in ce_text,
-             "candidate_extraction.py must define assert_conservation")
-    if mig_text:
-        extract_region = _function_region(mig_text, "_step_extract_candidates")
-        _require(report, mig_rel,
-                 bool(extract_region),
-                 "migration CLI must define _step_extract_candidates")
-        if extract_region:
-            _require(report, mig_rel,
-                     "assert_conservation(" in extract_region,
-                     "_step_extract_candidates must call assert_conservation "
-                     "before advancing the journal")
-            _require(report, mig_rel,
-                     "_quarantine_record(" in extract_region,
-                     "_step_extract_candidates must stream quarantine "
-                     "evidence via _quarantine_record")
-            for token in (
-                "seeds: list[", "candidates: list[", "unresolved_records",
-            ):
-                _require(report, mig_rel,
-                         token not in extract_region,
-                         f"_step_extract_candidates must stay streaming; "
-                         f"found accumulating container {token!r}")
-        _require(report, mig_rel,
-                 "def _quarantine_path" in mig_text
-                 and "candidate_quarantine" in mig_text,
-                 "migration CLI must define _quarantine_path for the "
-                 "<mid>.candidate_quarantine.jsonl evidence file")
-
-    # ── Gate 14b: preflight rejects quarantine/unresolved/conservation
-    #    breaches and pending-store drift.
-    if mig_text:
-        preflight_region = _function_region(mig_text, "_step_preflight")
-        _require(report, mig_rel,
-                 bool(preflight_region)
-                 and "quarantined" in preflight_region
-                 and "candidate_stats" in preflight_region,
-                 "_step_preflight must fail closed on quarantined/unresolved "
-                 "candidates and conservation drift")
-
-    # ── Gate 14c: post-cutover validation verifies per-seed receipts, not
-    #    just an empty pending store.
-    if mig_text:
-        validate_region = _function_region(mig_text, "cmd_post_cutover_validate")
-        _require(report, mig_rel,
-                 bool(validate_region)
-                 and "post_cutover_reconciliation" in validate_region
-                 and "receipts" in validate_region,
-                 "cmd_post_cutover_validate must verify migration seed "
-                 "receipts via the closed reconciliation report")
-
-    # ── Gate 14d: PendingCandidateStore never silently overwrites, and the
-    #    migration receipt store has a production call graph.
-    pcs_path = SRC / "stores" / "pending_candidate_store.py"
-    pcs_rel = "src/discovery/stores/pending_candidate_store.py"
-    pcs_text = pcs_path.read_text(encoding="utf-8") if pcs_path.exists() else ""
-    _require(report, pcs_rel,
-             pcs_path.exists()
-             and "CandidateIdentityCollisionError" in pcs_text
-             and "os.link(" in pcs_text,
-             "PendingCandidateStoreV4.write must be create-if-absent with a "
-             "typed collision error (no silent overwrite)")
-    _require(report, pcs_rel,
-             "PendingCandidateCorruptError" in pcs_text,
-             "PendingCandidateStoreV4.read must raise typed corruption errors")
-    drain_path = SRC / "pending_queue.py"
-    drain_rel = "src/discovery/pending_queue.py"
-    drain_text = (
-        drain_path.read_text(encoding="utf-8") if drain_path.exists() else ""
-    )
-    _require(report, drain_rel,
-             drain_path.exists() and "receipt_store" in drain_text
-             and "write_migration_receipt" in drain_text,
-             "the pending-store drain must support migration receipt "
-             "injection for legacy_candidate_seed candidates")
-    bundle_path = SRC / "stores" / "bundle.py"
-    bundle_rel = "src/discovery/stores/bundle.py"
-    bundle_text = (
-        bundle_path.read_text(encoding="utf-8") if bundle_path.exists() else ""
-    )
-    _require(report, bundle_rel,
-             bundle_path.exists() and "migration_receipts_dir" in bundle_text,
-             "DiscoveryStoreBundleV4.from_workspace must accept an explicit "
-             "migration_receipts_dir (receipt store production wiring)")
-    reconcile_script = SCRIPTS / "reconcile_discovery_v4_migration.py"
-    _require(report, "scripts/reconcile_discovery_v4_migration.py",
-             reconcile_script.exists(),
-             "the post-cutover reconciliation CLI must exist")
-
-    # ── Gate 15: every mutating migration command holds the maintenance
-    #    lock, and both production discovery writers check the maintenance
+    # ── Gate 15: both production discovery writers check the maintenance
     #    gate unconditionally at startup (no --workspace-root bypass).
-    if mig_text:
-        for cmd in (
-            "cmd_apply", "cmd_resume", "cmd_cutover", "cmd_rollback",
-            "cmd_abort", "cmd_clean_legacy", "cmd_finalize",
-        ):
-            region = _function_region(mig_text, cmd)
-            _require(report, mig_rel,
-                     bool(region) and "MigrationMaintenanceLock(" in region,
-                     f"{cmd} must run under MigrationMaintenanceLock")
     for writer in ("discover_papers.py", "discover_papers_concurrent.py"):
         writer_path = SCRIPTS / writer
         writer_text = (
@@ -1425,15 +1110,17 @@ def _check_v4_migration_final_rules(report: VerifierReport) -> None:
         _require(report, f"scripts/{writer}",
                  writer_path.exists()
                  and "assert_discovery_write_allowed(" in writer_text,
-                 f"{writer} must refuse to start while the migration "
+                 f"{writer} must refuse to start while the discovery "
                  "maintenance lock is held (assert_discovery_write_allowed)")
         _require(report, f"scripts/{writer}",
                  "if not args.workspace_root" not in writer_text,
                  f"{writer} must not exempt --workspace-root from the "
                  "maintenance gate")
 
-    # ── Gate 15b: production never imports the one-time migration package;
-    #    the maintenance gate lives in shared discovery infrastructure.
+    # ── Gate 15b: nothing imports the retired one-time migration package
+    #    (src.migrations is deleted; this guard scans importers and does not
+    #    require the package to exist), and the maintenance gate lives in
+    #    shared discovery infrastructure.
     maintenance_gate = SRC / "maintenance_gate.py"
     _require(report, "src/discovery/maintenance_gate.py",
              maintenance_gate.exists()
@@ -1445,20 +1132,18 @@ def _check_v4_migration_final_rules(report: VerifierReport) -> None:
     _migration_import = _re.compile(
         r"^\s*(?:from|import)\s+src\.migrations", _re.MULTILINE
     )
-    for py in sorted(SRC.rglob("*.py")):
-        rel = f"src/discovery/{py.relative_to(SRC).as_posix()}"
-        text = py.read_text(encoding="utf-8")
-        _require(report, rel,
-                 not _migration_import.search(text),
-                 f"{rel} must not import the one-time migration package")
-    for writer in ("discover_papers.py", "discover_papers_concurrent.py"):
-        writer_path = SCRIPTS / writer
-        writer_text = (
-            writer_path.read_text(encoding="utf-8") if writer_path.exists() else ""
-        )
-        _require(report, f"scripts/{writer}",
-                 not _migration_import.search(writer_text),
-                 f"{writer} must not import the one-time migration package")
+    verifier_self = (SCRIPTS / "verify_discovery_final_architecture.py").resolve()
+    for base in (SRC_ROOT, SCRIPTS):
+        if not base.is_dir():
+            continue
+        for py in sorted(base.rglob("*.py")):
+            if py.resolve() == verifier_self:
+                continue
+            rel = _file_label(py)
+            _require(report, rel,
+                     not _migration_import.search(py.read_text(encoding="utf-8")),
+                     f"{rel} must not import the retired one-time migration "
+                     "package (src.migrations)")
 
     # ── Gate 15c: production notebook tools resolve the active workspace;
     #    legacy flat path constants are migration/audit-only.
@@ -1491,16 +1176,6 @@ def _check_v4_migration_final_rules(report: VerifierReport) -> None:
                      token not in reader_text,
                      "create_safe_catalog_reader must use the active v4 "
                      f"workspace, not the retired flat constant {token}")
-
-    # ── Gate 15d: the migration smoke isolates reports and exports too.
-    if mig_text:
-        smoke_region = _function_region(mig_text, "_step_smoke")
-        _require(report, mig_rel,
-                 bool(smoke_region)
-                 and '"--report-dir"' in smoke_region
-                 and '"--output-dir"' in smoke_region,
-                 "_step_smoke must pass --report-dir/--output-dir into the "
-                 "ephemeral clone (no global report/export writes)")
 
     # ── Gate 16: production has no parser that ACCEPTS schema 1.0/2.0/3.0.
     #
@@ -1630,10 +1305,10 @@ def verify_discovery_final_architecture() -> VerifierReport:
     # v4 single-stack post-scan rules
     _check_single_stack_rules(report)
 
-    # Phase D migration/cutover hardening gates
+    # Post-migration hardening gates (workspace cutover + tombstones)
     _check_migration_hardening_rules(report)
 
-    # Phase 7a migration-final gates (11-16)
+    # Post-migration final-state gates (12, 15, 15b, 15c, 16)
     _check_v4_migration_final_rules(report)
 
     # Unified-HTTP + retired flat-path gates

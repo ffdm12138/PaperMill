@@ -45,7 +45,6 @@ class TransactionSymlinkError(TransactionPathError):
 # ── Pattern constants ──────────────────────────────────────────────────
 
 _PAPER_NUMBER_RE = re.compile(r"^\d{16}$")
-_paper_name_SAFE_RE = re.compile(r"^[A-Za-z0-9_\-一-鿿]+$")
 
 
 # ── Identity validators ────────────────────────────────────────────────

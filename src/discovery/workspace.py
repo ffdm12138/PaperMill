@@ -10,7 +10,6 @@ Layout::
     │       ├── keyword_notebooks/
     │       ├── lane_states/
     │       ├── page_journals/
-    │       ├── pending_candidates/
     │       ├── indexes/
     │       ├── exports/
     │       ├── reports/
@@ -52,8 +51,7 @@ MIGRATION_LOCK_PATH = DISCOVERY_MIGRATIONS_DIR / ".migration.lock"
 
 KNOWN_SUBDIRS = (
     "keyword_notebooks", "lane_states", "page_journals",
-    "pending_candidates", "indexes", "exports",
-    "reports", "locks",
+    "indexes", "exports", "reports", "locks",
 )
 
 
@@ -135,7 +133,6 @@ class DiscoveryWorkspace:
     keyword_notebook_dir: Path
     lane_states_dir: Path
     page_journals_dir: Path
-    pending_candidates_dir: Path
     indexes_dir: Path
     exports_dir: Path
     reports_dir: Path
@@ -163,7 +160,6 @@ class DiscoveryWorkspace:
             keyword_notebook_dir=root / "keyword_notebooks",
             lane_states_dir=root / "lane_states",
             page_journals_dir=root / "page_journals",
-            pending_candidates_dir=root / "pending_candidates",
             indexes_dir=root / "indexes",
             exports_dir=root / "exports",
             reports_dir=root / "reports",
@@ -174,9 +170,8 @@ class DiscoveryWorkspace:
         """Create all workspace subdirectories if they do not exist."""
         dirs: list[Path] = [
             self.keyword_notebook_dir, self.lane_states_dir,
-            self.page_journals_dir, self.pending_candidates_dir,
-            self.indexes_dir, self.exports_dir,
-            self.reports_dir, self.locks_dir,
+            self.page_journals_dir, self.indexes_dir,
+            self.exports_dir, self.reports_dir, self.locks_dir,
         ]
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
@@ -184,12 +179,10 @@ class DiscoveryWorkspace:
     def verify_dirs(self) -> list[str]:
         """Return list of missing required subdirectories.  Empty = complete.
 
-        ``pending_candidates`` is intentionally not required: it is a
-        transitional channel for migrated legacy candidates that
-        ``migrate_discovery_v4.py --clean-legacy`` removes from the active
-        generation once drained.  The store and the drain loop both tolerate
-        its absence, and staging workspaces still create it via
-        :meth:`ensure_dirs`.  See docs/ADR_DISCOVERY_V4_MIGRATION_FINAL.md.
+        ``pending_candidates`` was the finalized v3→v4 migration's transitional
+        channel; it is no longer part of the workspace layout.  A leftover
+        directory in a retired generation is ignored.  See
+        docs/ADR_DISCOVERY_V4_MIGRATION_FINAL.md.
         """
         missing: list[str] = []
         for attr, dirname in [
@@ -213,7 +206,6 @@ class DiscoveryWorkspace:
             "keyword_notebook_dir": str(self.keyword_notebook_dir),
             "lane_states_dir": str(self.lane_states_dir),
             "page_journals_dir": str(self.page_journals_dir),
-            "pending_candidates_dir": str(self.pending_candidates_dir),
             "indexes_dir": str(self.indexes_dir),
             "exports_dir": str(self.exports_dir),
             "reports_dir": str(self.reports_dir),
@@ -227,8 +219,7 @@ class DiscoveryWorkspace:
 class WorkspaceResolver:
     """Sole entry point for resolving discovery workspace paths.
 
-    Production CLI calls ``resolve_active()``.  Migration tools call
-    ``resolve_staging_for_migration()``.  No module may bypass this
+    Production CLI calls ``resolve_active()``.  No module may bypass this
     resolver to construct paths from ``config.settings`` discovery
     constants.
     """
@@ -264,7 +255,7 @@ class WorkspaceResolver:
         with ``manifest.workspace_tree_sha256``.  It is opt-in because the
         manifest tree hash binds the *activation-time* closure: every
         workspace subdirectory (``keyword_notebooks``, ``lane_states``,
-        ``page_journals``, ``pending_candidates``, ``indexes``, ``exports``,
+        ``page_journals``, ``indexes``, ``exports``,
         ``reports``, ``locks``) and the generation root itself
         (``.relevance_raw_work_cache``, ``*.lock`` files) are intentionally
         mutated by normal discovery runs, so unconditional content
@@ -403,14 +394,6 @@ class WorkspaceResolver:
                 f"active generation pointer is not strict V4: {exc}"
             ) from exc
 
-    # ── Staging workspace ──────────────────────────────────────────────
-
-    def resolve_staging_for_migration(
-        self, generation_id: str | None = None
-    ) -> DiscoveryWorkspace:
-        """Create a staging workspace for migration.  Migration-only."""
-        return create_staging_workspace(generation_id)
-
 
 # ── Staging workspace helpers ─────────────────────────────────────────────
 
@@ -435,7 +418,6 @@ def create_staging_workspace(
         keyword_notebook_dir=root / "keyword_notebooks",
         lane_states_dir=root / "lane_states",
         page_journals_dir=root / "page_journals",
-        pending_candidates_dir=root / "pending_candidates",
         indexes_dir=root / "indexes",
         exports_dir=root / "exports",
         reports_dir=root / "reports",

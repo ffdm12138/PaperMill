@@ -23,7 +23,6 @@ PDF access resolver 体系，以及明确不引入的依赖。目的是让新 ag
 可选的本地服务接口，非正式入库主流程所必需：
 
 - `FastAPI` / `uvicorn`：本地只读 API（`python -m src.server`），默认绑定 `127.0.0.1`。
-- `Gradio`：可选的交互界面。
 
 ## 3. Network metadata services
 
@@ -95,7 +94,6 @@ Key notices:
 - MinerU: MinerU Open Source License, based on Apache-2.0 with additional terms.
 - PyMuPDF/MuPDF: AGPL-or-commercial.
 - FastAPI: MIT.
-- Gradio: Apache-2.0.
 - ref-downloader bridge: external integration with the upstream MIT project.
 
 Read `THIRD_PARTY_NOTICES.md`. Use the read-only audits:

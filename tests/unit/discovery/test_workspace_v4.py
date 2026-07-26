@@ -54,8 +54,7 @@ class TestDiscoveryWorkspaceConstruction:
         # class attributes use singular (e.g., "keyword_notebook_dir")
         attr_names = [
             "keyword_notebook_dir", "lane_states_dir", "page_journals_dir",
-            "pending_candidates_dir", "indexes_dir", "exports_dir",
-            "reports_dir", "locks_dir",
+            "indexes_dir", "exports_dir", "reports_dir", "locks_dir",
         ]
         for attr in attr_names:
             d = getattr(ws, attr)
@@ -104,7 +103,6 @@ class TestDiscoveryWorkspaceEnsureDirs:
                 keyword_notebook_dir=root / "keyword_notebooks",
                 lane_states_dir=root / "lane_states",
                 page_journals_dir=root / "page_journals",
-                pending_candidates_dir=root / "pending_candidates",
                 indexes_dir=root / "indexes",
                 exports_dir=root / "exports",
                 reports_dir=root / "reports",
@@ -113,9 +111,8 @@ class TestDiscoveryWorkspaceEnsureDirs:
             ws.ensure_dirs()
             dir_attrs = [
                 ws.keyword_notebook_dir, ws.lane_states_dir,
-                ws.page_journals_dir, ws.pending_candidates_dir,
-                ws.indexes_dir, ws.exports_dir,
-                ws.reports_dir, ws.locks_dir,
+                ws.page_journals_dir, ws.indexes_dir,
+                ws.exports_dir, ws.reports_dir, ws.locks_dir,
             ]
             for d in dir_attrs:
                 assert d.is_dir(), f"not created: {d}"
@@ -132,7 +129,6 @@ class TestDiscoveryWorkspaceEnsureDirs:
                 keyword_notebook_dir=root / "keyword_notebooks",
                 lane_states_dir=root / "lane_states",
                 page_journals_dir=root / "page_journals",
-                pending_candidates_dir=root / "pending_candidates",
                 indexes_dir=root / "indexes",
                 exports_dir=root / "exports",
                 reports_dir=root / "reports",
@@ -143,10 +139,10 @@ class TestDiscoveryWorkspaceEnsureDirs:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_verify_dirs_tolerates_missing_pending_candidates(self):
-        """pending_candidates is a transitional migration channel: once
-        --clean-legacy removes the drained directory, the workspace must
-        still verify complete."""
+    def test_verify_dirs_ignores_leftover_pending_candidates(self):
+        """A retired generation may still carry the finalized migration's
+        pending_candidates directory on disk; it is not part of the layout
+        and must not affect verification."""
         tmp = Path(tempfile.mkdtemp())
         try:
             root = tmp / "test-g3"
@@ -156,17 +152,15 @@ class TestDiscoveryWorkspaceEnsureDirs:
                 keyword_notebook_dir=root / "keyword_notebooks",
                 lane_states_dir=root / "lane_states",
                 page_journals_dir=root / "page_journals",
-                pending_candidates_dir=root / "pending_candidates",
                 indexes_dir=root / "indexes",
                 exports_dir=root / "exports",
                 reports_dir=root / "reports",
                 locks_dir=root / "locks",
             )
             ws.ensure_dirs()
+            (root / "pending_candidates").mkdir()
             assert ws.verify_dirs() == []
-            shutil.rmtree(ws.pending_candidates_dir)
-            assert ws.verify_dirs() == []
-            # Other required directories are still enforced.
+            # Required directories are still enforced.
             shutil.rmtree(ws.reports_dir)
             assert ws.verify_dirs() == ["reports"]
         finally:
@@ -463,7 +457,6 @@ class TestCommitWorkspace:
             keyword_notebook_dir=ns.staging / "gen-ghost" / "keyword_notebooks",
             lane_states_dir=ns.staging / "gen-ghost" / "lane_states",
             page_journals_dir=ns.staging / "gen-ghost" / "page_journals",
-            pending_candidates_dir=ns.staging / "gen-ghost" / "pending_candidates",
             indexes_dir=ns.staging / "gen-ghost" / "indexes",
             exports_dir=ns.staging / "gen-ghost" / "exports",
             reports_dir=ns.staging / "gen-ghost" / "reports",

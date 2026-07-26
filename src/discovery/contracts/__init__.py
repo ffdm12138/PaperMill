@@ -8,17 +8,12 @@ execution, reporting, coordinator, or migration modules.
 """
 
 from src.discovery.contracts.enums import (
-    CandidateOrigin,
     DrainOutcome,
     JournalStateV4,
     LaneExecutionState,
     LaneStopReason,
     QueryLanguage,
     ShutdownReason,
-)
-from src.discovery.contracts.candidate import (
-    CANDIDATE_ORIGIN_VALUES,
-    PendingCandidateV4,
 )
 from src.discovery.contracts.lane_state import (
     LANE_STATE_SCHEMA_VERSION_V4,
@@ -52,16 +47,12 @@ from src.discovery.contracts.report import (
 
 __all__ = [
     # Enums
-    "CandidateOrigin",
     "DrainOutcome",
     "JournalStateV4",
     "LaneExecutionState",
     "LaneStopReason",
     "QueryLanguage",
     "ShutdownReason",
-    # Candidate
-    "CANDIDATE_ORIGIN_VALUES",
-    "PendingCandidateV4",
     # Lane state
     "LANE_STATE_SCHEMA_VERSION_V4",
     "CursorTransactionV4",

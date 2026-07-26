@@ -2,6 +2,10 @@
 
 **Status:** Accepted (target architecture for discovery runtime)  
 **Date:** 2026-07-24  
+**Update 2026-07-26:** the v3→v4 migration finalized on 2026-07-25 and the
+one-time migration toolchain described below has been removed from the
+working tree (git history preserves it). Migration-era sections are
+historical record.  
 **Supersedes:** Any earlier document that claims discovery runtime supports multiple concurrent notebook/page-journal schemas or a v3 fallback path.
 
 ## 1. Context

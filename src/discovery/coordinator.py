@@ -434,15 +434,11 @@ def _run_discovery_batch_unlocked(
             skip_duplicates=options.skip_duplicates,
             hide_existing=options.hide_existing,
             max_candidates=options.max_candidates,
-            max_pending_candidates=options.max_pending_candidates,
-            resume_pending_candidates=options.resume_pending_candidates,
             stage_to_paper_raw=options.stage_to_paper_raw,
             apply=options.apply,
             doi_resolution_budget=options.doi_resolution_budget,
             until_exhausted=options.until_exhausted,
             gateway=deps.metadata_gateway,
-            pending_store=deps.bundle.pending,
-            receipt_store=deps.bundle.receipts,
         ) as drain:
             # deferred relevance retry helper
             def retry_due_deferred(keyword_id: str, profile: dict) -> None:

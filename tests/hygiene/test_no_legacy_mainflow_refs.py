@@ -140,7 +140,6 @@ _READY_ARTIFACT_ALLOWED = {
     # This file itself contains the scan literals.
     "tests/hygiene/test_no_legacy_mainflow_refs.py",
     # reconcile fixtures build legacy/corpse workspaces with markers by hand
-    "tests/slow/test_reconcile_paper_raw_non_destructive.py",
     # pack_repo workspace sampling tests create *.paper.number markers as
     # test fixtures for sampling rules — these are not formalize artifacts.
     "tests/unit/test_pack_repo_rules.py",

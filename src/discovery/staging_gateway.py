@@ -45,7 +45,7 @@ class MetadataStagingGateway:
 
     The gateway owns the call to ``stage_network_metadata_records`` and the
     mapping from its raw item statuses to the v4 result vocabulary.  Discovery
-    code above this layer only sees ``PendingCandidateV4`` and
+    code above this layer only sees prepared staging records and
     ``MetadataStagingBatchResultV4``.
     """
 
@@ -72,7 +72,7 @@ class MetadataStagingGateway:
 
         Args:
             records: Prepared metadata v2.0 input records produced by the
-                discovery drain from ``PendingCandidateV4`` objects.
+                discovery journal drain.
             apply: When ``True``, allocate raw workspaces and write the ledger;
                 when ``False``, run a dry-run validation.
             skip_duplicates: If ``True``, duplicate observations are skipped

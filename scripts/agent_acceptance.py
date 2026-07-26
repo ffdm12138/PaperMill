@@ -92,7 +92,6 @@ FAST_ACCEPTANCE_TESTS = [
     "tests/unit/test_catalog_folders.py",
     "tests/unit/test_catalog_registry_lifecycle.py",
     "tests/unit/test_formal_registry_errors.py",
-    "tests/unit/test_app_catalog_title.py",
     "tests/integration/test_frozen_v32_transaction_pipeline.py",
     "tests/integration/test_writing_metadata_catalog_roles.py",
     "tests/integration/test_rollback_cli.py",
@@ -135,7 +134,6 @@ FAST_GROUPS: list[tuple[str, list[str]]] = [
     ]),
     ("rollback-cli", ["tests/integration/test_rollback_cli.py"]),
     ("app-server", [
-        "tests/unit/test_app_catalog_title.py",
         "tests/integration/test_server_security.py",
     ]),
     ("packaging", [
@@ -466,7 +464,6 @@ def verify_root_hygiene(root_path: Path | None = None) -> list[str]:
         "trace*.log",
     )
     allowed_root_tools = {
-        "app.py",
         "start.bat",
         "start_fast_api_mode.bat",
     }

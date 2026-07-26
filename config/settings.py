@@ -62,16 +62,12 @@ CATALOG_ALL_DIR = CATALOG_FOLDER_ROOT / "all"
 CATALOG_PENDING_DIR = CATALOG_FOLDER_ROOT / "_pending"
 PAPER_NUMBER_LEDGER_PATH = CATALOG_FOLDER_ROOT / "paper_number_ledger.json"
 DISCOVERY_DIR = DATA_DIR / "discovery"
-DISCOVERY_KEYWORD_NOTEBOOK_DIR = DISCOVERY_DIR / "keyword_notebooks"
-DISCOVERY_PENDING_PAGES_DIR = DISCOVERY_DIR / "pending_pages"
 DISCOVERY_LOCKS_DIR = DISCOVERY_DIR / "locks"
 DISCOVERY_EXPORTS_DIR = DISCOVERY_DIR / "exports"
 # v4 workspace paths
 DISCOVERY_GENERATIONS_DIR = DISCOVERY_DIR / "generations"
 DISCOVERY_ACTIVE_GENERATION_PATH = DISCOVERY_DIR / "active_generation.json"
 DISCOVERY_MIGRATIONS_DIR = DISCOVERY_DIR / "migrations"
-DISCOVERY_LEGACY_ARCHIVE_DIR = DISCOVERY_DIR / "legacy_archive"
-DISCOVERY_STAGING_DIR = DISCOVERY_GENERATIONS_DIR / ".staging"
 JOBS_DIR = DATA_DIR / "jobs"
 UPLOAD_JOBS_PATH = JOBS_DIR / "upload_jobs.json"
 UPLOAD_STAGING_DIR = JOBS_DIR / "upload_staging"
@@ -184,8 +180,6 @@ CITATION_STYLE = _env_str("MINERU_CITATION_STYLE", "author-year")
 SUPPORTED_FORMATS = {".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg"}
 
 # 确保目录存在（导入即创建，有副作用）
-# 注意：legacy 扁平目录 DISCOVERY_KEYWORD_NOTEBOOK_DIR / DISCOVERY_PENDING_PAGES_DIR
-# 不在此自动创建——v4 迁移后它们由迁移/审计工具按需显式创建，缺失即失败。
 for d in [
     RAW_DIR, PAPER_RAW_DIR, PAPERS_DIR,
     MINERU_TMP_DIR, MINERU_LOG_DIR,

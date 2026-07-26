@@ -18,7 +18,6 @@ is covered by the repository license boundary.
 | FastAPI | Optional local API server | MIT. |
 | uvicorn | Optional local ASGI server for API serving | BSD-3-Clause. |
 | python-multipart | Multipart form parsing for API uploads | Apache-2.0. |
-| Gradio | Optional local UI | Apache-2.0. |
 | requests | HTTP client | Apache-2.0. |
 | pydantic | Data validation | MIT. |
 | loguru | Logging | MIT. |

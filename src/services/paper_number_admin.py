@@ -51,8 +51,6 @@ def _find_stale_paper_number_tokens(text: str, current: str) -> list[str]:
             continue
         tokens.add(tok)
     return sorted(tokens)
-# A standalone 16-digit paper_number token (not part of a longer digit run).
-_STANDALONE_16DIGIT_RE = re.compile(r"(?<!\d)\d{16}(?!\d)")
 _METADATA_FINGERPRINT_PLACEHOLDER = "PAPER_NUMBER_TOKEN"
 
 

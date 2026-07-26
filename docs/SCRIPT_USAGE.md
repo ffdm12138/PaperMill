@@ -6,7 +6,6 @@
 | `verify_discovery_final_architecture.py` | strict static and dynamic verification of the single-path Discovery execution architecture | no |
 | `repair_discovery_workspaces.py` | explicit reserved-workspace repair planning/promotion | `--apply` |
 | `repair_formal_publications.py` | audit or identity-only repair of legacy active formal sidecars; unsafe closures emit rollback/recommit plans | `--apply` |
-| `migrate_quarantined_duplicate_ledger_state.py` | explicit retired-state migration to abandoned quarantine facts | `--apply` |
 | `benchmark_discovery_pipeline.py` | synthetic raw+formal+candidate batch I/O benchmark | no real runtime state |
 | `audit_discovery_reset_state.py` | read-only full discovery reset-state audit (paper_raw, ledger, formal, journals, cursors, locks) | no |
 
@@ -33,11 +32,9 @@ actions, never discovery staging.
 | `claim_catalog_classification_tasks.py` | list next unapplied tasks for a worker | no |
 | `reconcile_catalog_folders.py` | rebuild folder links from authoritative state | `--apply` |
 | `doctor_catalog_folders.py` | audit writer safety and folder integrity | no |
-| `recover_discovery_keyword_notebooks.py` | inspect legacy v3-to-v4 recovery candidates and emit an identity-bound plan | inspect-only; no v3 apply entry point |
 | `reconcile_discovery_v4_migration.py` | per-seed post-cutover reconciliation of a finalized v4 migration against paper_raw; writes strict seed receipts under `data/discovery/migrations/<id>.receipts/` | dry-run by default; receipts with `--apply` |
 | `show_catalog_classification_progress.py` | report classification completion status | no |
 | `rollback_formal_papers_to_paper_raw.py` | recoverable formal-to-numeric-raw rollback | `--apply` |
-| `revise_frozen_metadata.py` | admin-only raw Metadata revision | dry-run by default |
 | `validate_v2_library.py` | validate formal Catalog v3.2 library/index closure | no |
 | `agent_acceptance.py` | compile, tests, hygiene, pack, ZIP verification | creates snapshot |
 | `cleanup_test_caches.py` | safe cleanup of stale test workspaces and legacy caches | `--apply` |
@@ -45,13 +42,11 @@ actions, never discovery staging.
 | `pack_repo.py` | runtime-zero source audit snapshot | creates ZIP |
 | `benchmark_discovery_staging.py` | performance benchmark for discovery staging (synthetic temp data only) | no |
 
-Real migration apply requires explicit authorization after inventory, backup,
-dry-run reports, and fixture acceptance. Agent tests always use temporary roots.
-For the current five-notebook production migration, review the inventory and
-fixed mapping/plan first, then apply only that same plan-bound transaction.
-Operator mapping and transaction plans belong under local/runtime state and are
-not source snapshot artifacts. The migration inventory, strict audit, and
-`recover_discovery_keyword_notebooks.py --inspect` commands are read-only.
+The five-notebook production set was migrated from v3 by a one-time reviewed,
+plan-bound transaction; the migration finalized on 2026-07-25 and its tooling
+has been removed from the working tree (git history preserves it). Operator
+mapping and transaction plans remain local/runtime state, never source
+snapshot artifacts. The strict audit command is read-only.
 
 ## Platform notes
 
@@ -182,9 +177,7 @@ cleanup_test_caches.py
 test_runtime_workspace.py
 audit_ingest_duplicates.py
 audit_metadata_quality.py
-audit_paper_number_ledger.py
 audit_paper_raw_duplicate_workspaces.py
-audit_raw_vs_paper_raw.py
 audit_source_provenance.py
 audit_third_party_licenses.py
 benchmark_mineru.py
@@ -209,30 +202,22 @@ fetch_pdf_for_paper_raw.py
 formalize_paper_raw.py
 freeze_paper_raw_metadata.py
 manage_discovery_keywords.py
-migrate_import_status_v2.py
 pack_repo.py
 preflight_paper_raw_import.py
 prepare_paper_raw_catalog_task.py
 prepare_write_article_workdir.py
-quarantine_unreferenced_workspaces.py
 apply_catalog_classification_result.py
 claim_catalog_classification_tasks.py
 doctor_catalog_folders.py
 reconcile_catalog_folders.py
-recover_discovery_keyword_notebooks.py
 run_catalog_classification.py
 show_catalog_classification_progress.py
 sync_catalog_categories.py
-reconcile_paper_raw_non_destructive.py
-repair_corrupted_markers.py
 repair_formal_publications.py
-repair_ledger_folder_names.py
 repair_paper_raw_derived_files.py
 repair_stale_formal_asset_manifests.py
 reset_paper_number_ledger.py
 resolve_paper_raw_metadata.py
-restore_paper_raw_from_mineru_output_cache.py
-revise_frozen_metadata.py
 rollback_formal_papers_to_paper_raw.py
 run_paper_raw_gpu_conversion_then_resolve.py
 smoke_mineru_conversion.py

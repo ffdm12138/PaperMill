@@ -63,8 +63,8 @@ changes do not invalidate existing classification decisions.
 Enabled notebooks are required to be bilingual-ready. `ensure_notebook` creates
 an incomplete notebook as a disabled draft; `set_enabled(True)` and every
 definition mutation enforce readiness atomically. The audit is strict and
-read-only. Recovery currently supports only `--inspect`, because legacy v3
-apply is not exposed until a plan-bound writer can be independently verified.
+read-only. Legacy v3 notebook recovery tooling was retired after the migration
+finalized; v3 inputs are rejected by production before provider I/O.
 
 ## Catalog status
 
@@ -78,21 +78,25 @@ apply is not exposed until a plan-bound writer can be independently verified.
 ## Notebook v4 delivery status
 
 The five production notebooks are enabled, schema v4, bilingual-ready, and
-migrated from v3 via `scripts/migrate_discovery_v4.py`.  All cursors, exhausted
-states, and generation counters were reset on migration.  Provider page journals
-now use the strict v4 schema (`"4.0"`) with complete lane key, response metadata,
-and exhaustion evidence records.
+were migrated from v3 by the one-time v4 migration toolchain (finalized
+2026-07-25 and since removed from the working tree; git history preserves
+it).  All cursors, exhausted states, and generation counters were reset on
+migration.  Provider page journals use the strict v4 schema (`"4.0"`) with
+complete lane key, response metadata, and exhaustion evidence records.
 
 The active v4 workspace lives under `data/discovery/generations/<id>/` and is
-activated by `data/discovery/active_generation.json`.  Legacy v2/v3 journals
-remain in `data/discovery/pending_pages/` (not read by v4 production code) and
-may be archived to `data/discovery/legacy_archive/`.
+activated by `data/discovery/active_generation.json`.  Legacy flat directories
+were retired to `data/discovery/legacy_retained/<id>/`;
+`data/discovery/keyword_notebooks` and `data/discovery/pending_pages` are
+tombstone files.
 
 ## Test suite status
 
-- **Tests collected:** 1951 (run `pytest --collect-only -q` for current count)
-- **Acceptance:** pre-flight clean, syntax gate 464/464 passed, runtime-zero snapshot verified
-- **Snapshot:** 548 payload files, 549 members, 0 runtime files, secret scan passed
+- **Tests collected:** run `pytest --collect-only -q` for the current count
+  (2026-07-26: ~2,700; see `docs/TESTING.md` for verified gate timings)
+- **Acceptance:** pre-flight clean, syntax gate passed, runtime-zero snapshot
+  verified; fast gate runs its groups in parallel (~52s wall)
+- **Snapshot:** runtime-zero, 0 runtime files, secret scan passed
 
 ### Cleanup principles
 

@@ -2,6 +2,12 @@
 
 **Status:** Accepted  
 **Date:** 2026-07-25  
+**Update 2026-07-26:** the migration finalized on 2026-07-25 (see
+`artifacts/discovery_v4_post_cutover/final_acceptance.json`). The one-time
+toolchain (`scripts/migrate_discovery_v4.py`,
+`scripts/reconcile_discovery_v4_migration.py`, `src/migrations/`,
+`PendingCandidateStoreV4` and its drain channel) has been removed from the
+working tree; git history preserves it. Body text below is historical record.  
 **Complements:** `docs/ADR_DISCOVERY_V4_SINGLE_STACK.md` (which freezes the
 single v4 stack and the migration state machine).  Where the older ADR
 describes the post-cutover chain without the pending-store lifecycle, this

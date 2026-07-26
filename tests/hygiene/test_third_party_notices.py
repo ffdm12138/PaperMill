@@ -22,7 +22,6 @@ def test_third_party_notices_key_license_boundaries():
     assert "| FastAPI |" in text and "| MIT." in text
     assert "| uvicorn |" in text and "BSD-3-Clause" in text
     assert "| python-multipart |" in text and "Apache-2.0" in text
-    assert "| Gradio |" in text and "Apache-2.0" in text
     assert "| filelock |" in text and "| MIT." in text
     assert "ref-downloader" in text
 

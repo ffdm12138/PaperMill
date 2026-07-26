@@ -4,11 +4,6 @@ from __future__ import annotations
 import pytest
 
 from src.discovery.constants import INITIAL_CURSOR
-from src.discovery.contracts.candidate import (
-    CANDIDATE_ORIGIN_VALUES,
-    PendingCandidateV4,
-)
-from src.migrations.discovery_v4.legacy_contracts import LegacyCandidateSeedV4
 from src.discovery.contracts.page_journal import (
     PAGE_SCHEMA_VERSION_V4,
     PAGE_V4_FIELDS,
@@ -203,54 +198,6 @@ class TestProviderPageJournalV4:
         d["unknown_key"] = "intruder"
         with pytest.raises(ValueError, match="unknown fields"):
             ProviderPageJournalV4.from_dict_strict(d)
-
-
-# ── PendingCandidateV4 ────────────────────────────────────────────────────
-
-
-class TestPendingCandidateV4:
-    def test_default_origin_is_provider_page(self):
-        pc = PendingCandidateV4()
-        assert pc.origin == "provider_page"
-
-    def test_rejects_invalid_origin(self):
-        with pytest.raises(ValueError, match="invalid origin"):
-            PendingCandidateV4(origin="bad_origin")  # type: ignore[arg-type]
-
-    def test_all_origin_values_accepted(self):
-        for origin in CANDIDATE_ORIGIN_VALUES:
-            pc = PendingCandidateV4(origin=origin)  # type: ignore[arg-type]
-            assert pc.origin == origin
-
-
-# ── LegacyCandidateSeedV4 ─────────────────────────────────────────────────
-
-
-class TestLegacyCandidateSeedV4:
-    def test_basic_construction(self):
-        seed = LegacyCandidateSeedV4(
-            seed_id="s1", doi="10.1234/test",
-            normalized_doi="10.1234/test",
-            source_schema_version="2.0",
-        )
-        assert seed.seed_id == "s1"
-
-    def test_compute_seed_id_deterministic(self):
-        sid1 = LegacyCandidateSeedV4.compute_seed_id("page-1", "10.1234/a")
-        sid2 = LegacyCandidateSeedV4.compute_seed_id("page-1", "10.1234/a")
-        assert sid1 == sid2
-        assert len(sid1) == 32
-
-    def test_rejects_empty_seed_id(self):
-        with pytest.raises(ValueError, match="seed_id"):
-            LegacyCandidateSeedV4(seed_id="", doi="10.1234/x", normalized_doi="10.1234/x")
-
-    def test_rejects_invalid_source_schema(self):
-        with pytest.raises(ValueError, match="source_schema_version"):
-            LegacyCandidateSeedV4(
-                seed_id="s1", doi="10.1234/x", normalized_doi="10.1234/x",
-                source_schema_version="4.0",
-            )
 
 
 # ── CursorTransactionV4 (contracts: flat fields, not lane_key) ────────────

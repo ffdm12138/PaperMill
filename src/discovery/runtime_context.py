@@ -71,7 +71,6 @@ def resolve_active_runtime(
                 keyword_notebook_dir=notebook_dir,
                 lane_states_dir=root / "lane_states",
                 page_journals_dir=root / "page_journals",
-                pending_candidates_dir=root / "pending_candidates",
                 indexes_dir=root / "indexes",
                 exports_dir=root / "exports",
                 reports_dir=root / "reports",

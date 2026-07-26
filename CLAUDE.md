@@ -170,10 +170,9 @@ before cursor CAS. Use `manage_discovery_keywords.py` for notebook operations.
 Pending work uses leases and DOI/title-resolution locks; `max_candidates` is a
 drain budget and never discards fetched candidates.
 
-The page journal is the sole production candidate carrier.
-`PendingCandidateStoreV4` is a migration-only transitional drain channel:
-written only by the v4 migrator, drained by normal discovery runs, and its
-directory removed by `--clean-legacy` once empty (see
+The page journal is the sole production candidate carrier. The v3→v4
+migration is finalized and its transitional pending-candidate drain channel
+is removed; discovery has no secondary candidate store (see
 `docs/ADR_DISCOVERY_V4_MIGRATION_FINAL.md`).
 
 Only keyword notebook schema v4 is active. One notebook owns one Chinese
@@ -189,16 +188,15 @@ provider-lane plan.
 Enabled notebooks must always be bilingual-ready. New incomplete definitions
 are disabled drafts, and store-level enable/mutation checks fail closed if
 readiness would be lost. `audit_discovery_keyword_index_sources.py` is strict
-v4 and read-only. `recover_discovery_keyword_notebooks.py --inspect` is the
-only recovery mode for legacy v3 notebooks; recovery apply is unavailable until a plan-bound writer
-is independently verified.
+v4 and read-only. Legacy v3 notebooks are unsupported inputs: production
+rejects them before provider I/O, and no recovery or migration tooling exists
+in the working tree.
 
-The production set contains five enabled Chinese keyword notebooks; legacy v3 notebooks must be migrated to v4 before discovery can use them.
-Inventory and a fixed reviewed mapping/plan precede any authorized apply, and
-the applied transaction preserves queries, provider generation/signature,
-cursors, generation history, and page journals. Real mapping and plan evidence
-belongs in ignored operator/runtime state, never active source or snapshots;
-only safe examples may live under `migrations/`. The concurrent `--dry-run`
+The production set contains five enabled Chinese keyword notebooks, all
+schema v4; the v3→v4 migration finalized on 2026-07-25 and its toolchain is
+removed. Historical mapping and plan evidence stays in ignored
+operator/runtime state, never active source or snapshots; nothing under
+`migrations/` may carry real operator state. The concurrent `--dry-run`
 must report every notebook/provider lane with generation, request signature,
 refresh pages, backfill pages, worker count, and page budget. It performs no
 provider I/O, cursor or page-journal writes, paper allocation, notebook

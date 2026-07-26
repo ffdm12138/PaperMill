@@ -26,9 +26,9 @@ migration smoke run executes a real batch during a maintenance window.
 An external process cannot forge ownership: it has a different pid, and
 the sidecar/mutex pair cannot be claimed while the live owner holds them.
 
-This module is shared runtime infrastructure: production discovery and the
-migration package both depend on it.  Production code must never import
-``src.migrations`` for maintenance-gate functionality.
+This module is shared runtime infrastructure owned by production discovery.
+It doubles as the fail-closed operator lock for maintenance windows; the
+finalized v3→v4 migration used it through this same interface.
 """
 from __future__ import annotations
 

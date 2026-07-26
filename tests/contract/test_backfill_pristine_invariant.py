@@ -61,7 +61,7 @@ def _corrupt(store: KeywordNotebookStore, updates: dict) -> None:
 
 
 def test_strict_pristine_consistency(tmp_path):
-    """Pristine: helper=true, schema=pass, store=first-bind, no recovery ops."""
+    """Pristine: helper=true, schema=pass, store=first-bind."""
     store, nb = _make_store(tmp_path)
     bf = _backfill_from(nb)
 
@@ -80,25 +80,6 @@ def test_strict_pristine_consistency(tmp_path):
     result = store.ensure_backfill_generation(KEYWORD, qid, "openalex", request_signature_hash=sig["hash"])
     assert result["request_signature"] == sig["hash"]
     assert result["generation"] >= 1
-
-    # Recovery: no operations
-    from scripts.recover_discovery_keyword_notebooks import recover_notebooks
-    tmp_path.joinpath("pages").mkdir(exist_ok=True)
-    tmp_path.joinpath("locks").mkdir(exist_ok=True)
-    recover_store = KeywordNotebookStore(tmp_path / "nb_recover")
-    recover_store.ensure_notebook("测试恢复")
-    recover_store.sync_search_queries("测试恢复", add=[
-        {"query": "测试恢复", "language": "zh", "source": "pytest"},
-        {"query": "recovery test", "language": "en", "source": "pytest"},
-    ])
-    bind_test_relevance_profile(recover_store, "测试恢复")
-    recover_store.set_enabled("测试恢复", True)
-    report = recover_notebooks(
-        notebook_dir=tmp_path / "nb_recover",
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-    )
-    assert report["errors"] == []
 
 
 def test_durable_progress_fail_closed(tmp_path):

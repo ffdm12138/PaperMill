@@ -11,7 +11,7 @@ from typing import Iterable
 
 ROOT = Path(__file__).resolve().parent.parent
 SCAN_ROOTS = ("src", "scripts", "skills", "config", "docs", "web")
-SCAN_FILES = ("app.py", "THIRD_PARTY_NOTICES.md", "README.md", "SECURITY.md")
+SCAN_FILES = ("THIRD_PARTY_NOTICES.md", "README.md", "SECURITY.md")
 SCAN_SUFFIXES = {".py", ".md", ".sh", ".bat", ".ps1", ".txt"}
 
 HIGH_CONFIDENCE_PATTERNS = {

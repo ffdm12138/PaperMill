@@ -33,7 +33,6 @@ def make_test_workspace(
         keyword_notebook_dir=Path(notebook_dir) if notebook_dir is not None else root / "keyword_notebooks",
         lane_states_dir=root / "lane_states",
         page_journals_dir=Path(page_journals_dir) if page_journals_dir is not None else root / "page_journals",
-        pending_candidates_dir=root / "pending_candidates",
         indexes_dir=root / "indexes",
         exports_dir=Path(exports_dir) if exports_dir is not None else root / "exports",
         reports_dir=root / "reports",

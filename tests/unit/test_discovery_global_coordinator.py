@@ -47,7 +47,6 @@ def _make_bundle(tmp_path: Path, keyword_zh: str) -> tuple[DiscoveryWorkspace, D
         keyword_notebook_dir=root / "keyword_notebooks",
         lane_states_dir=root / "lane_states",
         page_journals_dir=root / "page_journals",
-        pending_candidates_dir=root / "pending_candidates",
         indexes_dir=root / "indexes",
         exports_dir=root / "exports",
         reports_dir=root / "reports",

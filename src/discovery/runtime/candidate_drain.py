@@ -55,14 +55,10 @@ class CandidateDrainCoordinator:
     locks_dir: Path
     exports_dir: Path
     gateway: MetadataStagingGateway | None = None
-    pending_store: Any = None  # PendingCandidateStoreV4; None disables store drain
-    receipt_store: Any = None  # MigrationReceiptStoreV4; migration drains only
     staging_no_progress_timeout_seconds: float = 300.0
     skip_duplicates: bool = False
     hide_existing: bool = False
     max_candidates: int = 50
-    max_pending_candidates: int = 1000
-    resume_pending_candidates: int = 700
     stage_to_paper_raw: bool = False
     apply: bool = False
     doi_resolution_budget: int = 10
@@ -173,8 +169,6 @@ class CandidateDrainCoordinator:
                 hide_existing=self.hide_existing,
                 runtime=self.runtime,
                 gateway=self.gateway,
-                pending_store=self.pending_store,
-                receipt_store=self.receipt_store,
             )
             self._track_drain_result(keyword_id, result, phase=phase)
             return result

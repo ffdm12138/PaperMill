@@ -4,7 +4,7 @@
 
 - FastAPI defaults to `MINERU_API_HOST=127.0.0.1`.
 - Local UI/server use is intended for trusted localhost workflows.
-- Gradio or other local UI entrypoints should keep sharing disabled unless explicitly reviewed.
+- Local UI entrypoints should keep sharing disabled unless explicitly reviewed.
 
 ## Exposing the API
 

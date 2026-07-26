@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = (
     "audit_discovery_workspace_registry.py",
     "repair_discovery_workspaces.py",
-    "migrate_quarantined_duplicate_ledger_state.py",
     "benchmark_discovery_pipeline.py",
 )
 

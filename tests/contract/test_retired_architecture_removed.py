@@ -99,6 +99,16 @@ _REMOVED_PATHS = (
     "src/discovery/notebook_v3_migration.py",
     "scripts/migrate_keyword_notebooks_v3.py",
     "data/discovery/keyword_notebooks_retired",
+    # Discovery v4 one-time migration toolchain removed after finalization
+    "scripts/migrate_discovery_v4.py",
+    "scripts/reconcile_discovery_v4_migration.py",
+    "scripts/recover_discovery_keyword_notebooks.py",
+    "src/migrations",
+    "src/discovery/stores/pending_candidate_store.py",
+    "src/discovery/stores/migration_receipt_store.py",
+    "src/discovery/contracts/candidate.py",
+    # Retired duplicate read-only UI
+    "app.py",
 )
 
 

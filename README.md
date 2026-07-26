@@ -99,8 +99,8 @@ data/catalog/
   classify (via skill) → import results → doctor verifies.
 
 `audit_discovery_keyword_index_sources.py` is strict-v4 and read-only.
-`recover_discovery_keyword_notebooks.py --inspect` is also read-only and emits
-an identity-bound recovery plan; legacy v3 recovery apply is intentionally unavailable.
+Legacy v3 notebooks are unsupported inputs; the one-time v3→v4 migration
+finalized on 2026-07-25 and its tooling has been removed.
 
 The current production set contains five enabled Chinese schema-v4 notebooks.
 Their migration was inventory-checked and applied from a fixed reviewed plan;
@@ -111,7 +111,6 @@ The read-only workflow is:
 
 ```text
 python scripts/audit_discovery_keyword_index_sources.py
-python scripts/recover_discovery_keyword_notebooks.py --inspect
 python scripts/sync_catalog_categories.py
 python scripts/discover_papers_concurrent.py --from-enabled-notebooks --dry-run
 ```

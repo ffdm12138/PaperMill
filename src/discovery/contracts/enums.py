@@ -79,16 +79,3 @@ class ShutdownReason(str, Enum):
     FATAL_ERROR = "fatal_error"
 
 
-class CandidateOrigin(str, Enum):
-    """Origin of a PendingCandidateV4."""
-    PROVIDER_PAGE = "provider_page"
-    LEGACY_CANDIDATE_SEED = "legacy_candidate_seed"
-    MANUAL_IMPORT = "manual_import"
-
-
-class CursorAdvanceDecision(str, Enum):
-    """Typed decision after analyzing a provider page response."""
-    ADVANCE = "advance"
-    EXHAUSTED = "exhausted"
-    RETRYABLE_STALL = "retryable_stall"
-    REPAIR_REQUIRED = "repair_required"
