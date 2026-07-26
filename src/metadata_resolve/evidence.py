@@ -108,7 +108,7 @@ def _extract_pdf_title_candidate(pdf_path: Path) -> str:
 
 # ── Local evidence extraction ──────────────────────────────────────────
 
-def _local_evidence(metadata: dict, md_path: Path | None, pdf_path: Path | None = None, *, prefer_markdown: bool = False) -> tuple[str, int | None, str, str, list[str], str, str, str, list[str]]:
+def local_evidence(metadata: dict, md_path: Path | None, pdf_path: Path | None = None, *, prefer_markdown: bool = False) -> tuple[str, int | None, str, str, list[str], str, str, str, list[str]]:
     """Return local metadata evidence plus title/author source hints.
 
     Pulls trusted existing metadata first, then converted Markdown first 100

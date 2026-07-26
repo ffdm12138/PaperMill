@@ -191,7 +191,7 @@ def build_receipt_payload(
     optional: when empty it is still part of the identity (as ``""``) so a
     later non-empty provider correctly reads as a distinct receipt.
     """
-    from src.ingest.models import now_iso
+    from src.utils.timestamps import now_iso
 
     identity = normalize_receipt_identity(
         {

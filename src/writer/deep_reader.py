@@ -20,15 +20,12 @@ from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_
 from src.naming import safe_child, validate_paper_name
 from src.writer.catalog_matcher import load_selected, selected_paper_names
 from src.writer.bib_manager import job_local_bib_keys, resolve_work_dir
-from src.writer.safe_write import write_text_safely
+from src.writer.safe_write import TODO_MARKERS, write_text_safely
 from config.settings import PAPERS_DIR, PAPER_MD_MAX_CHARS
 from src import bib as bibmod
 
 _WORKSET_MANIFEST = "planning/workset_manifest.json"
 
-
-# 模板/待填标记（用于判断笔记是否仍是空模板）
-TODO_MARKERS = ["TODO", "待填", "（待填）", "TEMPLATE_ONLY", "由大模型补全", "待补全"]
 
 NOTE_TEMPLATE = """# {pid}
 

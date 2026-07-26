@@ -65,7 +65,7 @@ from src.metadata_resolve.enrichment import (
     extract_doi_from_filename,
     extract_doi_from_pdf_file,
 )
-from src.metadata_resolve.evidence import _local_evidence
+from src.metadata_resolve.evidence import local_evidence
 from src.metadata_resolve.scoring import MANUAL_REVIEW_THRESHOLD
 
 
@@ -161,7 +161,7 @@ def _resolve_metadata_candidates_impl(
         title_source,
         author_source,
         markdown_front_matter_lines,
-    ) = _local_evidence(metadata, md_path if md_path.exists() else None, pdf_path if pdf_path.exists() else None, prefer_markdown=prefer_markdown)
+    ) = local_evidence(metadata, md_path if md_path.exists() else None, pdf_path if pdf_path.exists() else None, prefer_markdown=prefer_markdown)
     local_title_evidence_missing = not bool(local_title)
     local_doi_candidates = [existing_doi] if existing_doi else list(md_header_dois)
 

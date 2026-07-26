@@ -102,13 +102,15 @@ run, and pack evidence. A timeout is a failure, never a pass.
 
 ## Current test suite
 
-- **2693 tests collected** (run `pytest --collect-only -q`)
+- **~2,420 tests collected** (run `pytest --collect-only -q` for the exact
+  current number; the finished-mission cleanup removed migration-era suites)
 - **Full gate** (`not stress and not external`): last verified 2026-07-26 —
-  parallel chunk 2611 passed + 1 skipped in ~57s (`-n 12`), sequential
-  residue 74 passed + 4 skipped in ~6m; ~7m20s wall end to end, 0 failed
-- **Fast gate**: all 9 groups passed concurrently in ~52s wall (9 workers)
+  parallel chunk 2348 passed + 1 skipped in ~65-80s (`-n 12`), sequential
+  residue 64 passed + 4 skipped in ~6-10m (per-invocation timeout 900s);
+  ~11m wall end to end, 0 failed
+- **Fast gate**: all 9 groups passed concurrently in ~52-70s wall (9 workers)
   with clean pre/post pollution checks (sequential baseline: ~3m)
-- **Snapshot**: runtime-zero, 683 ZIP members, 0 runtime files, secret scan passed
+- **Snapshot**: runtime-zero, 659 ZIP members, 0 runtime files, secret scan passed
 
 Discovery staging acceptance additionally covers strict ledger validation,
 single-read evidence, unknown-profile failure, atomic copy-on-write refresh,

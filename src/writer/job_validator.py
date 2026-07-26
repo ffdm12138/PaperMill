@@ -7,9 +7,9 @@ from pathlib import Path
 from src.writer.bib_manager import validate_job_citations, validate_job_bib, portability_check
 from src.writer.catalog_matcher import load_selected
 from src.writer.job_manager import JobManager
+from src.writer.safe_write import TODO_MARKERS
 
 
-TODO_MARKERS = ["TODO", "待填", "TEMPLATE_ONLY", "由大模型补全", "待补全"]
 MIN_TEX_CHARS = 120
 
 

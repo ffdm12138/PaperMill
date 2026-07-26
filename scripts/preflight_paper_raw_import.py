@@ -20,7 +20,7 @@ from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.ingest.import_status import write_import_status
 from src.metadata.quality import is_valid_normalized_doi
 from src.metadata.source_records import validate_metadata_source_record_exists
-from src.ingest.models import now_iso
+from src.utils.timestamps import now_iso
 from src.metadata.schema import validate_metadata_schema
 from src.utils.atomic_io import atomic_write_json
 _BLOCKING_STATUSES = {

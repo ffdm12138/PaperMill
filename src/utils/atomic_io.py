@@ -9,7 +9,7 @@ Durable write order (when ``fsync=True``)::
     write tmp  ->  flush  ->  fsync(tmp file)  ->  validate JSON
     ->  os.replace(tmp, target)  ->  fsync(parent directory, POSIX only)
 
-Windows does not support directory ``fsync``; ``_fsync_dir`` is a no-op
+Windows does not support directory ``fsync``; ``fsync_dir`` is a no-op
 there.  The file-level ``fsync`` is the critical durability guarantee and
 works on every platform.
 """
@@ -22,7 +22,7 @@ from pathlib import Path
 from filelock import FileLock
 
 
-def _fsync_dir(directory: Path) -> None:
+def fsync_dir(directory: Path) -> None:
     """Best-effort fsync of the parent directory (POSIX only).
 
     Windows does not support directory fsync — the call is a no-op.
@@ -84,7 +84,7 @@ def atomic_write_json_unlocked(
         json.loads(tmp.read_text(encoding="utf-8"))
         os.replace(tmp, path)
         if fsync:
-            _fsync_dir(path.parent)
+            fsync_dir(path.parent)
     except Exception:
         # Clean up tmp on any failure so it does not linger.
         try:
@@ -137,7 +137,7 @@ def atomic_write_text(
                 os.fsync(fh.fileno())
         os.replace(tmp, path)
         if fsync:
-            _fsync_dir(path.parent)
+            fsync_dir(path.parent)
     except Exception:
         try:
             tmp.unlink()
@@ -169,7 +169,7 @@ def atomic_replace_bytes_unlocked(
                 os.fsync(fh.fileno())
         os.replace(tmp, path)
         if fsync:
-            _fsync_dir(path.parent)
+            fsync_dir(path.parent)
     except Exception:
         try:
             tmp.unlink()

@@ -15,7 +15,7 @@ Usage:
 Flags:
     --full                    Run the full pytest suite (excluding stress, external).
     --full-groups             Run full pytest in diagnostic groups (max 10 files each).
-    --full-timeout-seconds N  Timeout for --full / fast pytest (default 600).
+    --full-timeout-seconds N  Per-invocation timeout for --full / fast pytest (default 900).
     --group-timeout-seconds N Per-group timeout for --full-groups (default 300).
     --stop-on-first-failure   With fast groups or --full-groups, halt on first failing
                               group (forces sequential execution).
@@ -1160,8 +1160,10 @@ def main() -> int:
                         help="Force the legacy sequential code paths everywhere")
     parser.add_argument("--group-timeout-seconds", type=int, default=300,
                         help="Per-group timeout in seconds for --full-groups (default 300)")
-    parser.add_argument("--full-timeout-seconds", type=int, default=600,
-                        help="Timeout for --full / fast pytest subprocess in seconds (default 600)")
+    parser.add_argument("--full-timeout-seconds", type=int, default=900,
+                        help="Per-invocation timeout for --full / fast pytest subprocesses "
+                             "in seconds (default 900; the sequential process/slow residue "
+                             "measures ~6-10 min under load)")
     parser.add_argument("--no-pack", action="store_true",
                         help="Skip pack_repo and snapshot verification (debug only; not valid final acceptance)")
     parser.add_argument("--profile", type=str, default="audit", choices=["audit", "source"],

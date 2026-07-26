@@ -8,11 +8,12 @@ from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.contracts.page_journal import INITIAL_CURSOR, request_signature
 from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
-from src.discovery.pending_queue import (
-    _inspect_emitted_primary_export_cached,
-    drain_pending_candidates,
+from src.discovery.export_artifacts import (
     export_candidate_once,
+    inspect_emitted_primary_export_cached,
 )
+from src.discovery import export_artifacts
+from src.discovery.pending_queue import drain_pending_candidates
 from src.discovery.stores.journal_drain_index import JournalDrainIndex
 from src.discovery.resolve_crossref import ResolvedDoiMatch
 
@@ -194,7 +195,7 @@ def test_emitted_export_validation_cache_is_artifact_fingerprint_bound(
         PageJournalStore(tmp_path / "pages"),
         active_profile_hashes={KEYWORD_ID: PROFILE_HASH},
     )
-    original = pending_queue.inspect_emitted_primary_export
+    original = export_artifacts.inspect_emitted_primary_export
     calls = 0
 
     def counted(*args, **kwargs):
@@ -202,16 +203,16 @@ def test_emitted_export_validation_cache_is_artifact_fingerprint_bound(
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(pending_queue, "inspect_emitted_primary_export", counted)
-    assert _inspect_emitted_primary_export_cached(
+    monkeypatch.setattr(export_artifacts, "inspect_emitted_primary_export", counted)
+    assert inspect_emitted_primary_export_cached(
         index, item, doi, exports_dir=tmp_path / "exports") == (True, "")
-    assert _inspect_emitted_primary_export_cached(
+    assert inspect_emitted_primary_export_cached(
         index, item, doi, exports_dir=tmp_path / "exports") == (True, "")
     assert calls == 1
 
     jsonl = Path(exported["export_path"])
     jsonl.write_bytes(jsonl.read_bytes() + b" ")
-    valid, reason = _inspect_emitted_primary_export_cached(
+    valid, reason = inspect_emitted_primary_export_cached(
         index, item, doi, exports_dir=tmp_path / "exports")
     assert not valid
     assert reason == "artifact size mismatch"

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from src.writer.job_manager import JobManager
 from src.writer.catalog_matcher import load_selected, selected_paper_names
-from src.writer.safe_write import write_text_safely
+from src.writer.safe_write import TODO_MARKERS, write_text_safely
 from src.writer.bib_manager import load_workset_manifest, job_local_bib_keys
 
 
@@ -48,8 +48,6 @@ def _job_local_catalog_cards(pid_to_work_dir: dict[str, Path]) -> dict[str, dict
             out[pid] = {}
     return out
 
-
-TODO_MARKERS = ["TODO", "待填", "（待填）", "TEMPLATE_ONLY", "由大模型补全", "待补全"]
 
 # story_plan 必须包含的章节
 STORY_REQUIRED_SECTIONS = [

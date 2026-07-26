@@ -14,9 +14,8 @@ from src.writer.job_manager import JobManager
 from src.writer.bib_manager import export_job_bib, validate_job_citations, load_workset_manifest, job_local_bib_keys
 from src.writer.catalog_matcher import load_selected, selected_paper_names
 from src.writer.story_builder import extract_note_sections
-from src.writer.safe_write import write_text_safely
+from src.writer.safe_write import TODO_MARKERS, write_text_safely
 
-TODO_MARKERS = ["TODO", "待填", "（待填）", "TEMPLATE_ONLY", "由大模型补全", "待补全"]
 MIN_TEX_CHARS = 120  # 正文去空白后最小字符数（与 validate_write_job 一致）
 
 MAIN_TEX = r"""\documentclass[12pt,a4paper]{ctexart}
