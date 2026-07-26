@@ -32,7 +32,7 @@ STALE_CONVERSION = "stale_conversion"
 PARTIAL_CONVERSION = "partial_conversion"
 STAGE_FAILED = "stage_failed"
 
-# --- metadata resolve (mirror metadata_resolver.STATUS_*) --------------------
+# --- metadata resolve (mirror src.metadata_resolve.sidecars.STATUS_*) --------
 METADATA_CANDIDATES_FOUND = "metadata_candidates_found"
 METADATA_RESOLVE_FAILED = "metadata_resolve_failed"
 METADATA_CANDIDATE_CONFLICT = "metadata_candidate_conflict"

@@ -1,5 +1,27 @@
 # Project status
 
+## Productionization (2026-07-26)
+
+Single-day production hardening pass, executed as nine gated stages on
+`main` (local and both remotes carry only `main`):
+
+- Acceptance is parallel by default: the fast gate runs its 9 groups as
+  concurrent isolated subprocesses (~52s wall, previously ~3m) and `--full`
+  runs a pytest-xdist chunk plus a sequential process/slow residue. Routine
+  changes require the fast gate only; `--full` gates releases and refactors.
+- ~17k lines of finished-mission code removed (v4 migration toolchain after
+  finalization, one-shot repair scripts, the duplicate Gradio UI, orphan
+  configs) with reintroduction tombstones in the verifier and contract tests.
+- Single-sourced utilities (`src/utils/`: identifiers, timestamps, jsonio,
+  atomic_io, fs, rate_limit); all persisted timestamps are timezone-aware.
+- Layered packages enforced by `tests/hygiene/test_layering.py` (see
+  `docs/ARCHITECTURE.md`); the four historical import cycles are gone; the
+  paper_raw write lock has a single ranked acquisition point; the resolver's
+  double rate-limit wait bug is fixed (one pacing layer per request).
+- `config/settings.py` imports are side-effect free; operational scripts
+  initialize through `scripts/_bootstrap`; logging is one loguru sink; the
+  project carries `pyproject.toml` + split runtime/dev requirements.
+
 The discovery pipeline now uses a shared batch runtime: formal and raw identities
 share one Registry, durable formal publication state controls reloads, a single
 `JournalDrainIndex` replaces per-candidate page scans, and one bounded consumer

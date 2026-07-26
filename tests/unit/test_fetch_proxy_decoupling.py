@@ -71,18 +71,18 @@ def test_discovery_search_openalex_uses_proxy():
 
 
 def test_metadata_resolver_has_no_direct_http():
-    """metadata_resolver 不得直连 requests——OpenAlex/Crossref HTTP 统一走
+    """metadata_resolve.resolver 不得直连 requests——OpenAlex/Crossref HTTP 统一走
     ProviderClient(代理由 RequestsTransport 强制注入,见上方 transport 测试)。"""
-    src = (ROOT / "src" / "services" / "metadata_resolver.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "metadata_resolve" / "resolver.py").read_text(encoding="utf-8")
     assert "import requests" not in src
     assert "requests.get" not in src
     assert "proxies=get_fetch_proxies()" not in src
 
 
 def test_metadata_enrichment_service_has_no_direct_http():
-    """metadata_enrichment_service 不得直连 requests——Crossref HTTP 统一走
+    """metadata_resolve.enrichment 不得直连 requests——Crossref HTTP 统一走
     ProviderClient(代理由 RequestsTransport 强制注入,见上方 transport 测试)。"""
-    src = (ROOT / "src" / "services" / "metadata_enrichment_service.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "metadata_resolve" / "enrichment.py").read_text(encoding="utf-8")
     assert "import requests" not in src
     assert "requests.get" not in src
     assert "proxies=get_fetch_proxies()" not in src

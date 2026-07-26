@@ -28,7 +28,7 @@ from src.utils.rate_limit import (
     default_config,
     _parse_interval_seconds,
 )
-from src.services.metadata_resolve_checkpoint import (
+from src.metadata_resolve.checkpoint import (
     load_checkpoint,
     record_item,
     is_done,
@@ -242,7 +242,7 @@ def test_citation_ready_metadata_skipped(tmp_path, monkeypatch):
     import_status_before = (folder / ".import_status.json").read_bytes()
 
     # Any network call should explode if attempted
-    from src.services import metadata_resolver as mr
+    from src.metadata_resolve import resolver as mr
     monkeypatch.setattr(mr, "enrich_from_doi", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must skip")))
 
     argv = [
@@ -279,7 +279,7 @@ def test_rate_probe_processes_only_n_papers(tmp_path, monkeypatch, capsys):
         (folder / f"{i:016d}.metadata.json").write_text(json.dumps(meta), encoding="utf-8")
 
     # Disable network to avoid real calls
-    from src.services import metadata_resolver as mr
+    from src.metadata_resolve import resolver as mr
     monkeypatch.setattr(mr, "enrich_from_doi", lambda *a, **k: mr.EnrichmentResult(doi="", warnings=["no net"]))
 
     argv = [

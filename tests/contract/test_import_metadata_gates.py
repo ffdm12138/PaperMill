@@ -7,7 +7,7 @@ from scripts.validate_v2_library import validate_v2_library
 from src.discovery.models import PaperCandidate
 from src.ingest.asset_manifest import write_asset_manifest
 from src.services.network_metadata_staging import _metadata_from_record
-from src.services.metadata_resolver import patch_from_candidate
+from src.metadata_resolve.candidates import patch_from_candidate
 from src.metadata.schema import empty_metadata, validate_metadata_schema
 
 

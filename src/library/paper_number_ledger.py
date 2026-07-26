@@ -16,6 +16,7 @@ from src.utils.identifiers import PAPER_NUMBER_RE
 from src.utils.atomic_io import atomic_write_json
 from src.library.marker import parse_marker_number, write_paper_number_marker
 from src.utils.timestamps import now_iso
+from src.workspace.lifecycle import inspect_workspace_lifecycle
 from src.library.paper_number_state import (
     ALLOWED_LEDGER_TRANSITIONS,
     ALL_LEDGER_STATES,
@@ -346,7 +347,6 @@ class PaperNumberLedger:
           as a state. Incomplete workspaces stay ``reserved`` so the index
           re-scans them.
         """
-        from src.workspace.lifecycle import inspect_workspace_lifecycle
 
         items = data.setdefault("items", {})
         for number, item in list(items.items()):

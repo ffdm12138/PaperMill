@@ -72,7 +72,7 @@ EXEMPT_FILES: set[str] = {
     # forbidden-key constants (enforcement, not usage).
     "src/metadata/schema.py",
     # Filter code strips short_zh/translated_zh from compact patches.
-    "src/services/metadata_resolver.py",
+    "src/metadata_resolve/sidecars.py",
     # Patch-schema description explicitly lists the forbidden legacy
     # fields (it is telling the LLM not to generate them).
     "skills/paper_raw_metadata_resolver/metadata_patch_schema.json",

@@ -1,7 +1,7 @@
 """Tests for the paper_raw metadata resolver service + CLI.
 
 Network is always mocked:
-- DOI-enrichment branch: monkeypatch metadata_enrichment_service.query_crossref_by_doi
+- DOI-enrichment branch: monkeypatch src.metadata_resolve.enrichment.query_crossref_by_doi
   (it imports requests INSIDE the function, so requests.get cannot be patched).
 - title-search branch: monkeypatch resolve_crossref.requests.get,
   search_openalex.requests.get with FakeResponse.
@@ -15,8 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from src.services import metadata_enrichment_service as mes
-from src.services import metadata_resolver as mr
+from src.metadata_resolve import enrichment as mes
+from src.metadata_resolve import evidence as mev
+from src.metadata_resolve import resolver as mr
+from src.metadata_resolve.apply import apply_resolution
+from src.metadata_resolve.names import split_name
 from src.ingest.asset_manifest import write_asset_manifest
 from src.metadata.schema import empty_metadata
 from src.utils.rate_limit import ProviderRateLimiter, default_config
@@ -227,7 +230,7 @@ def test_existing_doi_enriches_via_crossref_no_overwrite(tmp_path, monkeypatch):
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.existing_doi == "10.5194/tc-8-395-2014"
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
     assert res["status"] == "resolved"
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
@@ -250,7 +253,7 @@ def test_existing_doi_conflict_stops(tmp_path, monkeypatch):
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.decision == "conflict"
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert "metadata_match" not in meta
@@ -273,7 +276,7 @@ def test_doi_from_filename_auto_matches(tmp_path, monkeypatch):
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.decision == "auto_matched"
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True and res["status"] == "resolved"
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["identifiers"]["doi"] == "10.5194/tc-8-395-2014"
@@ -294,7 +297,7 @@ def test_doi_from_pdf_text_auto_matches(tmp_path, monkeypatch):
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.decision == "auto_matched"
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True and res["status"] == "resolved"
 
 
@@ -317,7 +320,7 @@ def test_doi_from_markdown_header_auto_matches(tmp_path, monkeypatch):
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     assert report.doi_source == "markdown"
     assert report.decision == "auto_matched"
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True and res["status"] == "resolved"
 
 
@@ -384,10 +387,10 @@ def test_title_search_candidate_never_auto_matched(tmp_path, monkeypatch):
     # NOT auto_matched even though title/year match well
     assert report.decision != "auto_matched"
     # apply without manual-confirm 鈫?not applied
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     # apply WITH manual-confirm 鈫?manual_confirmed (passes full validation gate)
-    res2 = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
+    res2 = apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res2["applied"] is True and res2["status"] == "resolved"
 
 
@@ -429,7 +432,7 @@ def test_title_search_falls_back_to_pdf_first_pages_title(tmp_path, monkeypatch)
     folder = _make_folder(tmp_path, md_text="DOI: not-a-real-doi\nAbstract\nKeywords: snow\n")
     monkeypatch.setattr(mr, "extract_doi_from_filename", lambda name: None)
     monkeypatch.setattr(mr, "extract_doi_from_pdf_file", lambda pdf: None)
-    monkeypatch.setattr(mr, "_extract_pdf_title_candidate", lambda pdf: "PDF Fallback Title for Search")
+    monkeypatch.setattr(mev, "_extract_pdf_title_candidate", lambda pdf: "PDF Fallback Title for Search")
     captured = {}
 
     def fake_title_search(title, year=None, limit=5):
@@ -500,7 +503,7 @@ def test_title_search_manual_band_stays_unmatched(tmp_path, monkeypatch):
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     # low score 鈫?rejected or manual_review; never auto_matched
     assert report.decision != "auto_matched"
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert "metadata_match" not in meta
@@ -542,7 +545,7 @@ def test_non_empty_field_never_overwritten(tmp_path, monkeypatch):
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
     assert meta["title"]["original"] == "Pre-existing Title"
@@ -565,11 +568,11 @@ def test_duplicate_formal_doi_blocks(tmp_path, monkeypatch):
 
     report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     assert report.decision != "auto_matched"
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("duplicate_formal_doi" in w for w in res["warnings"])
     # manual-confirm still blocked
-    res2 = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
+    res2 = apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res2["applied"] is False
 
 
@@ -587,7 +590,7 @@ def test_duplicate_paper_raw_doi_blocks_manual_confirm(tmp_path, monkeypatch):
     report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     assert report.decision != "auto_matched"
     assert any("duplicate_paper_raw_doi" in r for r in report.candidates[0].gate_reasons)
-    res = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("duplicate_paper_raw_doi" in w for w in res["warnings"])
 
@@ -610,7 +613,7 @@ def test_duplicate_pdf_sha256_blocks(tmp_path, monkeypatch):
     assert report.decision != "auto_matched"
     assert any("duplicate_pdf_sha256" in r for r in (report.candidates[0].gate_reasons if report.candidates else [])) \
         or any("duplicate_pdf_sha256" in r for r in report.warnings)
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("duplicate_pdf_sha256" in w for w in res["warnings"])
 
@@ -643,7 +646,7 @@ def test_manual_confirm_rejects_doi_conflict(tmp_path, monkeypatch):
     meta["identifiers"]["doi"] = conflicting_doi
     meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
-    res = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
     assert any("conflict" in w.lower() for w in res["warnings"])
     # metadata unchanged (still the conflicting DOI, status still unmatched)
@@ -668,7 +671,7 @@ def test_manual_confirm_rejects_incomplete(tmp_path, monkeypatch):
 
     report = mr.resolve_metadata_candidates(folder, allow_network=True,
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
-    res = mr.apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, manual_confirm=True, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
 
 
@@ -693,7 +696,7 @@ def test_candidate_id_chooses_specified(tmp_path, monkeypatch):
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     # find cand_002's doi
     cand2 = next(c for c in report.candidates if c.doi == "10.9999/second")
-    res = mr.apply_resolution(folder, report, manual_confirm=True, candidate_id=cand2.candidate_id, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, manual_confirm=True, candidate_id=cand2.candidate_id, papers_dir=tmp_path / "papers")
     assert res["applied"] is True
     assert res["chosen_candidate_id"] == cand2.candidate_id
     meta = json.loads((folder / "0000000000000001.metadata.json").read_text(encoding="utf-8"))
@@ -710,7 +713,7 @@ def test_candidate_id_invalid_errors(tmp_path, monkeypatch):
     cat = _empty_catalog(tmp_path)
     report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     with pytest.raises(ValueError):
-        mr.apply_resolution(folder, report, manual_confirm=True, candidate_id="cand_999", papers_dir=tmp_path / "papers")
+        apply_resolution(folder, report, manual_confirm=True, candidate_id="cand_999", papers_dir=tmp_path / "papers")
 
 
 # 鈹€鈹€ 13. multi-DOI conflict 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -725,7 +728,7 @@ def test_multi_doi_conflict(tmp_path, monkeypatch):
     report = mr.resolve_metadata_candidates(folder, allow_network=False, papers_dir=tmp_path / "papers")
     assert report.decision == "conflict"
     assert "multiple distinct DOIs" in report.reason or "multiple" in report.reason.lower()
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is False
 
 
@@ -762,7 +765,7 @@ def test_local_evidence_fallback_auto_matches(tmp_path, monkeypatch):
                                            rate_limiter=_zero_rate_limiter(), papers_dir=tmp_path / "papers")
     # local year/author absent 鈫?fallback to authoritative completeness 鈫?auto_matched
     assert report.decision == "auto_matched", report.reason
-    res = mr.apply_resolution(folder, report, papers_dir=tmp_path / "papers")
+    res = apply_resolution(folder, report, papers_dir=tmp_path / "papers")
     assert res["applied"] is True and res["status"] == "resolved"
 
 
@@ -860,21 +863,21 @@ def test_cli_default_no_network_no_call(tmp_path, monkeypatch):
 # 鈹€鈹€ 18. conservative author split 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def test_conservative_author_split_cjk():
-    fam, giv = mr._split_name("\u738b\u6b63\u5e05")
+    fam, giv = split_name("\u738b\u6b63\u5e05")
     assert fam == "" and giv == ""  # CJK 鈫?not split
 
 
 def test_conservative_author_split_single_token():
-    fam, giv = mr._split_name("NASA")
+    fam, giv = split_name("NASA")
     assert fam == "" and giv == ""  # single token / institution-like 鈫?not split
 
 
 def test_conservative_author_split_normal():
-    fam, giv = mr._split_name("Vincent Vionnet")
+    fam, giv = split_name("Vincent Vionnet")
     assert fam == "Vionnet" and giv == "Vincent"
 
 
 def test_conservative_author_split_initial_last():
     # "Vionnet V" is ambiguous (Family Initial citation form) 鈫?refuse to split
-    fam, giv = mr._split_name("Vionnet V")
+    fam, giv = split_name("Vionnet V")
     assert fam == "" and giv == ""

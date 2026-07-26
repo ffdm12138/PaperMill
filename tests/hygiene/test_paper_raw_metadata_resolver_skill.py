@@ -149,7 +149,7 @@ def test_resolver_skill_status_permission():
 
 def test_metadata_resolver_service_docstring_status_authority():
     """Service docstring must distinguish LLM candidate generation from apply stamping."""
-    text = (_REPO_ROOT / "src" / "services" / "metadata_resolver.py").read_text(encoding="utf-8")
+    text = (_REPO_ROOT / "src" / "metadata_resolve" / "resolver.py").read_text(encoding="utf-8")
     head = text.split('"""', 2)[1]
     assert "converted Markdown is the primary evidence" in head
     assert "optional hints" in head

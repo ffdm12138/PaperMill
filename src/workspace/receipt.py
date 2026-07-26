@@ -300,3 +300,38 @@ def write_or_validate_discovery_receipt(
         if normalize_receipt_identity(verify) != identity:
             raise ValueError(f"discovery receipt verification mismatch: {path}")
     return ReceiptWriteResult(status="created", path=path, paper_number=paper_number)
+
+
+def write_discovery_receipt(
+    paper_raw_dir: Path,
+    *,
+    paper_number: str,
+    candidate_id: str,
+    page_id: str,
+    keyword_id: str,
+    normalized_doi: str,
+    provider: str = "",
+) -> Path:
+    """Write (or idempotently validate) a discovery receipt for a workspace.
+
+    Thin wrapper around the receipt service in this module so all callers — allocator, drain loop, reconciliation, and tests —
+    share one writer with identical conflict semantics. Raises
+    :class:`DiscoveryReceiptConflictError` if an existing receipt's identity
+    disagrees; never overwrites.
+    """
+    payload = build_receipt_payload(
+        candidate_id=candidate_id,
+        page_id=page_id,
+        keyword_id=keyword_id,
+        normalized_doi=normalized_doi,
+        paper_number=paper_number,
+        provider=provider,
+    )
+    result = write_or_validate_discovery_receipt(
+        receipt_path_for(Path(paper_raw_dir), paper_number),
+        payload,
+        workspace_root=Path(paper_raw_dir),
+    )
+    return result.path
+
+

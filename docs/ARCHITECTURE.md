@@ -1,5 +1,35 @@
 # Architecture
 
+## Package layering (enforced by tests/hygiene/test_layering.py)
+
+`src/` packages import strictly downward at module top level:
+
+```text
+utils                     leaf: atomic_io, identifiers, timestamps, jsonio,
+                          fs, rate_limit — no src imports at all
+root leaves               naming, path_utils, file_fingerprint, logging_setup
+metadata                  schema v2.0, freeze, citation, source_records,
+                          quality, pdf identity/match
+library ~ workspace       PaperNumberLedger + formal_publication + marker;
+                          workspace facts (evidence/readiness/lifecycle/receipt)
+catalog                   Catalog v3.2 schema/task/freeze + asset_refs
+ingest                    allocator, conversion, commit/rollback,
+                          transaction_paths, import_status (sole writer
+                          facade), stage/asset manifests, duplicate guard,
+                          locking (ranked; paper_raw_write_lock helper)
+catalog_folders           category registry/links/reader/doctor
+fetch                     PDF resolvers + transport + fetch_result_record
+discovery                 notebooks/journals/lanes/providers/drain/staging
+metadata_resolve          Path-B resolver package (scoring/evidence/apply)
+services                  slim app layer: network staging, canonicalization,
+                          admin, paper_library, repository_hygiene
+server / writer / scripts entry points (scripts init via scripts/_bootstrap)
+```
+
+The sanctioned cross-edges (candidate value object, unified ProviderClient
+HTTP mandate, staging gateway) are enumerated with reasons in the layering
+guard test — extend them consciously, never casually.
+
 ## Domain ownership
 
 - `paper_number` is the permanent 16-digit identity managed by the ledger.

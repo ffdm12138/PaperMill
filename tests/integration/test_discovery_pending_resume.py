@@ -9,7 +9,9 @@ from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.contracts.page_journal import INITIAL_CURSOR, request_signature
 from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
-from src.discovery.pending_queue import drain_pending_candidates, export_candidate_once, write_discovery_receipt
+from src.discovery.pending_queue import drain_pending_candidates
+from src.discovery.export_artifacts import export_candidate_once
+from src.workspace.receipt import write_discovery_receipt
 from src.utils.atomic_io import atomic_write_json
 
 

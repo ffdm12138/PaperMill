@@ -32,9 +32,9 @@ from loguru import logger
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.utils.identifiers import validate_paper_raw_id
 from src.ingest.import_status import write_import_status
-from src.services.metadata_resolver import (
-    apply_resolution,
-    resolve_metadata_candidates,
+from src.metadata_resolve.apply import apply_resolution
+from src.metadata_resolve.resolver import resolve_metadata_candidates
+from src.metadata_resolve.sidecars import (
     write_candidates_json,
     write_metadata_patch_json,
     write_resolve_report_json,
@@ -43,7 +43,7 @@ from src.services.metadata_resolver import (
     STATUS_MANUAL_REVIEW,
     STATUS_RESOLVE_FAILED,
 )
-from src.services.metadata_resolve_checkpoint import (
+from src.metadata_resolve.checkpoint import (
     load_checkpoint,
     record_item,
     save_checkpoint,

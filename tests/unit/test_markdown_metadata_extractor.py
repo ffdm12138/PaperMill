@@ -2,7 +2,7 @@
 import pytest
 from pathlib import Path
 
-from src.services.markdown_metadata_extractor import (
+from src.metadata_resolve.markdown_extract import (
     ExtractedMetadata,
     _extract_dois,
     _extract_title_candidates,

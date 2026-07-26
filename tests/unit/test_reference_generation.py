@@ -1,8 +1,8 @@
 import warnings
 from types import SimpleNamespace
 
-from src.services.metadata_enrichment_service import normalize_crossref_metadata
-from src.services.metadata_resolver import patch_from_enrichment
+from src.metadata_resolve.enrichment import normalize_crossref_metadata
+from src.metadata_resolve.candidates import patch_from_enrichment
 from src.metadata.citation import bibtex_from_metadata, format_reference_from_metadata
 
 
