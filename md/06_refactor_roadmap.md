@@ -79,3 +79,7 @@
 - [ ] relevance 五档 profile 的来源问题（PROJECT_STATUS 记录的"deliberately
   unresolved"），需要 frozen-taxonomy 方案。
 - [ ] `library ~ workspace` 2-cycle 的彻底消解（lifecycle 归属再讨论）。
+- [ ] 无用顶层 import 清理：粗扫描（AST，剔除 `annotations` 误报后）在
+  src/scripts 报告约 300 处候选，但其中混有跨模块 re-export（删除会断下游），
+  需要 pyflakes/ruff 级别的工具逐项确认；顺带评估是否把 lint 纳入验收门。
+  2026-07-27 决定不在整改尾声批删，避免破坏 re-export 面。
