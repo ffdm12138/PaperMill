@@ -45,7 +45,7 @@ from src.discovery.contracts.notebook import (
     validate_notebook,
 )
 from src.discovery.workspace import DiscoveryWorkspace
-from src.utils.atomic_io import _fsync_dir as _fsync_dir_if_posix
+from src.utils.atomic_io import fsync_dir as _fsync_dir_if_posix
 
 @dataclass
 class LaneRunResult:

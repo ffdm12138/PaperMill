@@ -201,7 +201,7 @@ class PaperNumberLedger:
     def save_unlocked(self, data: dict) -> None:
         """Durable save; the caller MUST already hold the ledger lock."""
         """Write ledger JSON atomically with fsync (caller holds lock)."""
-        from src.utils.atomic_io import _fsync_dir
+        from src.utils.atomic_io import fsync_dir
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -216,7 +216,7 @@ class PaperNumberLedger:
                 os.fsync(fh.fileno())
             orjson.loads(tmp.read_bytes())
             os.replace(tmp, self.path)
-            _fsync_dir(self.path.parent)
+            fsync_dir(self.path.parent)
         except Exception:
             try:
                 tmp.unlink()

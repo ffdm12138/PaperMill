@@ -142,7 +142,7 @@ def _iter_processes() -> list[dict]:
                     "name": parts[-2].strip(),
                     "cmdline": parts[0].strip(),
                 })
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError):
             pass
     else:
         try:
@@ -161,7 +161,7 @@ def _iter_processes() -> list[dict]:
                 parts = line.split(None, 2)
                 if len(parts) >= 3:
                     procs.append({"pid": parts[0], "name": parts[1], "cmdline": parts[2]})
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError):
             pass
     return procs
 

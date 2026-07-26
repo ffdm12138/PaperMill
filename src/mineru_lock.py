@@ -232,7 +232,7 @@ def clear_stale_mineru_lock() -> bool:
             LOCK_PATH.unlink(missing_ok=True)
             logger.info("Stale mineru lock cleared")
             return True
-        except Exception:
+        except OSError:
             pass
     return False
 

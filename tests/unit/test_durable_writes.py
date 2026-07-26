@@ -14,9 +14,9 @@ from unittest.mock import patch
 import pytest
 
 from src.utils.atomic_io import (
-    _fsync_dir,
     atomic_write_json,
     atomic_write_json_unlocked,
+    fsync_dir,
     lock_path_for,
 )
 
@@ -116,10 +116,10 @@ def test_lock_path_for_returns_correct_path(tmp_path: Path):
 
 
 def test_fsync_dir_is_noop_on_windows(monkeypatch):
-    """_fsync_dir must be a no-op on Windows (os.name == 'nt')."""
+    """fsync_dir must be a no-op on Windows (os.name == 'nt')."""
     monkeypatch.setattr(os, "name", "nt")
     # Should not raise even if the directory doesn't exist.
-    _fsync_dir(Path("/nonexistent/path"))
+    fsync_dir(Path("/nonexistent/path"))
     # If we got here without error, the test passed.
 
 
