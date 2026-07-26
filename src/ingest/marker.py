@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.utils.identifiers import PAPER_NUMBER_RE
 from src.utils.atomic_io import atomic_write_json
 
 

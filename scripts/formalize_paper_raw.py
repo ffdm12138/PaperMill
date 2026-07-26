@@ -14,7 +14,7 @@ from config.settings import (
     PAPERS_DIR,
 )
 from src.services.ingest_state import CATALOG_READY, READY_FOR_COMMIT, read_import_status
-from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
+from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.ingest.formalization import write_formalization_plan
 from src.ingest.workspace import PaperRawWorkspace
 

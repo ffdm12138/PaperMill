@@ -10,12 +10,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 from src.file_fingerprint import compute_file_hashes
 from src.naming import safe_child
 from src.metadata.freeze import assert_metadata_frozen
 from src.services.ingest_duplicate_guard import check_doi_duplicate, check_pdf_duplicate
-from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
+from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.ingest_state import write_import_status
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.source_records import validate_metadata_source_record_exists

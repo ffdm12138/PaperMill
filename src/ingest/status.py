@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
 import json
 from pathlib import Path
 from typing import Callable
@@ -13,12 +12,13 @@ from src.catalog.freeze import assert_catalog_frozen
 from src.ingest.workspace import PaperRawWorkspace
 from src.metadata.freeze import assert_metadata_frozen
 from src.utils.atomic_io import atomic_write_json_unlocked
+from src.utils.timestamps import now_iso
 
 STATUS_SCHEMA_VERSION="2.0"
 ALLOWED={"metadata":{"missing","resolving","resolved","matched","frozen","invalid","mismatch"},"pdf":{"missing","fetching","attached","duplicate","failed"},"conversion":{"pending","running","complete","failed"},"catalog":{"missing","waiting_for_llm","generated","validated","invalid","frozen","stale"},"formalization":{"pending","ready","stale","failed"},"commit":{"pending","committing","failed","imported"}}
 
 def initial_status(paper_number: str)->dict:
-    return {"schema_version":STATUS_SCHEMA_VERSION,"paper_number":paper_number,"metadata":{"state":"missing","revision":0},"pdf":{"state":"missing"},"conversion":{"state":"pending"},"catalog":{"state":"missing"},"formalization":{"state":"pending"},"commit":{"state":"pending"},"updated_at":datetime.now().astimezone().isoformat(timespec="seconds")}
+    return {"schema_version":STATUS_SCHEMA_VERSION,"paper_number":paper_number,"metadata":{"state":"missing","revision":0},"pdf":{"state":"missing"},"conversion":{"state":"pending"},"catalog":{"state":"missing"},"formalization":{"state":"pending"},"commit":{"state":"pending"},"updated_at":now_iso()}
 
 def read_status(workspace: PaperRawWorkspace)->dict:
     if not workspace.status.exists(): return initial_status(workspace.paper_number)
@@ -49,7 +49,7 @@ def update_import_status(
         updated = mutator(deepcopy(value))
         if not isinstance(updated, dict):
             raise TypeError("status mutator must return a dict")
-        updated["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        updated["updated_at"] = now_iso()
         validate_status(updated, workspace.paper_number)
         atomic_write_json_unlocked(workspace.status, updated, indent=2, fsync=fsync)
         return updated

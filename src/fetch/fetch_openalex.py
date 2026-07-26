@@ -6,7 +6,7 @@ only the PDF binary download itself uses ``pdf_transport``.
 """
 from loguru import logger
 
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 from src.discovery.providers.provider_client import ProviderRuntime, RequestSpec
 from src.fetch.models import FetchResult
 from src.services.openalex_credentials import (

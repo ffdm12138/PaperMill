@@ -17,7 +17,8 @@ from filelock import FileLock
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.services.ingest_duplicate_guard import is_paper_raw_workspace
-from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.utils.jsonio import read_json
+from src.utils.identifiers import PAPER_NUMBER_RE
 from src.library.paper_number_ledger import PaperNumberLedger, now_iso
 from src.utils.atomic_io import atomic_write_json
 
@@ -103,12 +104,7 @@ def metadata_fingerprint(metadata: dict) -> str:
 
 
 def _read_json(path: Path, default: Any = None) -> Any:
-    if not path.exists():
-        return {} if default is None else default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {} if default is None else default
+    return read_json(path, {} if default is None else default)
 
 
 def _write_json(path: Path, data: dict) -> None:

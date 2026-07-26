@@ -29,7 +29,9 @@ from src.discovery.contracts.notebook import (
     normalize_keyword,
     query_identity,
 )
-from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.discovery.models import PaperCandidate
+from src.utils.identifiers import normalize_doi, normalize_title
+from src.utils.timestamps import utc_now_iso as now_iso
 from src.discovery.relevance import (
     RELEVANCE_REASON_VALUES,
     RELEVANCE_STATES,
@@ -442,9 +444,6 @@ def _path_is_reparse(path: Path) -> bool:
     reparse_flag = getattr(_stat_mod, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     return bool(attrs & reparse_flag)
 
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def parse_iso(value: str | None) -> datetime | None:
@@ -1066,7 +1065,6 @@ def transform_page_for_profile_closure(
     data["checksum"] = _compute_checksum(data)
     validate_page(data)
     return _serialized_page_bytes(data)
-
 
 
 def _assert_terminal_replay_equivalent(

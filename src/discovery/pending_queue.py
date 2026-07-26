@@ -24,7 +24,8 @@ from src.discovery.discovery_receipt import (
     receipt_path_for,
     write_or_validate_discovery_receipt,
 )
-from src.discovery.models import PaperCandidate, normalize_doi
+from src.discovery.models import PaperCandidate
+from src.utils.identifiers import normalize_doi
 from src.discovery.contracts.page_journal import (
     stable_hash,
     title_resolution_key,
@@ -37,6 +38,8 @@ from src.discovery.runtime.budgets import BatchDoiResolutionBudget
 from src.discovery.staging_gateway import MetadataStagingGateway
 from src.discovery.title_resolution import DurableTitleCache, TitleResolutionService
 from src.services.metadata_quality import is_valid_normalized_doi
+from src.utils.atomic_io import atomic_write_json_unlocked, atomic_write_text
+from src.utils.timestamps import utc_now_iso as _now_iso
 
 
 DISCOVERY_LEASE_SECONDS = 300
@@ -153,9 +156,6 @@ class DrainReport:
         }
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
 
 def _candidate_from_record(record: dict[str, Any]) -> PaperCandidate:
     payload = record.get("candidate") if isinstance(record.get("candidate"), dict) else {}
@@ -173,20 +173,6 @@ def _resolution_lock_path(locks_dir: Path, candidate_record: dict[str, Any]) -> 
 def _lock(path: Path) -> FileLock:
     path.parent.mkdir(parents=True, exist_ok=True)
     return FileLock(str(path), timeout=DISCOVERY_LOCK_TIMEOUT)
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-
-
-def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
-    _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def write_discovery_receipt(
@@ -328,7 +314,7 @@ def export_candidate_once(exports_dir: Path, record: dict[str, Any]) -> dict[str
         }
     payload = record.get("candidate") if isinstance(record.get("candidate"), dict) else {}
     jsonl_text = json.dumps(payload, ensure_ascii=False) + "\n"
-    _atomic_write_text(jsonl_path, jsonl_text)
+    atomic_write_text(jsonl_path, jsonl_text)
     jsonl_bytes = jsonl_path.read_bytes()
     manifest = {
         "schema_version": "1.0",
@@ -348,7 +334,7 @@ def export_candidate_once(exports_dir: Path, record: dict[str, Any]) -> dict[str
         },
         "exported_at": _now_iso(),
     }
-    _atomic_write_json(manifest_path, manifest)
+    atomic_write_json_unlocked(manifest_path, manifest, indent=2)
     return {
         "export_id": export_id,
         "export_path": jsonl_path.as_posix(),
@@ -450,7 +436,6 @@ def _resolve_missing_doi_with_service(
         candidate.raw.setdefault("crossref_resolution", match.to_dict())
         return candidate, True
     return candidate, False
-
 
 
 def _drain_staging_candidate_batches(

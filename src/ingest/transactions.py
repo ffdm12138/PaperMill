@@ -16,6 +16,7 @@ from src.services.transaction_paths import (
     validate_transaction_id,
 )
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import now_iso as _now
 
 PHASES = (
     "prepared",
@@ -34,9 +35,6 @@ ROLLBACK_ACTIVE_PHASES = {
     "category_links_removed", "quarantine_removed",
 }
 
-
-def _now():
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def find_active_transaction_for_paper(

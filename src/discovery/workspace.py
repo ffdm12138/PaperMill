@@ -38,6 +38,7 @@ from config.settings import (
     DISCOVERY_GENERATIONS_DIR,
     DISCOVERY_MIGRATIONS_DIR,
 )
+from src.utils.atomic_io import atomic_write_json_unlocked
 from src.discovery.contracts.manifest import (
     WORKSPACE_MANIFEST_SCHEMA_VERSION_V4,
     ActiveGenerationPointerV4,
@@ -430,33 +431,7 @@ def create_staging_workspace(
 # ── Atomic I/O ────────────────────────────────────────────────────────────
 
 
-def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
-    """Write JSON atomically: tmp + flush + fsync + os.replace + fsync parent dir."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    try:
-        payload = json.dumps(data, ensure_ascii=False, indent=2)
-        raw = payload.encode("utf-8")
-        with tmp_path.open("wb") as fh:
-            fh.write(raw)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(str(tmp_path), str(path))
-        if os.name != "nt":
-            try:
-                fd = os.open(str(path.parent), os.O_RDONLY)
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-            except OSError:
-                pass
-    except Exception:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
-        raise
+_atomic_write_json = atomic_write_json_unlocked
 
 
 # ── Active generation commit ──────────────────────────────────────────────

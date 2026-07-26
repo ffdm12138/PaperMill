@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 
 
 @dataclass(frozen=True)
@@ -30,11 +30,32 @@ def _ref_matches_workspace(ref: DuplicateRef, paper_number: str) -> bool:
     return target in {str(ref.paper_number or ""), str(ref.paper_name or ""), folder_name}
 
 
-def _unique_refs(refs: list[DuplicateRef]) -> list[DuplicateRef]:
+def unique_refs_by_identity(refs: list[DuplicateRef]) -> list[DuplicateRef]:
+    """Dedupe on workspace identity only (scope, number, name, folder).
+
+    Later refs win.  See :func:`unique_refs_full` for the stricter key that
+    also distinguishes source/doi/pdf-hash — same input type, different
+    contract; the two used to share the name ``_unique_refs``.
+    """
     unique: dict[tuple[str, str, str, str], DuplicateRef] = {}
     for ref in refs:
         unique[(ref.scope, ref.paper_number, ref.paper_name, ref.folder)] = ref
     return list(unique.values())
+
+
+def unique_refs_full(refs: list[DuplicateRef]) -> list[DuplicateRef]:
+    """Order-preserving dedupe on the full evidence key
+    (identity + source + doi + pdf hash)."""
+    seen: set[tuple[str, str, str, str, str, str, str]] = set()
+    out: list[DuplicateRef] = []
+    for ref in refs:
+        key = (ref.scope, ref.paper_number, ref.paper_name, ref.folder,
+               ref.source, ref.doi, ref.pdf_sha256 or ref.pdf_md5)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ref)
+    return out
 
 
 @dataclass
@@ -62,7 +83,7 @@ class DuplicateIndex:
         refs = self.doi_to_refs.get(doi, [])
         if exclude_paper_number:
             refs = [ref for ref in refs if not _ref_matches_workspace(ref, exclude_paper_number)]
-        return _unique_refs(refs)
+        return unique_refs_by_identity(refs)
 
     def contains_workspace(self, paper_number: str) -> bool:
         return any(

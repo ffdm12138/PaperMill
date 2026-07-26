@@ -42,6 +42,7 @@ from typing import Any
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from src.mineru_lock import _is_pid_alive
+from src.utils.atomic_io import atomic_replace_bytes_unlocked
 
 LOCK_INFO_SUFFIX = ".info.json"
 
@@ -87,21 +88,8 @@ def _owner_is_live_other_process(info: dict[str, Any]) -> bool:
 
 
 def _write_info_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
     raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    try:
-        with tmp.open("wb") as fh:
-            fh.write(raw)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(str(tmp), str(path))
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+    atomic_replace_bytes_unlocked(path, raw)
 
 
 class MigrationMaintenanceLock:

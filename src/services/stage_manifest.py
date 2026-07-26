@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import now_iso as _now_iso
 
 
 STAGE_MANIFEST_VERSION = "1.0"
@@ -43,9 +44,6 @@ VALID_WORKFLOW_PATHS = {
     WORKFLOW_NETWORK_METADATA_PDF_FETCH,
 }
 
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def read_stage_manifest(folder: str | Path) -> dict[str, Any]:

@@ -1,25 +1,8 @@
 """Serializable models for DOI discovery."""
 from dataclasses import asdict, dataclass, field
-import re
 from typing import Any
 
-
-DOI_PREFIX = "https://doi.org/"
-
-
-def normalize_doi(doi: str | None) -> str:
-    if not doi:
-        return ""
-    value = doi.strip()
-    if value.lower().startswith(DOI_PREFIX):
-        value = value[len(DOI_PREFIX):]
-    return value.strip().lower()
-
-
-def normalize_title(title: str | None) -> str:
-    if not title:
-        return ""
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", title.lower())).strip()
+from src.utils.identifiers import normalize_doi
 
 
 @dataclass

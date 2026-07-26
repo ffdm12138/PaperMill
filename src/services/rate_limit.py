@@ -23,10 +23,8 @@ from datetime import datetime
 from typing import Any
 
 from loguru import logger
+from src.utils.timestamps import now_iso as _now_iso
 
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 @dataclass

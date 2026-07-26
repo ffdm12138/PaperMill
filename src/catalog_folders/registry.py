@@ -17,6 +17,7 @@ from src.catalog_folders.exceptions import (
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
 from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import utc_now_iso_z as now_iso
 
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
@@ -29,9 +30,6 @@ _WIN_RESERVED = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 }
 
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def validate_catalog_keyword(keyword: str) -> str:

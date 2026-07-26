@@ -18,6 +18,7 @@ from src.discovery.contracts.lane_state import (
     LaneStateV4,
 )
 from src.discovery.workspace import DiscoveryWorkspace
+from src.utils.atomic_io import atomic_replace_bytes_unlocked
 
 
 class LaneStateStoreV4:
@@ -82,21 +83,9 @@ class LaneStateStoreV4:
 
         payload = json.dumps(state.to_dict(), ensure_ascii=False, indent=2)
         raw = payload.encode("utf-8")
-        tmp = path.with_suffix(path.suffix + ".tmp")
 
-        try:
-            with lock:
-                with tmp.open("wb") as fh:
-                    fh.write(raw)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(str(tmp), str(path))
-        except Exception:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+        with lock:
+            atomic_replace_bytes_unlocked(path, raw)
 
         return path
 

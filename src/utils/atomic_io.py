@@ -115,6 +115,37 @@ def atomic_write_json(
         )
 
 
+def atomic_write_text(
+    path: str | Path,
+    text: str,
+    *,
+    fsync: bool = True,
+) -> None:
+    """Write text atomically (tmp + optional fsync + ``os.replace``).
+
+    No lock is acquired: callers either hold their own coordination lock or
+    write single-writer artifacts (exports, derived sidecars).
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(text)
+            if fsync:
+                fh.flush()
+                os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        if fsync:
+            _fsync_dir(path.parent)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def atomic_replace_bytes_unlocked(
     path: str | Path,
     payload: bytes,

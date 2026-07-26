@@ -78,7 +78,7 @@ def inspect_workspace_lifecycle(
         A fully-populated :class:`WorkspaceLifecycleInspection`.
     """
     import json
-    from src.discovery.models import normalize_doi
+    from src.utils.identifiers import normalize_doi
 
     # Gather pure facts.
     evidence = inspect_workspace_evidence(workspace, ledger_item=ledger_item)

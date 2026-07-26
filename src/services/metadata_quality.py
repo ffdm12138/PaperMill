@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from src.discovery.models import normalize_doi
+from src.utils.jsonio import read_json_strict
+from src.utils.identifiers import normalize_doi
 
 
 DOI_RE = re.compile(r"^10\.\S+/\S+$")
@@ -137,7 +138,7 @@ def metadata_quality_warnings(metadata: dict) -> list[str]:
 
 
 def _read_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json_strict(path)
 
 
 def _paper_number_from_folder(folder: Path) -> str:

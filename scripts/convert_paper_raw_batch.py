@@ -16,8 +16,8 @@ from loguru import logger
 
 from config.settings import PAPER_RAW_DIR
 from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_METHOD
-from src.discovery.models import normalize_doi
-from src.services.ingest_ids import validate_paper_raw_id
+from src.utils.identifiers import normalize_doi
+from src.utils.identifiers import validate_paper_raw_id
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.ingest.paper_raw import PaperRawConverter
 from src.metadata.schema import metadata_doi

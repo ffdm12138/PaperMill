@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Any
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
-from src.discovery.models import normalize_doi
+from src.utils.jsonio import read_json
+from src.utils.identifiers import normalize_doi
 from src.file_fingerprint import compute_file_hashes
 from src.path_utils import normalize_repo_path, resolve_stored_path
-from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.utils.identifiers import PAPER_NUMBER_RE
 from src.services.asset_manifest import pdf_hashes_from_manifest
 from src.services.stage_manifest import staged_pdf_hashes
-from src.services.duplicate_index import DuplicateIndex, DuplicateIndexView, DuplicateRef
+from src.services.duplicate_index import DuplicateIndex, DuplicateIndexView, DuplicateRef, unique_refs_full
 
 
 @dataclass
@@ -63,12 +64,7 @@ class DuplicateIngestError(RuntimeError):
 
 
 def _read_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    data = read_json(path, {})
     return data if isinstance(data, dict) else {}
 
 
@@ -347,16 +343,7 @@ def build_ingest_duplicate_index(
     return index
 
 
-def _unique_refs(refs: list[DuplicateRef]) -> list[DuplicateRef]:
-    seen: set[tuple[str, str, str, str, str, str, str]] = set()
-    out: list[DuplicateRef] = []
-    for ref in refs:
-        key = (ref.scope, ref.paper_number, ref.paper_name, ref.folder, ref.source, ref.doi, ref.pdf_sha256 or ref.pdf_md5)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(ref)
-    return out
+
 
 
 def check_pdf_duplicate(
@@ -384,7 +371,7 @@ def check_pdf_duplicate(
     if md5_refs and not sha_refs:
         if any(ref.pdf_sha256 and ref.pdf_sha256 != sha256 for ref in md5_refs):
             reasons.append("pdf_md5_collision_or_inconsistent_hash")
-    refs = _unique_refs([*sha_refs, *md5_refs])
+    refs = unique_refs_full([*sha_refs, *md5_refs])
     return DuplicateCheckResult(
         duplicate=bool(refs),
         blocking=bool(refs),

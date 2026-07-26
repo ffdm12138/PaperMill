@@ -11,7 +11,7 @@ import requests
 from loguru import logger
 
 from config.settings import MINERU_FETCH_MAX_BYTES
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 from src.fetch.models import FetchResult
 from src.fetch.pdf_transport import TRANSPORT_POLICY, fetch_url_direct_then_proxy, sanitize_for_persistence

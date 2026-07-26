@@ -18,7 +18,7 @@ from src.mineru_runtime import (
     snapshot_mineru_api,
     verify_gpu_runtime,
 )
-from src.services.ingest_ids import validate_paper_raw_id
+from src.utils.identifiers import validate_paper_raw_id
 from src.ingest.paper_raw import PaperRawConverter
 from src.utils.atomic_io import atomic_write_json
 

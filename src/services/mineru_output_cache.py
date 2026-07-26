@@ -15,7 +15,8 @@ from src.file_fingerprint import compute_file_hashes, compute_sha256
 from src.path_utils import normalize_repo_path
 from src.services.asset_manifest import write_asset_manifest
 from src.services.ingest_state import CONVERTED, write_import_status
-from src.utils.atomic_io import atomic_write_json
+from src.utils.fs import replace_images_dir
+from src.utils.atomic_io import atomic_write_json, atomic_write_text
 
 
 CACHE_MANIFEST = "mineru_output_cache.json"
@@ -376,21 +377,10 @@ class MinerUOutputCache:
         )
 
     def _replace_images_dir(self, images_source: Path, images_target: Path) -> int:
-        tmp_images_target = images_target.parent / ".images.tmp"
-        shutil.rmtree(tmp_images_target, ignore_errors=True)
-        try:
-            shutil.copytree(images_source, tmp_images_target)
-            shutil.rmtree(images_target, ignore_errors=True)
-            os.replace(tmp_images_target, images_target)
-            return sum(1 for p in images_target.rglob("*") if p.is_file())
-        finally:
-            shutil.rmtree(tmp_images_target, ignore_errors=True)
+        return replace_images_dir(images_source, images_target)
 
     def _write_text_atomic(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_write_text(path, text, fsync=False)
 
     def _params_dir(self, backend: str, method: str, lang: str, effort: str) -> str:
         parts = [backend, method, lang, effort]

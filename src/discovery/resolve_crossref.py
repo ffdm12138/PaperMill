@@ -14,7 +14,8 @@ from typing import Any
 
 from loguru import logger
 
-from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.discovery.models import PaperCandidate
+from src.utils.identifiers import normalize_doi, normalize_title
 from src.discovery.execution.lane_models import LaneExecutionSpec
 from src.discovery.providers.provider_client import ProviderClient, ProviderRuntime, RequestSpec
 from src.discovery.providers.provider_errors import (

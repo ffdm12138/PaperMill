@@ -3,7 +3,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 
 
 @dataclass

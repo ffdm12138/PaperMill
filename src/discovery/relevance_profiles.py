@@ -36,6 +36,7 @@ from src.discovery.relevance import (
     validate_relevance_profile_source,
 )
 from src.utils.atomic_io import atomic_replace_bytes, atomic_write_json
+from src.utils.timestamps import utc_now_iso as _now
 
 
 OPENALEX_SUBFIELDS_URL = "https://api.openalex.org/subfields"
@@ -53,9 +54,6 @@ class RelevanceProfilePlanError(RelevanceProfileTransactionError):
         super().__init__(message)
         self.report = dict(report)
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _sha_bytes(path: Path) -> str:

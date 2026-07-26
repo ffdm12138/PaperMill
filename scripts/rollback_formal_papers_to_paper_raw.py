@@ -22,7 +22,7 @@ from src.ingest.rollback import resolve_paper_number_by_paper_name, rollback_for
 from src.ingest.transactions import find_active_transaction_for_paper
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.library.validation import validate_formal_paper
-from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.utils.identifiers import PAPER_NUMBER_RE
 
 
 def _resolve_paper_number(

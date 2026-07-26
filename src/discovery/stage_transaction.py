@@ -10,7 +10,7 @@ import time
 
 from filelock import FileLock
 
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 from src.discovery.workspace_index import DiscoveryIdentityRef
 from src.discovery.workspace_registry import (
     DoiRegistryRef, WorkspaceRegistrySnapshot, classify_record_issues,

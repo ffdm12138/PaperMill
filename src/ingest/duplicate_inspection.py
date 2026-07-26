@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 from typing import Any
 
-from src.discovery.models import normalize_doi
+from src.utils.jsonio import read_json_strict
+from src.utils.identifiers import normalize_doi
 from src.file_fingerprint import compute_file_hashes, compute_sha256
 from src.ingest.workspace import PaperRawWorkspace
 
@@ -30,7 +31,7 @@ def _canonical_json_sha(value: object) -> str:
 
 
 def _read_json(path: Path) -> dict:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = read_json_strict(path)
     if not isinstance(value, dict):
         raise ValueError(f"JSON object required: {path}")
     return value

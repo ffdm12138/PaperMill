@@ -26,8 +26,8 @@ from typing import Any, Mapping
 
 from filelock import FileLock
 
-from src.discovery.models import normalize_doi
-from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.utils.identifiers import normalize_doi
+from src.utils.identifiers import PAPER_NUMBER_RE
 from src.utils.atomic_io import atomic_write_json_unlocked, lock_path_for
 
 

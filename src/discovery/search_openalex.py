@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
-from src.discovery.models import PaperCandidate, normalize_doi
+from src.discovery.models import PaperCandidate
+from src.utils.identifiers import normalize_doi
 from src.discovery.execution.lane_models import LaneExecutionSpec
 from src.discovery.providers.provider_client import ProviderClient, ProviderRuntime, RequestSpec
 from src.discovery.providers.provider_errors import (

@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from src.discovery.discovery_receipt import normalize_receipt_identity
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 from src.metadata.schema import metadata_doi, validate_metadata_schema
-from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.utils.identifiers import PAPER_NUMBER_RE
 
 
 @dataclass(frozen=True)

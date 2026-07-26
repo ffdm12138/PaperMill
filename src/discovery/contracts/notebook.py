@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.utils.timestamps import utc_now_iso as _now_iso
 from src.discovery.constants import (
     BACKFILL_STATE_ACCEPTED_FIELDS,
     BACKFILL_STATE_FIELDS,
@@ -486,9 +487,6 @@ def composite_backfill_signature(
 
 # ── Notebook state factories ─────────────────────────────────────────
 
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _empty_refresh_state() -> dict[str, Any]:

@@ -42,6 +42,7 @@ from src.services.transaction_paths import (
     validate_rollback_journal,
 )
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import now_iso as _now
 
 
 ROLLBACK_PHASES = (
@@ -60,9 +61,6 @@ _COPY_SUFFIXES = (
     "conversion.json",
 )
 
-
-def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _journal_path(transaction_root: Path, transaction_id: str) -> Path:

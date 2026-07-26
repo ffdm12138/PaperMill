@@ -18,48 +18,8 @@ from typing import Any
 
 from loguru import logger
 
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import extract_doi_from_text, normalize_doi
 from src.naming import sanitize_paper_name, validate_paper_name
-
-# ── DOI regex ──────────────────────────────────────────────────────────
-# Matches: 10.xxxx/xxxxx, https://doi.org/10.xxxx/xxxxx, doi:10.xxxx/xxxxx, DOI 10.xxxx/xxxxx
-_DOI_CANDIDATE_RE = re.compile(
-    r"""(?ix)
-    (?:doi\s*[:=\s]+)?               # optional "doi:" or "DOI " prefix
-    (?:https?://(?:dx\.)?doi\.org/)? # optional https://doi.org/
-    (10\.\d{4,}/[^\s<>"')\]};,]+)    # the DOI itself
-    """,
-)
-
-# Trailing punctuation to strip from DOI matches
-_DOI_TRAILING_RE = re.compile(r"""[.,;)\]};:'"]+$""")
-_REFERENCES_HEADING_RE = re.compile(
-    r"^\s{0,6}(?:#{1,6}\s*)?(references|bibliography|参考文献)\b",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def extract_doi_from_text(text: str) -> str | None:
-    """Extract and normalize a DOI from arbitrary text.
-
-    Returns the normalized DOI (lowercase, no prefix) or None.
-    """
-    if not text:
-        return None
-    match = _DOI_CANDIDATE_RE.search(text)
-    if not match:
-        return None
-    raw = match.group(1)
-    # Strip trailing punctuation that clearly isn't part of a DOI
-    raw = _DOI_TRAILING_RE.sub("", raw)
-    normalized = normalize_doi(raw)
-    if not normalized:
-        return None
-    # Basic plausibility check: must have a slash after the prefix
-    if "/" not in normalized:
-        return None
-    return normalized
-
 
 def extract_doi_from_filename(filename: str) -> str | None:
     """Try to extract a DOI from a PDF filename stem."""

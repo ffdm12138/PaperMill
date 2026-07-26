@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from src.utils.timestamps import utc_now_iso as _now_iso
 
 
 EVIDENCE_SCHEMA_VERSION = "1.1"
@@ -54,9 +55,6 @@ class RequestEvidenceError(ValueError):
     evidence bug into a retryable provider-network failure.
     """
 
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -202,7 +200,6 @@ def request_semantic_hash(safe_signature: Mapping[str, Any]) -> str:
         else validate_crossref_safe_signature(safe_signature)
     )
     return hashlib.sha256(_canonical_bytes(normalized)).hexdigest()
-
 
 
 

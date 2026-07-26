@@ -19,15 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-# ── DOI regex (same as metadata_enrichment_service) ───────────────────
-_DOI_RE = re.compile(
-    r"""(?ix)
-    (?:doi\s*[:=\s]+)?
-    (?:https?://(?:dx\.)?doi\.org/)?
-    (10\.\d{4,}/[^\s<>"')\]};,]+)
-    """,
-)
-_DOI_TRAILING_RE = re.compile(r"""[.,;)\]};:'"]+$""")
+from src.utils.identifiers import DOI_CANDIDATE_RE as _DOI_RE, DOI_TRAILING_RE as _DOI_TRAILING_RE
 
 # ── Patterns for extracting metadata ──────────────────────────────────
 

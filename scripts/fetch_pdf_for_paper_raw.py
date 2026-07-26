@@ -16,12 +16,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 import src.fetch.fetch_pipeline as fetch_pipeline
 from src.fetch.pdf_transport import TRANSPORT_POLICY, sanitize_for_persistence, sanitize_url_for_persistence
 from src.services.ingest_duplicate_guard import DuplicateIngestError
-from src.services.ingest_ids import validate_paper_raw_id
+from src.utils.identifiers import validate_paper_raw_id
 from src.services.ingest_state import write_import_status
 from src.services.metadata_quality import is_valid_normalized_doi
 from src.services.source_records import (

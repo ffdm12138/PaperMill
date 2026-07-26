@@ -19,6 +19,7 @@ from pathlib import Path
 from filelock import FileLock
 
 from src.utils.atomic_io import atomic_write_json_unlocked
+from src.utils.timestamps import now_iso
 
 
 class UnknownLegacyStatusError(ValueError):
@@ -78,9 +79,6 @@ STUCK_HYGIENE_STATUSES = {
     METADATA_RESOLVE_FAILED,
 }
 
-
-def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def write_import_status(

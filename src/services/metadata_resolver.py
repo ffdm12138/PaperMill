@@ -49,7 +49,9 @@ from loguru import logger
 from filelock import FileLock
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
-from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.discovery.models import PaperCandidate
+from src.utils.jsonio import read_json
+from src.utils.identifiers import collect_dois_from_text, normalize_doi, normalize_title
 from src.discovery.providers.provider_errors import ProviderRateLimited
 from src.discovery.resolve_crossref import (
     get_crossref_work_by_doi,
@@ -75,6 +77,7 @@ from src.metadata.schema import empty_metadata, first_author_family, metadata_do
 from src.metadata.normalization import merge_missing_metadata
 from src.services.source_records import write_metadata_source_record
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import now_iso as _now_iso
 
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -96,9 +99,6 @@ STATUS_CANDIDATE_CONFLICT = "metadata_candidate_conflict"
 STATUS_MATCHED = "metadata_matched"
 STATUS_MANUAL_REVIEW = "metadata_manual_review_required"
 
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 # ── Dataclasses ────────────────────────────────────────────────────────
@@ -254,14 +254,7 @@ class ResolveReport:
 
 # ── Formal-library duplicate sets ──────────────────────────────────────
 
-def _read_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
+_read_json = read_json
 
 
 # ── Name helpers (conservative author split) ───────────────────────────
@@ -636,18 +629,6 @@ def _split_header_and_references(md_text: str) -> tuple[str, str]:
     return header_text, references_text
 
 
-def _collect_dois_from_text(text: str) -> list[str]:
-    """Collect ALL distinct normalized DOIs from text (not just the first)."""
-    seen: list[str] = []
-    for match in re.finditer(r"10\.\d{4,}/[^\s<>\"')\]};,]+", text):
-        raw = match.group(0)
-        raw = re.sub(r"[.,;)\]};:'\"]+$", "", raw)
-        norm = normalize_doi(raw)
-        if norm and "/" in norm and norm not in seen:
-            seen.append(norm)
-    return seen
-
-
 def _extract_pdf_first_pages_text(pdf_path: Path, max_pages: int = 3) -> str:
     """Best-effort text from the first PDF pages; used only as local evidence."""
     if not pdf_path.exists():
@@ -743,7 +724,7 @@ def _local_evidence(metadata: dict, md_path: Path | None, pdf_path: Path | None 
         except Exception:
             md_text = ""
         header_text, _refs = _split_header_and_references(md_text)
-        md_dois = _collect_dois_from_text(header_text)
+        md_dois = collect_dois_from_text(header_text)
         front = extract_front_matter_candidates_from_markdown(md_path, max_lines=100)
         md_front_lines = list(front.front_matter_lines or [])
         # Default: only fall back to Markdown front-matter when metadata lacks

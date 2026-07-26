@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from loguru import logger
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
-from src.services.ingest_ids import validate_paper_raw_id
+from src.utils.identifiers import validate_paper_raw_id
 from src.services.ingest_state import write_import_status
 from src.services.metadata_resolver import (
     apply_resolution,

@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 
 
 IdentityKey = tuple[str, str, str, str, str]

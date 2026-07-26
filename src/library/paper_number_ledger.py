@@ -12,9 +12,10 @@ import orjson
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPERS_DIR
 from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.naming import safe_child
-from src.services.ingest_ids import PAPER_NUMBER_RE
+from src.utils.identifiers import PAPER_NUMBER_RE
 from src.utils.atomic_io import atomic_write_json
 from src.ingest.marker import parse_marker_number, write_paper_number_marker
+from src.utils.timestamps import now_iso
 from src.library.paper_number_state import (
     ALLOWED_LEDGER_TRANSITIONS,
     ALL_LEDGER_STATES,
@@ -39,9 +40,6 @@ _PAPER_NUMBER_RE = PAPER_NUMBER_RE
 # metadata-staged workspaces; preflight/repair reclassifies complete ``reserved``
 # workspaces to ``metadata_staged`` (only under explicit ``--apply``).
 
-def now_iso() -> str:
-    from datetime import datetime
-    return datetime.now().isoformat(timespec="seconds")
 
 def _read_json(path: Path, default: dict | None = None) -> dict:
     if not path.exists():

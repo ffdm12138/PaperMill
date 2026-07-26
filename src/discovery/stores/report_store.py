@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from src.discovery.workspace import DiscoveryWorkspace
+from src.utils.atomic_io import atomic_replace_bytes_unlocked
 
 
 class ReportStoreV4:
@@ -28,20 +29,7 @@ class ReportStoreV4:
 
         payload = json.dumps(report, ensure_ascii=False, indent=2)
         raw = payload.encode("utf-8")
-        tmp = path.with_suffix(path.suffix + ".tmp")
-
-        try:
-            with tmp.open("wb") as fh:
-                fh.write(raw)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(str(tmp), str(path))
-        except Exception:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+        atomic_replace_bytes_unlocked(path, raw)
 
         return path
 

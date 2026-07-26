@@ -21,7 +21,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
-from src.discovery.models import PaperCandidate, normalize_doi, normalize_title
+from src.discovery.models import PaperCandidate
+from src.utils.identifiers import normalize_doi, normalize_title
 from src.discovery.providers.provider_models import DiscoveryPage
 from src.discovery.providers.provider_request_evidence import (
     ActualRequestEvidence,

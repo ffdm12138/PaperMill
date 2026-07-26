@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import now_iso as _now_iso
 
 
 CHECKPOINT_VERSION = "1.0"
@@ -37,9 +38,6 @@ DONE_STATUSES = {"matched", "skipped"}
 # Items in these statuses are retried on --resume.
 RETRY_STATUSES = {"failed", "rate_limited", "unmatched"}
 
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def load_checkpoint(path: str | Path) -> dict[str, Any]:

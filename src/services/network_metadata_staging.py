@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.discovery.models import normalize_doi
+from src.utils.identifiers import normalize_doi
 from src.discovery.stage_transaction import (
     DiscoveryStageResult, DiscoveryStageTransaction, NormalizedDiscoveryCandidate, PreparedCandidate,
 )

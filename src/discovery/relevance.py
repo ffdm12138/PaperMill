@@ -18,7 +18,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
-from src.discovery.models import PaperCandidate, normalize_doi
+from src.discovery.models import PaperCandidate
+from src.utils.identifiers import normalize_doi
 
 
 RELEVANCE_PROFILE_SCHEMA_VERSION = "1.0"

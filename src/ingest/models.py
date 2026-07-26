@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime
+from src.utils.timestamps import now_iso
 
 
-def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")

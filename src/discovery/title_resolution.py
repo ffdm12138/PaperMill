@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.discovery.runtime.budgets import BatchDoiResolutionBudget
-from src.discovery.models import normalize_title
+from src.utils.identifiers import normalize_title
 from src.discovery.providers.provider_client import ProviderClient
 from src.discovery.providers.provider_errors import (
     ProviderError,

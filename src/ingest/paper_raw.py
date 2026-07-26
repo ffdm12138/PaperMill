@@ -27,26 +27,24 @@ from src.services.ingest_duplicate_guard import (
     DuplicateIngestError,
     check_pdf_duplicate,
 )
-from src.services.ingest_ids import PAPER_NUMBER_RE, validate_paper_raw_id
+from src.utils.jsonio import read_json_strict
+from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.services.ingest_state import METADATA_MANUAL_REVIEW_REQUIRED, STAGE_FAILED, write_import_status as _write_import_status
 from src.services.mineru_output_cache import MinerUOutputCache
 from src.services.source_records import ensure_raw_record_path_is_metadata_source, manual_metadata_source_record, metadata_source_rel_path, write_metadata_source_record
 from src.services.stage_manifest import doi_fetch_pdf_source, manual_pdf_source, read_stage_manifest, update_stage_manifest, write_stage_manifest
-from src.utils.atomic_io import atomic_write_json
+from src.utils.fs import replace_images_dir
+from src.utils.atomic_io import atomic_write_json, atomic_write_text
 
 _PAPER_NUMBER_RE = PAPER_NUMBER_RE
 
 def _read_json(path: Path, default: dict | None = None) -> dict:
     if not path.exists():
         return default or {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json_strict(path)
 
 def _write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(text, encoding="utf-8")
-    os.replace(temporary, path)
-
+    atomic_write_text(path, text, fsync=False)
 
 class PaperRawAllocator:
     def __init__(
@@ -544,18 +542,7 @@ class PaperRawConverter:
                 shutil.rmtree(dir_path)
 
     def _replace_images_dir(self, images_source: Path | None, images_target: Path) -> int:
-        tmp_images_target = images_target.parent / ".images.tmp"
-        shutil.rmtree(tmp_images_target, ignore_errors=True)
-        try:
-            if images_source and images_source.exists():
-                shutil.copytree(images_source, tmp_images_target)
-            else:
-                tmp_images_target.mkdir(parents=True)
-            shutil.rmtree(images_target, ignore_errors=True)
-            os.replace(tmp_images_target, images_target)
-            return self._images_count(images_target)
-        finally:
-            shutil.rmtree(tmp_images_target, ignore_errors=True)
+        return replace_images_dir(images_source, images_target)
 
     def convert(
         self,
