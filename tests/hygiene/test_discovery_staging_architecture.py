@@ -201,7 +201,7 @@ def test_source_record_scan_only_in_registry_or_recovery_or_audit():
     allowed_files = {
         "src/discovery/workspace_registry.py",
         "src/metadata/source_records.py",        # Writer, not scanner
-        "src/services/network_metadata_staging.py",  # Path references, not scans
+        "src/staging/network_metadata_staging.py",  # Path references, not scans
         "src/workspace/evidence.py",      # Single-file reads, not scans
     }
     allowed_patterns = [

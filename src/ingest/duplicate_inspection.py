@@ -12,7 +12,7 @@ from loguru import logger
 
 from src.utils.jsonio import read_json_strict
 from src.utils.identifiers import normalize_doi
-from src.file_fingerprint import compute_file_hashes, compute_sha256
+from src.utils.file_fingerprint import compute_file_hashes, compute_sha256
 from src.ingest.workspace import PaperRawWorkspace
 
 

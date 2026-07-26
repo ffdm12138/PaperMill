@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_RAW_DIR
-from src.mineru_runtime import activate_formal_gpu_env
+from src.mineru.runtime import activate_formal_gpu_env
 
 
 def _run_phase(module, argv: list[str]) -> tuple[int, dict | None]:
@@ -92,7 +92,7 @@ def _ensure_api(start: bool = True) -> dict:
     """
     if start:
         try:
-            from src.mineru_service_manager import start_services
+            from src.mineru.service_manager import start_services
             return start_services(wait=True, port=8000, restart_if_stale=True)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -102,7 +102,7 @@ def _ensure_api(start: bool = True) -> dict:
 def _check_api_only() -> dict:
     """Probe the current mineru-api health without starting it (dry-run safe)."""
     try:
-        from src.mineru_runtime import snapshot_mineru_api
+        from src.mineru.runtime import snapshot_mineru_api
         snap = snapshot_mineru_api("http://127.0.0.1:8000")
         return {"ok": bool(snap.get("api_available")), "started": False, "api_health": snap}
     except Exception as exc:
@@ -208,7 +208,7 @@ def main() -> int:
     if not args.resolve_only:
         applying = args.apply and not args.dry_run
         if applying and args.all and not args.skip_smoke_check:
-            from src.mineru_smoke import smoke_required_message, validate_smoke_report
+            from src.mineru.smoke import smoke_required_message, validate_smoke_report
 
             smoke = validate_smoke_report(args.smoke_report)
             result["phases"]["smoke_check"] = smoke

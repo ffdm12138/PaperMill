@@ -1,7 +1,6 @@
 """文件指纹：sha256 计算，用于去重与误跳过防护"""
 import hashlib
 from pathlib import Path
-from datetime import datetime
 
 
 def compute_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -35,7 +34,3 @@ def compute_file_hashes(path: Path) -> dict:
         "sha256": compute_sha256(p),
         "file_size": p.stat().st_size,
     }
-
-
-
-

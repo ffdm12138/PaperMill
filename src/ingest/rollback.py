@@ -8,6 +8,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from filelock import Timeout as FileLockTimeout
 
@@ -42,6 +43,7 @@ from src.ingest.transaction_paths import (
     validate_rollback_journal,
 )
 from src.utils.atomic_io import atomic_write_json
+from src.utils.identifiers import PAPER_NUMBER_RE
 from src.utils.timestamps import now_iso as _now
 
 
@@ -454,6 +456,143 @@ def resolve_paper_number_by_paper_name(
         transaction_root=transaction_root,
         ledger=ledger,
     )
+
+
+def discover_all_papers_rollback_targets(
+    papers_dir: Path,
+    ledger: PaperNumberLedger,
+    *, paper_raw_root: Path, transaction_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Discover all valid formal papers, returning (valid_targets, blocking_errors)."""
+    targets: list[dict[str, Any]] = []
+    blocking: list[dict[str, Any]] = []
+
+    if not papers_dir.is_dir():
+        return targets, blocking
+
+    # Scan .paper.number markers first
+    marker_map: dict[str, str] = {}  # paper_number -> dir_name
+    for candidate in sorted(papers_dir.iterdir()):
+        if not candidate.is_dir() or candidate.name.startswith("."):
+            continue
+        markers = list(candidate.glob("*.paper.number"))
+        if markers:
+            try:
+                data = json.loads(markers[0].read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                blocking.append({
+                    "dir": candidate.name,
+                    "error": "corrupt_marker",
+                    "message": f"cannot read .paper.number marker in {candidate.name}",
+                })
+                continue
+            pn = str(data.get("paper_number") or "").strip()
+            if not PAPER_NUMBER_RE.match(pn):
+                blocking.append({
+                    "dir": candidate.name,
+                    "error": "invalid_paper_number",
+                    "message": f"marker paper_number={pn!r} not valid 16-digit",
+                })
+                continue
+            if pn in marker_map:
+                blocking.append({
+                    "dir": candidate.name,
+                    "error": "duplicate_paper_number",
+                    "message": f"paper_number={pn} claimed by {marker_map[pn]} and {candidate.name}",
+                })
+                continue
+            marker_map[pn] = candidate.name
+        else:
+            # No marker — can't determine paper_number
+            blocking.append({
+                "dir": candidate.name,
+                "error": "missing_marker",
+                "message": f"no .paper.number marker in {candidate.name}",
+            })
+
+    if blocking:
+        return [], blocking
+
+    # Cross-validate with ledger
+    items = (ledger.load().get("items") or {})
+    for pn, dir_name in sorted(marker_map.items()):
+        item = items.get(pn) or {}
+        ledger_state = item.get("state") or ""
+        ledger_paper_name = item.get("paper_name") or ""
+
+        if ledger_state != "active":
+            blocking.append({
+                "paper_number": pn,
+                "paper_name": dir_name,
+                "error": "ledger_not_active",
+                "message": f"ledger state={ledger_state!r}, expected active",
+            })
+            continue
+
+        try:
+            info = validate_formal_paper(papers_dir / dir_name)
+        except Exception as exc:
+            blocking.append({
+                "paper_number": pn,
+                "paper_name": dir_name,
+                "error": "formal_validation_failed",
+                "message": str(exc),
+            })
+            continue
+
+        if info.get("paper_number") != pn or info.get("paper_name") != dir_name:
+            blocking.append({
+                "paper_number": pn,
+                "paper_name": dir_name,
+                "error": "formal_identity_mismatch",
+                "message": f"formal: number={info.get('paper_number')} id={info.get('paper_name')}",
+            })
+            continue
+
+        if ledger_paper_name and ledger_paper_name != dir_name:
+            blocking.append({
+                "paper_number": pn,
+                "paper_name": dir_name,
+                "error": "ledger_paper_name_mismatch",
+                "message": f"ledger paper_name={ledger_paper_name!r} vs dir={dir_name}",
+            })
+            continue
+
+        targets.append({
+            "paper_number": pn,
+            "paper_name": dir_name,
+        })
+
+    # Check for conflicting commit journals
+    for t in targets:
+        try:
+            active = find_active_transaction_for_paper(
+                transaction_root=transaction_root,
+                paper_number=t["paper_number"],
+                paper_raw_root=paper_raw_root,
+                papers_root=papers_dir,
+            )
+        except RuntimeError:
+            blocking.append({
+                "paper_number": t["paper_number"],
+                "paper_name": t["paper_name"],
+                "error": "ambiguous_transaction",
+                "message": "multiple active journals",
+            })
+            continue
+        if active is not None and active[0] == "commit":
+            blocking.append({
+                "paper_number": t["paper_number"],
+                "paper_name": t["paper_name"],
+                "error": "active_commit_transaction",
+                "message": "commit in progress",
+            })
+
+    # Recompute: remove blocked from valid
+    blocked_numbers = {b.get("paper_number") for b in blocking}
+    targets = [t for t in targets if t["paper_number"] not in blocked_numbers]
+
+    return targets, blocking
 
 
 def rollback_formal_papers(

@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
-from src.path_utils import is_windows_abs_path
+from src.utils.path_utils import is_windows_abs_path
 
 
 class MinerURunner(str, Enum):

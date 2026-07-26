@@ -1,6 +1,6 @@
 """测试 paper_name 命名、校验、路径穿越防护 + job_id 校验"""
 import pytest
-from src.naming import (sanitize_paper_name, validate_paper_name, validate_job_id,
+from src.utils.naming import (sanitize_paper_name, validate_paper_name, validate_job_id,
                         validate_image_name, safe_child)
 
 

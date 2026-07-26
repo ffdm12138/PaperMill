@@ -7,8 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.mineru_service_manager import dumps_result, stop_services
-from src.mineru_lock import clear_stale_mineru_lock, read_mineru_lock_status
+from src.mineru.service_manager import dumps_result, stop_services
+from src.mineru.lock import clear_stale_mineru_lock, read_mineru_lock_status
 
 
 def main() -> int:

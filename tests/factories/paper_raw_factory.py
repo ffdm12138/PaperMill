@@ -7,8 +7,8 @@ from typing import Any
 from src.ingest.paper_raw import PaperRawAllocator
 from src.library.formal_publication import publish_formal_publication_state
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.services.network_metadata_staging import stage_network_metadata_records
-from src.services.network_metadata_staging import _metadata_from_record, _source_record_payload
+from src.staging.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import _metadata_from_record, _source_record_payload
 from src.workspace.receipt import build_receipt_payload, write_or_validate_discovery_receipt
 from src.metadata.source_records import write_metadata_source_record
 from src.ingest.stage_manifest import write_stage_manifest
@@ -168,7 +168,7 @@ def write_minimal_formal_publication_identity(
         "schema_version": "3.2", "paper_number": paper_number,
         "paper_name": paper_name,
     }, indent=2)
-    from src.file_fingerprint import compute_sha256
+    from src.utils.file_fingerprint import compute_sha256
     atomic_write_json(formal / f"{paper_name}.asset_manifest.json", {
         "schema_version": "2.0", "stage": "papers",
         "paper_number": paper_number, "paper_name": paper_name,

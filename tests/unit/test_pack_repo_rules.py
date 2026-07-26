@@ -364,6 +364,7 @@ def test_pack_repo_secret_scan_allows_bare_env_var_names():
     "CLAUDE.md",
     "docs/PROJECT_CONTRACT.md",
     "docs/TESTING.md",
+    "md/README.md",
     "scripts/pack_repo.py",
     "src/fetch/models.py",
     "src/writer/job_manager.py",

@@ -20,6 +20,8 @@ from typing import Any, Callable, Iterable, Mapping
 
 from filelock import FileLock
 
+from src.utils.canonical_json import canonical_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.discovery.contracts.notebook import resolve_existing_notebook, validate_notebook
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.contracts.page_journal import (
@@ -57,12 +59,11 @@ class RelevanceProfilePlanError(RelevanceProfileTransactionError):
 
 
 def _sha_bytes(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return compute_sha256(path)
 
 
 def _canonical_hash(value: Any) -> str:
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return canonical_sha256(value)
 
 
 def _json_hash(path: Path) -> str:
@@ -596,17 +597,13 @@ def _profile_with_resolved_taxonomy(raw: dict[str, Any], snapshot: TaxonomySnaps
     return normalized, resolved
 
 
-def build_relevance_profile_plan(
-    *,
-    profiles_path: Path,
+def _resolve_and_check_runtime_paths(
     notebook_dir: Path,
     pending_pages_dir: Path,
-    transaction_root: Path | None = None,
-    runtime_paths: RelevanceRuntimePaths | None = None,
-    taxonomy: TaxonomySnapshot | None = None,
-    taxonomy_fetcher: Callable[[], TaxonomySnapshot] | None = None,
-) -> dict[str, Any]:
-    """Create a complete, hash-bound plan without mutating notebooks/pages."""
+    transaction_root: Path | None,
+    runtime_paths: RelevanceRuntimePaths | None,
+) -> RelevanceRuntimePaths:
+    """Resolve the runtime roots or verify supplied roots against them."""
     if runtime_paths is None:
         if transaction_root is None:
             raise RelevanceProfileTransactionError(
@@ -635,15 +632,14 @@ def build_relevance_profile_plan(
             raise RelevanceProfileTransactionError(
                 "supplied relevance roots do not match runtime_paths"
             )
-    notebook_dir = runtime_paths.notebook_root
-    pending_pages_dir = runtime_paths.journal_root
-    transaction_root = runtime_paths.transaction_root
-    # ── Step 1: Load and structurally validate profile definitions ─────
-    definitions = _load_profile_definitions(Path(profiles_path))
-    # Validate every source definition locally before any network access.
-    for definition in definitions:
-        validate_relevance_profile_source(definition["profile"])
-    # ── Step 2: Fetch taxonomy (only after local validation passes) ────
+    return runtime_paths
+
+
+def _obtain_taxonomy(
+    taxonomy: TaxonomySnapshot | None,
+    taxonomy_fetcher: Callable[[], TaxonomySnapshot] | None,
+) -> TaxonomySnapshot:
+    """Validate a supplied taxonomy snapshot or fetch and validate one."""
     if taxonomy is not None:
         if isinstance(taxonomy, TaxonomySnapshot):
             # Always validate — a TaxonomySnapshot can be constructed
@@ -677,14 +673,16 @@ def build_relevance_profile_plan(
         if violations:
             raise RelevanceProfileTransactionError(
                 "taxonomy snapshot validation failed: " + "; ".join(violations))
-    notebook_store = KeywordNotebookStore(Path(notebook_dir))
-    planned: list[dict[str, Any]] = []
-    seen_keywords: set[str] = set()
-    journal_store = PageJournalStore(Path(pending_pages_dir))
-    # Unknown/recovery lifecycle facts are checked before creating any
-    # transaction identity or timestamp.  A failed plan is diagnostic only;
-    # it must not even manufacture values that could be mistaken for an
-    # applicable transaction.
+    return snapshot
+
+
+def _check_lifecycle_before_transaction(
+    definitions: list[dict[str, Any]],
+    notebook_store: KeywordNotebookStore,
+    snapshot: TaxonomySnapshot,
+    pending_pages_dir: Path,
+) -> None:
+    """Fail closed on unknown/recovery lifecycle facts in the journal scope."""
     early_unknown: list[dict[str, str]] = []
     early_recovery: list[dict[str, str]] = []
     early_terminal = 0
@@ -737,164 +735,197 @@ def build_relevance_profile_plan(
             "recovery-required candidate blocks relevance profile plan",
             report,
         )
-    transaction_id = str(uuid.uuid4())
-    closure_timestamp = _now()
-    unknown_lifecycle_candidates: list[dict[str, str]] = []
-    recovery_required_candidates: list[dict[str, str]] = []
-    for definition in definitions:
-        keyword = definition["keyword_zh"]
-        if keyword in seen_keywords:
-            raise RelevanceProfileTransactionError(f"duplicate profile keyword: {keyword}")
-        seen_keywords.add(keyword)
-        notebook_path = resolve_existing_notebook(keyword, Path(notebook_dir))
-        if notebook_path is None:
-            raise RelevanceProfileTransactionError(f"notebook not found for {keyword!r}")
-        nb = notebook_store.require_v4(keyword)
-        profile, resolved = _profile_with_resolved_taxonomy(definition["profile"], snapshot)
-        old_generation = int(nb.get("relevance_generation") or 1)
-        new_generation = old_generation + 1
-        page_mutations: list[dict[str, Any]] = []
-        kid = str(nb["keyword_id"])
-        historical_terminal_untouched = 0
-        closeable_candidates = 0
-        for page_path in sorted(Path(pending_pages_dir).glob(f"{kid}/*/*/*/*.json")):
-            before_bytes = page_path.read_bytes()
-            try:
-                raw_page = json.loads(before_bytes.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise RelevanceProfileTransactionError(
-                    f"journal JSON is unreadable during profile plan: {page_path}"
-                ) from exc
-            raw_candidates = raw_page.get("candidates") if isinstance(raw_page, dict) else None
-            page_has_unknown_lifecycle = False
-            if isinstance(raw_candidates, list):
-                for candidate in raw_candidates:
-                    if not isinstance(candidate, dict):
-                        continue
-                    lifecycle = classify_candidate_lifecycle(candidate.get("status"))
-                    detail = {
-                        "page": str(page_path.resolve()),
-                        "candidate_id": str(candidate.get("candidate_id") or ""),
-                        "status": str(candidate.get("status") or ""),
-                    }
-                    if lifecycle is CandidateLifecycleClass.INVALID:
-                        unknown_lifecycle_candidates.append(detail)
-                        page_has_unknown_lifecycle = True
-                    elif (
-                        lifecycle is CandidateLifecycleClass.RECOVERY_REQUIRED
-                        and is_profile_closeable_candidate_state(candidate, profile["profile_hash"])
-                    ):
-                        recovery_required_candidates.append(detail)
-            # Strict page validation intentionally rejects an unknown status.
-            # Preserve the global diagnostic contract by collecting every raw
-            # unknown in scope and withholding all transformations for its page.
-            if page_has_unknown_lifecycle:
-                continue
-            page = journal_store.read(page_path)
-            mutations: list[dict[str, str]] = []
-            for candidate in page.get("candidates", []):
-                lifecycle = classify_candidate_lifecycle(candidate.get("status"))
-                relevance = candidate.get("relevance")
-                old_hash = (
-                    str(relevance.get("profile_hash") or "")
-                    if isinstance(relevance, Mapping) else ""
-                )
-                stale_relevance = (
-                    _profile_change_relevance_state(candidate)
-                    and old_hash != profile["profile_hash"]
-                )
-                if lifecycle is CandidateLifecycleClass.COMPLETED_TERMINAL:
-                    if stale_relevance:
-                        historical_terminal_untouched += 1
+
+
+def _plan_page_closures(
+    *,
+    kid: str,
+    profile: dict[str, Any],
+    pending_pages_dir: Path,
+    journal_store: PageJournalStore,
+    transaction_id: str,
+    closure_timestamp: str,
+    unknown_lifecycle_candidates: list[dict[str, str]],
+    recovery_required_candidates: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Plan stale-candidate page closures within one notebook's journal scope."""
+    page_mutations: list[dict[str, Any]] = []
+    historical_terminal_untouched = 0
+    closeable_candidates = 0
+    for page_path in sorted(Path(pending_pages_dir).glob(f"{kid}/*/*/*/*.json")):
+        before_bytes = page_path.read_bytes()
+        try:
+            raw_page = json.loads(before_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RelevanceProfileTransactionError(
+                f"journal JSON is unreadable during profile plan: {page_path}"
+            ) from exc
+        raw_candidates = raw_page.get("candidates") if isinstance(raw_page, dict) else None
+        page_has_unknown_lifecycle = False
+        if isinstance(raw_candidates, list):
+            for candidate in raw_candidates:
+                if not isinstance(candidate, dict):
                     continue
-                if lifecycle is CandidateLifecycleClass.PRE_STAGING_CLOSEABLE and stale_relevance:
-                    cid = str(candidate.get("candidate_id") or "")
-                    mutations.append({
+                lifecycle = classify_candidate_lifecycle(candidate.get("status"))
+                detail = {
+                    "page": str(page_path.resolve()),
+                    "candidate_id": str(candidate.get("candidate_id") or ""),
+                    "status": str(candidate.get("status") or ""),
+                }
+                if lifecycle is CandidateLifecycleClass.INVALID:
+                    unknown_lifecycle_candidates.append(detail)
+                    page_has_unknown_lifecycle = True
+                elif (
+                    lifecycle is CandidateLifecycleClass.RECOVERY_REQUIRED
+                    and is_profile_closeable_candidate_state(candidate, profile["profile_hash"])
+                ):
+                    recovery_required_candidates.append(detail)
+        # Strict page validation intentionally rejects an unknown status.
+        # Preserve the global diagnostic contract by collecting every raw
+        # unknown in scope and withholding all transformations for its page.
+        if page_has_unknown_lifecycle:
+            continue
+        page = journal_store.read(page_path)
+        mutations: list[dict[str, str]] = []
+        for candidate in page.get("candidates", []):
+            lifecycle = classify_candidate_lifecycle(candidate.get("status"))
+            relevance = candidate.get("relevance")
+            old_hash = (
+                str(relevance.get("profile_hash") or "")
+                if isinstance(relevance, Mapping) else ""
+            )
+            stale_relevance = (
+                _profile_change_relevance_state(candidate)
+                and old_hash != profile["profile_hash"]
+            )
+            if lifecycle is CandidateLifecycleClass.COMPLETED_TERMINAL:
+                if stale_relevance:
+                    historical_terminal_untouched += 1
+                continue
+            if lifecycle is CandidateLifecycleClass.PRE_STAGING_CLOSEABLE and stale_relevance:
+                cid = str(candidate.get("candidate_id") or "")
+                mutations.append({
+                    "candidate_id": cid,
+                    "mutation_id": _canonical_hash({
+                        "transaction_id": transaction_id,
+                        "page": str(page_path.resolve()),
                         "candidate_id": cid,
-                        "mutation_id": _canonical_hash({
-                            "transaction_id": transaction_id,
-                            "page": str(page_path.resolve()),
-                            "candidate_id": cid,
-                        })[:24],
-                    })
-            if mutations:
-                after_bytes = transform_page_for_profile_closure(
-                    before_bytes,
-                    planned_mutations=tuple(mutations),
-                    closure_timestamp=closure_timestamp,
-                    transaction_id=transaction_id,
-                    reason=RelevanceReason.STALE_PROFILE_CLOSED_BY_PROFILE_APPLY,
-                    target_profile_hash=profile["profile_hash"],
-                )
-                closeable_candidates += len(mutations)
-                page_mutations.append({
-                    "path": str(page_path.resolve()),
-                    "before_sha256": hashlib.sha256(before_bytes).hexdigest(),
-                    "after_sha256": hashlib.sha256(after_bytes).hexdigest(),
-                    "candidate_count": len(mutations),
-                    "candidate_ids": [item["candidate_id"] for item in mutations],
-                    "planned_mutations": mutations,
-                    "identity": {
-                        "keyword_id": kid,
-                        "query_id": str(page.get("query_id") or ""),
-                        "provider": str(page.get("provider") or ""),
-                        "lane": str(page.get("lane") or ""),
-                        "request_profile_hash": str(
-                            ((page.get("request_signature") or {}).get("filters") or {}).get(
-                                "profile_hash"
-                            ) or ""
-                        ),
-                        "candidate_profile_hashes": sorted({
-                            str((item.get("relevance") or {}).get("profile_hash") or "")
-                            for item in page.get("candidates", [])
-                            if isinstance(item.get("relevance"), dict)
-                        }),
-                        "request_signature": page.get("request_signature"),
-                    },
-                    "applied": False,
+                    })[:24],
                 })
-        notebook_after = deepcopy(nb)
-        notebook_after["relevance_profile"] = profile
-        notebook_after["relevance_generation"] = new_generation
-        notebook_after["updated_at"] = closure_timestamp
-        validate_notebook(notebook_after)
-        notebook_after_bytes = _json_bytes(notebook_after)
-        planned.append({
-            "keyword_zh": keyword,
-            "keyword_id": kid,
-            "notebook_path": str(notebook_path.resolve()),
-            "notebook_before_sha256": _sha_bytes(notebook_path),
-            "notebook_after_sha256": hashlib.sha256(notebook_after_bytes).hexdigest(),
-            "notebook_after": notebook_after,
-            "old_profile_hash": (nb.get("relevance_profile") or {}).get("profile_hash", "") if isinstance(nb.get("relevance_profile"), dict) else "",
-            "old_generation": old_generation,
-            "new_generation": new_generation,
-            "profile": profile,
-            "profile_hash": profile["profile_hash"],
-            "resolved_entities": resolved,
-            "page_mutations": page_mutations,
-            "historical_terminal_untouched": historical_terminal_untouched,
-            "closed_stale_candidates": closeable_candidates,
-            "query_configuration_hash": _canonical_hash(nb.get("search_queries") or {}),
-        })
-    if unknown_lifecycle_candidates or recovery_required_candidates:
-        report = {
-            "schema_version": TRANSACTION_SCHEMA_VERSION,
-            "status": "failed",
-            "applicable": False,
-            "unknown_lifecycle_candidates": unknown_lifecycle_candidates,
-            "recovery_required_candidates": recovery_required_candidates,
-            "historical_terminal_untouched": sum(
-                item["historical_terminal_untouched"] for item in planned
-            ),
-            "closeable_candidates": sum(item["closed_stale_candidates"] for item in planned),
-        }
-        reason = (
-            "unknown candidate lifecycle in target journal scope"
-            if unknown_lifecycle_candidates
-            else "recovery-required candidate blocks relevance profile plan"
+        if mutations:
+            after_bytes = transform_page_for_profile_closure(
+                before_bytes,
+                planned_mutations=tuple(mutations),
+                closure_timestamp=closure_timestamp,
+                transaction_id=transaction_id,
+                reason=RelevanceReason.STALE_PROFILE_CLOSED_BY_PROFILE_APPLY,
+                target_profile_hash=profile["profile_hash"],
+            )
+            closeable_candidates += len(mutations)
+            page_mutations.append({
+                "path": str(page_path.resolve()),
+                "before_sha256": hashlib.sha256(before_bytes).hexdigest(),
+                "after_sha256": hashlib.sha256(after_bytes).hexdigest(),
+                "candidate_count": len(mutations),
+                "candidate_ids": [item["candidate_id"] for item in mutations],
+                "planned_mutations": mutations,
+                "identity": {
+                    "keyword_id": kid,
+                    "query_id": str(page.get("query_id") or ""),
+                    "provider": str(page.get("provider") or ""),
+                    "lane": str(page.get("lane") or ""),
+                    "request_profile_hash": str(
+                        ((page.get("request_signature") or {}).get("filters") or {}).get(
+                            "profile_hash"
+                        ) or ""
+                    ),
+                    "candidate_profile_hashes": sorted({
+                        str((item.get("relevance") or {}).get("profile_hash") or "")
+                        for item in page.get("candidates", [])
+                        if isinstance(item.get("relevance"), dict)
+                    }),
+                    "request_signature": page.get("request_signature"),
+                },
+                "applied": False,
+            })
+    return page_mutations, historical_terminal_untouched, closeable_candidates
+
+
+def _plan_one_notebook(
+    definition: dict[str, Any],
+    *,
+    notebook_dir: Path,
+    notebook_store: KeywordNotebookStore,
+    snapshot: TaxonomySnapshot,
+    pending_pages_dir: Path,
+    journal_store: PageJournalStore,
+    transaction_id: str,
+    closure_timestamp: str,
+    seen_keywords: set[str],
+    unknown_lifecycle_candidates: list[dict[str, str]],
+    recovery_required_candidates: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Plan one notebook's profile/generation update and its page closures."""
+    keyword = definition["keyword_zh"]
+    if keyword in seen_keywords:
+        raise RelevanceProfileTransactionError(f"duplicate profile keyword: {keyword}")
+    seen_keywords.add(keyword)
+    notebook_path = resolve_existing_notebook(keyword, Path(notebook_dir))
+    if notebook_path is None:
+        raise RelevanceProfileTransactionError(f"notebook not found for {keyword!r}")
+    nb = notebook_store.require_v4(keyword)
+    profile, resolved = _profile_with_resolved_taxonomy(definition["profile"], snapshot)
+    old_generation = int(nb.get("relevance_generation") or 1)
+    new_generation = old_generation + 1
+    kid = str(nb["keyword_id"])
+    page_mutations, historical_terminal_untouched, closeable_candidates = (
+        _plan_page_closures(
+            kid=kid,
+            profile=profile,
+            pending_pages_dir=pending_pages_dir,
+            journal_store=journal_store,
+            transaction_id=transaction_id,
+            closure_timestamp=closure_timestamp,
+            unknown_lifecycle_candidates=unknown_lifecycle_candidates,
+            recovery_required_candidates=recovery_required_candidates,
         )
-        raise RelevanceProfilePlanError(reason, report)
+    )
+    notebook_after = deepcopy(nb)
+    notebook_after["relevance_profile"] = profile
+    notebook_after["relevance_generation"] = new_generation
+    notebook_after["updated_at"] = closure_timestamp
+    validate_notebook(notebook_after)
+    notebook_after_bytes = _json_bytes(notebook_after)
+    return {
+        "keyword_zh": keyword,
+        "keyword_id": kid,
+        "notebook_path": str(notebook_path.resolve()),
+        "notebook_before_sha256": _sha_bytes(notebook_path),
+        "notebook_after_sha256": hashlib.sha256(notebook_after_bytes).hexdigest(),
+        "notebook_after": notebook_after,
+        "old_profile_hash": (nb.get("relevance_profile") or {}).get("profile_hash", "") if isinstance(nb.get("relevance_profile"), dict) else "",
+        "old_generation": old_generation,
+        "new_generation": new_generation,
+        "profile": profile,
+        "profile_hash": profile["profile_hash"],
+        "resolved_entities": resolved,
+        "page_mutations": page_mutations,
+        "historical_terminal_untouched": historical_terminal_untouched,
+        "closed_stale_candidates": closeable_candidates,
+        "query_configuration_hash": _canonical_hash(nb.get("search_queries") or {}),
+    }
+
+
+def _assemble_hashed_plan(
+    *,
+    runtime_paths: RelevanceRuntimePaths,
+    profiles_path: Path,
+    transaction_id: str,
+    closure_timestamp: str,
+    snapshot: TaxonomySnapshot,
+    planned: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Assemble the ordered plan payload and bind its content hash."""
     plan_core = {
         "schema_version": TRANSACTION_SCHEMA_VERSION,
         "transaction_id": transaction_id,
@@ -938,6 +969,87 @@ def build_relevance_profile_plan(
     plan = dict(plan_core)
     plan["plan_hash"] = _canonical_hash(plan_core)
     return plan
+
+
+def build_relevance_profile_plan(
+    *,
+    profiles_path: Path,
+    notebook_dir: Path,
+    pending_pages_dir: Path,
+    transaction_root: Path | None = None,
+    runtime_paths: RelevanceRuntimePaths | None = None,
+    taxonomy: TaxonomySnapshot | None = None,
+    taxonomy_fetcher: Callable[[], TaxonomySnapshot] | None = None,
+) -> dict[str, Any]:
+    """Create a complete, hash-bound plan without mutating notebooks/pages."""
+    runtime_paths = _resolve_and_check_runtime_paths(
+        notebook_dir, pending_pages_dir, transaction_root, runtime_paths
+    )
+    notebook_dir = runtime_paths.notebook_root
+    pending_pages_dir = runtime_paths.journal_root
+    transaction_root = runtime_paths.transaction_root
+    # ── Step 1: Load and structurally validate profile definitions ─────
+    definitions = _load_profile_definitions(Path(profiles_path))
+    # Validate every source definition locally before any network access.
+    for definition in definitions:
+        validate_relevance_profile_source(definition["profile"])
+    # ── Step 2: Fetch taxonomy (only after local validation passes) ────
+    snapshot = _obtain_taxonomy(taxonomy, taxonomy_fetcher)
+    notebook_store = KeywordNotebookStore(Path(notebook_dir))
+    planned: list[dict[str, Any]] = []
+    seen_keywords: set[str] = set()
+    journal_store = PageJournalStore(Path(pending_pages_dir))
+    # Unknown/recovery lifecycle facts are checked before creating any
+    # transaction identity or timestamp.  A failed plan is diagnostic only;
+    # it must not even manufacture values that could be mistaken for an
+    # applicable transaction.
+    _check_lifecycle_before_transaction(
+        definitions, notebook_store, snapshot, pending_pages_dir
+    )
+    transaction_id = str(uuid.uuid4())
+    closure_timestamp = _now()
+    unknown_lifecycle_candidates: list[dict[str, str]] = []
+    recovery_required_candidates: list[dict[str, str]] = []
+    for definition in definitions:
+        planned.append(_plan_one_notebook(
+            definition,
+            notebook_dir=notebook_dir,
+            notebook_store=notebook_store,
+            snapshot=snapshot,
+            pending_pages_dir=pending_pages_dir,
+            journal_store=journal_store,
+            transaction_id=transaction_id,
+            closure_timestamp=closure_timestamp,
+            seen_keywords=seen_keywords,
+            unknown_lifecycle_candidates=unknown_lifecycle_candidates,
+            recovery_required_candidates=recovery_required_candidates,
+        ))
+    if unknown_lifecycle_candidates or recovery_required_candidates:
+        report = {
+            "schema_version": TRANSACTION_SCHEMA_VERSION,
+            "status": "failed",
+            "applicable": False,
+            "unknown_lifecycle_candidates": unknown_lifecycle_candidates,
+            "recovery_required_candidates": recovery_required_candidates,
+            "historical_terminal_untouched": sum(
+                item["historical_terminal_untouched"] for item in planned
+            ),
+            "closeable_candidates": sum(item["closed_stale_candidates"] for item in planned),
+        }
+        reason = (
+            "unknown candidate lifecycle in target journal scope"
+            if unknown_lifecycle_candidates
+            else "recovery-required candidate blocks relevance profile plan"
+        )
+        raise RelevanceProfilePlanError(reason, report)
+    return _assemble_hashed_plan(
+        runtime_paths=runtime_paths,
+        profiles_path=profiles_path,
+        transaction_id=transaction_id,
+        closure_timestamp=closure_timestamp,
+        snapshot=snapshot,
+        planned=planned,
+    )
 
 
 def _journal_path(plan: Mapping[str, Any]) -> Path:

@@ -28,7 +28,7 @@ from src.workspace.receipt import (
 )
 from src.library.paper_number_ledger import LockedLedgerSession, PaperNumberLedger
 from src.metadata.schema import METADATA_SCHEMA_VERSION, metadata_doi, validate_metadata_schema
-from src.path_utils import normalize_repo_path
+from src.utils.path_utils import normalize_repo_path
 from src.ingest.import_status import write_import_status
 from src.metadata.source_records import ensure_raw_record_path_is_metadata_source, write_metadata_source_record
 from src.ingest.stage_manifest import write_stage_manifest

@@ -1,6 +1,8 @@
 # Claude Notes
 
-This is the only default article-writing skill. It is:
+This is the default mini-article writing skill for prepared write jobs.
+Topic reviews belong to `catalog_review_writer`; research proposals belong to
+`catalog_research_proposal_writer`. It is:
 - not an ingest skill
 - not a metadata resolver
 - not a catalog curator

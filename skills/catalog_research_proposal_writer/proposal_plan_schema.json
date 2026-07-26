@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CatalogResearchProposalPlan",
+  "description": "Machine-checkable plan emitted by the catalog_research_proposal_writer skill (先射箭后画靶). Every proposed method must be grounded in at least one selected paper that actually uses it (grounded_in, paper_number + bib_key); every results_plan item is a PLAN (status is always 'planned' - no fake data, no invented results). Citations come only from job-local Metadata.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "job_id", "workflow", "title_zh",
+    "research_question_zh", "objectives_zh", "language",
+    "source_categories", "paper_pool", "themes", "research_gaps",
+    "methods_design", "results_plan", "sections"
+  ],
+  "definitions": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "paperNumber": {"type": "string", "pattern": "^[0-9]{16}$"},
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paper_number", "bib_key", "basis_zh"],
+      "properties": {
+        "paper_number": {"$ref": "#/definitions/paperNumber"},
+        "bib_key": {"$ref": "#/definitions/nonEmptyString"},
+        "basis_zh": {"$ref": "#/definitions/nonEmptyString"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "job_id": {"$ref": "#/definitions/nonEmptyString"},
+    "workflow": {"const": "catalog_research_proposal"},
+    "title_zh": {"$ref": "#/definitions/nonEmptyString"},
+    "research_question_zh": {"$ref": "#/definitions/nonEmptyString"},
+    "objectives_zh": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/definitions/nonEmptyString"}
+    },
+    "language": {"type": "string", "enum": ["zh", "en"]},
+    "source_categories": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/definitions/nonEmptyString"}
+    },
+    "paper_pool": {
+      "type": "array", "minItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paper_number", "paper_name", "bib_key", "role_in_review_zh"],
+        "properties": {
+          "paper_number": {"$ref": "#/definitions/paperNumber"},
+          "paper_name": {"$ref": "#/definitions/nonEmptyString"},
+          "bib_key": {"$ref": "#/definitions/nonEmptyString"},
+          "role_in_review_zh": {"$ref": "#/definitions/nonEmptyString"}
+        }
+      }
+    },
+    "themes": {
+      "type": "array", "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["theme_id", "theme_zh", "thesis_zh", "evidence"],
+        "properties": {
+          "theme_id": {"type": "string", "pattern": "^T[0-9]{2}$"},
+          "theme_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "thesis_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "evidence": {
+            "type": "array", "minItems": 2,
+            "items": {"$ref": "#/definitions/evidenceRef"}
+          }
+        }
+      }
+    },
+    "research_gaps": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gap_id", "gap_zh", "why_it_matters_zh", "evidence"],
+        "properties": {
+          "gap_id": {"type": "string", "pattern": "^G[0-9]{2}$"},
+          "gap_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "why_it_matters_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "evidence": {
+            "type": "array", "minItems": 1,
+            "items": {"$ref": "#/definitions/evidenceRef"}
+          }
+        }
+      }
+    },
+    "methods_design": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method_id", "method_zh", "purpose_zh", "grounded_in",
+                     "adaptation_zh", "data_requirements_zh"],
+        "properties": {
+          "method_id": {"type": "string", "pattern": "^M[0-9]{2}$"},
+          "method_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "purpose_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "grounded_in": {
+            "type": "array", "minItems": 1,
+            "items": {"$ref": "#/definitions/evidenceRef"}
+          },
+          "adaptation_zh": {"type": ["string", "null"]},
+          "data_requirements_zh": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "results_plan": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["analysis_id", "analysis_zh", "uses_method_ids",
+                     "expected_output_zh", "validation_zh", "status"],
+        "properties": {
+          "analysis_id": {"type": "string", "pattern": "^A[0-9]{2}$"},
+          "analysis_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "uses_method_ids": {
+            "type": "array", "minItems": 1,
+            "items": {"type": "string", "pattern": "^M[0-9]{2}$"}
+          },
+          "expected_output_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "validation_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "status": {"const": "planned"}
+        }
+      }
+    },
+    "sections": {
+      "type": "array", "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "title_zh", "purpose_zh"],
+        "properties": {
+          "file": {"type": "string", "pattern": "^sections/[a-z0-9_]+\\.tex$"},
+          "title_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "purpose_zh": {"$ref": "#/definitions/nonEmptyString"},
+          "theme_ids": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^T[0-9]{2}$"}
+          }
+        }
+      }
+    },
+    "alternative_directions_zh": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/nonEmptyString"}
+    }
+  }
+}

@@ -245,7 +245,7 @@ def test_apply_aborts_when_api_unavailable(monkeypatch, tmp_path):
 def test_all_apply_blocks_without_smoke(monkeypatch, tmp_path):
     import scripts.convert_paper_raw_gpu as gpu
     monkeypatch.setattr(gpu, "main", lambda: (_ for _ in ()).throw(AssertionError("convert must not run")))
-    monkeypatch.setattr("src.mineru_smoke.DEFAULT_SMOKE_REPORT", tmp_path / "missing_smoke.json")
+    monkeypatch.setattr("src.mineru.smoke.DEFAULT_SMOKE_REPORT", tmp_path / "missing_smoke.json")
 
     rc, result = _run_sop([
         "run.py", "--all",
@@ -289,7 +289,7 @@ def test_all_apply_with_valid_default_smoke_does_not_require_explicit_report(mon
     smoke = tmp_path / "reports" / "smoke_mineru_conversion.json"
     smoke.parent.mkdir(parents=True)
     _valid_smoke(smoke)
-    monkeypatch.setattr("src.mineru_smoke.DEFAULT_SMOKE_REPORT", smoke)
+    monkeypatch.setattr("src.mineru.smoke.DEFAULT_SMOKE_REPORT", smoke)
     convert_report = {"applied": True, "items": [
         {"paper_number": PN, "status": "converted", "metadata_ready_for_commit": True},
     ]}

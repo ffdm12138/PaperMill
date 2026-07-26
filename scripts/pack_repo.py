@@ -37,7 +37,7 @@ from pathlib import Path, PurePosixPath
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from src.services.repository_hygiene import (
+from src.utils.repository_hygiene import (
     is_forbidden_snapshot_member,
     runtime_workspace_counts,
 )

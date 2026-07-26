@@ -96,7 +96,7 @@ class JobManager:
         self.write_dir = Path(write_dir)
 
     def job_dir(self, job_id: str) -> Path:
-        from src.naming import validate_job_id, safe_child
+        from src.utils.naming import validate_job_id, safe_child
         validate_job_id(job_id)  # 防路径穿越
         return safe_child(self.write_dir, job_id)
 
@@ -216,7 +216,7 @@ class JobManager:
                 raise ValueError(
                     f"input_file 不允许路径分隔符或穿越: {input_file!r}")
             base = input_base_dir or (self.write_dir / "_inputs")
-            from src.naming import safe_child
+            from src.utils.naming import safe_child
             ip = safe_child(base, input_file)
             if not ip.exists():
                 raise FileNotFoundError(f"输入文件不存在: {ip}")

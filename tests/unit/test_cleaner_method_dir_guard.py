@@ -5,7 +5,7 @@
 """
 import tempfile
 from pathlib import Path
-from src.cleaner import MinerUOutputCleaner
+from src.mineru.cleaner import MinerUOutputCleaner
 
 
 def _make(path: Path, content: str = "# test"):

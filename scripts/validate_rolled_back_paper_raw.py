@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
-from src.path_utils import resolve_stored_path
+from src.utils.path_utils import resolve_stored_path
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.metadata.quality import bibliographic_identity_gate
 from src.library.paper_number_ledger import PaperNumberLedger

@@ -3,7 +3,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from src.converter import MinerUConverter
+from src.mineru.converter import MinerUConverter
 
 
 _EXPECTED = {"backend": "hybrid-engine", "method": "auto",
@@ -17,22 +17,22 @@ def _mock_converter_deps(subprocess_result=None):
     subprocess_result: MagicMock 作为 subprocess.run() 的返回值。
                        若为 callable，作为 side_effect 使用。
     """
-    with patch("src.converter.preflight_gpu",
+    with patch("src.mineru.converter.preflight_gpu",
                return_value=type("H", (), {"ok": True, "message": "ok", "nvidia_smi": True})()):
-        with patch("src.converter.preflight_torch_cuda",
+        with patch("src.mineru.converter.preflight_torch_cuda",
                    return_value=type("T", (), {"ok": True, "message": "ok"})()):
-            with patch("src.converter.snapshot_nvidia_smi",
+            with patch("src.mineru.converter.snapshot_nvidia_smi",
                        return_value={"available": False}):
-                with patch("src.converter.MinerULock.acquire",
+                with patch("src.mineru.converter.MinerULock.acquire",
                            return_value=True):
-                    with patch("src.converter.MinerULock.release"):
+                    with patch("src.mineru.converter.MinerULock.release"):
                         if subprocess_result is not None:
                             mock_run = MagicMock()
                             if callable(subprocess_result) and not isinstance(subprocess_result, MagicMock):
                                 mock_run.side_effect = subprocess_result
                             else:
                                 mock_run.return_value = subprocess_result
-                            with patch("src.converter.subprocess.run", mock_run):
+                            with patch("src.mineru.converter.subprocess.run", mock_run):
                                 yield mock_run
                         else:
                             yield None

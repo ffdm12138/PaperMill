@@ -2,28 +2,37 @@
 
 ## Package layering (enforced by tests/hygiene/test_layering.py)
 
-`src/` packages import strictly downward at module top level:
+`src/` packages import strictly downward — module-level and function-body
+imports are both scanned; cycles exist only as sanctioned per-module seams:
 
 ```text
 utils                     leaf: atomic_io, identifiers, timestamps, jsonio,
-                          fs, rate_limit — no src imports at all
-root leaves               naming, path_utils, file_fingerprint, logging_setup
+                          fs, rate_limit, naming, path_utils, file_fingerprint,
+                          logging_setup, process, canonical_json,
+                          repository_hygiene — no src imports at all
+mineru                    MinerU runtime: converter, cleaner, runtime, lock,
+                          service_manager, smoke
 metadata                  schema v2.0, freeze, citation, source_records,
                           quality, pdf identity/match
-library ~ workspace       PaperNumberLedger + formal_publication + marker;
+catalog ~ workspace       Catalog v3.2 schema/task/freeze + asset_refs;
                           workspace facts (evidence/readiness/lifecycle/receipt)
-catalog                   Catalog v3.2 schema/task/freeze + asset_refs
+library                   PaperNumberLedger + formal_publication + marker
+                          (declared 2-cycle with workspace, sanctioned)
 ingest                    allocator, conversion, commit/rollback,
                           transaction_paths, import_status (sole writer
                           facade), stage/asset manifests, duplicate guard,
-                          locking (ranked; paper_raw_write_lock helper)
-catalog_folders           category registry/links/reader/doctor
+                          conversion gates, admin, locking (ranked;
+                          paper_raw_write_lock helper)
+catalog_folders           category registry/links/reader/doctor + paper_library
 fetch                     PDF resolvers + transport + fetch_result_record
 discovery                 notebooks/journals/lanes/providers/drain/staging
 metadata_resolve          Path-B resolver package (scoring/evidence/apply)
-services                  slim app layer: network staging, canonicalization,
-                          admin, paper_library, repository_hygiene
-server / writer / scripts entry points (scripts init via scripts/_bootstrap)
+staging                   Path-A app layer: network metadata staging +
+                          canonicalization
+writer                    write-job pipeline + bib
+root                      src/server.py + src/prompt_builder.py only; may
+                          import anything, nothing may import root
+scripts                   entry points (init via scripts/_bootstrap)
 ```
 
 The sanctioned cross-edges (candidate value object, unified ProviderClient

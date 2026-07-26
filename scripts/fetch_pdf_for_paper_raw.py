@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 import json
 import shutil
 import sys
@@ -17,14 +16,18 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from loguru import logger
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
-from src.utils.identifiers import normalize_doi
-from src.fetch.access_policy import AccessMode, AccessPolicy
+from src.fetch.access_policy import (
+    AccessMode,
+    AccessPolicy,
+    BLOCKED_FETCH_STATUSES,  # noqa: F401  (re-exported script surface)
+    FetchCandidateStatus,
+    classify_pdf_fetch_candidate,
+)
 import src.fetch.fetch_pipeline as fetch_pipeline
 from src.fetch.pdf_transport import TRANSPORT_POLICY, sanitize_for_persistence, sanitize_url_for_persistence
 from src.ingest.duplicate_guard import DuplicateIngestError
 from src.utils.identifiers import validate_paper_raw_id
 from src.ingest.import_status import write_import_status
-from src.metadata.quality import is_valid_normalized_doi
 from src.metadata.source_records import (
     ensure_raw_record_path_is_metadata_source,
     fetch_result_rel_path,
@@ -38,45 +41,6 @@ from src.ingest.stage_manifest import (
 )
 from src.ingest.paper_raw import PaperRawAllocator
 from src.utils.atomic_io import atomic_write_json
-
-
-BLOCKED_FETCH_STATUSES = {
-    "ready_for_commit",
-    "catalog_ready",
-    "committed",
-    "imported",
-    "quarantined_duplicate",
-    "possible_duplicate",
-}
-
-
-@dataclass
-class FetchCandidateStatus:
-    paper_number: str
-    folder: Path
-    status: str
-    reason: str = ""
-    has_metadata: bool = False
-    has_pdf: bool = False
-    doi: str = ""
-    import_status: str = ""
-    metadata: dict[str, Any] | None = None
-
-    @property
-    def eligible(self) -> bool:
-        return self.status == "planned"
-
-    def to_item(self) -> dict[str, Any]:
-        return {
-            "paper_number": self.paper_number,
-            "paper_raw_id": self.paper_number,
-            "status": self.status,
-            "reason": self.reason,
-            "has_metadata": self.has_metadata,
-            "has_pdf": self.has_pdf,
-            "doi": self.doi,
-            "import_status": self.import_status,
-        }
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -94,74 +58,6 @@ def _paper_numbers(root: Path, all_sources: bool, one: str | None) -> list[str]:
             return []
         return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 16)
     raise ValueError("--paper-number or --all is required")
-
-
-def classify_pdf_fetch_candidate(
-    folder: Path,
-    paper_number: str,
-    *,
-    force_refetch: bool = False,
-) -> FetchCandidateStatus:
-    paper_number = validate_paper_raw_id(paper_number)
-    meta_path = folder / f"{paper_number}.metadata.json"
-    pdf_path = folder / f"{paper_number}.pdf"
-    status_data = _read_json(folder / ".import_status.json")
-    import_status = str(status_data.get("status") or "")
-
-    item = FetchCandidateStatus(
-        paper_number=paper_number,
-        folder=folder,
-        status="planned",
-        has_metadata=meta_path.exists(),
-        has_pdf=pdf_path.exists(),
-        import_status=import_status,
-    )
-    if not folder.is_dir():
-        item.status = "skipped"
-        item.reason = "paper_raw folder missing"
-        return item
-    if "quarantine" in {part.lower() for part in folder.parts}:
-        item.status = "skipped"
-        item.reason = "workspace is under quarantine"
-        return item
-    if not (folder.name.isdigit() and len(folder.name) == 16):
-        item.status = "skipped"
-        item.reason = "not a 16-digit paper_raw workspace"
-        return item
-    if not meta_path.exists():
-        item.status = "skipped"
-        item.reason = "metadata file missing"
-        return item
-    try:
-        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        item.status = "failed"
-        item.reason = f"metadata unreadable: {exc}"
-        return item
-    if not isinstance(metadata, dict):
-        item.status = "failed"
-        item.reason = "metadata must be a JSON object"
-        return item
-    item.metadata = metadata
-    doi = normalize_doi(((metadata.get("identifiers") or {}).get("doi") or "").strip())
-    item.doi = doi
-    if not doi:
-        item.status = "skipped"
-        item.reason = "missing DOI in metadata"
-        return item
-    if not is_valid_normalized_doi(doi):
-        item.status = "skipped"
-        item.reason = "invalid DOI in metadata"
-        return item
-    if item.has_pdf and not force_refetch:
-        item.status = "skipped"
-        item.reason = "PDF already exists"
-        return item
-    if import_status in BLOCKED_FETCH_STATUSES:
-        item.status = "skipped"
-        item.reason = f"blocked import status: {import_status}"
-        return item
-    return item
 
 
 def _parse_header(value: str, *, ua_warn_only: bool = True) -> tuple[str, str]:
@@ -308,25 +204,8 @@ def _sanitized_fetch_record(
     })
 
 
-def _fetch_one(
-    candidate: FetchCandidateStatus,
-    *,
-    policy: AccessPolicy,
-    allocator: PaperRawAllocator,
-    force_refetch: bool,
-    header_keys: list[str],
-) -> dict[str, Any]:
-    start = time.monotonic()
-    item = candidate.to_item()
-    item["transport_policy"] = TRANSPORT_POLICY
-    item["transport_attempts"] = []
-    folder = candidate.folder
-    meta_path = folder / f"{candidate.paper_number}.metadata.json"
-    metadata = dict(candidate.metadata or {})
-    metadata.setdefault("identifiers", {})["doi"] = candidate.doi
-    title = ((metadata.get("title") or {}).get("original") or "").strip()
-    year = metadata.get("year")
-    fetch_root = folder / ".fetch"
+def _load_source_record(folder: Path, metadata: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+    """Return ``(source_record, status, error)`` for the workspace metadata."""
     # Load source record from source.raw_record_path (if present) via the
     # path-safe resolver — never persisted back to metadata.
     source_record: dict[str, Any] = {}
@@ -350,141 +229,226 @@ def _fetch_one(
         else:
             source_record_status = "missing"
             source_record_error = "source record file not found"
-    item["source_record_status"] = source_record_status
-    item["source_record_error"] = source_record_error
-    try:
-        result = fetch_pipeline.fetch_pdf(
-            candidate.doi,
-            domain_id="paper_raw",
-            output_root=fetch_root,
-            dry_run=False,
-            access_policy=policy,
-            title=title,
-            year=year if isinstance(year, int) else None,
-            metadata=metadata,
-            source_record=source_record,
-        )
-        if not result.success or not result.output_path:
-            item.update({
-                "status": "failed",
-                "reason": result.error or "fetch failed",
-                "resolver_chain": list(result.resolver_chain or []),
-                "attempts": sanitize_for_persistence(list(result.attempts or [])),
-                "transport_policy": TRANSPORT_POLICY,
-                "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
-                "final_reason": result.error or "fetch failed",
-            })
-            if result.transport_attempts:
-                write_fetch_result(
-                    folder,
-                    _sanitized_fetch_record(
-                        result,
-                        None,
-                        header_keys,
-                        success=False,
-                        final_reason=result.error or "fetch failed",
-                    ),
-                )
-            return item
-        try:
-            attached = allocator.attach_pdf(
-                candidate.paper_number,
-                result.output_path,
-                move=True,
-                replace=force_refetch,
-            )
-        except DuplicateIngestError as exc:
-            item.update({
-                "status": "duplicate",
-                "error": "pdf_duplicate",
-                "reason": "fetched PDF duplicates an existing paper_raw/papers PDF",
-                "duplicate_reasons": exc.result.reasons,
-                "duplicate_refs": [ref.to_dict() for ref in exc.result.refs],
-                "pdf_md5": exc.result.pdf_md5,
-                "pdf_sha256": exc.result.pdf_sha256,
-                "transport_policy": TRANSPORT_POLICY,
-                "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
-            })
-            write_import_status(
-                folder,
-                "duplicate",
-                reason=item["reason"],
-                extra={
-                    "duplicate_reasons": item["duplicate_reasons"],
-                    "duplicate_refs": item["duplicate_refs"],
-                    "paper_number": candidate.paper_number,
-                    "paper_raw_id": candidate.paper_number,
-                    "source_type": "network_search",
-                    "source_provider": ((candidate.metadata or {}).get("source") or {}).get("provider", "network_search") if candidate.metadata else "network_search",
-                    "doi": candidate.doi,
-                    "pdf_md5": exc.result.pdf_md5,
-                    "pdf_sha256": exc.result.pdf_sha256,
-                },
-            )
-            if result.transport_attempts:
-                write_fetch_result(
-                    folder,
-                    _sanitized_fetch_record(
-                        result,
-                        {
-                            "pdf_md5": exc.result.pdf_md5,
-                            "pdf_sha256": exc.result.pdf_sha256,
-                        },
-                        header_keys,
-                        success=False,
-                        final_reason="duplicate PDF",
-                    ),
-                )
-            return item
+    return source_record, source_record_status, source_record_error
 
-        metadata = _read_json(meta_path)
-        fetch_record = _sanitized_fetch_record(result, attached, header_keys)
-        # fetch_result.json is a SEPARATE file from metadata source records.
-        # Never write the fetch result to metadata.source.raw_record_path.
-        write_fetch_result(folder, fetch_record)
-        # Enrich the stage_manifest pdf_source with fetch-specific details.
-        existing_manifest = read_stage_manifest(folder)
-        pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
-        if pdf_source is None:
-            pdf_source = doi_fetch_pdf_source(operation="attach")
-        pdf_source.update(doi_fetch_pdf_source(
-            operation="replace" if force_refetch else "attach",
-            fetch_record_path=fetch_result_rel_path(),
-            resolver=result.resolver,
-            pdf_url=sanitize_url_for_persistence(result.pdf_url or ""),
-            doi=candidate.doi,
-        ))
-        update_stage_manifest(folder, updates={"pdf_source": pdf_source})
-        # Build the sole authoritative match sidecar from independent PDF
-        # bytes. If the PDF text layer exposes the DOI, network ingest can
-        # freeze immediately; otherwise conversion will regenerate richer
-        # evidence from Markdown before Catalog generation.
-        from src.metadata.pdf_identity import extract_pdf_identity_evidence
-        from src.metadata.pdf_match import build_match_receipt, write_match_receipt
-        from src.metadata.freeze import freeze_metadata
-        from src.ingest.status import update_status
-        from src.ingest.workspace import PaperRawWorkspace
-        evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{candidate.paper_number}.pdf")
-        provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
-        match=build_match_receipt(folder,candidate.paper_number,metadata,evidence,requested_doi=candidate.doi,provider_records=[provider_record] if provider_record else [])
-        write_match_receipt(folder,match)
-        if match["match_status"] in {"matched","manual_confirmed"}:
-            frozen=freeze_metadata(folder,candidate.paper_number)
-            update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
-            item["metadata_frozen"]=True
-        else:
-            update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=match["match_method"])
+
+def _resolve_and_download(
+    candidate: FetchCandidateStatus,
+    *,
+    policy: AccessPolicy,
+    allocator: PaperRawAllocator,
+    force_refetch: bool,
+    header_keys: list[str],
+    metadata: dict[str, Any],
+    title: str,
+    year: Any,
+    source_record: dict[str, Any],
+    fetch_root: Path,
+    item: dict[str, Any],
+) -> tuple[Any, dict[str, Any] | None]:
+    """Run the fetch pipeline and attach the downloaded PDF.
+
+    On fetch failure or duplicate PDF the terminal ``item`` state is
+    recorded here and ``(result, None)`` is returned; on success returns
+    ``(result, attached)`` for provenance recording.
+    """
+    folder = candidate.folder
+    result = fetch_pipeline.fetch_pdf(
+        candidate.doi,
+        domain_id="paper_raw",
+        output_root=fetch_root,
+        dry_run=False,
+        access_policy=policy,
+        title=title,
+        year=year if isinstance(year, int) else None,
+        metadata=metadata,
+        source_record=source_record,
+    )
+    if not result.success or not result.output_path:
         item.update({
-            **attached,
-            "status": "attached",
-            "reason": "",
-            "resolver": result.resolver,
-            "pdf_path": attached.get("pdf", ""),
-            "pdf_md5": attached.get("pdf_md5", ""),
-            "pdf_sha256": attached.get("pdf_sha256", ""),
+            "status": "failed",
+            "reason": result.error or "fetch failed",
+            "resolver_chain": list(result.resolver_chain or []),
+            "attempts": sanitize_for_persistence(list(result.attempts or [])),
+            "transport_policy": TRANSPORT_POLICY,
+            "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
+            "final_reason": result.error or "fetch failed",
+        })
+        if result.transport_attempts:
+            write_fetch_result(
+                folder,
+                _sanitized_fetch_record(
+                    result,
+                    None,
+                    header_keys,
+                    success=False,
+                    final_reason=result.error or "fetch failed",
+                ),
+            )
+        return result, None
+    try:
+        attached = allocator.attach_pdf(
+            candidate.paper_number,
+            result.output_path,
+            move=True,
+            replace=force_refetch,
+        )
+    except DuplicateIngestError as exc:
+        item.update({
+            "status": "duplicate",
+            "error": "pdf_duplicate",
+            "reason": "fetched PDF duplicates an existing paper_raw/papers PDF",
+            "duplicate_reasons": exc.result.reasons,
+            "duplicate_refs": [ref.to_dict() for ref in exc.result.refs],
+            "pdf_md5": exc.result.pdf_md5,
+            "pdf_sha256": exc.result.pdf_sha256,
             "transport_policy": TRANSPORT_POLICY,
             "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
         })
+        write_import_status(
+            folder,
+            "duplicate",
+            reason=item["reason"],
+            extra={
+                "duplicate_reasons": item["duplicate_reasons"],
+                "duplicate_refs": item["duplicate_refs"],
+                "paper_number": candidate.paper_number,
+                "paper_raw_id": candidate.paper_number,
+                "source_type": "network_search",
+                "source_provider": ((candidate.metadata or {}).get("source") or {}).get("provider", "network_search") if candidate.metadata else "network_search",
+                "doi": candidate.doi,
+                "pdf_md5": exc.result.pdf_md5,
+                "pdf_sha256": exc.result.pdf_sha256,
+            },
+        )
+        if result.transport_attempts:
+            write_fetch_result(
+                folder,
+                _sanitized_fetch_record(
+                    result,
+                    {
+                        "pdf_md5": exc.result.pdf_md5,
+                        "pdf_sha256": exc.result.pdf_sha256,
+                    },
+                    header_keys,
+                    success=False,
+                    final_reason="duplicate PDF",
+                ),
+            )
+        return result, None
+    return result, attached
+
+
+def _record_result(
+    candidate: FetchCandidateStatus,
+    result: Any,
+    attached: dict[str, Any],
+    *,
+    force_refetch: bool,
+    header_keys: list[str],
+    item: dict[str, Any],
+) -> None:
+    """Persist provenance for an attached PDF and finalize ``item``:
+    fetch record, stage_manifest pdf_source, match receipt, and (when
+    matched) the metadata freeze — in that order."""
+    folder = candidate.folder
+    meta_path = folder / f"{candidate.paper_number}.metadata.json"
+
+    metadata = _read_json(meta_path)
+    fetch_record = _sanitized_fetch_record(result, attached, header_keys)
+    # fetch_result.json is a SEPARATE file from metadata source records.
+    # Never write the fetch result to metadata.source.raw_record_path.
+    write_fetch_result(folder, fetch_record)
+    # Enrich the stage_manifest pdf_source with fetch-specific details.
+    existing_manifest = read_stage_manifest(folder)
+    pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
+    if pdf_source is None:
+        pdf_source = doi_fetch_pdf_source(operation="attach")
+    pdf_source.update(doi_fetch_pdf_source(
+        operation="replace" if force_refetch else "attach",
+        fetch_record_path=fetch_result_rel_path(),
+        resolver=result.resolver,
+        pdf_url=sanitize_url_for_persistence(result.pdf_url or ""),
+        doi=candidate.doi,
+    ))
+    update_stage_manifest(folder, updates={"pdf_source": pdf_source})
+    # Build the sole authoritative match sidecar from independent PDF
+    # bytes. If the PDF text layer exposes the DOI, network ingest can
+    # freeze immediately; otherwise conversion will regenerate richer
+    # evidence from Markdown before Catalog generation.
+    from src.metadata.pdf_identity import extract_pdf_identity_evidence
+    from src.metadata.pdf_match import build_match_receipt, write_match_receipt
+    from src.metadata.freeze import freeze_metadata
+    from src.ingest.status import update_status
+    from src.ingest.workspace import PaperRawWorkspace
+    evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{candidate.paper_number}.pdf")
+    provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
+    match=build_match_receipt(folder,candidate.paper_number,metadata,evidence,requested_doi=candidate.doi,provider_records=[provider_record] if provider_record else [])
+    write_match_receipt(folder,match)
+    if match["match_status"] in {"matched","manual_confirmed"}:
+        frozen=freeze_metadata(folder,candidate.paper_number)
+        update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
+        item["metadata_frozen"]=True
+    else:
+        update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=match["match_method"])
+    item.update({
+        **attached,
+        "status": "attached",
+        "reason": "",
+        "resolver": result.resolver,
+        "pdf_path": attached.get("pdf", ""),
+        "pdf_md5": attached.get("pdf_md5", ""),
+        "pdf_sha256": attached.get("pdf_sha256", ""),
+        "transport_policy": TRANSPORT_POLICY,
+        "transport_attempts": sanitize_for_persistence(list(result.transport_attempts or [])),
+    })
+
+
+def _fetch_one(
+    candidate: FetchCandidateStatus,
+    *,
+    policy: AccessPolicy,
+    allocator: PaperRawAllocator,
+    force_refetch: bool,
+    header_keys: list[str],
+) -> dict[str, Any]:
+    start = time.monotonic()
+    item = candidate.to_item()
+    item["transport_policy"] = TRANSPORT_POLICY
+    item["transport_attempts"] = []
+    folder = candidate.folder
+    metadata = dict(candidate.metadata or {})
+    metadata.setdefault("identifiers", {})["doi"] = candidate.doi
+    title = ((metadata.get("title") or {}).get("original") or "").strip()
+    year = metadata.get("year")
+    fetch_root = folder / ".fetch"
+    source_record, source_record_status, source_record_error = _load_source_record(folder, metadata)
+    item["source_record_status"] = source_record_status
+    item["source_record_error"] = source_record_error
+    try:
+        result, attached = _resolve_and_download(
+            candidate,
+            policy=policy,
+            allocator=allocator,
+            force_refetch=force_refetch,
+            header_keys=header_keys,
+            metadata=metadata,
+            title=title,
+            year=year,
+            source_record=source_record,
+            fetch_root=fetch_root,
+            item=item,
+        )
+        if attached is None:
+            return item
+        _record_result(
+            candidate,
+            result,
+            attached,
+            force_refetch=force_refetch,
+            header_keys=header_keys,
+            item=item,
+        )
         return item
     except Exception as exc:
         item.update({"status": "failed", "reason": str(exc)})

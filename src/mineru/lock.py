@@ -1,7 +1,7 @@
 """MinerU 全局转换锁 — 防止多个 MinerU 进程同时占用 GPU。
 
 使用方法:
-    from src.mineru_lock import MinerULock
+    from src.mineru.lock import MinerULock
 
     lock = MinerULock()
     if not lock.acquire(timeout=3600):
@@ -12,7 +12,7 @@
         lock.release()
 
 状态查询:
-    from src.mineru_lock import read_mineru_lock_status, clear_stale_mineru_lock
+    from src.mineru.lock import read_mineru_lock_status, clear_stale_mineru_lock
     status = read_mineru_lock_status()
     if status["stale"]:
         clear_stale_mineru_lock()
@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+from src.utils.process import is_pid_alive as _is_pid_alive
 
 try:
     from loguru import logger
@@ -51,23 +52,6 @@ LOCK_STUCK_SUSPECTED = "LOCK_STUCK_SUSPECTED"
 
 def _ensure_lock_dir():
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """检查 PID 是否存活（Windows）。"""
-    try:
-        if sys.platform == "win32":
-            r = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=8,
-            )
-            return str(pid) in r.stdout
-        else:
-            os.kill(pid, 0)
-            return True
-    except Exception:
-        return False
 
 
 def _get_current_command() -> str:

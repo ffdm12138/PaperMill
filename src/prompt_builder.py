@@ -11,7 +11,7 @@ from loguru import logger
 
 from config.settings import PAPER_MD_MAX_CHARS
 from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
-from src.services.paper_library import PaperLibrary
+from src.catalog_folders.paper_library import PaperLibrary
 
 # prompt 超过此估算 token 数时给 warning
 PROMPT_TOKEN_WARN_THRESHOLD = 30000

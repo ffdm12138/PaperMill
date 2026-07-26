@@ -47,7 +47,7 @@ from src.catalog.asset_refs import inspect_legacy_catalog_fields
 from src.ingest.duplicate_guard import is_paper_raw_workspace, read_best_metadata_json
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.ingest.import_status import now_iso
-from src.services.paper_number_admin import metadata_fingerprint
+from src.ingest.paper_number_admin import metadata_fingerprint
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json
 

@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 import re
 
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.metadata.freeze import assert_metadata_frozen
-from src.naming import sanitize_paper_name
+from src.utils.naming import sanitize_paper_name
 from src.utils.atomic_io import atomic_write_json
 
 TASK_SCHEMA_VERSION = "1.0"

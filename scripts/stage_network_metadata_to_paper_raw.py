@@ -1,6 +1,6 @@
 """Stage network/discovery metadata records into 16-digit paper_raw workspaces.
 
-Thin CLI wrapper around ``src.services.network_metadata_staging``.
+Thin CLI wrapper around ``src.staging.network_metadata_staging``.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 
 
 def _records(path: Path) -> list[dict]:

@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 from config.settings import CUDA_PATH_DEFAULT, DATA_DIR, PROJECT_ROOT
-from src.mineru_runtime import build_mineru_env, list_gpu_processes, preflight_gpu, preflight_torch_cuda, runtime_config_from_env, snapshot_mineru_api
+from src.mineru.runtime import build_mineru_env, list_gpu_processes, preflight_gpu, preflight_torch_cuda, runtime_config_from_env, snapshot_mineru_api
 
 
 def find_mineru_api_exe() -> str:
@@ -26,7 +26,7 @@ def find_mineru_api_exe() -> str:
     ``python.exe`` (e.g. ``C:\\Users\\Admin\\.conda\\envs\\mineru\\python.exe``),
     which does NOT put the env's ``Scripts/`` directory on PATH. A bare
     ``"mineru-api"`` then fails with ``FileNotFoundError``. This helper mirrors
-    ``src.converter._find_mineru_exe`` for the ``mineru`` CLI.
+    ``src.mineru.converter._find_mineru_exe`` for the ``mineru`` CLI.
 
     Resolution order:
     1. ``shutil.which("mineru-api")``
@@ -392,39 +392,31 @@ def _service_env(
     return env
 
 
-def start_services(
+def _port_mismatch_result(*, api_url: str, api_port: int, port: int) -> dict:
+    """Build the failure result for an api_url whose port does not match --port."""
+    return {
+        "ok": False,
+        "action": "failed",
+        "mineru_api_url": api_url,
+        "pid": None,
+        "pid_file": str(MINERU_API_PID_FILE),
+        "log_file": str(MINERU_API_LOG_FILE),
+        "health": "failed",
+        "message": (
+            f"api_url port {api_port} does not match --port {port}; "
+            "refusing to start/probe different mineru-api ports."
+        ),
+    }
+
+
+def _classify_and_maybe_reuse(
     *,
-    port: int = 8000,
-    api_url: str | None = None,
-    cuda_visible_devices: str = "0",
-    cuda_path: str = CUDA_PATH_DEFAULT,
-    vlm_preload: bool = True,
-    wait: bool = False,
-    wait_seconds: float = 60.0,
-    web: bool = False,
-    restart_if_stale: bool = False,
-) -> dict:
-    api_url = api_url or _api_url_for_port(port)
-    host, api_port = _host_port(api_url)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    mineru_api_exe = find_mineru_api_exe()
-
-    if api_port != port:
-        return {
-            "ok": False,
-            "action": "failed",
-            "mineru_api_url": api_url,
-            "pid": None,
-            "pid_file": str(MINERU_API_PID_FILE),
-            "log_file": str(MINERU_API_LOG_FILE),
-            "health": "failed",
-            "message": (
-                f"api_url port {api_port} does not match --port {port}; "
-                "refusing to start/probe different mineru-api ports."
-            ),
-        }
-
+    api_url: str,
+    mineru_api_exe: str,
+    port: int,
+    restart_if_stale: bool,
+) -> tuple[dict | None, str]:
+    """Classify the existing service and decide reuse/refuse; a None result means proceed to start."""
     service = classify_mineru_api_service(
         pid_file=MINERU_API_PID_FILE,
         api_url=api_url,
@@ -451,7 +443,7 @@ def start_services(
                 "Current /health plus managed service identity are authoritative."
             ),
             "next_command": MINERU_READY_NEXT_COMMAND,
-        }
+        }, service_verdict_before
     if service.get("healthy"):
         # healthy_but_stale_pid with non-live pid: delete stale pid file and
         # reclassify before deciding whether to start or restart.
@@ -488,7 +480,7 @@ def start_services(
                         "identity are authoritative."
                     ),
                     "next_command": MINERU_READY_NEXT_COMMAND,
-                }
+                }, service_verdict_before
             if restart_if_stale and service.get("identity", {}).get("is_mineru_api"):
                 pid = service.get("pid")
                 stopped = _terminate_pid(int(pid), force=False) if pid is not None else False
@@ -512,7 +504,7 @@ def start_services(
                             "stop_mineru_services.py --all-mineru-api or manually "
                             "stop the process."
                         ),
-                    }
+                    }, service_verdict_before
                 # fall through to start a fresh managed service
             elif service["verdict"] == "healthy_but_unmanaged" and not service.get("pid"):
                 # healthy but no safe PID to stop — must not start a second service
@@ -533,7 +525,7 @@ def start_services(
                         "PID to stop; run stop_mineru_services.py --all-mineru-api "
                         "or manually stop the process."
                     ),
-                }
+                }, service_verdict_before
             else:
                 return {
                     "ok": False,
@@ -552,28 +544,20 @@ def start_services(
                         "restart required. Run stop_mineru_services.py "
                         "--all-mineru-api or manually stop the process."
                     ),
-                }
+                }, service_verdict_before
+    return None, service_verdict_before
 
-    if port_is_open(host, api_port):
-        return {
-            "ok": False,
-            "action": "failed",
-            "mineru_api_url": api_url,
-            "pid": None,
-            "pid_file": str(MINERU_API_PID_FILE),
-            "log_file": str(MINERU_API_LOG_FILE),
-            "health": "failed",
-            "port_open": True,
-            "service_verdict_before": service_verdict_before,
-            "service_verdict_after": "failed",
-            "message": (
-                f"port {api_port} is occupied but {api_url}/health is "
-                "unavailable; not starting a second mineru-api. Run "
-                "stop_mineru_services.py --all-mineru-api, stop the occupying "
-                "process, or use another --port."
-            ),
-        }
 
+def _spawn_mineru_api(
+    *,
+    mineru_api_exe: str,
+    port: int,
+    vlm_preload: bool,
+    api_url: str,
+    cuda_visible_devices: str,
+    cuda_path: str,
+) -> tuple[list[str], dict, subprocess.Popen]:
+    """Launch a fresh managed mineru-api process and record its pid file."""
     cmd = [mineru_api_exe, "--port", str(port)]
     if vlm_preload:
         cmd.extend(["--enable-vlm-preload", "true"])
@@ -593,7 +577,11 @@ def start_services(
     )
     log_handle.close()
     write_pid(proc.pid, MINERU_API_PID_FILE)
+    return cmd, env, proc
 
+
+def _await_managed_ready(*, api_url: str, wait: bool, wait_seconds: float) -> str:
+    """Poll /health until ready when wait is requested; return the resulting health state."""
     health = "not_ready"
     if wait:
         deadline = time.time() + wait_seconds
@@ -602,11 +590,26 @@ def start_services(
                 health = "ok"
                 break
             time.sleep(2.0)
+    return health
 
-    web_result = None
-    if web:
-        web_result = start_web_service()
 
+def _assemble_start_result(
+    *,
+    api_url: str,
+    mineru_api_exe: str,
+    port: int,
+    cmd: list[str],
+    env: dict,
+    proc: subprocess.Popen,
+    health: str,
+    wait: bool,
+    restart_if_stale: bool,
+    service_verdict_before: str,
+    cuda_visible_devices: str,
+    cuda_path: str,
+    web_result: dict | None,
+) -> dict:
+    """Reclassify after launch and build the final start_services result dict."""
     # With --wait, the caller expects the API to actually be ready: a not_ready
     # result is a failure. Without --wait, fire-and-forget: not_ready is acceptable.
     initial_ok = (health == "ok") if wait else (health in {"ok", "not_ready"})
@@ -667,6 +670,88 @@ def start_services(
         "next_command": MINERU_READY_NEXT_COMMAND,
         "web": web_result,
     }
+
+
+def start_services(
+    *,
+    port: int = 8000,
+    api_url: str | None = None,
+    cuda_visible_devices: str = "0",
+    cuda_path: str = CUDA_PATH_DEFAULT,
+    vlm_preload: bool = True,
+    wait: bool = False,
+    wait_seconds: float = 60.0,
+    web: bool = False,
+    restart_if_stale: bool = False,
+) -> dict:
+    api_url = api_url or _api_url_for_port(port)
+    host, api_port = _host_port(api_url)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    mineru_api_exe = find_mineru_api_exe()
+
+    if api_port != port:
+        return _port_mismatch_result(api_url=api_url, api_port=api_port, port=port)
+
+    early_result, service_verdict_before = _classify_and_maybe_reuse(
+        api_url=api_url,
+        mineru_api_exe=mineru_api_exe,
+        port=port,
+        restart_if_stale=restart_if_stale,
+    )
+    if early_result is not None:
+        return early_result
+
+    if port_is_open(host, api_port):
+        return {
+            "ok": False,
+            "action": "failed",
+            "mineru_api_url": api_url,
+            "pid": None,
+            "pid_file": str(MINERU_API_PID_FILE),
+            "log_file": str(MINERU_API_LOG_FILE),
+            "health": "failed",
+            "port_open": True,
+            "service_verdict_before": service_verdict_before,
+            "service_verdict_after": "failed",
+            "message": (
+                f"port {api_port} is occupied but {api_url}/health is "
+                "unavailable; not starting a second mineru-api. Run "
+                "stop_mineru_services.py --all-mineru-api, stop the occupying "
+                "process, or use another --port."
+            ),
+        }
+
+    cmd, env, proc = _spawn_mineru_api(
+        mineru_api_exe=mineru_api_exe,
+        port=port,
+        vlm_preload=vlm_preload,
+        api_url=api_url,
+        cuda_visible_devices=cuda_visible_devices,
+        cuda_path=cuda_path,
+    )
+
+    health = _await_managed_ready(api_url=api_url, wait=wait, wait_seconds=wait_seconds)
+
+    web_result = None
+    if web:
+        web_result = start_web_service()
+
+    return _assemble_start_result(
+        api_url=api_url,
+        mineru_api_exe=mineru_api_exe,
+        port=port,
+        cmd=cmd,
+        env=env,
+        proc=proc,
+        health=health,
+        wait=wait,
+        restart_if_stale=restart_if_stale,
+        service_verdict_before=service_verdict_before,
+        cuda_visible_devices=cuda_visible_devices,
+        cuda_path=cuda_path,
+        web_result=web_result,
+    )
 
 
 def start_web_service() -> dict:

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from src.file_fingerprint import compute_file_hashes
+from src.utils.file_fingerprint import compute_file_hashes
 from src.ingest.duplicate_guard import (
     DuplicateIndex,
     DuplicateRef,

@@ -35,7 +35,7 @@ LLM_WORK_GUARD_FILES = {
     "src/writer/deep_reader.py",
     "scripts/check_write_tex_project.py",
     "scripts/prepare_write_article_workdir.py",
-    "src/services/repository_hygiene.py",
+    "src/utils/repository_hygiene.py",
 }
 
 
@@ -44,6 +44,7 @@ def _active_files() -> list[Path]:
         ROOT / "src",
         ROOT / "scripts",
         ROOT / "skills",
+        ROOT / "md",
         ROOT / "README.md",
         ROOT / "AGENTS.md",
         ROOT / "CLAUDE.md",

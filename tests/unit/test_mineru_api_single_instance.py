@@ -7,7 +7,7 @@ import pytest
 
 import scripts.check_mineru_processes as proc_check
 import scripts.convert_paper_raw_batch as batch
-from src.converter import MinerUConverter
+from src.mineru.converter import MinerUConverter
 
 
 pytestmark = pytest.mark.unit
@@ -49,13 +49,13 @@ def test_start_fast_api_mode_checks_health_before_start_and_sets_cuda():
 def test_runtime_failure_reports_unavailable_cli_api_proxy(monkeypatch):
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
-    monkeypatch.setattr("src.mineru_runtime.preflight_gpu", lambda: _health())
-    monkeypatch.setattr("src.mineru_runtime.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.runtime.preflight_gpu", lambda: _health())
+    monkeypatch.setattr("src.mineru.runtime.preflight_torch_cuda", lambda: _torch_health())
     monkeypatch.setattr(
-        "src.mineru_runtime.preflight_mineru_api",
+        "src.mineru.runtime.preflight_mineru_api",
         lambda api_url: _health(False, "connection refused", api_available=False),
     )
-    from src.mineru_runtime import runtime_config_from_env
+    from src.mineru.runtime import runtime_config_from_env
 
     runtime = batch._runtime_snapshot(runtime_config_from_env())
 
@@ -68,10 +68,10 @@ def test_batch_api_unavailable_does_not_call_converter(monkeypatch, tmp_path):
     folder.mkdir(parents=True)
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
-    monkeypatch.setattr("src.mineru_runtime.preflight_gpu", lambda: _health())
-    monkeypatch.setattr("src.mineru_runtime.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.runtime.preflight_gpu", lambda: _health())
+    monkeypatch.setattr("src.mineru.runtime.preflight_torch_cuda", lambda: _torch_health())
     monkeypatch.setattr(
-        "src.mineru_runtime.preflight_mineru_api",
+        "src.mineru.runtime.preflight_mineru_api",
         lambda api_url: _health(False, "connection refused", api_available=False),
     )
 
@@ -109,11 +109,11 @@ def test_mineru_converter_cli_api_proxy_checks_health_before_subprocess(monkeypa
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_API_URL", "http://127.0.0.1:8000")
     monkeypatch.setattr(
-        "src.converter.preflight_mineru_api",
+        "src.mineru.converter.preflight_mineru_api",
         lambda api_url: _health(False, "connection refused", api_available=False),
     )
     monkeypatch.setattr(
-        "src.converter.subprocess.run",
+        "src.mineru.converter.subprocess.run",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("subprocess should not run")),
     )
 
@@ -173,7 +173,7 @@ def test_check_mineru_processes_warns_on_multiple_api(monkeypatch, capsys):
 def test_snapshot_mineru_api_parses_failed_tasks(monkeypatch):
     """snapshot_mineru_api parses /health JSON and the warning fires when the
     API is healthy but only failed tasks exist."""
-    from src import mineru_runtime as rt
+    from src.mineru import runtime as rt
 
     class _FakeResp:
         status_code = 200
@@ -183,7 +183,7 @@ def test_snapshot_mineru_api_parses_failed_tasks(monkeypatch):
             import json as _json
             return _json.loads(self.content)
 
-    import src.mineru_runtime as _rt
+    import src.mineru.runtime as _rt
     monkeypatch.setattr(_rt, "runtime_config_from_env", lambda: type("Cfg", (), {
         "runner": type("R", (), {"value": "cli_api_proxy"})(),
         "api_url": "http://127.0.0.1:8000",

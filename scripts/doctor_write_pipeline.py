@@ -16,8 +16,8 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from config.settings import CATALOG_FOLDER_ROOT, PROJECT_ROOT
 from scripts.check_write_quality_text import check_write_quality_text
 from scripts.check_write_tex_project import check_tex_project
-from src.naming import safe_child, validate_job_id
-from src.path_utils import normalize_repo_path
+from src.utils.naming import safe_child, validate_job_id
+from src.utils.path_utils import normalize_repo_path
 
 
 WRITE_DIR = PROJECT_ROOT / "write" / "jobs"

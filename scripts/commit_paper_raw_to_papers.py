@@ -2,7 +2,7 @@
 from __future__ import annotations
 import argparse,json,sys
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 from config.settings import CATALOG_FOLDER_ROOT,PAPER_NUMBER_LEDGER_PATH,PAPER_RAW_DIR,PAPERS_DIR
 from src.ingest.commit import commit_paper_raw

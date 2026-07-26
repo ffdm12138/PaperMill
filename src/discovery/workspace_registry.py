@@ -19,10 +19,10 @@ from src.workspace.evidence import WorkspaceEvidence, inspect_workspace_evidence
 from src.workspace.readiness import WorkspaceReadiness, evaluate_metadata_staged
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.library.paper_number_state import ALL_LEDGER_STATES, TERMINAL_LEDGER_STATES
-from src.path_utils import resolve_stored_path
+from src.utils.path_utils import resolve_stored_path
 from src.ingest.duplicate_index import DuplicateIndex, DuplicateRef
 from src.utils.identifiers import PAPER_NUMBER_RE
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.discovery.staging_metrics import NullStagingMetricsObserver, StagingMetricsObserver
 from config.settings import PROJECT_ROOT
 

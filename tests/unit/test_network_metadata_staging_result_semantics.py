@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.discovery.stage_transaction import DiscoveryStageResult, StageTransactionError
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 from tests.factories.discovery_factory import create_discovery_candidate
 
 

@@ -2,7 +2,7 @@
 import tempfile
 import pytest
 from pathlib import Path
-from src.cleaner import MinerUOutputCleaner
+from src.mineru.cleaner import MinerUOutputCleaner
 
 
 def _make_md(path: Path, content: str = "# test"):

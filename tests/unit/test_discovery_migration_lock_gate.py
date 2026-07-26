@@ -28,7 +28,7 @@ from src.discovery.maintenance_gate import (
     migration_maintenance_block_reason,
     read_maintenance_lock_info,
 )
-from src.mineru_lock import _is_pid_alive
+from src.utils.process import is_pid_alive as _is_pid_alive
 
 
 @pytest.fixture

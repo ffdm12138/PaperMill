@@ -18,7 +18,7 @@ MOJIBAKE_PATTERNS = [
 def _collect_source_files() -> list[Path]:
     paths: list[Path] = []
     for pattern in ["tests/**/*.py", "scripts/**/*.py", "src/**/*.py",
-                    "*.md", "docs/**/*.md", "tests/**/*.json"]:
+                    "*.md", "docs/**/*.md", "md/**/*.md", "tests/**/*.json"]:
         paths.extend(ROOT.glob(pattern))
     return [
         p for p in paths

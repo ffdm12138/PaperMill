@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.converter import MinerUConverter
+from src.mineru.converter import MinerUConverter
 
 
 def _torch_health(ok=True, message="ok"):
@@ -34,16 +34,16 @@ def test_cli_command_includes_hybrid_engine_and_effort(monkeypatch, tmp_path):
         (stem_dir / "a.md").write_text("ok", encoding="utf-8")
         return Result()
 
-    monkeypatch.setattr("src.converter.subprocess.run", fake_run)
-    monkeypatch.setattr("src.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
-    monkeypatch.setattr("src.converter.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.converter.subprocess.run", fake_run)
+    monkeypatch.setattr("src.mineru.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
+    monkeypatch.setattr("src.mineru.converter.preflight_torch_cuda", lambda: _torch_health())
     monkeypatch.setattr(
-        "src.converter.preflight_mineru_api",
+        "src.mineru.converter.preflight_mineru_api",
         lambda api_url: type("Health", (), {"api_available": True, "message": "ok"})(),
     )
-    monkeypatch.setattr("src.converter.snapshot_nvidia_smi", lambda: {"available": False})
-    monkeypatch.setattr("src.converter.MinerULock.acquire", lambda self, timeout=None: True)
-    monkeypatch.setattr("src.converter.MinerULock.release", lambda self: None)
+    monkeypatch.setattr("src.mineru.converter.snapshot_nvidia_smi", lambda: {"available": False})
+    monkeypatch.setattr("src.mineru.converter.MinerULock.acquire", lambda self, timeout=None: True)
+    monkeypatch.setattr("src.mineru.converter.MinerULock.release", lambda self: None)
     converter = MinerUConverter(timeout=1, log_dir="")
 
     result = converter.convert_via_cli(
@@ -72,7 +72,7 @@ def test_api_url_returns_structured_failure_not_notimplemented(monkeypatch, tmp_
         api_available = False
         message = "down"
 
-    monkeypatch.setattr("src.converter.preflight_mineru_api", lambda api_url: Health())
+    monkeypatch.setattr("src.mineru.converter.preflight_mineru_api", lambda api_url: Health())
     result = MinerUConverter(timeout=1, log_dir="").convert(
         pdf,
         tmp_path / "out",
@@ -111,7 +111,7 @@ def test_cli_runner_returns_gpu_preflight_failure(monkeypatch, tmp_path):
         ok = False
         message = "gpu missing"
 
-    monkeypatch.setattr("src.converter.preflight_gpu", lambda: Health())
+    monkeypatch.setattr("src.mineru.converter.preflight_gpu", lambda: Health())
     result = MinerUConverter(timeout=1, log_dir="").convert_via_cli(pdf, tmp_path / "out")
 
     assert result["success"] is False
@@ -123,11 +123,11 @@ def test_cli_runner_returns_torch_cuda_preflight_failure(monkeypatch, tmp_path):
     pdf.write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "src.converter.preflight_gpu",
+        "src.mineru.converter.preflight_gpu",
         lambda: type("Health", (), {"ok": True, "message": "ok"})(),
     )
     monkeypatch.setattr(
-        "src.converter.preflight_torch_cuda",
+        "src.mineru.converter.preflight_torch_cuda",
         lambda: _torch_health(False, "torch.cuda.is_available() is false"),
     )
 
@@ -173,16 +173,16 @@ def test_cli_api_proxy_command_includes_api_url(monkeypatch, tmp_path):
 
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_API_URL", "http://127.0.0.1:9000")
-    monkeypatch.setattr("src.converter.subprocess.run", fake_run)
-    monkeypatch.setattr("src.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
-    monkeypatch.setattr("src.converter.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.converter.subprocess.run", fake_run)
+    monkeypatch.setattr("src.mineru.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
+    monkeypatch.setattr("src.mineru.converter.preflight_torch_cuda", lambda: _torch_health())
     monkeypatch.setattr(
-        "src.converter.preflight_mineru_api",
+        "src.mineru.converter.preflight_mineru_api",
         lambda api_url: type("Health", (), {"api_available": True, "message": "ok"})(),
     )
-    monkeypatch.setattr("src.converter.snapshot_nvidia_smi", lambda: {"available": False})
-    monkeypatch.setattr("src.converter.MinerULock.acquire", lambda self, timeout=None: True)
-    monkeypatch.setattr("src.converter.MinerULock.release", lambda self: None)
+    monkeypatch.setattr("src.mineru.converter.snapshot_nvidia_smi", lambda: {"available": False})
+    monkeypatch.setattr("src.mineru.converter.MinerULock.acquire", lambda self, timeout=None: True)
+    monkeypatch.setattr("src.mineru.converter.MinerULock.release", lambda self: None)
 
     result = MinerUConverter(timeout=1, log_dir="").convert_via_cli(
         pdf, output, backend="hybrid-engine", method="auto", effort="medium",
@@ -216,16 +216,16 @@ def test_cli_api_proxy_with_env_api_url(monkeypatch, tmp_path):
 
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_API_URL", "http://127.0.0.1:9000")
-    monkeypatch.setattr("src.converter.subprocess.run", fake_run)
-    monkeypatch.setattr("src.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
-    monkeypatch.setattr("src.converter.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.converter.subprocess.run", fake_run)
+    monkeypatch.setattr("src.mineru.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
+    monkeypatch.setattr("src.mineru.converter.preflight_torch_cuda", lambda: _torch_health())
     monkeypatch.setattr(
-        "src.converter.preflight_mineru_api",
+        "src.mineru.converter.preflight_mineru_api",
         lambda api_url: type("Health", (), {"api_available": True, "message": "ok"})(),
     )
-    monkeypatch.setattr("src.converter.snapshot_nvidia_smi", lambda: {"available": False})
-    monkeypatch.setattr("src.converter.MinerULock.acquire", lambda self, timeout=None: True)
-    monkeypatch.setattr("src.converter.MinerULock.release", lambda self: None)
+    monkeypatch.setattr("src.mineru.converter.snapshot_nvidia_smi", lambda: {"available": False})
+    monkeypatch.setattr("src.mineru.converter.MinerULock.acquire", lambda self, timeout=None: True)
+    monkeypatch.setattr("src.mineru.converter.MinerULock.release", lambda self: None)
 
     # 不传 api_url → 应该用 env MINERU_API_URL
     result = MinerUConverter(timeout=1, log_dir="").convert(
@@ -257,12 +257,12 @@ def test_cli_runner_no_api_url(monkeypatch, tmp_path):
 
     monkeypatch.setenv("MINERU_RUNNER", "cli")
     monkeypatch.delenv("MINERU_API_URL", raising=False)
-    monkeypatch.setattr("src.converter.subprocess.run", fake_run)
-    monkeypatch.setattr("src.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
-    monkeypatch.setattr("src.converter.preflight_torch_cuda", lambda: _torch_health())
-    monkeypatch.setattr("src.converter.snapshot_nvidia_smi", lambda: {"available": False})
-    monkeypatch.setattr("src.converter.MinerULock.acquire", lambda self, timeout=None: True)
-    monkeypatch.setattr("src.converter.MinerULock.release", lambda self: None)
+    monkeypatch.setattr("src.mineru.converter.subprocess.run", fake_run)
+    monkeypatch.setattr("src.mineru.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok"})())
+    monkeypatch.setattr("src.mineru.converter.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.converter.snapshot_nvidia_smi", lambda: {"available": False})
+    monkeypatch.setattr("src.mineru.converter.MinerULock.acquire", lambda self, timeout=None: True)
+    monkeypatch.setattr("src.mineru.converter.MinerULock.release", lambda self: None)
 
     result = MinerUConverter(timeout=1, log_dir="").convert(
         pdf, output, backend="hybrid-engine", method="auto", effort="medium")
@@ -292,12 +292,12 @@ def test_timing_log_records_torch_cuda(monkeypatch, tmp_path):
         (stem_dir / "a.md").write_text("ok", encoding="utf-8")
         return Result()
 
-    monkeypatch.setattr("src.converter.subprocess.run", fake_run)
-    monkeypatch.setattr("src.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok", "nvidia_smi": True})())
-    monkeypatch.setattr("src.converter.preflight_torch_cuda", lambda: _torch_health())
-    monkeypatch.setattr("src.converter.snapshot_nvidia_smi", lambda: {"available": False})
-    monkeypatch.setattr("src.converter.MinerULock.acquire", lambda self, timeout=None: True)
-    monkeypatch.setattr("src.converter.MinerULock.release", lambda self: None)
+    monkeypatch.setattr("src.mineru.converter.subprocess.run", fake_run)
+    monkeypatch.setattr("src.mineru.converter.preflight_gpu", lambda: type("Health", (), {"ok": True, "message": "ok", "nvidia_smi": True})())
+    monkeypatch.setattr("src.mineru.converter.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.converter.snapshot_nvidia_smi", lambda: {"available": False})
+    monkeypatch.setattr("src.mineru.converter.MinerULock.acquire", lambda self, timeout=None: True)
+    monkeypatch.setattr("src.mineru.converter.MinerULock.release", lambda self: None)
 
     result = MinerUConverter(timeout=1, log_dir=log_dir).convert_via_cli(
         pdf, output, backend="hybrid-engine", method="auto", effort="medium")

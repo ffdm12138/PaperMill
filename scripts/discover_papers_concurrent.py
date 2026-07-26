@@ -11,7 +11,7 @@ import json
 import re
 import sys
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +25,7 @@ from config.settings import (  # noqa: E402
     PAPER_RAW_DIR,
     PAPERS_DIR,
 )
+from src.utils.timestamps import utc_now_iso  # noqa: E402
 from src.discovery.cli_plan import (  # noqa: E402
     list_enabled_keyword_zh,
     load_keyword_plan,
@@ -259,7 +260,7 @@ def main_internal(argv: list[str]) -> int:
         return 0
 
     batch_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = utc_now_iso()
     args.report_dir.mkdir(parents=True, exist_ok=True)
 
     options = DiscoveryOptions(
@@ -304,7 +305,7 @@ def main_internal(argv: list[str]) -> int:
     batch = run_discovery_batch_with_dependencies(
         args.keywords, deps=deps, options=options, max_workers=args.max_workers
     )
-    ended_at = datetime.now(timezone.utc).isoformat()
+    ended_at = utc_now_iso()
     ordered_results = [
         {
             "index": index,

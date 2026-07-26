@@ -90,7 +90,7 @@ def test_source_record_reconciliation_restores_missing_receipt(tmp_path: Path):
     A terminal ledger state is a claim that all required evidence exists.  The
     normal drain must not silently repair or allocate past a broken closure.
     """
-    from src.services.network_metadata_staging import stage_network_metadata_records
+    from src.staging.network_metadata_staging import stage_network_metadata_records
     from src.library.paper_number_ledger import PaperNumberLedger
 
     store = PageJournalStore(tmp_path / "pages")

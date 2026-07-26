@@ -8,7 +8,7 @@ from src.discovery.staging_context import DiscoveryStagingContext
 from src.discovery.stage_transaction import StageTransactionConfigurationError
 from src.discovery.staging_metrics import CollectingStagingMetricsObserver
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.services.network_metadata_staging import _metadata_from_record
+from src.staging.network_metadata_staging import _metadata_from_record
 from tests.factories.paper_raw_factory import create_active_formal_workspace
 
 pytestmark = pytest.mark.integration

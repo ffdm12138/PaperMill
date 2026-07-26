@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 from src.discovery.models import normalize_doi
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.metadata.normalization import canonical_title
 
 

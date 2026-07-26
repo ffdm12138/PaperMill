@@ -19,7 +19,7 @@ from src.discovery.workspace_registry import WorkspaceRegistrySnapshot, build_wo
 from src.workspace.evidence import inspect_workspace_evidence
 from src.workspace.readiness import evaluate_metadata_staged
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.path_utils import resolve_stored_path
+from src.utils.path_utils import resolve_stored_path
 from src.ingest.import_status import METADATA_INCOMPLETE, write_import_status
 
 

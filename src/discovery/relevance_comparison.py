@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
 from src.discovery.models import PaperCandidate
+from src.utils.canonical_json import canonical_json_bytes
 from src.utils.identifiers import normalize_doi, normalize_title
 from src.discovery.providers.provider_models import DiscoveryPage
 from src.discovery.providers.provider_request_evidence import (
@@ -73,10 +74,8 @@ def _canonical_subfield_id(value: Any) -> str | None:
 
 
 def _canonical_bytes(value: Any) -> bytes:
-    return (
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        + "\n"
-    ).encode("utf-8")
+    # Trailing newline is part of the persisted corpus-line encoding — keep it.
+    return canonical_json_bytes(value) + b"\n"
 
 
 def _sha256(payload: bytes) -> str:

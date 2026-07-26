@@ -90,7 +90,11 @@ catalog-first preparation flow.
   commands.
 - Do not write final prose or claim quality acceptance.
 
-### P1: Job-Local Literature Matrix (planned)
+### P1: Job-Local Literature Matrix (implemented as skill output)
+
+Implemented: the `catalog_review_writer` and `catalog_research_proposal_writer`
+skills emit `write/jobs/<job_id>/reports/literature_matrix.md`; presence and
+per-paper coverage are validated by `scripts/check_write_planning_docs.py`.
 
 Generate `write/jobs/<job_id>/reports/literature_matrix.md` from copied
 catalog, copied metadata, and copied Markdown where needed.

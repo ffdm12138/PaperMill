@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from src.file_fingerprint import compute_file_hashes, compute_sha256
+from src.utils.file_fingerprint import compute_file_hashes, compute_sha256
 from src.utils.atomic_io import atomic_write_json
 
 

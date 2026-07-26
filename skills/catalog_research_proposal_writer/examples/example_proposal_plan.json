@@ -1,0 +1,120 @@
+{
+  "schema_version": "1.0",
+  "job_id": "002_非均匀床面跃移_1b2c3d",
+  "workflow": "catalog_research_proposal",
+  "title_zh": "非均匀床面条件下的跃移输沙通量模拟研究",
+  "research_question_zh": "非均匀床面的粗糙度变化如何改变跃移层结构与输沙通量估计的不确定性？",
+  "objectives_zh": [
+    "建立非均匀床面粗糙度-跃移耦合的数值实验基准",
+    "量化粗糙度参数化误差沿模型链的传播"
+  ],
+  "language": "zh",
+  "source_categories": ["风沙动力学"],
+  "paper_pool": [
+    {
+      "paper_number": "0000000000000001",
+      "paper_name": "1998_Macdonald_障碍物阵列地表粗糙度估算改进方法",
+      "bib_key": "macdonald1998improved",
+      "role_in_review_zh": "粗糙度参数化基线与其验证边界"
+    },
+    {
+      "paper_number": "0000000000000002",
+      "paper_name": "2010_Kok_跃移沙粒浓度分布的比例定律",
+      "bib_key": "kok2010scaling",
+      "role_in_review_zh": "跃移层浓度标度关系"
+    },
+    {
+      "paper_number": "0000000000000003",
+      "paper_name": "2016_Wang_大涡模拟风沙两相流",
+      "bib_key": "wang2016les",
+      "role_in_review_zh": "两相大涡模拟方法来源"
+    }
+  ],
+  "themes": [
+    {
+      "theme_id": "T01",
+      "theme_zh": "粗糙度参数化及其验证边界",
+      "thesis_zh": "现有参数化在规则阵列外的适用性未经检验",
+      "evidence": [
+        {
+          "paper_number": "0000000000000001",
+          "bib_key": "macdonald1998improved",
+          "basis_zh": "改进式仅在规则障碍物阵列风洞条件下验证"
+        },
+        {
+          "paper_number": "0000000000000003",
+          "bib_key": "wang2016les",
+          "basis_zh": "大涡模拟显示近壁湍流对粗糙度处理敏感"
+        }
+      ]
+    },
+    {
+      "theme_id": "T02",
+      "theme_zh": "跃移层结构的标度与耦合",
+      "thesis_zh": "浓度标度关系为通量校核提供了独立约束",
+      "evidence": [
+        {
+          "paper_number": "0000000000000002",
+          "bib_key": "kok2010scaling",
+          "basis_zh": "给出浓度随高度分布的比例定律"
+        },
+        {
+          "paper_number": "0000000000000003",
+          "bib_key": "wang2016les",
+          "basis_zh": "两相耦合修改近壁湍流强度约 10%（该算例）"
+        }
+      ]
+    }
+  ],
+  "research_gaps": [
+    {
+      "gap_id": "G01",
+      "gap_zh": "非均匀床面下粗糙度-跃移耦合的误差传播未被量化",
+      "why_it_matters_zh": "野外条件外推的通量估计误差来源不明",
+      "evidence": [
+        {
+          "paper_number": "0000000000000001",
+          "bib_key": "macdonald1998improved",
+          "basis_zh": "参数化验证范围限于规则阵列"
+        }
+      ]
+    }
+  ],
+  "methods_design": [
+    {
+      "method_id": "M01",
+      "method_zh": "两相耦合大涡模拟",
+      "purpose_zh": "在受控数值条件下生成非均匀床面的参照解",
+      "grounded_in": [
+        {
+          "paper_number": "0000000000000003",
+          "bib_key": "wang2016les",
+          "basis_zh": "该工作建立了双向耦合大涡模拟框架并给出验证算例"
+        }
+      ],
+      "adaptation_zh": "把均匀底边界替换为分块粗糙度图，其余数值设置沿用原框架",
+      "data_requirements_zh": "无需外部观测数据；需其算例参数表作对照配置"
+    }
+  ],
+  "results_plan": [
+    {
+      "analysis_id": "A01",
+      "analysis_zh": "对比均匀/非均匀床面算例的跃移层浓度剖面",
+      "uses_method_ids": ["M01"],
+      "expected_output_zh": "两组浓度-高度剖面及其与比例定律（kok2010scaling）的偏离度",
+      "validation_zh": "均匀算例须先复现 wang2016les 的公开剖面再做非均匀扩展",
+      "status": "planned"
+    }
+  ],
+  "sections": [
+    {"file": "sections/introduction.tex", "title_zh": "引言", "purpose_zh": "项目定位与问题陈述"},
+    {"file": "sections/literature_review.tex", "title_zh": "文献综述", "purpose_zh": "主题综述", "theme_ids": ["T01", "T02"]},
+    {"file": "sections/research_gaps.tex", "title_zh": "研究空白", "purpose_zh": "靶点论证"},
+    {"file": "sections/methods.tex", "title_zh": "研究方法", "purpose_zh": "方法设计与语料出处"},
+    {"file": "sections/research_plan.tex", "title_zh": "结果与数据分析规划", "purpose_zh": "计划的分析与验证路径"},
+    {"file": "sections/conclusion.tex", "title_zh": "结论与预期贡献", "purpose_zh": "收束"}
+  ],
+  "alternative_directions_zh": [
+    "若大涡模拟成本超预算，退化为壁面模化的混合 RANS-LES 路线"
+  ]
+}

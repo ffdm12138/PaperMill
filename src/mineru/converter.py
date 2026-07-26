@@ -10,11 +10,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 from loguru import logger
-from src.mineru_runtime import (
+from src.mineru.runtime import (
     MinerURunner, build_mineru_env, preflight_gpu, preflight_mineru_api,
     preflight_torch_cuda, runtime_config_from_env, snapshot_nvidia_smi,
 )
-from src.mineru_lock import MinerULock, read_mineru_lock_status, update_mineru_lock_stage
+from src.mineru.lock import MinerULock, read_mineru_lock_status, update_mineru_lock_stage
 
 
 def _find_mineru_exe() -> str:
@@ -403,7 +403,7 @@ class MinerUConverter:
                 # 查找生成的Markdown文件
                 # 产品固定 hybrid-engine，优先 hybrid_auto / hybrid_ocr / hybrid_txt
                 stem = input_path.stem
-                from src.cleaner import MinerUOutputCleaner
+                from src.mineru.cleaner import MinerUOutputCleaner
                 cl = MinerUOutputCleaner()
                 # 先试 locate_markdown（支持 hybrid_* 变体）
                 md_path = cl.locate_markdown(

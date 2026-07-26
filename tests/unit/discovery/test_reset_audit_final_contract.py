@@ -9,7 +9,7 @@ import sys
 from filelock import FileLock
 import pytest
 
-from scripts.audit_discovery_reset_state import (
+from src.discovery.audits.reset_state import (
     audit_reset_state,
     probe_existing_file_lock,
     resolve_safe_report_path,

@@ -9,7 +9,7 @@ import pytest
 
 from scripts.agent_acceptance import verify_git_hygiene, verify_root_hygiene, verify_snapshot
 from scripts.pack_repo import SnapshotMember, _member_digest
-from src.services.repository_hygiene import is_forbidden_snapshot_member, runtime_workspace_counts
+from src.utils.repository_hygiene import is_forbidden_snapshot_member, runtime_workspace_counts
 
 
 pytestmark = [pytest.mark.hygiene, pytest.mark.security]
@@ -282,7 +282,7 @@ def test_gitignore_matches_pack_repo_runtime_dirs():
 
 def test_active_docs_do_not_reference_legacy_scripts():
     paths = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CLAUDE.md"]
-    for directory in (ROOT / "docs", ROOT / "skills"):
+    for directory in (ROOT / "docs", ROOT / "md", ROOT / "skills"):
         for path in directory.rglob("*.md"):
             rel = path.relative_to(ROOT).as_posix()
             if rel.startswith("docs/archive/") or rel.startswith("docs/audits/"):

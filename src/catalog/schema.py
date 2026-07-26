@@ -9,8 +9,8 @@ import re
 import jsonschema
 
 from src.catalog.task import SKILL_VERSION, validate_task_envelope
-from src.file_fingerprint import compute_sha256
-from src.naming import validate_paper_name
+from src.utils.file_fingerprint import compute_sha256
+from src.utils.naming import validate_paper_name
 
 FORBIDDEN_BIBLIOGRAPHIC_KEYS={"doi","authors","publication_year","journal","volume","issue","pages","publisher","bibtex","csl","citation_key"}
 SCHEMA_PATH=Path(__file__).resolve().parents[2]/"skills"/"paper_raw_catalog_curator"/"catalog_schema.json"

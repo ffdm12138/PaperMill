@@ -14,9 +14,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PROJECT_ROOT
-from src.bib import parse_blocks
-from src.naming import safe_child, validate_job_id
-from src.path_utils import normalize_repo_path
+from src.writer.bib import parse_blocks
+from src.utils.naming import safe_child, validate_job_id
+from src.utils.path_utils import normalize_repo_path
 from src.utils.atomic_io import atomic_write_json
 
 

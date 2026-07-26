@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 
 
 @dataclass(frozen=True)

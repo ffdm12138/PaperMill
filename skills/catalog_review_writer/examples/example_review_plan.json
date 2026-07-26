@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0",
+  "job_id": "001_风沙输运综述_0a3f1c",
+  "workflow": "catalog_review",
+  "title_zh": "风沙输运数值模拟研究进展与展望",
+  "topic_zh": "风沙输运的数值模拟方法",
+  "language": "zh",
+  "source_categories": ["风沙动力学", "风沙物理学"],
+  "paper_pool": [
+    {
+      "paper_number": "0000000000000001",
+      "paper_name": "1998_Macdonald_障碍物阵列地表粗糙度估算改进方法",
+      "bib_key": "macdonald1998improved",
+      "role_in_review_zh": "粗糙度参数化的经典基线，用于主题一的对照"
+    },
+    {
+      "paper_number": "0000000000000002",
+      "paper_name": "2010_Kok_跃移沙粒浓度分布的比例定律",
+      "bib_key": "kok2010scaling",
+      "role_in_review_zh": "跃移层浓度分布的标度关系，支撑主题二的机制链"
+    },
+    {
+      "paper_number": "0000000000000003",
+      "paper_name": "2016_Wang_大涡模拟风沙两相流",
+      "bib_key": "wang2016les",
+      "role_in_review_zh": "两相流大涡模拟的代表工作，主题二的方法证据"
+    }
+  ],
+  "themes": [
+    {
+      "theme_id": "T01",
+      "theme_zh": "地表粗糙度与起动条件",
+      "thesis_zh": "粗糙度参数化决定起动风速的估计精度，是输运模型的第一道不确定性来源",
+      "evidence": [
+        {
+          "paper_number": "0000000000000001",
+          "bib_key": "macdonald1998improved",
+          "basis_zh": "对障碍物阵列给出改进的粗糙度估算式并用风洞数据验证"
+        },
+        {
+          "paper_number": "0000000000000003",
+          "bib_key": "wang2016les",
+          "basis_zh": "大涡模拟中粗糙度处理直接影响近壁湍流结构再现"
+        }
+      ]
+    },
+    {
+      "theme_id": "T02",
+      "theme_zh": "跃移层结构与两相耦合",
+      "thesis_zh": "跃移层浓度标度与颗粒-湍流双向耦合是当前模拟分歧的核心",
+      "evidence": [
+        {
+          "paper_number": "0000000000000002",
+          "bib_key": "kok2010scaling",
+          "basis_zh": "提出跃移沙粒浓度随高度分布的比例定律"
+        },
+        {
+          "paper_number": "0000000000000003",
+          "bib_key": "wang2016les",
+          "basis_zh": "两相大涡模拟给出颗粒对湍流的反馈量级"
+        }
+      ]
+    }
+  ],
+  "research_gaps": [
+    {
+      "gap_id": "G01",
+      "gap_zh": "非均匀床面条件下粗糙度参数化与跃移模型的耦合缺少系统验证",
+      "why_it_matters_zh": "野外床面几乎总是非均匀的，现有均匀床面标定的参数外推误差未知",
+      "evidence": [
+        {
+          "paper_number": "0000000000000001",
+          "bib_key": "macdonald1998improved",
+          "basis_zh": "其估算式仅在规则障碍物阵列风洞条件下验证"
+        }
+      ]
+    }
+  ],
+  "proposed_directions": [
+    {
+      "direction_id": "D01",
+      "direction_zh": "以大涡模拟为参照，对非均匀床面构建粗糙度-跃移耦合的分层验证基准",
+      "rationale_zh": "把 G01 的外推不确定性拆成粗糙度、起动、浓度分布三段分别量化",
+      "addresses_gap_ids": ["G01"],
+      "builds_on": [
+        {
+          "paper_number": "0000000000000003",
+          "bib_key": "wang2016les",
+          "basis_zh": "其两相大涡模拟框架可直接扩展到非均匀床面算例"
+        }
+      ],
+      "feasibility_zh": "现有开源求解器可复现其算例，计算量在单机 GPU 集群可承受范围"
+    }
+  ],
+  "sections": [
+    {"file": "sections/introduction.tex", "title_zh": "引言", "purpose_zh": "问题背景与综述范围"},
+    {"file": "sections/theme_roughness.tex", "title_zh": "粗糙度与起动", "purpose_zh": "主题一", "theme_ids": ["T01"]},
+    {"file": "sections/theme_saltation.tex", "title_zh": "跃移层与两相耦合", "purpose_zh": "主题二", "theme_ids": ["T02"]},
+    {"file": "sections/research_gaps.tex", "title_zh": "研究空白与不确定性", "purpose_zh": "空白与局限讨论"},
+    {"file": "sections/future_directions.tex", "title_zh": "潜在研究方向", "purpose_zh": "方向建议"},
+    {"file": "sections/conclusion.tex", "title_zh": "结论", "purpose_zh": "收束"}
+  ]
+}

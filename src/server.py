@@ -17,8 +17,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import API_CORS_ORIGINS, API_HOST, API_PORT, CATALOG_FOLDER_ROOT, MINERU_API_KEY, PAPERS_DIR
 from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
-from src.services.paper_library import PaperLibrary
-from src.naming import validate_job_id, validate_paper_name
+from src.catalog_folders.paper_library import PaperLibrary
+from src.utils.naming import validate_job_id, validate_paper_name
 from src.prompt_builder import PromptBuilder
 from src.metadata.citation import bibtex_from_metadata
 from src.writer.bib_manager import portability_check, validate_catalog_citations, validate_job_citations
@@ -462,9 +462,9 @@ async def status():
 
 @app.get("/status/runtime")
 async def status_runtime():
-    from src.converter import MINERU_EXE
-    from src.mineru_lock import read_mineru_lock_status
-    from src.mineru_runtime import (
+    from src.mineru.converter import MINERU_EXE
+    from src.mineru.lock import read_mineru_lock_status
+    from src.mineru.runtime import (
         describe_runtime,
         preflight_gpu,
         preflight_mineru_api,
@@ -486,7 +486,7 @@ async def status_runtime():
 
 if __name__ == "__main__":
     from config.settings import ensure_runtime_dirs, validate_settings
-    from src.logging_setup import configure_logging
+    from src.utils.logging_setup import configure_logging
 
     validate_settings()
     ensure_runtime_dirs()

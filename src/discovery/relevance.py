@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from src.discovery.models import PaperCandidate
+from src.utils.canonical_json import canonical_sha256
 from src.utils.identifiers import normalize_doi
 
 
@@ -224,9 +225,7 @@ def _canonical_profile_semantics(profile: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def profile_hash(profile: Mapping[str, Any]) -> str:
-    canonical = _canonical_profile_semantics(profile)
-    payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return canonical_sha256(_canonical_profile_semantics(profile))
 
 
 def validate_relevance_profile(value: Any) -> dict[str, Any]:
@@ -518,8 +517,6 @@ class ScopeClassification:
     ) -> "ScopeClassification":
         """The single entry point for both production and frozen verifiers."""
         import re as _re
-        import hashlib as _hashlib
-        import json as _json
 
         canonical_doi = normalize_doi(str(work.get("doi") or ""))
         malformed: list[str] = []
@@ -582,10 +579,7 @@ class ScopeClassification:
             "classification_input_state": "valid",
             "topics": canonical_topics,
         }
-        evidence_hash = _hashlib.sha256(
-            _json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            .encode("utf-8")
-        ).hexdigest()
+        evidence_hash = canonical_sha256(evidence)
 
         # Check subfield match.
         matched = {t["subfield"]["id"] for t in canonical_topics}
@@ -605,18 +599,13 @@ class ScopeClassification:
     def _invalid(
         cls, doi: str, reason: str, malformed_types: tuple[str, ...],
     ) -> "ScopeClassification":
-        import hashlib as _hashlib
-        import json as _json
         evidence = {
             "schema_version": "1.0",
             "normalized_doi": doi,
             "classification_input_state": reason,
             "topics": None,
         }
-        evidence_hash = _hashlib.sha256(
-            _json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            .encode("utf-8")
-        ).hexdigest()
+        evidence_hash = canonical_sha256(evidence)
         return cls(
             verdict="invalid",
             canonical_evidence=evidence,

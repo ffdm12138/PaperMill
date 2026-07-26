@@ -11,7 +11,7 @@ import re
 import shutil
 
 from src.writer.job_manager import JobManager
-from src.naming import validate_paper_name, validate_image_name, safe_child
+from src.utils.naming import validate_paper_name, validate_image_name, safe_child
 from src.writer.bib_manager import job_local_bib_keys, resolve_work_dir
 
 

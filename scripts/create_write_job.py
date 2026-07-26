@@ -13,11 +13,41 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 
 from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PROJECT_ROOT
 from scripts.prepare_write_article_workdir import prepare_workdir
-from src.naming import safe_child, validate_job_id
-from src.path_utils import normalize_repo_path
+from src.utils.atomic_io import atomic_write_json
+from src.utils.naming import safe_child, validate_job_id
+from src.utils.path_utils import normalize_repo_path
 
 
 WRITE_DIR = PROJECT_ROOT / "write" / "jobs"
+
+# --workflow choice → persisted job.json workflow value.
+WORKFLOW_VALUES = {
+    "article": "catalog_tex_article",
+    "review": "catalog_review",
+    "proposal": "catalog_research_proposal",
+}
+
+RESEARCH_INPUT_TEMPLATE = """# 研究项目描述
+
+请填写以下各节后再运行 catalog_research_proposal_writer skill；
+仍含「（待填）」占位符时 skill 与 check_write_planning_docs.py 会 fail-closed。
+
+## 研究问题
+
+（待填）
+
+## 研究对象与数据
+
+（待填）
+
+## 已有条件与约束
+
+（待填）
+
+## 预期产出
+
+（待填）
+"""
 
 
 def _catalog_value(item: dict[str, Any], *path: str) -> Any:
@@ -58,23 +88,47 @@ def _selected_summary(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _job_readme(job_id: str, selected_count: int) -> str:
+def _workflow_next_commands(job_id: str, workflow: str) -> str:
+    if workflow == "review":
+        return f"""```bash
+conda run -n mineru python scripts/export_write_job_bib.py --job-id {job_id}
+# invoke the catalog_review_writer skill (matrix -> planning md -> review_plan.json -> tex)
+conda run -n mineru python scripts/check_write_planning_docs.py --job-id {job_id}
+conda run -n mineru python scripts/check_write_tex_project.py --job-id {job_id} --compile
+conda run -n mineru python scripts/check_write_quality_text.py --job-id {job_id}
+```"""
+    if workflow == "proposal":
+        return f"""1. Fill in `input/research_input.md` (all「（待填）」sections).
+2. Then:
+
+```bash
+conda run -n mineru python scripts/export_write_job_bib.py --job-id {job_id}
+# invoke the catalog_research_proposal_writer skill (matrix -> planning md -> proposal_plan.json -> tex)
+conda run -n mineru python scripts/check_write_planning_docs.py --job-id {job_id}
+conda run -n mineru python scripts/check_write_tex_project.py --job-id {job_id} --compile
+conda run -n mineru python scripts/check_write_quality_text.py --job-id {job_id}
+```"""
+    return f"""```bash
+conda run -n mineru python scripts/write_catalog_tex_article.py --job-id {job_id} --title "Mini Review" --language zh --apply
+conda run -n mineru python scripts/check_write_tex_project.py --job-id {job_id} --compile
+conda run -n mineru python scripts/check_write_quality_text.py --job-id {job_id}
+```"""
+
+
+def _job_readme(job_id: str, selected_count: int, workflow: str = "article") -> str:
     return f"""# Write Job {job_id}
 
 This job was created by `scripts/create_write_job.py`.
 
 - selected papers: {selected_count}
+- workflow: {WORKFLOW_VALUES[workflow]}
 - article workspace: `article/<paper_number>/`
 - status: prepared
 - quality accepted: no
 
 Next commands:
 
-```bash
-conda run -n mineru python scripts/write_catalog_tex_article.py --job-id {job_id} --title "Mini Review" --language zh --apply
-conda run -n mineru python scripts/check_write_tex_project.py --job-id {job_id} --compile
-conda run -n mineru python scripts/check_write_quality_text.py --job-id {job_id}
-```
+{_workflow_next_commands(job_id, workflow)}
 
 Rules:
 
@@ -109,13 +163,30 @@ def create_write_job(args: argparse.Namespace) -> dict[str, Any]:
 
     readme_path = job_dir / "README.md"
     summary_path = reports_dir / "selected_papers.md"
-    readme_path.write_text(_job_readme(job_id, int(report.get("selected_count") or 0)), encoding="utf-8")
+    readme_path.write_text(
+        _job_readme(job_id, int(report.get("selected_count") or 0), args.workflow),
+        encoding="utf-8",
+    )
     summary_path.write_text(_selected_summary(report), encoding="utf-8")
+
+    workflow_value = WORKFLOW_VALUES[args.workflow]
+    if args.workflow != "article":
+        job_json_path = job_dir / "job.json"
+        job_meta = json.loads(job_json_path.read_text(encoding="utf-8"))
+        job_meta["workflow"] = workflow_value
+        atomic_write_json(job_json_path, job_meta, indent=2)
+    if args.workflow == "proposal":
+        input_dir = safe_child(job_dir, "input")
+        input_dir.mkdir(parents=True, exist_ok=True)
+        research_input = input_dir / "research_input.md"
+        if not research_input.exists():
+            research_input.write_text(RESEARCH_INPUT_TEMPLATE, encoding="utf-8")
 
     result = {
         "job_id": job_id,
         "status": "prepared",
         "quality_status": "not_accepted",
+        "workflow": workflow_value,
         "selected_count": report.get("selected_count", 0),
         "job_dir": normalize_repo_path(job_dir),
         "readme": normalize_repo_path(readme_path),
@@ -128,6 +199,7 @@ def create_write_job(args: argparse.Namespace) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create a catalog-first write job.")
     parser.add_argument("--job-id", default=None)
+    parser.add_argument("--workflow", choices=sorted(WORKFLOW_VALUES), default="article")
     parser.add_argument("--paper-numbers", nargs="+", default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--categories", nargs="+", default=None)

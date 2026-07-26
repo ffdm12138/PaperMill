@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
-from src.naming import validate_paper_name
+from src.utils.naming import validate_paper_name
 from src.utils.atomic_io import atomic_write_json
 from src.writer.job_manager import JobManager
 

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from config.settings import PROJECT_ROOT
-from src.mineru_runtime import runtime_config_from_env
+from src.mineru.runtime import runtime_config_from_env
 
 
 DEFAULT_SMOKE_REPORT = PROJECT_ROOT / "reports" / "smoke_mineru_conversion.json"

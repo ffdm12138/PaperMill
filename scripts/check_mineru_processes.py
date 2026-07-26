@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
-from src.mineru_runtime import (
+from src.mineru.runtime import (
     describe_runtime,
     mineru_api_failed_task_warning,
     preflight_gpu,
@@ -29,8 +29,9 @@ from src.mineru_runtime import (
     snapshot_mineru_api,
     snapshot_nvidia_smi,
 )
-from src.mineru_service_manager import verify_gpu_runtime
-from src.mineru_lock import read_mineru_lock_status, clear_stale_mineru_lock, LOCK_PATH
+from src.mineru.service_manager import verify_gpu_runtime
+from src.mineru.lock import read_mineru_lock_status, clear_stale_mineru_lock, LOCK_PATH
+from src.utils.process import is_pid_alive as _is_pid_alive
 
 
 def _run_cmd(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
@@ -87,15 +88,6 @@ def _kill_by_pid(pid: int) -> bool:
         subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                        capture_output=True, timeout=10)
         return True
-    except Exception:
-        return False
-
-
-def _is_pid_alive(pid: int) -> bool:
-    try:
-        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
-                           capture_output=True, text=True, timeout=8)
-        return str(pid) in r.stdout
     except Exception:
         return False
 

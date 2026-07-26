@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 
 
 pytestmark = pytest.mark.unit

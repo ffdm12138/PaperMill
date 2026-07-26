@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from src.mineru_runtime import (
+from src.mineru.runtime import (
     MinerURunner,
     MinerURuntimeConfig,
     _join_cuda_bin,
@@ -120,7 +120,7 @@ def test_describe_runtime_serializes_runner():
 
 def test_require_gpu_true_fails_when_nvidia_smi_missing(monkeypatch):
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
-    monkeypatch.setattr("src.mineru_runtime.shutil.which", lambda name: None)
+    monkeypatch.setattr("src.mineru.runtime.shutil.which", lambda name: None)
 
     health = preflight_gpu()
 
@@ -133,7 +133,7 @@ def test_require_gpu_true_fails_when_nvidia_smi_missing(monkeypatch):
 def test_allow_cpu_missing_nvidia_smi_is_debug_fallback(monkeypatch):
     monkeypatch.delenv("MINERU_REQUIRE_GPU", raising=False)
     monkeypatch.setenv("MINERU_ALLOW_CPU", "true")
-    monkeypatch.setattr("src.mineru_runtime.shutil.which", lambda name: None)
+    monkeypatch.setattr("src.mineru.runtime.shutil.which", lambda name: None)
 
     health = preflight_gpu()
 
@@ -144,12 +144,12 @@ def test_allow_cpu_missing_nvidia_smi_is_debug_fallback(monkeypatch):
 
 def test_require_gpu_true_fails_when_nvidia_smi_fails(monkeypatch):
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
-    monkeypatch.setattr("src.mineru_runtime.shutil.which", lambda name: "nvidia-smi")
+    monkeypatch.setattr("src.mineru.runtime.shutil.which", lambda name: "nvidia-smi")
 
     class Result:
         returncode = 1
 
-    monkeypatch.setattr("src.mineru_runtime.subprocess.run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr("src.mineru.runtime.subprocess.run", lambda *args, **kwargs: Result())
 
     health = preflight_gpu()
 
@@ -181,7 +181,7 @@ def test_torch_cuda_preflight_success(monkeypatch):
         captured["env"] = kwargs.get("env") or {}
         return Result()
 
-    monkeypatch.setattr("src.mineru_runtime.subprocess.run", fake_run)
+    monkeypatch.setattr("src.mineru.runtime.subprocess.run", fake_run)
 
     health = preflight_torch_cuda()
 
@@ -207,7 +207,7 @@ def test_torch_cuda_preflight_fail_closed_when_cuda_unavailable(monkeypatch):
         })
         stderr = ""
 
-    monkeypatch.setattr("src.mineru_runtime.subprocess.run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr("src.mineru.runtime.subprocess.run", lambda *args, **kwargs: Result())
 
     health = preflight_torch_cuda()
 
@@ -224,7 +224,7 @@ def test_torch_cuda_preflight_debug_fallback_skips_probe(monkeypatch):
     def fail_if_called(*args, **kwargs):
         raise AssertionError("torch subprocess probe should be skipped")
 
-    monkeypatch.setattr("src.mineru_runtime.subprocess.run", fail_if_called)
+    monkeypatch.setattr("src.mineru.runtime.subprocess.run", fail_if_called)
 
     health = preflight_torch_cuda()
 

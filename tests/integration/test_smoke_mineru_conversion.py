@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 import scripts.smoke_mineru_conversion as smoke
-from src import mineru_smoke
+from src.mineru import smoke as mineru_smoke
 
 
 PN = "0000000000000208"

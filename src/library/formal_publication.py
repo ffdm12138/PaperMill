@@ -17,8 +17,8 @@ from typing import Any, Mapping
 from filelock import FileLock
 
 from config.settings import PROJECT_ROOT
-from src.file_fingerprint import compute_sha256
-from src.path_utils import normalize_repo_path, resolve_stored_path
+from src.utils.file_fingerprint import compute_sha256
+from src.utils.path_utils import normalize_repo_path, resolve_stored_path
 from src.utils.atomic_io import atomic_write_json_unlocked
 
 

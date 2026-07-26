@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.path_utils import (
+from src.utils.path_utils import (
     is_windows_abs_path,
     normalize_record_paths,
     normalize_repo_path,

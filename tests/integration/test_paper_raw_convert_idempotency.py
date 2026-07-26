@@ -157,8 +157,8 @@ def test_all_skipped_batch_does_not_run_runtime_preflight(monkeypatch, tmp_path)
     def fail_if_called(*args, **kwargs):
         raise AssertionError("runtime preflight should not run when all sources are skipped")
 
-    monkeypatch.setattr("src.mineru_runtime.preflight_gpu", fail_if_called)
-    monkeypatch.setattr("src.mineru_runtime.preflight_torch_cuda", fail_if_called)
+    monkeypatch.setattr("src.mineru.runtime.preflight_gpu", fail_if_called)
+    monkeypatch.setattr("src.mineru.runtime.preflight_torch_cuda", fail_if_called)
     saved = sys.argv
     sys.argv = ["convert_paper_raw_batch.py", "--paper-raw-dir", str(paper_raw), "--all", "--apply"]
     try:

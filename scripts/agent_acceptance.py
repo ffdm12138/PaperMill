@@ -487,7 +487,7 @@ from scripts.pack_repo import (
     ZIP_MAX_BYTES,
     _verify_snapshot_self_check,
 )
-from src.services.repository_hygiene import is_forbidden_git_member, is_forbidden_snapshot_member
+from src.utils.repository_hygiene import is_forbidden_git_member, is_forbidden_snapshot_member
 
 
 # Snapshot verification delegates runtime classification to the shared policy.

@@ -4,7 +4,7 @@ import json
 import sys
 
 import scripts.start_mineru_services as start_cli
-import src.mineru_service_manager as sm
+import src.mineru.service_manager as sm
 
 
 def _patch_paths(monkeypatch, tmp_path):

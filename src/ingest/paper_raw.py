@@ -16,15 +16,15 @@ from config.settings import (
     PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR,
 )
 from src.ingest.locking import paper_raw_write_lock
-from src.cleaner import MinerUOutputCleaner
-from src.converter import MinerUConverter
-from src.file_fingerprint import compute_file_hashes, compute_sha256
+from src.mineru.cleaner import MinerUOutputCleaner
+from src.mineru.converter import MinerUConverter
+from src.utils.file_fingerprint import compute_file_hashes, compute_sha256
 from src.ingest.models import now_iso
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.metadata.schema import METADATA_SCHEMA_VERSION, empty_metadata, metadata_doi, validate_metadata_schema
 from src.metadata.freeze import assert_metadata_frozen
-from src.naming import safe_child
-from src.path_utils import normalize_repo_path
+from src.utils.naming import safe_child
+from src.utils.path_utils import normalize_repo_path
 from src.ingest.asset_manifest import write_asset_manifest
 from src.ingest.duplicate_guard import (
     DuplicateIngestError,
@@ -681,7 +681,7 @@ class PaperRawConverter:
         pdf_sha = pdf_hashes["sha256"]
         markdown_sha = compute_sha256(target_md)
         try:
-            from src.mineru_runtime import runtime_config_from_env
+            from src.mineru.runtime import runtime_config_from_env
 
             runtime_cfg = runtime_config_from_env()
             runner = runtime_cfg.runner.value

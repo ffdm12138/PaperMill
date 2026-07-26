@@ -19,7 +19,7 @@ def test_identifier_conflict_cannot_be_manually_confirmed(tmp_path: Path):
     folder=tmp_path; metadata={"title":{"original":"A"},"authors":[{"family":"Smith"}],"first_author":{"family":"Smith"},"year":2024,"identifiers":{"doi":"10.1234/a"}}
     meta=folder/f"{NUMBER}.metadata.json"; pdf=folder/f"{NUMBER}.pdf"; meta.write_text(json.dumps(metadata),encoding="utf-8"); pdf.write_bytes(b"%PDF")
     evidence=PdfIdentityEvidence("",("10.1234/b",),None,None,None,(),("pdf",),"explicit_identifier",())
-    manual={"operator":"admin","reason":"looked","evidence":[{"type":"visual_pdf_inspection","detail":"title page"}],"confirmed_at":"2026-01-01T00:00:00+00:00","metadata_sha256":__import__("src.file_fingerprint",fromlist=["compute_sha256"]).compute_sha256(meta),"pdf_sha256":__import__("src.file_fingerprint",fromlist=["compute_sha256"]).compute_sha256(pdf)}
+    manual={"operator":"admin","reason":"looked","evidence":[{"type":"visual_pdf_inspection","detail":"title page"}],"confirmed_at":"2026-01-01T00:00:00+00:00","metadata_sha256":__import__("src.utils.file_fingerprint",fromlist=["compute_sha256"]).compute_sha256(meta),"pdf_sha256":__import__("src.utils.file_fingerprint",fromlist=["compute_sha256"]).compute_sha256(pdf)}
     receipt=build_match_receipt(folder,NUMBER,metadata,evidence,manual=manual)
     assert receipt["match_method"]=="identifier_conflict"
 

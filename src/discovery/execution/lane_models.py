@@ -377,6 +377,8 @@ def _request_signature_hash(
         str(page_size),
         pagination_schema_version,
     ))
+    # Persisted 16-hex request signature over a string-join payload — do NOT
+    # swap to src.utils.canonical_json (different bytes, stored hashes).
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 

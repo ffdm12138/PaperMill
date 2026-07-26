@@ -13,7 +13,7 @@ from src.catalog_folders.registry import (
 )
 from src.discovery.contracts.notebook import notebook_path
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 
 
 def _write_v3_notebook(

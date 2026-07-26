@@ -259,7 +259,7 @@ def inspect_workspace_evidence(
     ledger_folder_matches = True
     stored = str((ledger_item or {}).get("folder_path") or "")
     if stored:
-        from src.path_utils import resolve_stored_path
+        from src.utils.path_utils import resolve_stored_path
         ledger_folder_matches = resolve_stored_path(stored).resolve() == folder.resolve()
         if not ledger_folder_matches:
             issues.append(EvidenceIssue("ledger_folder_path_mismatch"))

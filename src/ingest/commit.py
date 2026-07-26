@@ -7,7 +7,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.ingest.formalization import assert_formalization_current
 from src.ingest.duplicate_inspection import inspect_ingest_duplicates
 from src.ingest.locking import (
@@ -291,7 +291,7 @@ def validate_committed_state(
             raise ValueError("ledger entry is not active")
         if str(item.get("paper_name") or "") != paper_name:
             raise ValueError("ledger paper_name mismatch")
-        from src.path_utils import resolve_stored_path
+        from src.utils.path_utils import resolve_stored_path
         if resolve_stored_path(str(item.get("folder_path") or "")).resolve() != final.resolve():
             raise ValueError("ledger folder_path mismatch")
         publication = validate_publication_state(
@@ -306,6 +306,310 @@ def validate_committed_state(
 
 
 # ── Resume commit ─────────────────────────────────────────────────────
+
+
+def _resume_phase_prepared(
+    journal: dict,
+    *,
+    store: CommitJournalStore,
+    workspace: PaperRawWorkspace | None,
+    papers_dir: Path,
+    ledger_path: Path,
+    paper_raw_root: Path,
+    ledger: PaperNumberLedger,
+    staging: Path,
+    number,
+    paper_name,
+    fault_injector,
+) -> dict:
+    """Resume the ``prepared`` phase: build the hidden staging directory."""
+    if workspace is None:
+        raise RuntimeError(
+            "prepared transaction lost its source workspace"
+        )
+    _assert_journal_inputs(journal, workspace)
+    plan = assert_formalization_current(
+        workspace,
+        papers_dir=papers_dir,
+        ledger_path=ledger_path,
+    )
+    with acquire_locks(
+        LockRequest.path_lock(
+            PAPER_RAW_GLOBAL_RANK,
+            paper_raw_root / ".paper_raw_write.lock",
+        ),
+        LockRequest.paper_lock(
+            WORKSPACE_RANK, workspace.lock, number
+        ),
+        LockRequest.path_lock(
+            PAPERS_INSTALL_RANK,
+            papers_dir / ".papers_install.lock",
+        ),
+    ):
+        _assert_duplicate_clear(
+            workspace,
+            ledger=ledger,
+            papers_dir=papers_dir,
+        )
+        _prepare_staging(
+            workspace,
+            plan,
+            staging,
+            papers_root=papers_dir,
+            paper_name=paper_name,
+            transaction_id=journal["transaction_id"],
+        )
+    journal = store.update(journal, "staging_complete")
+    _fault(fault_injector, "staging_complete")
+    return journal
+
+
+def _resume_phase_staging_complete(
+    journal: dict,
+    *,
+    store: CommitJournalStore,
+    workspace: PaperRawWorkspace | None,
+    papers_dir: Path,
+    ledger_path: Path,
+    ledger: PaperNumberLedger,
+    staging: Path,
+    final: Path,
+    number,
+    paper_name,
+    fault_injector,
+) -> dict:
+    """Resume ``staging_complete``: atomic formal install plus ledger activation."""
+    # ── Atomic formal-install + ledger-activation ──────────────
+    # Both os.replace(staging → final) and ledger activation happen
+    # under the same PAPERS_INSTALL_RANK + LEDGER_RANK lock to
+    # prevent the index publisher observing an inconsistent state
+    # (final exists but ledger still reserved).
+    with acquire_locks(
+        LockRequest.path_lock(
+            LEDGER_RANK,
+            ledger.lock_path,
+        ),
+        LockRequest.path_lock(
+            PAPERS_INSTALL_RANK,
+            papers_dir / ".papers_install.lock",
+        ),
+        LockRequest.path_lock(
+            INDEX_PUBLISH_RANK,
+            Path(publication_state_path(papers_dir).as_posix() + ".lock"),
+        ),
+    ):
+        ledger_before = ledger.load()
+        had_existing_active = any(
+            isinstance(item, dict)
+            and item.get("state") == "active"
+            and number != str(candidate_number)
+            for candidate_number, item in (ledger_before.get("items") or {}).items()
+        )
+        if final.exists() and not staging.exists():
+            validate_formal_paper(final)
+            # Ledger should already be active; if not, this is recovery.
+            state = _ledger_state(ledger, number)
+            if state == "reserved":
+                # Crash between final install and ledger activation —
+                # but the workspace was never metadata_staged. This is a
+                # historical anomaly; refuse and require explicit repair.
+                raise RuntimeError(
+                    f"repair_required_reserved_final_mismatch: "
+                    f"final exists for {number} but ledger is reserved, "
+                    f"not metadata_staged"
+                )
+            if state == "metadata_staged":
+                # Crash recovery: final exists but ledger not yet active.
+                ledger.activate_metadata_staged_locked(
+                    number, final, paper_name=paper_name
+                )
+        else:
+            if workspace is None:
+                raise RuntimeError(
+                    "staging transaction lost source before final install"
+                )
+            plan = assert_formalization_current(
+                workspace,
+                papers_dir=papers_dir,
+                ledger_path=ledger_path,
+            )
+            _assert_duplicate_clear(
+                workspace,
+                ledger=ledger,
+                papers_dir=papers_dir,
+            )
+            # Re-validate staging path before os.replace
+            _revalidate_before_rmtree(
+                papers_dir, final,
+                field="final_path",
+                expected_name=paper_name,
+            )
+            validate_formal_paper(
+                staging, expected_paper_name=paper_name
+            )
+            if final.exists():
+                raise FileExistsError(
+                    f"final paper_name already exists: {paper_name}"
+                )
+            os.replace(staging, final)
+            # Activate ledger within the same lock scope
+            ledger.activate_metadata_staged_locked(
+                number, final, paper_name=paper_name
+            )
+        publish_formal_publication_state_unlocked(
+            papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
+            allow_initialize=not had_existing_active,
+        )
+    journal = store.update(journal, "final_installed")
+    _fault(fault_injector, "final_installed")
+    return journal
+
+
+def _resume_phase_final_installed(
+    journal: dict,
+    *,
+    store: CommitJournalStore,
+    papers_dir: Path,
+    ledger: PaperNumberLedger,
+    final: Path,
+    number,
+    paper_name,
+    fault_injector,
+) -> dict:
+    """Resume ``final_installed``: ensure ledger activation and publication state."""
+    # Final installed + ledger active already complete above;
+    # this is a recovery path from a crash after ledger activation
+    # but before journal phase advancement.
+    if _ledger_state(ledger, number) != "active":
+        # Edge case: final installed, ledger still reserved.
+        with acquire_locks(
+            LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
+            LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
+            LockRequest.path_lock(
+                INDEX_PUBLISH_RANK,
+                Path(publication_state_path(papers_dir).as_posix() + ".lock"),
+            ),
+        ):
+            state = _ledger_state(ledger, number)
+            if state == "reserved":
+                raise RuntimeError(
+                    f"repair_required_reserved_final_mismatch: "
+                    f"final exists for {number} but ledger is reserved"
+                )
+            if state == "metadata_staged":
+                ledger.activate_metadata_staged_locked(
+                    number, final, paper_name=paper_name
+                )
+            elif state != "active":
+                raise RuntimeError(
+                    f"ledger cannot resume commit from state {state}"
+                )
+            publish_formal_publication_state_unlocked(
+                papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
+                allow_initialize=True,
+            )
+    else:
+        with acquire_locks(
+            LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
+            LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
+            LockRequest.path_lock(
+                INDEX_PUBLISH_RANK,
+                Path(publication_state_path(papers_dir).as_posix() + ".lock"),
+            ),
+        ):
+            current = ledger.load()
+            other_active = any(
+                isinstance(item, dict)
+                and item.get("state") == "active"
+                and str(candidate_number) != str(number)
+                for candidate_number, item in (current.get("items") or {}).items()
+            )
+            publish_formal_publication_state_unlocked(
+                papers_dir=papers_dir,
+                ledger_items=current.get("items") or {},
+                allow_initialize=not other_active,
+            )
+    journal = store.update(journal, "ledger_active")
+    _fault(fault_injector, "ledger_active")
+    return journal
+
+
+def _resume_phase_ledger_active(
+    journal: dict,
+    *,
+    store: CommitJournalStore,
+    papers_dir: Path,
+    catalog_root: Path,
+    ledger: PaperNumberLedger,
+    number,
+    fault_injector,
+) -> dict:
+    """Resume ``ledger_active``: request post-commit Catalog-folder reconciliation."""
+    if _ledger_state(ledger, number) != "active":
+        raise RuntimeError("ledger activation evidence missing")
+    try:
+        from src.catalog_folders.formal_registry import FormalPaperRegistry
+        from src.catalog_folders.reconcile import reconcile_catalog_folders
+        from src.catalog_folders.task_planner import plan_tasks
+        registry = FormalPaperRegistry(papers_dir=papers_dir, ledger=ledger)
+        reconcile_catalog_folders(root=catalog_root, formal_registry=registry, apply=True, allow_empty_categories=True)
+        plan_tasks(root=catalog_root, formal_registry=registry, paper_number=number, apply=True)
+        journal["category_state"] = "classification_pending"
+    except Exception as exc:
+        (Path(catalog_root) / ".state").mkdir(parents=True, exist_ok=True)
+        (Path(catalog_root) / ".state" / "DIRTY").write_text(f"post-commit reconcile failed: {exc}\n", encoding="utf-8")
+        journal["category_state"] = "repair_required"
+        journal["category_error"] = str(exc)
+    journal = store.update(journal, "category_reconcile_requested")
+    _fault(fault_injector, "category_reconcile_requested")
+    return journal
+
+
+def _resume_phase_category_reconcile_requested(
+    journal: dict,
+    *,
+    store: CommitJournalStore,
+    papers_dir: Path,
+    ledger: PaperNumberLedger,
+    paper_raw_root: Path,
+    fault_injector,
+) -> dict:
+    """Resume ``category_reconcile_requested``: verify then delete the raw source."""
+    validate_committed_state(
+        journal,
+        papers_dir=papers_dir,
+        ledger=ledger,
+    )
+    cleanup_committed_source_from_journal(
+        journal,
+        paper_raw_root=paper_raw_root,
+    )
+    journal = store.update(journal, "source_deleted")
+    _fault(fault_injector, "source_deleted")
+    return journal
+
+
+def _resume_phase_source_deleted(
+    journal: dict,
+    *,
+    store: CommitJournalStore,
+    papers_dir: Path,
+    ledger: PaperNumberLedger,
+    fault_injector,
+) -> dict:
+    """Resume ``source_deleted``: re-verify durable state and mark complete."""
+    validate_committed_state(
+        journal,
+        papers_dir=papers_dir,
+        ledger=ledger,
+    )
+    if Path(journal["source_workspace"]).exists():
+        raise CommitRecoveryCorruptionError(
+            "source_deleted phase contradicts an existing source workspace"
+        )
+    journal = store.update(journal, "complete")
+    _fault(fault_injector, "complete")
+    return journal
 
 
 def resume_commit(
@@ -341,230 +645,76 @@ def resume_commit(
         phase = journal["phase"]
 
         if phase == "prepared":
-            if workspace is None:
-                raise RuntimeError(
-                    "prepared transaction lost its source workspace"
-                )
-            _assert_journal_inputs(journal, workspace)
-            plan = assert_formalization_current(
-                workspace,
+            journal = _resume_phase_prepared(
+                journal,
+                store=store,
+                workspace=workspace,
                 papers_dir=papers_dir,
                 ledger_path=ledger_path,
+                paper_raw_root=paper_raw_root,
+                ledger=ledger,
+                staging=staging,
+                number=number,
+                paper_name=paper_name,
+                fault_injector=fault_injector,
             )
-            with acquire_locks(
-                LockRequest.path_lock(
-                    PAPER_RAW_GLOBAL_RANK,
-                    paper_raw_root / ".paper_raw_write.lock",
-                ),
-                LockRequest.paper_lock(
-                    WORKSPACE_RANK, workspace.lock, number
-                ),
-                LockRequest.path_lock(
-                    PAPERS_INSTALL_RANK,
-                    papers_dir / ".papers_install.lock",
-                ),
-            ):
-                _assert_duplicate_clear(
-                    workspace,
-                    ledger=ledger,
-                    papers_dir=papers_dir,
-                )
-                _prepare_staging(
-                    workspace,
-                    plan,
-                    staging,
-                    papers_root=papers_dir,
-                    paper_name=paper_name,
-                    transaction_id=journal["transaction_id"],
-                )
-            journal = store.update(journal, "staging_complete")
-            _fault(fault_injector, "staging_complete")
 
         elif phase == "staging_complete":
-            # ── Atomic formal-install + ledger-activation ──────────────
-            # Both os.replace(staging → final) and ledger activation happen
-            # under the same PAPERS_INSTALL_RANK + LEDGER_RANK lock to
-            # prevent the index publisher observing an inconsistent state
-            # (final exists but ledger still reserved).
-            with acquire_locks(
-                LockRequest.path_lock(
-                    LEDGER_RANK,
-                    ledger.lock_path,
-                ),
-                LockRequest.path_lock(
-                    PAPERS_INSTALL_RANK,
-                    papers_dir / ".papers_install.lock",
-                ),
-                LockRequest.path_lock(
-                    INDEX_PUBLISH_RANK,
-                    Path(publication_state_path(papers_dir).as_posix() + ".lock"),
-                ),
-            ):
-                ledger_before = ledger.load()
-                had_existing_active = any(
-                    isinstance(item, dict)
-                    and item.get("state") == "active"
-                    and number != str(candidate_number)
-                    for candidate_number, item in (ledger_before.get("items") or {}).items()
-                )
-                if final.exists() and not staging.exists():
-                    validate_formal_paper(final)
-                    # Ledger should already be active; if not, this is recovery.
-                    state = _ledger_state(ledger, number)
-                    if state == "reserved":
-                        # Crash between final install and ledger activation —
-                        # but the workspace was never metadata_staged. This is a
-                        # historical anomaly; refuse and require explicit repair.
-                        raise RuntimeError(
-                            f"repair_required_reserved_final_mismatch: "
-                            f"final exists for {number} but ledger is reserved, "
-                            f"not metadata_staged"
-                        )
-                    if state == "metadata_staged":
-                        # Crash recovery: final exists but ledger not yet active.
-                        ledger.activate_metadata_staged_locked(
-                            number, final, paper_name=paper_name
-                        )
-                else:
-                    if workspace is None:
-                        raise RuntimeError(
-                            "staging transaction lost source before final install"
-                        )
-                    plan = assert_formalization_current(
-                        workspace,
-                        papers_dir=papers_dir,
-                        ledger_path=ledger_path,
-                    )
-                    _assert_duplicate_clear(
-                        workspace,
-                        ledger=ledger,
-                        papers_dir=papers_dir,
-                    )
-                    # Re-validate staging path before os.replace
-                    _revalidate_before_rmtree(
-                        papers_dir, final,
-                        field="final_path",
-                        expected_name=paper_name,
-                    )
-                    validate_formal_paper(
-                        staging, expected_paper_name=paper_name
-                    )
-                    if final.exists():
-                        raise FileExistsError(
-                            f"final paper_name already exists: {paper_name}"
-                        )
-                    os.replace(staging, final)
-                    # Activate ledger within the same lock scope
-                    ledger.activate_metadata_staged_locked(
-                        number, final, paper_name=paper_name
-                    )
-                publish_formal_publication_state_unlocked(
-                    papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
-                    allow_initialize=not had_existing_active,
-                )
-            journal = store.update(journal, "final_installed")
-            _fault(fault_injector, "final_installed")
+            journal = _resume_phase_staging_complete(
+                journal,
+                store=store,
+                workspace=workspace,
+                papers_dir=papers_dir,
+                ledger_path=ledger_path,
+                ledger=ledger,
+                staging=staging,
+                final=final,
+                number=number,
+                paper_name=paper_name,
+                fault_injector=fault_injector,
+            )
 
         elif phase == "final_installed":
-            # Final installed + ledger active already complete above;
-            # this is a recovery path from a crash after ledger activation
-            # but before journal phase advancement.
-            if _ledger_state(ledger, number) != "active":
-                # Edge case: final installed, ledger still reserved.
-                with acquire_locks(
-                    LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
-                    LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
-                    LockRequest.path_lock(
-                        INDEX_PUBLISH_RANK,
-                        Path(publication_state_path(papers_dir).as_posix() + ".lock"),
-                    ),
-                ):
-                    state = _ledger_state(ledger, number)
-                    if state == "reserved":
-                        raise RuntimeError(
-                            f"repair_required_reserved_final_mismatch: "
-                            f"final exists for {number} but ledger is reserved"
-                        )
-                    if state == "metadata_staged":
-                        ledger.activate_metadata_staged_locked(
-                            number, final, paper_name=paper_name
-                        )
-                    elif state != "active":
-                        raise RuntimeError(
-                            f"ledger cannot resume commit from state {state}"
-                        )
-                    publish_formal_publication_state_unlocked(
-                        papers_dir=papers_dir, ledger_items=ledger.load().get("items") or {},
-                        allow_initialize=True,
-                    )
-            else:
-                with acquire_locks(
-                    LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
-                    LockRequest.path_lock(PAPERS_INSTALL_RANK, papers_dir / ".papers_install.lock"),
-                    LockRequest.path_lock(
-                        INDEX_PUBLISH_RANK,
-                        Path(publication_state_path(papers_dir).as_posix() + ".lock"),
-                    ),
-                ):
-                    current = ledger.load()
-                    other_active = any(
-                        isinstance(item, dict)
-                        and item.get("state") == "active"
-                        and str(candidate_number) != str(number)
-                        for candidate_number, item in (current.get("items") or {}).items()
-                    )
-                    publish_formal_publication_state_unlocked(
-                        papers_dir=papers_dir,
-                        ledger_items=current.get("items") or {},
-                        allow_initialize=not other_active,
-                    )
-            journal = store.update(journal, "ledger_active")
-            _fault(fault_injector, "ledger_active")
+            journal = _resume_phase_final_installed(
+                journal,
+                store=store,
+                papers_dir=papers_dir,
+                ledger=ledger,
+                final=final,
+                number=number,
+                paper_name=paper_name,
+                fault_injector=fault_injector,
+            )
 
         elif phase == "ledger_active":
-            if _ledger_state(ledger, number) != "active":
-                raise RuntimeError("ledger activation evidence missing")
-            try:
-                from src.catalog_folders.formal_registry import FormalPaperRegistry
-                from src.catalog_folders.reconcile import reconcile_catalog_folders
-                from src.catalog_folders.task_planner import plan_tasks
-                registry = FormalPaperRegistry(papers_dir=papers_dir, ledger=ledger)
-                reconcile_catalog_folders(root=catalog_root, formal_registry=registry, apply=True, allow_empty_categories=True)
-                plan_tasks(root=catalog_root, formal_registry=registry, paper_number=number, apply=True)
-                journal["category_state"] = "classification_pending"
-            except Exception as exc:
-                (Path(catalog_root) / ".state").mkdir(parents=True, exist_ok=True)
-                (Path(catalog_root) / ".state" / "DIRTY").write_text(f"post-commit reconcile failed: {exc}\n", encoding="utf-8")
-                journal["category_state"] = "repair_required"
-                journal["category_error"] = str(exc)
-            journal = store.update(journal, "category_reconcile_requested")
-            _fault(fault_injector, "category_reconcile_requested")
+            journal = _resume_phase_ledger_active(
+                journal,
+                store=store,
+                papers_dir=papers_dir,
+                catalog_root=catalog_root,
+                ledger=ledger,
+                number=number,
+                fault_injector=fault_injector,
+            )
 
         elif phase == "category_reconcile_requested":
-            validate_committed_state(
+            journal = _resume_phase_category_reconcile_requested(
                 journal,
+                store=store,
                 papers_dir=papers_dir,
                 ledger=ledger,
-            )
-            cleanup_committed_source_from_journal(
-                journal,
                 paper_raw_root=paper_raw_root,
+                fault_injector=fault_injector,
             )
-            journal = store.update(journal, "source_deleted")
-            _fault(fault_injector, "source_deleted")
 
         elif phase == "source_deleted":
-            validate_committed_state(
+            journal = _resume_phase_source_deleted(
                 journal,
+                store=store,
                 papers_dir=papers_dir,
                 ledger=ledger,
+                fault_injector=fault_injector,
             )
-            if Path(journal["source_workspace"]).exists():
-                raise CommitRecoveryCorruptionError(
-                    "source_deleted phase contradicts an existing source workspace"
-                )
-            journal = store.update(journal, "complete")
-            _fault(fault_injector, "complete")
 
     return journal
 

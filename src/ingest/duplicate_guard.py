@@ -13,8 +13,8 @@ from typing import Any
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.utils.jsonio import read_json
 from src.utils.identifiers import normalize_doi
-from src.file_fingerprint import compute_file_hashes
-from src.path_utils import normalize_repo_path, resolve_stored_path
+from src.utils.file_fingerprint import compute_file_hashes
+from src.utils.path_utils import normalize_repo_path, resolve_stored_path
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.ingest.asset_manifest import pdf_hashes_from_manifest
 from src.ingest.stage_manifest import staged_pdf_hashes

@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import src.mineru_lock as lock_mod
+import src.mineru.lock as lock_mod
 
 
 def _use_tmp_lock(monkeypatch, tmp_path: Path) -> Path:

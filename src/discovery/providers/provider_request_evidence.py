@@ -8,10 +8,10 @@ notebooks, ledgers, staging, or replay evaluation.
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from src.utils.canonical_json import canonical_json_bytes
 from src.utils.timestamps import utc_now_iso as _now_iso
 
 
@@ -58,9 +58,7 @@ class RequestEvidenceError(ValueError):
 
 
 def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    return canonical_json_bytes(value)
 
 
 def _is_hash(value: Any) -> bool:

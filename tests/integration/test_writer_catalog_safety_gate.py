@@ -220,7 +220,7 @@ def test_fully_safe_allows_writer(catalog_env):
     from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION
     from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
     from src.catalog_folders.registry import load_categories
-    from src.file_fingerprint import compute_sha256
+    from src.utils.file_fingerprint import compute_sha256
 
     # Write a complete assignment so nothing is pending
     cats = load_categories(root / ".state" / "category_registry.json")

@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from config.settings import MINERU_OUTPUT_CACHE_DIR
-from src.cleaner import MinerUOutputCleaner
-from src.file_fingerprint import compute_file_hashes, compute_sha256
-from src.path_utils import normalize_repo_path
+from src.mineru.cleaner import MinerUOutputCleaner
+from src.utils.file_fingerprint import compute_file_hashes, compute_sha256
+from src.utils.path_utils import normalize_repo_path
 from src.ingest.asset_manifest import write_asset_manifest
 from src.ingest.import_status import CONVERTED, write_import_status
 from src.utils.fs import replace_images_dir

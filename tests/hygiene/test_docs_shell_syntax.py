@@ -29,6 +29,10 @@ _CORE_DOCS: list[str] = [
     "skills/literature_library_manager/CLAUDE.md",
     "skills/literature_library_manager/README.md",
 ]
+# Change-governance docs (md/) are scanned in full.
+_CORE_DOCS += sorted(
+    p.relative_to(ROOT).as_posix() for p in (ROOT / "md").glob("*.md")
+)
 
 _SET_VAR_RE = re.compile(r"^\s*set\s+[A-Z_]+=")
 _SMOKE_CMD_RE = re.compile(r"smoke_mineru_conversion\.py\s+--paper-number\s+\S+")

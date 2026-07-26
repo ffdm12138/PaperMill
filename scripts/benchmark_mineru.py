@@ -35,9 +35,9 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from loguru import logger
 
 from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_METHOD, MINERU_LANG
-from src.converter import MinerUConverter
-from src.mineru_lock import read_mineru_lock_status, clear_stale_mineru_lock
-from src.mineru_runtime import (
+from src.mineru.converter import MinerUConverter
+from src.mineru.lock import read_mineru_lock_status, clear_stale_mineru_lock
+from src.mineru.runtime import (
     describe_runtime,
     preflight_gpu,
     preflight_torch_cuda,

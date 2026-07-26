@@ -21,6 +21,7 @@ def _active_markdown_paths() -> list[Path]:
         ROOT / "AGENTS.md",
         ROOT / "CLAUDE.md",
         *sorted((ROOT / "docs").rglob("*.md")),
+        *sorted((ROOT / "md").rglob("*.md")),
         *sorted((ROOT / "skills").rglob("*.md")),
         *sorted((ROOT / "scripts").rglob("*.md")),
     ]

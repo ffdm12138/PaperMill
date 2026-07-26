@@ -12,9 +12,9 @@ import json
 import re
 from pathlib import Path
 
-from src import bib as bibmod
+from src.writer import bib as bibmod
 from src.catalog_folders.reader import create_safe_catalog_reader
-from src.services.paper_library import PaperLibrary
+from src.catalog_folders.paper_library import PaperLibrary
 from src.writer.catalog_matcher import load_selected
 from src.writer.job_manager import JobManager
 from src.metadata.citation_readiness import citation_key_from_metadata, validate_citation_ready

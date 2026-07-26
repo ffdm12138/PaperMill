@@ -4,7 +4,7 @@ from pathlib import Path
 from src.discovery.workspace_registry import refresh_registry_under_write_lock
 from src.discovery.staging_context import DiscoveryStagingContext
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 from tests.factories.discovery_factory import create_discovery_candidate
 
 

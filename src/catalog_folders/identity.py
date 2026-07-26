@@ -5,8 +5,7 @@ longer import each other (former late-import cycle).
 """
 from __future__ import annotations
 
-import hashlib
-import json
+from src.utils.canonical_json import canonical_sha256
 import re
 import unicodedata
 
@@ -106,7 +105,6 @@ def definition_hash(value: dict) -> str:
     keys = ("category_id", "keyword_zh", "guidance_zh", "aliases_zh", "exclusions_zh")
     payload = {key: value.get(key) for key in keys if not _is_empty(value.get(key))}
     payload["classifier_skill_version"] = CLASSIFIER_SKILL_VERSION
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return canonical_sha256(payload)
 
 

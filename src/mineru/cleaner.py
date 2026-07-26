@@ -285,7 +285,7 @@ class MinerUOutputCleaner:
         """
         source_dir = Path(source_dir)
         # 防御性校验 paper_name，防路径穿越（调用方已校验，此处二次确认）
-        from src.naming import validate_paper_name, safe_child
+        from src.utils.naming import validate_paper_name, safe_child
         try:
             validate_paper_name(paper_name)
         except ValueError as e:

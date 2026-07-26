@@ -2,6 +2,8 @@
 
 Read `docs/PROJECT_STATUS.md`, `docs/PROJECT_CONTRACT.md`, `docs/TESTING.md`,
 `docs/SCRIPT_USAGE.md`, and `README.md` before changing ingest or writing code.
+Change-governance rules (Chinese) live under `md/`; read `md/README.md` before
+structural or architectural changes. This contract prevails on conflict.
 
 ## Active architecture
 
@@ -71,6 +73,9 @@ PDF/tree copies. Never acquire a lower-ranked lock while holding a higher one.
 Use the Python environment at
 `C:\Users\Admin\.conda\envs\mineru\python.exe` when `python` is not on PATH.
 Set `PYTHONIOENCODING=utf-8` and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` for tests.
+
+PowerShell 7 is installed as `pwsh`. When PowerShell is required, run `pwsh`,
+never legacy Windows PowerShell 5.1 (`powershell`).
 
 For routine changes run targeted tests, then the fast gate:
 
@@ -254,7 +259,7 @@ Run the default fast gate first. Use `--process` for real process behavior,
 `--stress` for amplified races, and `--full` for releases or broad refactors.
 No real-process test may lack the `process` marker; every process test must
 clean its complete process tree. Keep each contract authoritative in one
-layer. Runtime-zero rules live in `src/services/repository_hygiene.py`;
+layer. Runtime-zero rules live in `src/utils/repository_hygiene.py`;
 `source_records` and its targets must never be symlinks. After every change,
 run the packer and inspect an unpacked snapshot.
 

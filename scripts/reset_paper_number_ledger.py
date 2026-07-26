@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
-from src.services.paper_number_admin import PaperNumberAdminService
+from src.ingest.paper_number_admin import PaperNumberAdminService
 
 
 def _write_report(path: Path | None, report: dict) -> None:

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from src.metadata.schema import empty_metadata
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -142,7 +142,7 @@ def test_apply_mode_never_outputs_stale_planned_number(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("peek_next_numbers must not run in apply mode")
 
-    monkeypatch.setattr("src.services.network_metadata_staging.PaperNumberLedger.peek_next_numbers", boom)
+    monkeypatch.setattr("src.staging.network_metadata_staging.PaperNumberLedger.peek_next_numbers", boom)
 
     report = stage_network_metadata_records(
         [{"title": "Unique", "year": 2024, "doi": "10.1000/unique"}],

@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from src.services.network_metadata_canonical import (
+from src.staging.network_metadata_canonical import (
     combine_page_range,
     canonicalize_network_record,
 )
-from src.services.network_metadata_staging import _metadata_from_record
+from src.staging.network_metadata_staging import _metadata_from_record
 
 
 pytestmark = pytest.mark.contract

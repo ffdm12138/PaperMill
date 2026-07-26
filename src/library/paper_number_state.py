@@ -163,10 +163,10 @@ def build_transition_patch(
     consistent timestamps and identity fields without duplicating patch logic
     across sites.
     """
-    import datetime
+    from src.utils.timestamps import utc_now_iso
 
     if not now_iso:
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now_iso = utc_now_iso()
 
     existing = existing_item or {}
     base: dict[str, Any] = {

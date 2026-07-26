@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime, timezone
 import json
 import os
 import sys
@@ -17,45 +16,13 @@ from loguru import logger
 
 from config.settings import PAPER_RAW_DIR
 from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_METHOD
-from src.utils.identifiers import normalize_doi
+from src.utils.timestamps import utc_now_iso
 from src.utils.identifiers import validate_paper_raw_id
-from src.metadata.quality import is_valid_normalized_doi
+from src.ingest import conversion_gates as gates
 from src.ingest.paper_raw import PaperRawConverter
-from src.metadata.schema import metadata_doi
-from src.metadata.freeze import assert_metadata_frozen
 
 
 _WRAPPER_ENV = "MINERU_GPU_WRAPPER_ACTIVE"
-
-# import_status values that mean a workspace is past the conversion stage and
-# must NOT be re-converted: it is at formalize/commit stage or parked as a
-# duplicate. Metadata-incomplete bootstrap statuses (doi_invalid,
-# metadata_resolve_failed, metadata_manual_review_required, metadata_unmatched,
-# metadata_candidates_found, metadata_candidate_conflict) are intentionally NOT
-# here — conversion is allowed before metadata is matched, but a metadata.json
-# shell must already exist so staging/import owns workspace initialization.
-CONVERSION_BLOCKED_STATUSES = {
-    "ready_for_commit",
-    "catalog_ready",
-    "committed",
-    "imported",
-    "possible_duplicate",
-    "quarantined_duplicate",
-}
-
-# import_status values that signal metadata is not yet resolved, so a
-# post-conversion metadata-resolution pass is recommended (the converted
-# Markdown is a fresh evidence source).
-POST_CONVERSION_RESOLVE_RECOMMENDED_STATUSES = {
-    "doi_invalid",
-    "metadata_resolve_failed",
-    "metadata_manual_review_required",
-    "metadata_unmatched",
-    "metadata_candidates_found",
-    "metadata_candidate_conflict",
-    "metadata_incomplete",
-    "metadata_invalid",
-}
 
 
 def _source_ids(root: Path, args) -> list[str]:
@@ -68,91 +35,6 @@ def _source_ids(root: Path, args) -> list[str]:
     raise ValueError("--paper-number, --paper-numbers, or --all is required")
 
 
-def _preflight_status(root: Path, source_id: str) -> str:
-    path = root / source_id / ".import_status.json"
-    if not path.exists():
-        return ""
-    try:
-        return str((json.loads(path.read_text(encoding="utf-8")) or {}).get("status") or "")
-    except Exception:
-        return ""
-
-
-def _read_metadata(root: Path, source_id: str) -> dict:
-    """Best-effort read of <source_id>.metadata.json; {} if missing/invalid."""
-    path = root / source_id / f"{source_id}.metadata.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-
-
-def _metadata_ready_for_commit(root: Path, source_id: str, metadata: dict) -> bool:
-    """True only when metadata is matched/manual_confirmed AND DOI is valid.
-
-    This is the formalize/commit gate. Conversion does NOT require this — this
-    field is reported per-item so operators can see which workspaces are still
-    blocked for formal ingestion after conversion.
-    """
-    if not metadata:
-        return False
-    try:
-        assert_metadata_frozen(root/source_id,source_id)
-    except Exception:
-        return False
-    doi = normalize_doi(metadata_doi(metadata))
-    return bool(doi) and is_valid_normalized_doi(doi)
-
-
-def _metadata_fields_for_report(root: Path, source_id: str) -> dict:
-    """Per-item metadata-status fields for the conversion report."""
-    import_status = _preflight_status(root, source_id)
-    metadata = _read_metadata(root, source_id)
-    return {
-        "import_status": import_status,
-        "metadata_ready_for_commit": _metadata_ready_for_commit(root,source_id,metadata),
-        # Conversion only requires the metadata *shell* (staging/import-owned
-        # workspace contract), NOT complete matched metadata. DOI/journal/pages
-        # are required only at formalize/commit time. See docs/PROJECT_CONTRACT.md
-        # "Ingest layered semantics".
-        "metadata_shell_required_for_conversion": True,
-        "matched_metadata_required_for_conversion": False,
-        "post_conversion_metadata_resolution_recommended": (
-            import_status in POST_CONVERSION_RESOLVE_RECOMMENDED_STATUSES
-            or not _metadata_ready_for_commit(root, source_id, metadata)
-        ),
-    }
-
-
-def _conversion_asset_gate(root: Path, source_id: str) -> tuple[bool, str, bool, bool]:
-    """Check the physical assets required for conversion.
-
-    Returns ``(ok, reason, has_pdf, has_metadata_shell)``. Conversion requires
-    both the PDF and the metadata.json shell. The shell does not need matched
-    DOI metadata yet; it is the staging/import-owned workspace contract that
-    later metadata resolution and formalize/commit build on.
-    """
-    folder = root / source_id
-    if not folder.exists():
-        return False, "paper_raw workspace missing", False, False
-    pdf = folder / f"{source_id}.pdf"
-    has_pdf = pdf.exists() and pdf.is_file()
-    meta = folder / f"{source_id}.metadata.json"
-    has_metadata_shell = meta.exists() and meta.is_file()
-    if not has_pdf:
-        return False, "missing paper_raw PDF", has_pdf, has_metadata_shell
-    if not has_metadata_shell:
-        return (
-            False,
-            "missing metadata.json shell; run staging/import metadata initialization first",
-            has_pdf,
-            has_metadata_shell,
-        )
-    return True, "", has_pdf, has_metadata_shell
-
-
 def _health_to_dict(health) -> dict:
     if hasattr(health, "__dataclass_fields__"):
         return asdict(health)
@@ -160,7 +42,7 @@ def _health_to_dict(health) -> dict:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now_iso()
 
 
 def _api_task_delta(before: dict | None, after: dict | None, key: str) -> int:
@@ -192,7 +74,7 @@ def _default_lock_fields() -> dict:
 
 def _lock_fields_after_wait(started: float, stuck_warn_seconds: int | None) -> dict:
     try:
-        from src.mineru_lock import read_mineru_lock_status
+        from src.mineru.lock import read_mineru_lock_status
 
         status = read_mineru_lock_status(stuck_warn_seconds=stuck_warn_seconds)
     except Exception as exc:
@@ -226,7 +108,7 @@ def _summarize(items: list[dict]) -> dict:
 
 
 def _runtime_snapshot(cfg) -> dict:
-    from src.mineru_runtime import MinerURunner, preflight_gpu, preflight_mineru_api, preflight_torch_cuda
+    from src.mineru.runtime import MinerURunner, preflight_gpu, preflight_mineru_api, preflight_torch_cuda
 
     gpu_health = preflight_gpu()
     torch_health = preflight_torch_cuda()
@@ -305,7 +187,8 @@ def _print_runtime_summary(runtime: dict) -> None:
     )
 
 
-def main() -> int:
+def _parse_args() -> argparse.Namespace:
+    """Build the batch-converter CLI and validate cross-flag constraints."""
     parser = argparse.ArgumentParser(description="Convert v2 paper_raw PDFs into md/images.")
     parser.add_argument("--paper-number", default=None)
     parser.add_argument("--paper-numbers", nargs="+", default=None)
@@ -344,6 +227,11 @@ def main() -> int:
         parser.error("--cache-only cannot be combined with --ignore-output-cache")
     if args.cache_only and args.force_reconvert:
         parser.error("--cache-only cannot be combined with --force-reconvert")
+    return args
+
+
+def _apply_env_flags(args: argparse.Namespace) -> None:
+    """Emit the direct-call warning and apply debug env overrides."""
     _print_direct_call_warning()
     if args.lock_wait_timeout_seconds is not None:
         os.environ["MINERU_LOCK_WAIT_TIMEOUT_SECONDS"] = str(args.lock_wait_timeout_seconds)
@@ -359,26 +247,29 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    write = args.apply and not args.dry_run
-    source_ids = _source_ids(args.paper_raw_dir, args)
 
-    from src.mineru_runtime import runtime_config_from_env, MinerURunner
-    cfg = runtime_config_from_env()
-    if write and args.all:
-        try:
-            from src.mineru_smoke import validate_smoke_report
+def _warn_missing_smoke(args: argparse.Namespace, write: bool) -> None:
+    """Warn when a low-level --all --apply run has no valid smoke report."""
+    if not (write and args.all):
+        return
+    try:
+        from src.mineru.smoke import validate_smoke_report
 
-            smoke = validate_smoke_report(args.smoke_report)
-            if not smoke.get("ok"):
-                print(
-                    "WARNING: lower-level convert_paper_raw_batch.py is running --all --apply "
-                    "without a valid smoke report; formal entrypoints hard-fail this case.",
-                    file=sys.stderr,
-                )
-                for error in smoke.get("errors") or []:
-                    print(f"WARNING: smoke: {error}", file=sys.stderr)
-        except Exception as exc:
-            print(f"WARNING: smoke report check failed: {exc}", file=sys.stderr)
+        smoke = validate_smoke_report(args.smoke_report)
+        if not smoke.get("ok"):
+            print(
+                "WARNING: lower-level convert_paper_raw_batch.py is running --all --apply "
+                "without a valid smoke report; formal entrypoints hard-fail this case.",
+                file=sys.stderr,
+            )
+            for error in smoke.get("errors") or []:
+                print(f"WARNING: smoke: {error}", file=sys.stderr)
+    except Exception as exc:
+        print(f"WARNING: smoke report check failed: {exc}", file=sys.stderr)
+
+
+def _build_converter(args: argparse.Namespace) -> PaperRawConverter:
+    """Construct the converter with the run's output-cache configuration."""
     converter = PaperRawConverter(args.paper_raw_dir)
     if args.output_cache_dir:
         from src.ingest.mineru_output_cache import MinerUOutputCache
@@ -386,7 +277,16 @@ def main() -> int:
         converter.output_cache = MinerUOutputCache(args.output_cache_dir, cleaner=converter.cleaner)
     if args.ignore_output_cache:
         converter.reuse_output_cache = False
-    skip_existing = not args.no_skip_existing
+    return converter
+
+
+def _plan_batch(
+    args: argparse.Namespace,
+    converter: PaperRawConverter,
+    source_ids: list[str],
+    skip_existing: bool,
+) -> tuple[dict, dict, dict, list[str]]:
+    """Inspect every source and decide which items need a live MinerU runtime."""
     inspections = {
         source_id: converter.inspect_conversion(
             source_id,
@@ -397,7 +297,7 @@ def main() -> int:
         for source_id in source_ids
     }
     asset_gates = {
-        source_id: _conversion_asset_gate(args.paper_raw_dir, source_id)
+        source_id: gates.conversion_asset_gate(args.paper_raw_dir, source_id)
         for source_id in source_ids
     }
     cache_inspections = {}
@@ -454,6 +354,19 @@ def main() -> int:
             )
         )
     ]
+    return inspections, asset_gates, cache_inspections, source_ids_needing_runtime
+
+
+def _gate_runtime(
+    args: argparse.Namespace,
+    cfg,
+    write: bool,
+    source_ids: list[str],
+    source_ids_needing_runtime: list[str],
+) -> tuple[dict | None, str, dict | None, int | None]:
+    """Snapshot/print the runtime and enforce the formal-GPU/cold-CLI gates."""
+    from src.mineru.runtime import MinerURunner
+
     runtime = None
     runtime_failure = ""
     api_health_before = None
@@ -465,7 +378,7 @@ def main() -> int:
         # cli_api_proxy runner talks to a persistent mineru-api worth snapshotting.
         if cfg.runner == MinerURunner.CLI_API_PROXY:
             try:
-                from src.mineru_runtime import snapshot_mineru_api
+                from src.mineru.runtime import snapshot_mineru_api
                 api_health_before = snapshot_mineru_api(cfg.api_url)
             except Exception as exc:
                 api_health_before = {"api_available": False, "error": str(exc)}
@@ -476,7 +389,7 @@ def main() -> int:
                 "--allow-cpu; --allow-cpu is debug-only and not formal ingest SOP.",
                 file=sys.stderr,
             )
-            return 2
+            return runtime, runtime_failure, api_health_before, 2
 
     if write and len(source_ids_needing_runtime) > 1 and cfg.runner == MinerURunner.CLI and not args.allow_cold_cli_batch:
         print(
@@ -487,7 +400,7 @@ def main() -> int:
             "For explicit debugging only, pass --allow-cold-cli-batch.",
             file=sys.stderr,
         )
-        return 2
+        return runtime, runtime_failure, api_health_before, 2
 
     # warn when dry-running >1 PDF with cold-start CLI runner
     if len(source_ids_needing_runtime) > 1:
@@ -502,177 +415,204 @@ def main() -> int:
                 )
         except Exception:
             pass  # never let a warning break conversion
+    return runtime, runtime_failure, api_health_before, None
 
-    report = []
-    for source_id in source_ids:
-        item_started = time.time()
-        api_before_item = None
-        api_after_item = None
-        inspection = inspections[source_id]
-        item = {
-            "paper_number": source_id,
-            "paper_raw_id": source_id,
-            "status": "planned",
-            "stage": "inspect",
-            "started_at": _now_iso(),
-            "runtime": runtime,
-            "conversion_state": inspection["state"],
-        }
-        cache_item = cache_inspections.get(source_id, {})
-        item.update({
-            "output_cache_enabled": cache_item.get("output_cache_enabled", not args.ignore_output_cache),
-            "output_cache_state": cache_item.get("output_cache_state", ""),
-            "output_cache_reason": cache_item.get("output_cache_reason", ""),
-            "output_cache_dir": cache_item.get("output_cache_dir", ""),
-            "output_cache_manifest": cache_item.get("output_cache_manifest", ""),
-            "restored_from_output_cache": False,
-        })
-        item.update(_default_lock_fields())
-        item.update(_metadata_fields_for_report(args.paper_raw_dir, source_id))
-        asset_ok, asset_reason, has_pdf, has_metadata_shell = asset_gates[source_id]
-        item["has_pdf"] = has_pdf
-        item["has_metadata_shell"] = has_metadata_shell
-        if args.only_convertible:
-            preflight_status = _preflight_status(args.paper_raw_dir, source_id)
-            item["preflight_status"] = preflight_status
-            if not asset_ok:
-                item["status"] = "skipped"
-                item["stage"] = "skip"
-                item["reason"] = asset_reason
-                _finish_item(item, item_started, api_before_item, api_before_item)
-                report.append(item)
-                continue
-            if preflight_status in CONVERSION_BLOCKED_STATUSES:
-                item["status"] = "skipped"
-                item["stage"] = "skip"
-                item["reason"] = "formalization/commit-stage workspace is not convertible"
-                _finish_item(item, item_started, api_before_item, api_before_item)
-                report.append(item)
-                continue
+
+def _convert_one(
+    source_id: str,
+    *,
+    args: argparse.Namespace,
+    cfg,
+    write: bool,
+    skip_existing: bool,
+    converter: PaperRawConverter,
+    inspections: dict,
+    asset_gates: dict,
+    cache_inspections: dict,
+    source_ids_needing_runtime: list[str],
+    runtime: dict | None,
+    runtime_failure: str,
+    api_health_before: dict | None,
+) -> dict:
+    """Run (or plan) the conversion of one source and return its report item."""
+    from src.mineru.runtime import MinerURunner
+
+    item_started = time.time()
+    api_before_item = None
+    api_after_item = None
+    inspection = inspections[source_id]
+    item = {
+        "paper_number": source_id,
+        "paper_raw_id": source_id,
+        "status": "planned",
+        "stage": "inspect",
+        "started_at": _now_iso(),
+        "runtime": runtime,
+        "conversion_state": inspection["state"],
+    }
+    cache_item = cache_inspections.get(source_id, {})
+    item.update({
+        "output_cache_enabled": cache_item.get("output_cache_enabled", not args.ignore_output_cache),
+        "output_cache_state": cache_item.get("output_cache_state", ""),
+        "output_cache_reason": cache_item.get("output_cache_reason", ""),
+        "output_cache_dir": cache_item.get("output_cache_dir", ""),
+        "output_cache_manifest": cache_item.get("output_cache_manifest", ""),
+        "restored_from_output_cache": False,
+    })
+    item.update(_default_lock_fields())
+    item.update(gates.metadata_fields_for_report(args.paper_raw_dir, source_id))
+    asset_ok, asset_reason, has_pdf, has_metadata_shell = asset_gates[source_id]
+    item["has_pdf"] = has_pdf
+    item["has_metadata_shell"] = has_metadata_shell
+    if args.only_convertible:
+        preflight_status = gates.preflight_status(args.paper_raw_dir, source_id)
+        item["preflight_status"] = preflight_status
         if not asset_ok:
-            item["status"] = "failed" if write else "skipped"
-            item["stage"] = "failed" if write else "skip"
-            item["reason"] = asset_reason
-            if write:
-                item["error"] = asset_reason
-            _finish_item(item, item_started, api_before_item, api_before_item)
-            report.append(item)
-            continue
-        if skip_existing and not args.force_reconvert and inspection["state"] == "converted_current":
             item["status"] = "skipped"
             item["stage"] = "skip"
-            item["reason"] = inspection["reason"]
-            item["markdown"] = inspection["markdown"]
-            item["images_dir"] = inspection["images_dir"]
+            item["reason"] = asset_reason
             _finish_item(item, item_started, api_before_item, api_before_item)
-            report.append(item)
-            continue
+            return item
+        if preflight_status in gates.CONVERSION_BLOCKED_STATUSES:
+            item["status"] = "skipped"
+            item["stage"] = "skip"
+            item["reason"] = "formalization/commit-stage workspace is not convertible"
+            _finish_item(item, item_started, api_before_item, api_before_item)
+            return item
+    if not asset_ok:
+        item["status"] = "failed" if write else "skipped"
+        item["stage"] = "failed" if write else "skip"
+        item["reason"] = asset_reason
+        if write:
+            item["error"] = asset_reason
+        _finish_item(item, item_started, api_before_item, api_before_item)
+        return item
+    if skip_existing and not args.force_reconvert and inspection["state"] == "converted_current":
+        item["status"] = "skipped"
+        item["stage"] = "skip"
+        item["reason"] = inspection["reason"]
+        item["markdown"] = inspection["markdown"]
+        item["images_dir"] = inspection["images_dir"]
+        _finish_item(item, item_started, api_before_item, api_before_item)
+        return item
+    if cfg.runner == MinerURunner.CLI_API_PROXY and source_id in source_ids_needing_runtime:
+        try:
+            from src.mineru.runtime import snapshot_mineru_api
+            api_before_item = snapshot_mineru_api(cfg.api_url)
+        except Exception as exc:
+            api_before_item = {"api_available": False, "error": str(exc)}
+    if write and runtime_failure:
+        item["status"] = "failed"
+        item["stage"] = "failed"
+        item["error"] = runtime_failure
+        item["api_health_before"] = api_health_before
+        _finish_item(item, item_started, api_before_item, api_before_item)
+        return item
+    logger.info("{} convert paper_raw/{}", "CONVERT" if write else "DRY-RUN", source_id)
+    if write:
+        item["stage"] = "submit"
+        try:
+            result = converter.convert(
+                source_id,
+                force_reconvert=args.force_reconvert,
+                skip_existing=skip_existing,
+                cache_only=args.cache_only,
+            )
+            item.update(result)
+            if result.get("skipped"):
+                item["status"] = "skipped"
+                item["stage"] = "skip"
+            elif result.get("restored_from_output_cache"):
+                item["status"] = "restored_from_output_cache"
+                item["stage"] = "done"
+            elif result.get("success"):
+                item["status"] = "converted"
+                item["stage"] = "done"
+                # Conversion is metadata-independent, but when a citation
+                # record already exists this is the first point at which
+                # independent Markdown identity evidence is available.
+                try:
+                    from src.metadata.pdf_identity import extract_pdf_identity_evidence
+                    from src.metadata.pdf_match import build_match_receipt, write_match_receipt
+                    from src.metadata.freeze import freeze_metadata
+                    from src.metadata.freeze import assert_metadata_frozen
+                    from src.ingest.status import update_status
+                    from src.ingest.workspace import PaperRawWorkspace
+                    folder = args.paper_raw_dir / source_id
+                    metadata_path = folder / f"{source_id}.metadata.json"
+                    pdf_path = folder / f"{source_id}.pdf"
+                    if metadata_path.exists() and pdf_path.exists():
+                        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        freeze_path=folder/f"{source_id}.metadata_freeze.json"
+                        if freeze_path.exists():
+                            assert_metadata_frozen(folder,source_id)
+                            item["metadata_frozen"]=True
+                        else:
+                            evidence = extract_pdf_identity_evidence(
+                                pdf_path=pdf_path,
+                                markdown_path=folder / f"{source_id}.md",
+                                conversion_manifest_path=folder / f"{source_id}.conversion.json",
+                            )
+                            provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
+                            receipt = build_match_receipt(folder, source_id, metadata, evidence,
+                                                          requested_doi=((metadata.get("identifiers") or {}).get("doi") or ""),provider_records=[provider_record] if provider_record else [])
+                            write_match_receipt(folder, receipt)
+                            item["metadata_match_method"] = receipt["match_method"]
+                            if receipt["match_status"] in {"matched","manual_confirmed"}:
+                                frozen=freeze_metadata(folder, source_id); update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
+                                item["metadata_frozen"] = True
+                            else:
+                                update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=receipt["match_method"])
+                                item["metadata_match_status"] = receipt["match_status"]
+                except Exception as exc:
+                    item.setdefault("warnings", []).append(f"metadata match/freeze deferred: {exc}")
+            else:
+                item["status"] = "failed"
+                item["stage"] = "failed"
+        except Exception as exc:
+            item.update({"status": "failed", "stage": "failed", "error": str(exc)})
+            logger.error("convert failed for {}: {}", source_id, exc)
+        if item["status"] == "failed":
+            item.update(_lock_fields_after_wait(item_started, args.lock_stuck_warn_seconds))
+        # On failure, capture API health so the report explains WHY (e.g.
+        # API healthy but task failed) rather than leaving it in stderr.
+        if item["status"] == "failed" and api_health_before is not None:
+            item["api_health_before"] = api_health_before
+            try:
+                from src.mineru.runtime import snapshot_mineru_api
+                item["api_health_after"] = snapshot_mineru_api(cfg.api_url)
+            except Exception as exc:
+                item["api_health_after"] = {"api_available": False, "error": str(exc)}
         if cfg.runner == MinerURunner.CLI_API_PROXY and source_id in source_ids_needing_runtime:
             try:
-                from src.mineru_runtime import snapshot_mineru_api
-                api_before_item = snapshot_mineru_api(cfg.api_url)
+                from src.mineru.runtime import snapshot_mineru_api
+                api_after_item = snapshot_mineru_api(cfg.api_url)
             except Exception as exc:
-                api_before_item = {"api_available": False, "error": str(exc)}
-        if write and runtime_failure:
-            item["status"] = "failed"
-            item["stage"] = "failed"
-            item["error"] = runtime_failure
-            item["api_health_before"] = api_health_before
-            _finish_item(item, item_started, api_before_item, api_before_item)
-            report.append(item)
-            continue
-        logger.info("{} convert paper_raw/{}", "CONVERT" if write else "DRY-RUN", source_id)
-        if write:
-            item["stage"] = "submit"
-            try:
-                result = converter.convert(
-                    source_id,
-                    force_reconvert=args.force_reconvert,
-                    skip_existing=skip_existing,
-                    cache_only=args.cache_only,
-                )
-                item.update(result)
-                if result.get("skipped"):
-                    item["status"] = "skipped"
-                    item["stage"] = "skip"
-                elif result.get("restored_from_output_cache"):
-                    item["status"] = "restored_from_output_cache"
-                    item["stage"] = "done"
-                elif result.get("success"):
-                    item["status"] = "converted"
-                    item["stage"] = "done"
-                    # Conversion is metadata-independent, but when a citation
-                    # record already exists this is the first point at which
-                    # independent Markdown identity evidence is available.
-                    try:
-                        from src.metadata.pdf_identity import extract_pdf_identity_evidence
-                        from src.metadata.pdf_match import build_match_receipt, write_match_receipt
-                        from src.metadata.freeze import freeze_metadata
-                        from src.metadata.freeze import assert_metadata_frozen
-                        from src.ingest.status import update_status
-                        from src.ingest.workspace import PaperRawWorkspace
-                        folder = args.paper_raw_dir / source_id
-                        metadata_path = folder / f"{source_id}.metadata.json"
-                        pdf_path = folder / f"{source_id}.pdf"
-                        if metadata_path.exists() and pdf_path.exists():
-                            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                            freeze_path=folder/f"{source_id}.metadata_freeze.json"
-                            if freeze_path.exists():
-                                assert_metadata_frozen(folder,source_id)
-                                item["metadata_frozen"]=True
-                            else:
-                                evidence = extract_pdf_identity_evidence(
-                                    pdf_path=pdf_path,
-                                    markdown_path=folder / f"{source_id}.md",
-                                    conversion_manifest_path=folder / f"{source_id}.conversion.json",
-                                )
-                                provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
-                                receipt = build_match_receipt(folder, source_id, metadata, evidence,
-                                                              requested_doi=((metadata.get("identifiers") or {}).get("doi") or ""),provider_records=[provider_record] if provider_record else [])
-                                write_match_receipt(folder, receipt)
-                                item["metadata_match_method"] = receipt["match_method"]
-                                if receipt["match_status"] in {"matched","manual_confirmed"}:
-                                    frozen=freeze_metadata(folder, source_id); update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
-                                    item["metadata_frozen"] = True
-                                else:
-                                    update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=receipt["match_method"])
-                                    item["metadata_match_status"] = receipt["match_status"]
-                    except Exception as exc:
-                        item.setdefault("warnings", []).append(f"metadata match/freeze deferred: {exc}")
-                else:
-                    item["status"] = "failed"
-                    item["stage"] = "failed"
-            except Exception as exc:
-                item.update({"status": "failed", "stage": "failed", "error": str(exc)})
-                logger.error("convert failed for {}: {}", source_id, exc)
-            if item["status"] == "failed":
-                item.update(_lock_fields_after_wait(item_started, args.lock_stuck_warn_seconds))
-            # On failure, capture API health so the report explains WHY (e.g.
-            # API healthy but task failed) rather than leaving it in stderr.
-            if item["status"] == "failed" and api_health_before is not None:
-                item["api_health_before"] = api_health_before
-                try:
-                    from src.mineru_runtime import snapshot_mineru_api
-                    item["api_health_after"] = snapshot_mineru_api(cfg.api_url)
-                except Exception as exc:
-                    item["api_health_after"] = {"api_available": False, "error": str(exc)}
-            if cfg.runner == MinerURunner.CLI_API_PROXY and source_id in source_ids_needing_runtime:
-                try:
-                    from src.mineru_runtime import snapshot_mineru_api
-                    api_after_item = snapshot_mineru_api(cfg.api_url)
-                except Exception as exc:
-                    api_after_item = {"api_available": False, "error": str(exc)}
-        else:
-            api_after_item = api_before_item
-        _finish_item(item, item_started, api_before_item, api_after_item)
-        report.append(item)
+                api_after_item = {"api_available": False, "error": str(exc)}
+    else:
+        api_after_item = api_before_item
+    _finish_item(item, item_started, api_before_item, api_after_item)
+    return item
+
+
+def _emit_report(
+    args: argparse.Namespace,
+    cfg,
+    write: bool,
+    report: list[dict],
+    source_ids_needing_runtime: list[str],
+    runtime: dict | None,
+    api_health_before: dict | None,
+) -> int:
+    """Collect post-batch API health, persist/print the payload, return exit code."""
+    from src.mineru.runtime import MinerURunner
 
     # Post-batch API health + warning when the API is healthy but tasks failed.
     api_health_after = None
     api_warning = ""
     if cfg.runner == MinerURunner.CLI_API_PROXY and source_ids_needing_runtime:
         try:
-            from src.mineru_runtime import snapshot_mineru_api, mineru_api_failed_task_warning
+            from src.mineru.runtime import snapshot_mineru_api, mineru_api_failed_task_warning
             api_health_after = snapshot_mineru_api(cfg.api_url)
             api_warning = mineru_api_failed_task_warning(api_health_after) or mineru_api_failed_task_warning(api_health_before)
         except Exception as exc:
@@ -694,6 +634,50 @@ def main() -> int:
         args.report.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if any(i["status"] == "failed" for i in report) else 0
+
+
+def main() -> int:
+    args = _parse_args()
+    _apply_env_flags(args)
+
+    write = args.apply and not args.dry_run
+    source_ids = _source_ids(args.paper_raw_dir, args)
+
+    from src.mineru.runtime import runtime_config_from_env
+    cfg = runtime_config_from_env()
+    _warn_missing_smoke(args, write)
+    converter = _build_converter(args)
+    skip_existing = not args.no_skip_existing
+    inspections, asset_gates, cache_inspections, source_ids_needing_runtime = _plan_batch(
+        args, converter, source_ids, skip_existing
+    )
+    runtime, runtime_failure, api_health_before, exit_code = _gate_runtime(
+        args, cfg, write, source_ids, source_ids_needing_runtime
+    )
+    if exit_code is not None:
+        return exit_code
+
+    report = []
+    for source_id in source_ids:
+        report.append(_convert_one(
+            source_id,
+            args=args,
+            cfg=cfg,
+            write=write,
+            skip_existing=skip_existing,
+            converter=converter,
+            inspections=inspections,
+            asset_gates=asset_gates,
+            cache_inspections=cache_inspections,
+            source_ids_needing_runtime=source_ids_needing_runtime,
+            runtime=runtime,
+            runtime_failure=runtime_failure,
+            api_health_before=api_health_before,
+        ))
+
+    return _emit_report(
+        args, cfg, write, report, source_ids_needing_runtime, runtime, api_health_before
+    )
 
 
 if __name__ == "__main__":

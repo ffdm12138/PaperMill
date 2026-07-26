@@ -97,22 +97,22 @@ def test_status_ok():
 
 
 def test_status_runtime_ok(monkeypatch):
-    from src.mineru_runtime import MinerURuntimeHealth
+    from src.mineru.runtime import MinerURuntimeHealth
 
     monkeypatch.setattr(
-        "src.mineru_runtime.preflight_gpu",
+        "src.mineru.runtime.preflight_gpu",
         lambda: MinerURuntimeHealth(ok=True, runner="cli", message="gpu ok", nvidia_smi=True),
     )
     monkeypatch.setattr(
-        "src.mineru_runtime.preflight_torch_cuda",
+        "src.mineru.runtime.preflight_torch_cuda",
         lambda: type("TorchHealth", (), {"ok": True, "message": "torch ok"})(),
     )
     monkeypatch.setattr(
-        "src.mineru_runtime.preflight_mineru_cli",
+        "src.mineru.runtime.preflight_mineru_cli",
         lambda exe: MinerURuntimeHealth(ok=True, runner="cli", message="cli ok", cli_available=True),
     )
     monkeypatch.setattr(
-        "src.mineru_runtime.preflight_mineru_api",
+        "src.mineru.runtime.preflight_mineru_api",
         lambda url: MinerURuntimeHealth(ok=True, runner="api", message="api ok", api_available=True),
     )
 

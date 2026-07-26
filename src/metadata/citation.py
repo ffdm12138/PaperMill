@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from src.metadata.schema import first_author_family
-from src.naming import sanitize_paper_name
+from src.utils.naming import sanitize_paper_name
 
 
 def _field(metadata: dict, path: tuple[str, ...], default: Any = "") -> Any:

@@ -6,7 +6,7 @@ import pytest
 
 from src.catalog.freeze import assert_catalog_frozen,freeze_catalog
 from src.catalog.task import build_task_envelope,write_task_envelope
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.ingest.commit import commit_paper_raw
 from src.ingest.commit_recovery import reconcile_commits
 from src.ingest.formalization import write_formalization_plan

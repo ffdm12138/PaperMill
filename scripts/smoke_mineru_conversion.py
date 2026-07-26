@@ -13,12 +13,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_RAW_DIR, PROJECT_ROOT
-from src.mineru_runtime import (
+from src.mineru.runtime import (
     activate_formal_gpu_env,
     runtime_config_from_env,
     snapshot_mineru_api,
 )
-from src.mineru_service_manager import verify_gpu_runtime
+from src.mineru.service_manager import verify_gpu_runtime
 from src.utils.identifiers import validate_paper_raw_id
 from src.ingest.paper_raw import PaperRawConverter
 from src.utils.atomic_io import atomic_write_json

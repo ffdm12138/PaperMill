@@ -1,5 +1,45 @@
 # Project status
 
+## Architecture consolidation + writing skills (2026-07-27)
+
+Full-scope structural cleanup executed as gated stages on `main`, each stage
+passing the fast acceptance gate:
+
+- Package homes finalized: MinerU runtime modules form `src/mineru/`
+  (converter/cleaner/runtime/lock/service_manager/smoke), Path-A staging forms
+  `src/staging/` (network metadata staging + canonicalization), and
+  `src/services/` is fully dissolved (admin → `src/ingest/`, paper_library →
+  `src/catalog_folders/`, repository_hygiene → `src/utils/`, bib →
+  `src/writer/`). Root leaves (naming, path_utils, file_fingerprint,
+  logging_setup) joined `src/utils/`; `src/` root now holds only `server.py`
+  and `prompt_builder.py`.
+- The layering guard (`tests/hygiene/test_layering.py`) is strict: the old
+  bidirectional `root` wildcard is gone, function-body (lazy) imports are
+  scanned, every `ALLOWED` edge must point strictly downward, and all cycles
+  exist only as reasoned `SANCTIONED`/`SANCTIONED_LATE` seams. Nothing may
+  import root.
+- Single-sourcing extended: canonical-JSON hashing (`src/utils/canonical_json.py`,
+  Family-A sites only — persisted non-canonical encodings carry explicit
+  do-not-unify comments), process-liveness (`src/utils/process.py`), placeholder
+  markers (`src/writer/safe_write.TODO_MARKERS`), and six same-shape inline
+  timestamp implementations.
+- The seven largest functions were decomposed behavior-preserving
+  (coordinator batch run, both pending-queue drains, resume_commit per journal
+  phase, relevance-profile planning, service start, batch-convert main), and
+  script-embedded engines sank into `src/` (reset-state audit →
+  `src/discovery/audits/`, conversion gates → `src/ingest/conversion_gates.py`,
+  fetch candidate policy → `src/fetch/access_policy.py`, rollback target
+  discovery → `src/ingest/rollback.py`) with byte-compatible CLI surfaces.
+- Change governance now lives in Chinese under `md/` (indexed by
+  `md/README.md`, roadmap in `md/06_refactor_roadmap.md`); the hygiene suite
+  scans `md/` like `docs/` and the snapshot packs it.
+- Two writing skills landed on the write-job pipeline:
+  `catalog_review_writer` (topic review + research gaps + directions) and
+  `catalog_research_proposal_writer` (review → methods → planned
+  results/data-analysis), with `create_write_job.py --workflow`,
+  `export_write_job_bib.py`, `check_write_planning_docs.py`, JSON-schema'd
+  plans, and companion hygiene tests. Citations remain Metadata-only.
+
 ## Productionization (2026-07-26)
 
 Single-day production hardening pass, executed as nine gated stages on
@@ -13,7 +53,9 @@ Single-day production hardening pass, executed as nine gated stages on
   finalization, one-shot repair scripts, the duplicate Gradio UI, orphan
   configs) with reintroduction tombstones in the verifier and contract tests.
 - Single-sourced utilities (`src/utils/`: identifiers, timestamps, jsonio,
-  atomic_io, fs, rate_limit); all persisted timestamps are timezone-aware.
+  atomic_io, fs, rate_limit); timezone-aware persistence is the contract
+  (the legacy writer-family naive stamps are a tracked proposal, see
+  `md/06_refactor_roadmap.md`).
 - Layered packages enforced by `tests/hygiene/test_layering.py` (see
   `docs/ARCHITECTURE.md`); the four historical import cycles are gone; the
   paper_raw write lock has a single ranked acquisition point; the resolver's

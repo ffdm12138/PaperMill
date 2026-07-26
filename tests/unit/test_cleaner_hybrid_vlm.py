@@ -1,7 +1,7 @@
 """测试 cleaner hybrid_auto/vlm_auto 目录兼容 + backend 优先级"""
 import tempfile
 from pathlib import Path
-from src.cleaner import MinerUOutputCleaner
+from src.mineru.cleaner import MinerUOutputCleaner
 
 
 def _make(path: Path, content: str = "# test"):

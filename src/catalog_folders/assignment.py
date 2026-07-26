@@ -5,7 +5,7 @@ from pathlib import Path
 
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
 from src.catalog_folders.formal_registry import FormalPaper
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 
 
 def load_assignment(path: Path) -> dict | None:

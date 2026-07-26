@@ -19,7 +19,7 @@ inside an unpacked snapshot must never create runtime data directories.
 from __future__ import annotations
 
 from config.settings import ensure_runtime_dirs, validate_settings
-from src.logging_setup import configure_logging
+from src.utils.logging_setup import configure_logging
 
 
 def init_runtime() -> None:

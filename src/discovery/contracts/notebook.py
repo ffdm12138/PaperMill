@@ -473,6 +473,8 @@ def composite_backfill_signature(
             "crossref": {"backfill_sort": crossref_backfill_sort or ""},
         },
     }
+    # Persisted 16-hex identity with DEFAULT json separators — do NOT swap to
+    # src.utils.canonical_json (compact separators would change stored hashes).
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 

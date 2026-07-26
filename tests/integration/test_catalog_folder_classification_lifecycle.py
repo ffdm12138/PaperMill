@@ -535,7 +535,7 @@ def test_reconcile_paper_membership_single_paper(catalog_env):
         "schema_version": "1.0",
         "paper_number": paper.paper_number,
         "paper_name": paper.paper_name,
-        "catalog_sha256": __import__("src.file_fingerprint", fromlist=["compute_sha256"]).compute_sha256(paper.catalog_path),
+        "catalog_sha256": __import__("src.utils.file_fingerprint", fromlist=["compute_sha256"]).compute_sha256(paper.catalog_path),
         "decisions": {
             cats[0].category_id: {
                 "category_definition_sha256": cats[0].definition_sha256,

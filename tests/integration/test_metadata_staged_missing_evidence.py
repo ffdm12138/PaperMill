@@ -9,7 +9,7 @@ from src.discovery.stage_transaction import DiscoveryStageTransaction
 from src.discovery.workspace_registry import build_workspace_registry
 from src.ingest.paper_raw import PaperRawAllocator
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 from tests.factories.discovery_factory import create_discovery_candidate
 from tests.factories.paper_raw_factory import create_network_metadata_workspace
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import argparse,json,sys
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 from config.settings import PAPER_RAW_DIR
 from src.catalog.task import write_task_envelope

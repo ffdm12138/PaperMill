@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.services.repository_hygiene import (
+from src.utils.repository_hygiene import (
     is_allowed_runtime_placeholder,
     is_forbidden_git_member,
     is_forbidden_snapshot_member,

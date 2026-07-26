@@ -53,12 +53,12 @@ audit/repair. Discovery still rejects every `complete=False` Registry.
     Audit fixtures must be synthetic and live under
     ``tests/fixtures/synthetic_library``. Source snapshot packaging follows a
     strict runtime-zero policy defined in
-    ``src/services/repository_hygiene.py``.
+    ``src/utils/repository_hygiene.py``.
 14. Source-record provider names must be normalized through
     ``normalize_provider_slug()`` and validated by resolved containment before
     any filesystem write. Metadata ``raw_record_path`` must be a POSIX-relative
     path under ``source_records/``.
-15. ``PaperLibrary`` is defined only at ``src.services.paper_library``. No
+15. ``PaperLibrary`` is defined only at ``src.catalog_folders.paper_library``. No
     compatibility wrapper or alternate import path should exist.
 16. Formalization application entry is ``scripts/formalize_paper_raw.py``
     calling ``src.ingest.formalization`` directly — no facade layer between

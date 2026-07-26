@@ -7,7 +7,7 @@ from pathlib import Path
 from config.settings import PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.naming import safe_child, validate_image_name
+from src.utils.naming import safe_child, validate_image_name
 
 
 class PaperLibrary:

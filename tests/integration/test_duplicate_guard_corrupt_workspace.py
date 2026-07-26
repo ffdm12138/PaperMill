@@ -1,7 +1,7 @@
 """Corrupt registry facts fail closed before allocation."""
 from pathlib import Path
 
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 from tests.factories.paper_raw_factory import create_network_metadata_workspace
 
 

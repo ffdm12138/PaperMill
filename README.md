@@ -20,8 +20,9 @@ Read [project status](docs/PROJECT_STATUS.md),
 [testing](docs/TESTING.md), [script index](docs/SCRIPT_USAGE.md),
 [agent rules](AGENTS.md), [mirrored agent rules](CLAUDE.md),
 [dependencies](docs/DEPENDENCIES_AND_EXTERNAL_TOOLS.md),
-[writing acceptance](docs/WRITING_QUALITY_ACCEPTANCE.md), and
-[writer plan](docs/WRITER_PRODUCTIZATION_PLAN.md).
+[writing acceptance](docs/WRITING_QUALITY_ACCEPTANCE.md),
+[writer plan](docs/WRITER_PRODUCTIZATION_PLAN.md), and
+[change governance (Chinese)](md/README.md).
 
 ## Ingest
 

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "paper_raw metadata patch (resolver)",
-  "description": "Patch produced by the paper_raw_metadata_resolver skill. It is merged into the existing metadata via src/services/v2_library.py::merge_missing_metadata(), which fills ONLY empty fields and preserves trusted non-empty fields. Conflicts are recorded as warnings, never overwritten. DOI must come from the PDF/Markdown/filename or an authoritative network source — never fabricated. STRICT: additionalProperties is false. Legacy fields are FORBIDDEN here: title.short_zh, title.translated_zh, abstract, keywords, notes, bibtex, citation_key, source.raw_record (use source.raw_record_path only), content_title, md_title_candidates. Chinese titles belong in catalog (content_identity.content_title_zh), never in metadata.",
+  "description": "Patch produced by the paper_raw_metadata_resolver skill. It is merged into the existing metadata via src/metadata/normalization.py::merge_missing_metadata(), which fills ONLY empty fields and preserves trusted non-empty fields. Conflicts are recorded as warnings, never overwritten. DOI must come from the PDF/Markdown/filename or an authoritative network source — never fabricated. STRICT: additionalProperties is false. Legacy fields are FORBIDDEN here: title.short_zh, title.translated_zh, abstract, keywords, notes, bibtex, citation_key, source.raw_record (use source.raw_record_path only), content_title, md_title_candidates. Chinese titles belong in catalog (content_identity.content_title_zh), never in metadata.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

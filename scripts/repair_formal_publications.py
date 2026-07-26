@@ -26,7 +26,7 @@ from src.library.formal_publication import (
     publish_formal_publication_state_unlocked,
     publication_state_path,
 )
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.ingest.locking import (
     INDEX_PUBLISH_RANK,
     LEDGER_RANK,
@@ -37,7 +37,7 @@ from src.ingest.locking import (
 )
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.library.validation import validate_formal_paper
-from src.path_utils import resolve_stored_path
+from src.utils.path_utils import resolve_stored_path
 from src.utils.atomic_io import atomic_write_json
 
 

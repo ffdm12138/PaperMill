@@ -1,7 +1,7 @@
 """测试 cleaner：Markdown 定位、覆盖保护、多候选处理"""
 import tempfile
 from pathlib import Path
-from src.cleaner import MinerUOutputCleaner
+from src.mineru.cleaner import MinerUOutputCleaner
 
 
 def test_locate_markdown_finds_md():

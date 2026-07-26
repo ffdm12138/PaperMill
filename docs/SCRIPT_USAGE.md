@@ -33,7 +33,6 @@ actions, never discovery staging.
 | `claim_catalog_classification_tasks.py` | list next unapplied tasks for a worker | no |
 | `reconcile_catalog_folders.py` | rebuild folder links from authoritative state | `--apply` |
 | `doctor_catalog_folders.py` | audit writer safety and folder integrity | no |
-| `reconcile_discovery_v4_migration.py` | per-seed post-cutover reconciliation of a finalized v4 migration against paper_raw; writes strict seed receipts under `data/discovery/migrations/<id>.receipts/` | dry-run by default; receipts with `--apply` |
 | `show_catalog_classification_progress.py` | report classification completion status | no |
 | `rollback_formal_papers_to_paper_raw.py` | recoverable formal-to-numeric-raw rollback | `--apply` |
 | `validate_v2_library.py` | validate formal Catalog v3.2 library/index closure | no |
@@ -185,6 +184,7 @@ audit_third_party_licenses.py
 benchmark_mineru.py
 check_directory_hygiene.py
 check_mineru_processes.py
+check_write_planning_docs.py
 check_write_quality_text.py
 check_write_tex_project.py
 commit_paper_raw_to_papers.py
@@ -200,6 +200,7 @@ compare_discovery_relevance.py
 doctor_ingest_pipeline.py
 doctor_write_pipeline.py
 export_job_bib.py
+export_write_job_bib.py
 fetch_pdf_for_paper_raw.py
 formalize_paper_raw.py
 freeze_paper_raw_metadata.py

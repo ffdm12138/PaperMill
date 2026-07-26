@@ -10,7 +10,7 @@ from loguru import logger
 
 from src.metadata.citation_readiness import citation_key_from_metadata, validate_citation_ready
 from src.metadata.citation import bibtex_from_metadata
-from src.naming import sanitize_paper_name
+from src.utils.naming import sanitize_paper_name
 
 
 def _entry_type_and_key(block: str) -> tuple[str, str]:
@@ -60,7 +60,7 @@ def _resolve_metadata(entry: dict) -> dict:
     pid = entry.get("paper_name")
     if number or pid:
         try:
-            from src.services.paper_library import PaperLibrary
+            from src.catalog_folders.paper_library import PaperLibrary
             lib = PaperLibrary()
             m = lib.load_metadata(number) if number else None
             if not m and pid:

@@ -88,6 +88,8 @@ def compute_checksum(data: dict[str, Any]) -> str:
 
 
 def _canonical_json_bytes(obj: Any) -> bytes:
+    # Persisted checksum encoding uses indent=2 — do NOT swap to
+    # src.utils.canonical_json (compact separators would change stored hashes).
     import json
     return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
 

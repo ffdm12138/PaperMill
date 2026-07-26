@@ -9,7 +9,7 @@ from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.contracts.page_journal import INITIAL_CURSOR, request_signature
 from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json
 

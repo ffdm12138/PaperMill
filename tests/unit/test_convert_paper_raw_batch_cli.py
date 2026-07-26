@@ -58,14 +58,14 @@ def _add_conversion_assets(paper_raw: Path, *source_ids: str) -> None:
 
 
 def _patch_preflights(monkeypatch, *, api_available=True):
-    monkeypatch.setattr("src.mineru_runtime.preflight_gpu", lambda: _health())
-    monkeypatch.setattr("src.mineru_runtime.preflight_torch_cuda", lambda: _torch_health())
+    monkeypatch.setattr("src.mineru.runtime.preflight_gpu", lambda: _health())
+    monkeypatch.setattr("src.mineru.runtime.preflight_torch_cuda", lambda: _torch_health())
     monkeypatch.setattr(
-        "src.mineru_runtime.preflight_mineru_api",
+        "src.mineru.runtime.preflight_mineru_api",
         lambda api_url: _health(api_available, "api ok" if api_available else "api down", api_available=api_available),
     )
     monkeypatch.setattr(
-        "src.mineru_runtime.snapshot_mineru_api",
+        "src.mineru.runtime.snapshot_mineru_api",
         lambda api_url=None, timeout=5.0: {"api_available": api_available, "status": "healthy" if api_available else ""},
     )
 
@@ -286,9 +286,9 @@ def test_missing_metadata_shell_dry_run_does_not_run_runtime_preflight(monkeypat
     def fail_if_called(*args, **kwargs):
         raise AssertionError("runtime preflight should not run for asset-gated dry-run")
 
-    monkeypatch.setattr("src.mineru_runtime.preflight_gpu", fail_if_called)
-    monkeypatch.setattr("src.mineru_runtime.preflight_torch_cuda", fail_if_called)
-    monkeypatch.setattr("src.mineru_runtime.preflight_mineru_api", fail_if_called)
+    monkeypatch.setattr("src.mineru.runtime.preflight_gpu", fail_if_called)
+    monkeypatch.setattr("src.mineru.runtime.preflight_torch_cuda", fail_if_called)
+    monkeypatch.setattr("src.mineru.runtime.preflight_mineru_api", fail_if_called)
 
     rc = _run_batch(monkeypatch, paper_raw, "--all", "--dry-run")
 
@@ -300,7 +300,7 @@ def test_gpu_wrapper_all_apply_requires_smoke(monkeypatch, tmp_path, capsys):
     _add_conversion_assets(paper_raw, PN1)
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
-    monkeypatch.setattr("src.mineru_smoke.DEFAULT_SMOKE_REPORT", tmp_path / "missing_smoke.json")
+    monkeypatch.setattr("src.mineru.smoke.DEFAULT_SMOKE_REPORT", tmp_path / "missing_smoke.json")
 
     rc = _run_wrapper(monkeypatch, paper_raw, "--all", "--apply")
     captured = capsys.readouterr()
@@ -346,7 +346,7 @@ def test_gpu_wrapper_valid_default_smoke_allows_formal_batch(monkeypatch, tmp_pa
     smoke = tmp_path / "reports" / "smoke_mineru_conversion.json"
     smoke.parent.mkdir(parents=True)
     _valid_smoke(smoke)
-    monkeypatch.setattr("src.mineru_smoke.DEFAULT_SMOKE_REPORT", smoke)
+    monkeypatch.setattr("src.mineru.smoke.DEFAULT_SMOKE_REPORT", smoke)
     monkeypatch.setenv("MINERU_RUNNER", "cli_api_proxy")
     monkeypatch.setenv("MINERU_API_URL", "http://127.0.0.1:8000")
     monkeypatch.setenv("MINERU_REQUIRE_GPU", "true")
@@ -443,7 +443,7 @@ def test_batch_failed_item_reports_lock_owner(monkeypatch, tmp_path):
             return {"success": False, "error": "MinerU lock busy: held by PID 46416"}
 
     monkeypatch.setattr(batch, "PaperRawConverter", FakeConverter)
-    monkeypatch.setattr("src.mineru_lock.read_mineru_lock_status", lambda **kwargs: {
+    monkeypatch.setattr("src.mineru.lock.read_mineru_lock_status", lambda **kwargs: {
         "owner_pid": 46416,
         "paper_number": PN2,
         "age_seconds": 2935,

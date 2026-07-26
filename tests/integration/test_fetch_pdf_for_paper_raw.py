@@ -5,10 +5,10 @@ import runpy
 import sys
 from pathlib import Path
 
+from src.fetch.access_policy import classify_pdf_fetch_candidate
 from src.fetch.models import FetchResult
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.metadata.schema import empty_metadata
-from scripts.fetch_pdf_for_paper_raw import classify_pdf_fetch_candidate
 
 
 REPO = Path(__file__).resolve().parent.parent.parent

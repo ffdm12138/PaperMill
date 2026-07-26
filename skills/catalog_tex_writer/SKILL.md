@@ -28,7 +28,7 @@ Do not read `data/paper_raw`, `data/raw`, or non-job-local data paths directly.
 
 - Output TeX only under `write/jobs/<job_id>/tex/`.
 - Generate `references.bib` only from metadata, preferably through
-  `bibtex_from_metadata()` or `src.bib.bibtex_for_entry()`.
+  `bibtex_from_metadata()` or `src.writer.bib.bibtex_for_entry()`.
 - Every `\cite{}` key in TeX must exist in `references.bib`.
 - Every `references.bib` entry must have a DOI. If evidence is insufficient,
   write a TODO or report the shortage instead of inventing facts.

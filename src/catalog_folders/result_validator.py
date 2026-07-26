@@ -12,7 +12,7 @@ from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
 from src.catalog_folders.registry import load_categories, now_iso
 from src.catalog_folders.task_planner import canonical_hash
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.utils.atomic_io import atomic_write_json, atomic_write_json_unlocked
 
 

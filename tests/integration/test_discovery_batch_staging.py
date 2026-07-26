@@ -13,7 +13,7 @@ from src.discovery.pending_queue import drain_pending_candidates
 from src.discovery.staging_gateway import MetadataStagingGateway
 from src.discovery.staging_context import DiscoveryStagingContext
 from src.discovery.staging_metrics import CollectingStagingMetricsObserver
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 
 pytestmark = pytest.mark.integration
 PROFILE_HASH = "test-active-profile"

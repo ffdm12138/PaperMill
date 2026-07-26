@@ -271,7 +271,7 @@ OpenAlex API calls use two optional environment variables for polite pool / API 
 
 **Contract:**
 - Only read from process environment variables. No `.env` file, no config file, no file-based fallback.
-- Load once per request via `src.services.openalex_credentials.load_openalex_credentials()`.
+- Load once per request via `src.fetch.openalex_credentials.load_openalex_credentials()`.
 - Missing or empty variables → anonymous access (not an error).
 - Consumers (`src.discovery.search_openalex`, `src.fetch.fetch_openalex`) import from the centralized module, never read `os.environ` directly.
 - Credential values (email, API key) must never appear in logs, error messages, reports, or snapshot output. Use `safe_summary()` or `safe_request_error_summary()` for diagnostics.

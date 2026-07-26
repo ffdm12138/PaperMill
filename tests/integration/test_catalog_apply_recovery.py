@@ -19,7 +19,7 @@ from src.catalog_folders.registry import load_categories, sync_registry
 from src.catalog_folders.reconcile import reconcile_catalog_folders
 from src.catalog_folders.result_validator import apply_result
 from src.catalog_folders.task_planner import plan_tasks, canonical_hash
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 

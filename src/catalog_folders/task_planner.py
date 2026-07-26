@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -9,15 +8,15 @@ from src.catalog_folders.assignment import load_assignment, valid_decisions
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
 from src.catalog_folders.registry import load_categories
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.utils.atomic_io import atomic_write_json
+from src.utils.canonical_json import canonical_sha256
 
 CATALOG_CLASSIFICATION_MAX_CATEGORIES_PER_TASK = 20
 
 
 def canonical_hash(value: dict) -> str:
-    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return canonical_sha256(value)
 
 
 def _task_id_from_body(body: dict, batch_ordinal: int) -> str:

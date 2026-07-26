@@ -7,7 +7,7 @@ import pytest
 import json
 import uuid
 
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.ingest.commit import commit_paper_raw
 from src.ingest.formalization import write_formalization_plan
 from src.ingest.rollback import rollback_formal_papers

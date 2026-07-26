@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -30,6 +30,7 @@ from config.settings import (  # noqa: E402
     CATALOG_STATE_ROOT,
 )
 from src.catalog_folders.registry_schema import validate_registry_schema  # noqa: E402
+from src.utils.timestamps import utc_now_iso  # noqa: E402
 from src.discovery.backfill_state import (  # noqa: E402
     REASON_CURSOR_ADVANCED,
     REASON_CURSOR_CONFLICTS,
@@ -72,7 +73,7 @@ COMMITTED_PAGE_STATES = frozenset({"cursor_committed", "draining", "drained"})
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now_iso()
 
 
 def _relative(path: Path, base: Path = PROJECT_ROOT) -> str:

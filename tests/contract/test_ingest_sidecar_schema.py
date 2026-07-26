@@ -49,7 +49,7 @@ def _stage_manual(tmp_path: Path) -> tuple[Path, Path, str]:
 def _stage_network_metadata(tmp_path: Path, doi: str = "10.1000/net-meta") -> tuple[Path, Path, str]:
     """Stage network metadata (no PDF); return (paper_raw_dir, workspace_folder, paper_number)."""
     paper_raw = tmp_path / "paper_raw"
-    from src.services.network_metadata_staging import stage_network_metadata_records
+    from src.staging.network_metadata_staging import stage_network_metadata_records
     report = stage_network_metadata_records(
         [{"title": "Network Metadata Paper", "year": 2024, "doi": doi,
           "provider": "crossref"}],

@@ -261,6 +261,391 @@ def _validate_discovery_options(
         raise ValueError("skip_duplicates=True requires stage_to_paper_raw=True")
 
 
+def _collect_active_profiles(notebook: Any) -> tuple[dict[str, str], str]:
+    """Collect enabled-notebook profile hashes; readiness failures fail closed."""
+    active_profiles: dict[str, str] = {}
+    global_error = ""
+    try:
+        for summary in notebook.list_keywords():
+            if not summary["enabled"]:
+                continue
+            current = notebook.require_v4(str(summary["keyword_zh"]))
+            readiness = validate_discovery_readiness(current)
+            if not readiness:
+                raise RuntimeError(
+                    f"enabled notebook {current['keyword_zh']!r} is not discovery-ready: "
+                    + "; ".join(readiness.errors)
+                )
+            active_profiles[str(current["keyword_id"])] = str(
+                current["relevance_profile"]["profile_hash"]
+            )
+    except (RuntimeError, NotebookCorruptError, UnsupportedNotebookSchemaError) as exc:
+        global_error = str(exc)
+    return active_profiles, global_error
+
+
+def _failed_batch_report(
+    builder: ReportBuilder,
+    *,
+    keyword_inputs: list,
+    page_budget: Any,
+) -> "BatchDiscoveryReport":
+    """Build an early-failure batch report with no lane outcomes and zero telemetry."""
+    return builder.build(
+        keyword_inputs=keyword_inputs,
+        lane_outcomes=(),
+        page_budget_snapshot=page_budget.snapshot(),
+        telemetry_snapshot={"attempted": 0, "retried": 0, "succeeded": 0, "failed": 0,
+                            "by_provider_purpose": {}},
+        pipeline_metrics=DiscoveryPipelineMetrics().to_dict(),
+    )
+
+
+def _attribute_journal_corruption(
+    exc: Exception,
+    *,
+    pages_root: Path,
+    page_schema_version: str,
+    keywords: list[str],
+    options: "DiscoveryOptions",
+    KeywordReportInput: Any,
+) -> list:
+    """Attribute journal corruption to keywords, failing every keyword when unreliable."""
+    # v4: per-keyword isolation — attribute journals whose schema is not
+    # the active v4 page schema to their keyword_zh so only those keywords
+    # receive repair_required.  Unaffected keywords continue normally.
+    # When attribution is impossible or unreliable, every keyword receives
+    # the error (fail closed).
+    error_msg = f"provider_page_journal_repair_required:{exc}"
+    affected_keywords: set[str] = set()
+    attribution_reliable = True
+    try:
+        for path in sorted(pages_root.rglob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                # An unreadable journal makes per-keyword attribution
+                # unreliable; fail all keywords instead of guessing.
+                attribution_reliable = False
+                break
+            if isinstance(data, dict):
+                schema_ver = str(data.get("schema_version") or "")
+                if schema_ver != page_schema_version:
+                    kw = str(data.get("keyword_zh", "") or "")
+                    if kw:
+                        affected_keywords.add(kw)
+    except OSError:
+        attribution_reliable = False
+    if not attribution_reliable:
+        affected_keywords.clear()
+
+    keyword_inputs: list[KeywordReportInput] = []
+    for keyword in keywords:
+        is_affected = keyword in affected_keywords
+        keyword_inputs.append(KeywordReportInput(
+            keyword_zh=keyword,
+            keyword_id=make_keyword_id(keyword),
+            mode=options.mode,
+            errors=(error_msg,) if is_affected else (),
+            terminal_status="repair_required" if is_affected else None,
+        ))
+    # If no keywords were attributed (or attribution failed), fail all
+    if not affected_keywords:
+        keyword_inputs = [KeywordReportInput(
+            keyword_zh=keyword,
+            keyword_id=make_keyword_id(keyword),
+            mode=options.mode,
+            errors=(error_msg,),
+            terminal_status="repair_required",
+        ) for keyword in keywords]
+    return keyword_inputs
+
+
+# deferred relevance retry helper
+def _retry_due_deferred(
+    keyword_id: str,
+    profile: dict,
+    *,
+    journal: Any,
+    runtime: Any,
+    scope_verifier: Any,
+) -> None:
+    """Re-evaluate due verification_deferred relevance verdicts for one keyword."""
+    now = datetime.now(timezone.utc)
+    for ref in journal.list_pages([keyword_id]):
+        if ref.state not in {"cursor_committed", "draining"}:
+            continue
+        page = journal.read(ref.path)
+        due = [
+            c for c in page.get("candidates", [])
+            if isinstance(c.get("relevance"), dict)
+            and c["relevance"].get("state") == "verification_deferred"
+            and c["relevance"].get("profile_hash") == profile.get("profile_hash")
+            and (
+                not c["relevance"].get("next_retry_at")
+                or (parse_iso(c["relevance"].get("next_retry_at")) or now) <= now
+            )
+        ]
+        if not due:
+            continue
+        decisions = evaluate_page_candidates(
+            due, profile,
+            provider=str(page["provider"]),
+            scope_verifier=scope_verifier,
+        )
+        updated = journal.retry_deferred_relevance(ref.path, decisions)
+        updated_candidates = [
+            c for c in updated["candidates"]
+            if str(c.get("candidate_id") or "") in decisions
+        ]
+        runtime.journal_index.apply_relevance_updates(ref.path, updated_candidates)
+        runtime.metrics.relevance_incremental_updates += len(updated_candidates)
+    runtime.journal_index.assert_active_bindings(
+        runtime.active_relevance_profiles.by_keyword_id)
+    runtime.metrics.sync_journal(runtime.journal_index)
+
+
+def _finalize_page_relevance(
+    page_path: Path,
+    profile: dict,
+    provider: str,
+    *,
+    journal: Any,
+    scope_verifier: Any,
+) -> dict:
+    """Evaluate relevance decisions for every candidate on one journal page."""
+    page = journal.read(page_path)
+    return evaluate_page_candidates(
+        page.get("candidates") or [], profile,
+        provider=provider, scope_verifier=scope_verifier,
+    )
+
+
+def _on_refresh_page_persisted(
+    page_path: Path,
+    page_data: dict,
+    *,
+    profile: dict,
+    provider: str,
+    finalize_page_relevance: Any,
+    journal: Any,
+    runtime: Any,
+) -> None:
+    """Finalize relevance, commit the cursor, and index a persisted refresh page."""
+    decisions = finalize_page_relevance(page_path, profile, provider)
+    journal.finalize_relevance(page_path, decisions)
+    committed = journal.mark_cursor_committed(page_path)
+    runtime.journal_index.add_page(page_path, committed)
+    runtime.metrics.journal_pages_written += 1
+    runtime.metrics.page_fsyncs += 1
+
+
+def _prepare_keyword_records(
+    keywords: list[str],
+    *,
+    notebook: Any,
+    drain: Any,
+    runtime: Any,
+    options: "DiscoveryOptions",
+    retry_due_deferred: Any,
+) -> list[dict]:
+    """Load, validate, initially drain, and backpressure-check each keyword."""
+    records: list[dict] = []
+    for keyword in keywords:
+        record: dict = {
+            "keyword": keyword, "keyword_id": make_keyword_id(keyword),
+            "nb": None, "initial": DrainReport(), "final": DrainReport(),
+            "backpressure": False, "errors": [], "terminal_status": None,
+        }
+        try:
+            nb = notebook.require_v4(keyword)
+            record["keyword_id"] = nb["keyword_id"]
+            if not nb["enabled"]:
+                record["terminal_status"] = "skipped"
+            else:
+                readiness = validate_discovery_readiness(nb)
+                if not readiness:
+                    record["terminal_status"] = "failed"
+                    record["errors"].append("; ".join(readiness.errors))
+                else:
+                    retry_due_deferred(nb["keyword_id"], nb["relevance_profile"])
+                    initial = drain.drain(nb["keyword_id"], min(16, options.max_candidates), phase="initial")
+                    record["initial"] = initial
+                    pending_count = runtime.journal_index.pending_count([nb["keyword_id"]])
+                    state = notebook.update_backpressure(
+                        keyword, pending_count=pending_count,
+                        max_threshold=options.max_pending_candidates,
+                        resume_threshold=options.resume_pending_candidates,
+                    )
+                    record["backpressure"] = bool(state.get("active"))
+                    if record["backpressure"]:
+                        initial.backpressure = True
+                    record["nb"] = nb
+        except (FileNotFoundError, NotebookCorruptError, UnsupportedNotebookSchemaError, RuntimeError) as exc:
+            record["terminal_status"] = "failed"
+            record["errors"].append(str(exc))
+        records.append(record)
+    return records
+
+
+def _build_lane_specs(
+    records: list[dict],
+    *,
+    options: "DiscoveryOptions",
+    notebook: Any,
+    DiscoveryLaneKey: Any,
+    LaneCounters: Any,
+    LaneExecutionSpec: Any,
+    LaneOutcome: Any,
+    LaneState: Any,
+    RequestSignature: Any,
+    StopReason: Any,
+) -> tuple[dict, list[str], list, list]:
+    """Build lane execution specs plus the planned/active/skipped lane inventory."""
+    refresh_run_id = uuid.uuid4().hex
+    profiles_by_keyword = {
+        r["keyword_id"]: r["nb"]["relevance_profile"]
+        for r in records if isinstance(r["nb"], dict)
+    }
+    specs: list[LaneExecutionSpec] = []
+    for record in records:
+        nb = record["nb"]
+        if not isinstance(nb, dict):
+            continue
+        for active_query in _active_queries(nb):
+            for provider in PROVIDERS:
+                for mode in ("refresh", "backfill"):
+                    if options.mode != "hybrid" and options.mode != mode:
+                        continue
+                    sort, order = _validate_provider_request_shape(
+                        provider,
+                        _profile_sort(nb, provider, mode),
+                        _profile_order(nb, mode),
+                    )
+                    signature = RequestSignature.create(
+                        sort=sort,
+                        filters=_profile_filters(nb, provider, mode, sort, order),
+                        page_size=options.page_size,
+                        pagination_schema_version="2.0",
+                    )
+                    if mode == "backfill":
+                        bound = notebook.ensure_backfill_generation(
+                            record["keyword"], active_query["query_id"],
+                            provider, request_signature_hash=signature.hash,
+                        )
+                        generation = int(bound["generation"])
+                    else:
+                        generation = max(1, int(nb.get("relevance_generation") or 1))
+                    key = DiscoveryLaneKey(
+                        keyword_id=nb["keyword_id"],
+                        query_id=active_query["query_id"],
+                        provider=provider, mode=mode,
+                        generation=generation,
+                        request_signature=signature.hash,
+                    )
+                    # Preserve original query language — never coerce mixed to zh.
+                    # The QueryLanguage enum accepts zh, en, and mixed.
+                    query_lang = active_query.get("language", "zh")
+                    specs.append(LaneExecutionSpec(
+                        key=key, request_signature=signature,
+                        keyword_zh=record["keyword"],
+                        query=active_query["query"],
+                        query_language=query_lang,
+                        relevance_profile_hash=nb["relevance_profile"]["profile_hash"],
+                        order=order,
+                        topic_filter=(
+                            openalex_topic_filter(nb["relevance_profile"])
+                            if provider == "openalex" else ""
+                        ),
+                        refresh_run_id=refresh_run_id if mode == "refresh" else None,
+                    ))
+
+    # planned lane inventory
+    planned_lane_ids: list[str] = [spec.key.stable_id() for spec in specs]
+    backpressured_keyword_ids: set[str] = {
+        r["keyword_id"] for r in records
+        if r["backpressure"] and isinstance(r["nb"], dict)
+    }
+    active_specs = [s for s in specs if s.key.keyword_id not in backpressured_keyword_ids]
+    skipped_outcomes: list[LaneOutcome] = [
+        LaneOutcome(key=s.key, state=LaneState.SKIPPED,
+                    stop_reason=StopReason.CANDIDATE_BACKPRESSURE,
+                    counters=LaneCounters(), exhaustion_evidence=None)
+        for s in specs if s.key.keyword_id in backpressured_keyword_ids
+    ]
+    return profiles_by_keyword, planned_lane_ids, active_specs, skipped_outcomes
+
+
+def _final_drain_records(
+    records: list[dict],
+    *,
+    drain: Any,
+    runtime: Any,
+    notebook: Any,
+    options: "DiscoveryOptions",
+) -> None:
+    """Run per-keyword final drains and persist updated pending counts."""
+    for record in records:
+        nb = record["nb"]
+        if not isinstance(nb, dict):
+            continue
+        keyword_id = nb["keyword_id"]
+        concurrent = list(drain.drain_reports.get(keyword_id, []))
+        if options.until_exhausted:
+            fragments: list[DrainReport] = []
+            while True:
+                remaining = runtime.journal_index.pending_count([keyword_id])
+                if remaining <= 0:
+                    break
+                current = drain.drain(keyword_id, min(16, remaining), phase="final_until_exhausted")
+                fragments.append(current)
+                if current.processed <= 0:
+                    break
+            record["final_fragments"] = fragments
+        else:
+            remaining = max(0,
+                options.max_candidates - record["initial"].processed
+                - sum(r.processed for r in concurrent))
+            record["final_fragments"] = [drain.drain(keyword_id, remaining, phase="final")]
+        try:
+            notebook.update_pending_counts(
+                record["keyword"],
+                pages=runtime.journal_index.page_count_for_keyword(keyword_id),
+                candidates=runtime.journal_index.pending_count([keyword_id]),
+            )
+        except Exception as exc:
+            record["errors"].append(f"pending_count_update_failed:{type(exc).__name__}:{exc}")
+
+
+def _build_keyword_inputs(
+    records: list[dict],
+    *,
+    options: "DiscoveryOptions",
+    drain: Any,
+    KeywordReportInput: Any,
+) -> list:
+    """Convert per-keyword records into report-builder keyword inputs."""
+    inputs: list[KeywordReportInput] = []
+    for record in records:
+        nb = record["nb"]
+        queries: tuple = ()
+        if isinstance(nb, dict):
+            queries = tuple({"query": i["query"], "query_language": i["language"]} for i in _active_queries(nb))
+        keyword_id = record["keyword_id"]
+        inputs.append(KeywordReportInput(
+            keyword_zh=record["keyword"], keyword_id=keyword_id, mode=options.mode,
+            queries=queries,
+            pending_reports=(record["initial"], *drain.drain_reports.get(keyword_id, [])),
+            final_pending_reports=tuple(record.get("final_fragments", (record["final"],))),
+            backpressure=bool(record["backpressure"]) or keyword_id in drain.dynamically_backpressured,
+            initial_backpressure=bool(record["backpressure"]),
+            dynamic_backpressure=keyword_id in drain.dynamically_backpressured,
+            errors=tuple(record["errors"]),
+            terminal_status=record["terminal_status"],
+        ))
+    return inputs
+
+
 def _run_discovery_batch_unlocked(
     keywords: list[str],
     *,
@@ -292,26 +677,10 @@ def _run_discovery_batch_unlocked(
         total_limit=options.max_pages_total,
     )
 
-    active_profiles: dict[str, str] = {}
-    global_error = ""
-    try:
-        for summary in notebook.list_keywords():
-            if not summary["enabled"]:
-                continue
-            current = notebook.require_v4(str(summary["keyword_zh"]))
-            readiness = validate_discovery_readiness(current)
-            if not readiness:
-                raise RuntimeError(
-                    f"enabled notebook {current['keyword_zh']!r} is not discovery-ready: "
-                    + "; ".join(readiness.errors)
-                )
-            active_profiles[str(current["keyword_id"])] = str(
-                current["relevance_profile"]["profile_hash"]
-            )
-    except (RuntimeError, NotebookCorruptError, UnsupportedNotebookSchemaError) as exc:
-        global_error = str(exc)
+    active_profiles, global_error = _collect_active_profiles(notebook)
     if global_error:
-        return builder.build(
+        return _failed_batch_report(
+            builder,
             keyword_inputs=[KeywordReportInput(
                 keyword_zh=keyword,
                 keyword_id=make_keyword_id(keyword),
@@ -319,11 +688,7 @@ def _run_discovery_batch_unlocked(
                 errors=(global_error,),
                 terminal_status="failed",
             ) for keyword in keywords],
-            lane_outcomes=(),
-            page_budget_snapshot=page_budget.snapshot(),
-            telemetry_snapshot={"attempted": 0, "retried": 0, "succeeded": 0, "failed": 0,
-                                "by_provider_purpose": {}},
-            pipeline_metrics=DiscoveryPipelineMetrics().to_dict(),
+            page_budget=page_budget,
         )
 
     request_budget = (
@@ -345,61 +710,17 @@ def _run_discovery_batch_unlocked(
             page_budget=page_budget,
         )
     except JournalCorruptError as exc:
-        # v4: per-keyword isolation — attribute journals whose schema is not
-        # the active v4 page schema to their keyword_zh so only those keywords
-        # receive repair_required.  Unaffected keywords continue normally.
-        # When attribution is impossible or unreliable, every keyword receives
-        # the error (fail closed).
-        error_msg = f"provider_page_journal_repair_required:{exc}"
-        affected_keywords: set[str] = set()
-        attribution_reliable = True
-        try:
-            for path in sorted(deps.bundle.pages.root_dir.rglob("*.json")):
-                try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                    # An unreadable journal makes per-keyword attribution
-                    # unreliable; fail all keywords instead of guessing.
-                    attribution_reliable = False
-                    break
-                if isinstance(data, dict):
-                    schema_ver = str(data.get("schema_version") or "")
-                    if schema_ver != PAGE_SCHEMA_VERSION:
-                        kw = str(data.get("keyword_zh", "") or "")
-                        if kw:
-                            affected_keywords.add(kw)
-        except OSError:
-            attribution_reliable = False
-        if not attribution_reliable:
-            affected_keywords.clear()
-
-        keyword_inputs: list[KeywordReportInput] = []
-        for keyword in keywords:
-            is_affected = keyword in affected_keywords
-            keyword_inputs.append(KeywordReportInput(
-                keyword_zh=keyword,
-                keyword_id=make_keyword_id(keyword),
-                mode=options.mode,
-                errors=(error_msg,) if is_affected else (),
-                terminal_status="repair_required" if is_affected else None,
-            ))
-        # If no keywords were attributed (or attribution failed), fail all
-        if not affected_keywords:
-            keyword_inputs = [KeywordReportInput(
-                keyword_zh=keyword,
-                keyword_id=make_keyword_id(keyword),
-                mode=options.mode,
-                errors=(error_msg,),
-                terminal_status="repair_required",
-            ) for keyword in keywords]
-
-        return builder.build(
-            keyword_inputs=keyword_inputs,
-            lane_outcomes=(),
-            page_budget_snapshot=page_budget.snapshot(),
-            telemetry_snapshot={"attempted": 0, "retried": 0, "succeeded": 0, "failed": 0,
-                                "by_provider_purpose": {}},
-            pipeline_metrics=DiscoveryPipelineMetrics().to_dict(),
+        return _failed_batch_report(
+            builder,
+            keyword_inputs=_attribute_journal_corruption(
+                exc,
+                pages_root=deps.bundle.pages.root_dir,
+                page_schema_version=PAGE_SCHEMA_VERSION,
+                keywords=keywords,
+                options=options,
+                KeywordReportInput=KeywordReportInput,
+            ),
+            page_budget=page_budget,
         )
     with runtime:
         runtime.title_resolution_service = TitleResolutionService(
@@ -440,168 +761,43 @@ def _run_discovery_batch_unlocked(
             until_exhausted=options.until_exhausted,
             gateway=deps.metadata_gateway,
         ) as drain:
-            # deferred relevance retry helper
-            def retry_due_deferred(keyword_id: str, profile: dict) -> None:
-                now = datetime.now(timezone.utc)
-                for ref in journal.list_pages([keyword_id]):
-                    if ref.state not in {"cursor_committed", "draining"}:
-                        continue
-                    page = journal.read(ref.path)
-                    due = [
-                        c for c in page.get("candidates", [])
-                        if isinstance(c.get("relevance"), dict)
-                        and c["relevance"].get("state") == "verification_deferred"
-                        and c["relevance"].get("profile_hash") == profile.get("profile_hash")
-                        and (
-                            not c["relevance"].get("next_retry_at")
-                            or (parse_iso(c["relevance"].get("next_retry_at")) or now) <= now
-                        )
-                    ]
-                    if not due:
-                        continue
-                    decisions = evaluate_page_candidates(
-                        due, profile,
-                        provider=str(page["provider"]),
-                        scope_verifier=scope_verifier,
-                    )
-                    updated = journal.retry_deferred_relevance(ref.path, decisions)
-                    updated_candidates = [
-                        c for c in updated["candidates"]
-                        if str(c.get("candidate_id") or "") in decisions
-                    ]
-                    runtime.journal_index.apply_relevance_updates(ref.path, updated_candidates)
-                    runtime.metrics.relevance_incremental_updates += len(updated_candidates)
-                runtime.journal_index.assert_active_bindings(
-                    runtime.active_relevance_profiles.by_keyword_id)
-                runtime.metrics.sync_journal(runtime.journal_index)
+            retry_due_deferred = lambda keyword_id, profile: _retry_due_deferred(
+                keyword_id, profile,
+                journal=journal, runtime=runtime, scope_verifier=scope_verifier,
+            )
 
             def candidate_budget_is_exhausted(keyword_id: str) -> bool:
                 return drain.budget_exhausted(keyword_id)
 
-            def finalize_page_relevance(page_path: Path, profile: dict, provider: str) -> dict:
-                page = journal.read(page_path)
-                return evaluate_page_candidates(
-                    page.get("candidates") or [], profile,
-                    provider=provider, scope_verifier=scope_verifier,
-                )
+            finalize_page_relevance = lambda page_path, profile, provider: _finalize_page_relevance(
+                page_path, profile, provider,
+                journal=journal, scope_verifier=scope_verifier,
+            )
 
-            def on_refresh_page_persisted(page_path: Path, page_data: dict, *, profile: dict, provider: str) -> None:
-                decisions = finalize_page_relevance(page_path, profile, provider)
-                journal.finalize_relevance(page_path, decisions)
-                committed = journal.mark_cursor_committed(page_path)
-                runtime.journal_index.add_page(page_path, committed)
-                runtime.metrics.journal_pages_written += 1
-                runtime.metrics.page_fsyncs += 1
+            on_refresh_page_persisted = (
+                lambda page_path, page_data, *, profile, provider:
+                _on_refresh_page_persisted(
+                    page_path, page_data, profile=profile, provider=provider,
+                    finalize_page_relevance=finalize_page_relevance,
+                    journal=journal, runtime=runtime,
+                )
+            )
 
             # per-keyword records
-            records: list[dict] = []
-            for keyword in keywords:
-                record: dict = {
-                    "keyword": keyword, "keyword_id": make_keyword_id(keyword),
-                    "nb": None, "initial": DrainReport(), "final": DrainReport(),
-                    "backpressure": False, "errors": [], "terminal_status": None,
-                }
-                try:
-                    nb = notebook.require_v4(keyword)
-                    record["keyword_id"] = nb["keyword_id"]
-                    if not nb["enabled"]:
-                        record["terminal_status"] = "skipped"
-                    else:
-                        readiness = validate_discovery_readiness(nb)
-                        if not readiness:
-                            record["terminal_status"] = "failed"
-                            record["errors"].append("; ".join(readiness.errors))
-                        else:
-                            retry_due_deferred(nb["keyword_id"], nb["relevance_profile"])
-                            initial = drain.drain(nb["keyword_id"], min(16, options.max_candidates), phase="initial")
-                            record["initial"] = initial
-                            pending_count = runtime.journal_index.pending_count([nb["keyword_id"]])
-                            state = notebook.update_backpressure(
-                                keyword, pending_count=pending_count,
-                                max_threshold=options.max_pending_candidates,
-                                resume_threshold=options.resume_pending_candidates,
-                            )
-                            record["backpressure"] = bool(state.get("active"))
-                            if record["backpressure"]:
-                                initial.backpressure = True
-                            record["nb"] = nb
-                except (FileNotFoundError, NotebookCorruptError, UnsupportedNotebookSchemaError, RuntimeError) as exc:
-                    record["terminal_status"] = "failed"
-                    record["errors"].append(str(exc))
-                records.append(record)
+            records = _prepare_keyword_records(
+                keywords, notebook=notebook, drain=drain, runtime=runtime,
+                options=options, retry_due_deferred=retry_due_deferred,
+            )
 
             # build lane execution specs
-            refresh_run_id = uuid.uuid4().hex
-            profiles_by_keyword = {
-                r["keyword_id"]: r["nb"]["relevance_profile"]
-                for r in records if isinstance(r["nb"], dict)
-            }
-            specs: list[LaneExecutionSpec] = []
-            for record in records:
-                nb = record["nb"]
-                if not isinstance(nb, dict):
-                    continue
-                for active_query in _active_queries(nb):
-                    for provider in PROVIDERS:
-                        for mode in ("refresh", "backfill"):
-                            if options.mode != "hybrid" and options.mode != mode:
-                                continue
-                            sort, order = _validate_provider_request_shape(
-                                provider,
-                                _profile_sort(nb, provider, mode),
-                                _profile_order(nb, mode),
-                            )
-                            signature = RequestSignature.create(
-                                sort=sort,
-                                filters=_profile_filters(nb, provider, mode, sort, order),
-                                page_size=options.page_size,
-                                pagination_schema_version="2.0",
-                            )
-                            if mode == "backfill":
-                                bound = notebook.ensure_backfill_generation(
-                                    record["keyword"], active_query["query_id"],
-                                    provider, request_signature_hash=signature.hash,
-                                )
-                                generation = int(bound["generation"])
-                            else:
-                                generation = max(1, int(nb.get("relevance_generation") or 1))
-                            key = DiscoveryLaneKey(
-                                keyword_id=nb["keyword_id"],
-                                query_id=active_query["query_id"],
-                                provider=provider, mode=mode,
-                                generation=generation,
-                                request_signature=signature.hash,
-                            )
-                            # Preserve original query language — never coerce mixed to zh.
-                            # The QueryLanguage enum accepts zh, en, and mixed.
-                            query_lang = active_query.get("language", "zh")
-                            specs.append(LaneExecutionSpec(
-                                key=key, request_signature=signature,
-                                keyword_zh=record["keyword"],
-                                query=active_query["query"],
-                                query_language=query_lang,
-                                relevance_profile_hash=nb["relevance_profile"]["profile_hash"],
-                                order=order,
-                                topic_filter=(
-                                    openalex_topic_filter(nb["relevance_profile"])
-                                    if provider == "openalex" else ""
-                                ),
-                                refresh_run_id=refresh_run_id if mode == "refresh" else None,
-                            ))
-
-            # planned lane inventory
-            planned_lane_ids: list[str] = [spec.key.stable_id() for spec in specs]
-            backpressured_keyword_ids: set[str] = {
-                r["keyword_id"] for r in records
-                if r["backpressure"] and isinstance(r["nb"], dict)
-            }
-            active_specs = [s for s in specs if s.key.keyword_id not in backpressured_keyword_ids]
-            skipped_outcomes: list[LaneOutcome] = [
-                LaneOutcome(key=s.key, state=LaneState.SKIPPED,
-                            stop_reason=StopReason.CANDIDATE_BACKPRESSURE,
-                            counters=LaneCounters(), exhaustion_evidence=None)
-                for s in specs if s.key.keyword_id in backpressured_keyword_ids
-            ]
+            (profiles_by_keyword, planned_lane_ids, active_specs,
+             skipped_outcomes) = _build_lane_specs(
+                records, options=options, notebook=notebook,
+                DiscoveryLaneKey=DiscoveryLaneKey, LaneCounters=LaneCounters,
+                LaneExecutionSpec=LaneExecutionSpec, LaneOutcome=LaneOutcome,
+                LaneState=LaneState, RequestSignature=RequestSignature,
+                StopReason=StopReason,
+            )
 
             def execute_spec(spec: LaneExecutionSpec) -> LaneOutcome:
                 if spec.key.mode == "refresh":
@@ -660,59 +856,19 @@ def _run_discovery_batch_unlocked(
             # Skip final drain after interrupt — runtime is no longer OPEN.
             # Phase 11: no final drain after KeyboardInterrupt.
             if not interrupted:
-                for record in records:
-                    nb = record["nb"]
-                    if not isinstance(nb, dict):
-                        continue
-                    keyword_id = nb["keyword_id"]
-                    concurrent = list(drain.drain_reports.get(keyword_id, []))
-                    if options.until_exhausted:
-                        fragments: list[DrainReport] = []
-                        while True:
-                            remaining = runtime.journal_index.pending_count([keyword_id])
-                            if remaining <= 0:
-                                break
-                            current = drain.drain(keyword_id, min(16, remaining), phase="final_until_exhausted")
-                            fragments.append(current)
-                            if current.processed <= 0:
-                                break
-                        record["final_fragments"] = fragments
-                    else:
-                        remaining = max(0,
-                            options.max_candidates - record["initial"].processed
-                            - sum(r.processed for r in concurrent))
-                        record["final_fragments"] = [drain.drain(keyword_id, remaining, phase="final")]
-                    try:
-                        notebook.update_pending_counts(
-                            record["keyword"],
-                            pages=runtime.journal_index.page_count_for_keyword(keyword_id),
-                            candidates=runtime.journal_index.pending_count([keyword_id]),
-                        )
-                    except Exception as exc:
-                        record["errors"].append(f"pending_count_update_failed:{type(exc).__name__}:{exc}")
+                _final_drain_records(
+                    records, drain=drain, runtime=runtime,
+                    notebook=notebook, options=options,
+                )
             else:
                 for record in records:
                     record.setdefault("final_fragments", [])
 
             # build report
-            inputs: list[KeywordReportInput] = []
-            for record in records:
-                nb = record["nb"]
-                queries: tuple = ()
-                if isinstance(nb, dict):
-                    queries = tuple({"query": i["query"], "query_language": i["language"]} for i in _active_queries(nb))
-                keyword_id = record["keyword_id"]
-                inputs.append(KeywordReportInput(
-                    keyword_zh=record["keyword"], keyword_id=keyword_id, mode=options.mode,
-                    queries=queries,
-                    pending_reports=(record["initial"], *drain.drain_reports.get(keyword_id, [])),
-                    final_pending_reports=tuple(record.get("final_fragments", (record["final"],))),
-                    backpressure=bool(record["backpressure"]) or keyword_id in drain.dynamically_backpressured,
-                    initial_backpressure=bool(record["backpressure"]),
-                    dynamic_backpressure=keyword_id in drain.dynamically_backpressured,
-                    errors=tuple(record["errors"]),
-                    terminal_status=record["terminal_status"],
-                ))
+            inputs = _build_keyword_inputs(
+                records, options=options, drain=drain,
+                KeywordReportInput=KeywordReportInput,
+            )
             runtime.metrics.sync_journal(runtime.journal_index)
             return builder.build(
                 keyword_inputs=inputs, lane_outcomes=outcomes,

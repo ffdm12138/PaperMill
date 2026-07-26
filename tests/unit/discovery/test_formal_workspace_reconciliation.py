@@ -3,7 +3,7 @@ from pathlib import Path
 
 from src.discovery.stage_transaction import NormalizedDiscoveryCandidate
 from src.discovery.staging_context import DiscoveryStagingContext
-from src.services.network_metadata_staging import _metadata_from_record
+from src.staging.network_metadata_staging import _metadata_from_record
 from tests.factories.paper_raw_factory import create_active_formal_workspace
 
 

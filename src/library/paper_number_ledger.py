@@ -10,8 +10,8 @@ from filelock import FileLock
 import orjson
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPERS_DIR
-from src.path_utils import normalize_repo_path, resolve_stored_path
-from src.naming import safe_child
+from src.utils.path_utils import normalize_repo_path, resolve_stored_path
+from src.utils.naming import safe_child
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.utils.atomic_io import atomic_write_json
 from src.library.marker import parse_marker_number, write_paper_number_marker

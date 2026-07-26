@@ -4,7 +4,7 @@ import pytest
 
 from src.ingest.commit import commit_paper_raw
 from src.ingest.formalization import write_formalization_plan
-from src.services.paper_library import PaperLibrary
+from src.catalog_folders.paper_library import PaperLibrary
 from src.metadata.citation import bibtex_from_metadata
 from src.metadata.citation_readiness import citation_key_from_metadata, validate_citation_ready
 from src.metadata.schema import empty_metadata

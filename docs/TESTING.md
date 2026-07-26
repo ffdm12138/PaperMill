@@ -91,7 +91,7 @@ or rollback recovery boundaries.
 ## Packaging and delivery
 
 Repository runtime-zero classification lives only in
-`src/services/repository_hygiene.py`. Every source/audit profile excludes real
+`src/utils/repository_hygiene.py`. Every source/audit profile excludes real
 paper workspaces, transactions, generated indexes/ledger, local tool state,
 runtime reports, credentials, caches, and logs. After changes, run the packer,
 extract the ZIP into a temporary directory, and verify manifest/member counts,

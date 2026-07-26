@@ -41,7 +41,7 @@ from typing import Any
 
 from filelock import FileLock, Timeout as FileLockTimeout
 
-from src.mineru_lock import _is_pid_alive
+from src.utils.process import is_pid_alive
 from src.utils.atomic_io import atomic_replace_bytes_unlocked
 
 LOCK_INFO_SUFFIX = ".info.json"
@@ -83,7 +83,7 @@ def _owner_is_live_other_process(info: dict[str, Any]) -> bool:
     return (
         isinstance(owner_pid, int)
         and owner_pid != os.getpid()
-        and _is_pid_alive(owner_pid)
+        and is_pid_alive(owner_pid)
     )
 
 

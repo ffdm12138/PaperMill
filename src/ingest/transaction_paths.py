@@ -22,7 +22,7 @@ import uuid as _uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.naming import validate_paper_name as _validate_paper_name
+from src.utils.naming import validate_paper_name as _validate_paper_name
 
 # ── Exceptions ─────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ def validate_paper_number(value: str) -> str:
 def validate_paper_name(value: str) -> str:
     """Return validated paper_name or raise.
 
-    Reuses ``src.naming.validate_paper_name`` for the character-level
+    Reuses ``src.utils.naming.validate_paper_name`` for the character-level
     rules, then adds extra guards for ``..``, separators, drive prefixes
     and NUL beyond what the base validator enforces.
     """

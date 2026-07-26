@@ -46,7 +46,7 @@ from src.discovery.resolve_crossref import (
     resolve_crossref_by_title,
 )
 from src.discovery.search_openalex import search_openalex
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.metadata.schema import metadata_doi
 from src.utils.identifiers import normalize_doi
 from src.utils.jsonio import read_json

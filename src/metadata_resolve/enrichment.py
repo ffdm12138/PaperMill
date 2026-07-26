@@ -26,7 +26,7 @@ _REFERENCES_HEADING_RE = re.compile(
     r"^\s{0,6}(?:#{1,6}\s*)?(references|bibliography|参考文献)",
     re.IGNORECASE | re.MULTILINE,
 )
-from src.naming import sanitize_paper_name, validate_paper_name
+from src.utils.naming import sanitize_paper_name, validate_paper_name
 
 def extract_doi_from_filename(filename: str) -> str | None:
     """Try to extract a DOI from a PDF filename stem."""

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from src.catalog.freeze import assert_catalog_frozen
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.ingest.duplicate_inspection import duplicate_inspection_sha256, inspect_ingest_duplicates
 from src.ingest.status import inspect_workspace_readiness, update_status
 from src.ingest.workspace import PaperRawWorkspace

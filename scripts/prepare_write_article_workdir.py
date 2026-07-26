@@ -20,8 +20,8 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 
 from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PROJECT_ROOT
 from src.catalog_folders.reader import CatalogFolderReader
-from src.naming import safe_child, validate_job_id
-from src.path_utils import normalize_repo_path
+from src.utils.naming import safe_child, validate_job_id
+from src.utils.path_utils import normalize_repo_path
 from src.utils.atomic_io import atomic_write_json
 
 

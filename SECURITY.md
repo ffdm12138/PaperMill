@@ -49,7 +49,7 @@ fallback. Missing credentials are transparent — the caller falls back to
 anonymous access instead of raising an error.
 
 Credentials are loaded once per request via the centralized module
-`src.services.openalex_credentials`. Internal helper methods accept
+`src.fetch.openalex_credentials`. Internal helper methods accept
 `OpenAlexCredentials` as a parameter; the credentials object is never stored
 on the module, never serialised, and never persisted into data structures
 returned to callers.
@@ -67,7 +67,7 @@ returned to callers.
 A security boundary exists between the external provider identifier and the
 filesystem path where source records are stored. Every provider name MUST be
 normalized through ``normalize_provider_slug()`` in
-``src/services/source_records.py`` before being used in any file path.
+``src/metadata/source_records.py`` before being used in any file path.
 
 The slug function enforces:
 - Strict character whitelist ``[a-z0-9][a-z0-9._-]{0,63}``
@@ -106,7 +106,7 @@ invariant. If the check fails, the ZIP is deleted and the command exits
 non-zero.
 
 Runtime-zero exclusions are defined centrally in
-``src/services/repository_hygiene.py`` and consumed by the packer and verifier.
+``src/utils/repository_hygiene.py`` and consumed by the packer and verifier.
 
 Transaction journals are untrusted persisted input. Recovery accepts trusted
 roots from configuration or CLI arguments, validates all lexical and resolved
@@ -121,7 +121,7 @@ immutable selection plan and fails closed if any selected file disappears,
 changes, becomes a symlink, exceeds a limit, or is omitted from the archive.
 Other file-type exclusions remain in ``scripts/pack_repo.py`` as the constants
 The canonical runtime classification and placeholder allowlist live in
-``src/services/repository_hygiene.py``; archive-format deny rules remain in
+``src/utils/repository_hygiene.py``; archive-format deny rules remain in
 ``scripts/pack_repo.py``.
 
 **If you discover a packaging leak**: open an issue immediately with the

@@ -161,7 +161,7 @@ def run_tasks(
                 continue
 
             # Validate task is current
-            from src.file_fingerprint import compute_sha256
+            from src.utils.file_fingerprint import compute_sha256
             current_catalog_sha256 = compute_sha256(paper.catalog_path)
             if current_catalog_sha256 != task.get("catalog_sha256"):
                 errors += 1

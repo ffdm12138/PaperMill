@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.catalog.freeze import assert_formal_catalog_frozen
 from src.catalog.schema import validate_catalog_v32
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.metadata.freeze import assert_metadata_frozen
 from src.metadata.schema import validate_metadata_schema
 

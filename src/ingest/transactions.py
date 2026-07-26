@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from src.file_fingerprint import compute_sha256
+from src.utils.file_fingerprint import compute_sha256
 from src.ingest.locking import acquire_locks, transaction_requests
 from src.ingest.transaction_paths import (
     TransactionIdentityError,

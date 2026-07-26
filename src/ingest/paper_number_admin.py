@@ -16,7 +16,7 @@ from filelock import FileLock
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.ingest.locking import paper_raw_write_lock
-from src.path_utils import normalize_repo_path, resolve_stored_path
+from src.utils.path_utils import normalize_repo_path, resolve_stored_path
 from src.ingest.duplicate_guard import is_paper_raw_workspace
 from src.utils.jsonio import read_json
 from src.utils.identifiers import PAPER_NUMBER_RE

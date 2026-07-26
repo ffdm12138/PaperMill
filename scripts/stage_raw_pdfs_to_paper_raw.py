@@ -12,7 +12,7 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from loguru import logger
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR, RAW_DIR
-from src.file_fingerprint import compute_file_hashes
+from src.utils.file_fingerprint import compute_file_hashes
 from src.ingest.duplicate_guard import DuplicateIngestError, check_pdf_duplicate
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.ingest.paper_raw import PaperRawAllocator

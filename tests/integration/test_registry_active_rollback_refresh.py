@@ -7,7 +7,7 @@ import pytest
 
 from src.discovery.staging_context import DiscoveryStagingContext
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.services.network_metadata_staging import stage_network_metadata_records
+from src.staging.network_metadata_staging import stage_network_metadata_records
 from tests.factories.discovery_factory import create_discovery_candidate
 from tests.factories.paper_raw_factory import create_active_formal_workspace
 

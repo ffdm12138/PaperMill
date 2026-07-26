@@ -24,7 +24,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(repo_root))
 
-    from src.mineru_runtime import activate_formal_gpu_env
+    from src.mineru.runtime import activate_formal_gpu_env
 
     activate_formal_gpu_env()
     os.environ["MINERU_GPU_WRAPPER_ACTIVE"] = "1"
@@ -34,7 +34,7 @@ def main() -> int:
 
     formal_batch_apply = "--all" in remaining and "--apply" in remaining and "--dry-run" not in remaining
     if formal_batch_apply and not wrapper_args.skip_smoke_check:
-        from src.mineru_smoke import smoke_required_message, validate_smoke_report
+        from src.mineru.smoke import smoke_required_message, validate_smoke_report
 
         validation = validate_smoke_report(wrapper_args.smoke_report)
         if not validation.get("ok"):

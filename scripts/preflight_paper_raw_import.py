@@ -12,8 +12,8 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.utils.identifiers import normalize_doi
-from src.file_fingerprint import compute_file_hashes
-from src.naming import safe_child
+from src.utils.file_fingerprint import compute_file_hashes
+from src.utils.naming import safe_child
 from src.metadata.freeze import assert_metadata_frozen
 from src.ingest.duplicate_guard import check_doi_duplicate, check_pdf_duplicate
 from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id

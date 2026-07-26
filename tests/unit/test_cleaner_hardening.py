@@ -1,4 +1,4 @@
-from src.cleaner import MinerUOutputCleaner
+from src.mineru.cleaner import MinerUOutputCleaner
 
 
 def test_cleaner_uses_injected_papers_dir(tmp_path):

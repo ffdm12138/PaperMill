@@ -56,7 +56,7 @@ FORBIDDEN_TOKENS = [
 
 LEGACY_ONLY_ALLOWED = set()
 
-SCAN_DIRS = ["src", "scripts", "config", "web", "skills", "docs"]
+SCAN_DIRS = ["src", "scripts", "config", "web", "skills", "docs", "md"]
 UNSAFE_ONE_OFF_ROOT_SCRIPTS = {
     "post_compact_fix.py",
     "restore_missing_ledger.py",
@@ -121,7 +121,7 @@ def test_no_legacy_field_paths_in_active_code():
     assert not paper_md_offenders, "paper.md referenced as a path in:\n" + "\n".join(paper_md_offenders)
 
     citation_offenders: list[str] = []
-    for sub in ("src/writer", "src/bib.py"):
+    for sub in ("src/writer",):
         base = ROOT / sub
         paths = [base] if base.is_file() else list(base.rglob("*.py"))
         for path in paths:

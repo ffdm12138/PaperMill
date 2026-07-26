@@ -17,12 +17,12 @@ from pathlib import Path
 
 from src.writer.job_manager import JobManager
 from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
-from src.naming import safe_child, validate_paper_name
+from src.utils.naming import safe_child, validate_paper_name
 from src.writer.catalog_matcher import load_selected, selected_paper_names
 from src.writer.bib_manager import job_local_bib_keys, resolve_work_dir
 from src.writer.safe_write import TODO_MARKERS, write_text_safely
 from config.settings import PAPERS_DIR, PAPER_MD_MAX_CHARS
-from src import bib as bibmod
+from src.writer import bib as bibmod
 
 _WORKSET_MANIFEST = "planning/workset_manifest.json"
 

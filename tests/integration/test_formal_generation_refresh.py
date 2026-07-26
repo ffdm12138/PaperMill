@@ -5,7 +5,7 @@ import pytest
 from src.discovery.stage_transaction import NormalizedDiscoveryCandidate
 from src.discovery.staging_context import DiscoveryStagingContext
 from src.discovery.staging_metrics import CollectingStagingMetricsObserver
-from src.services.network_metadata_staging import _metadata_from_record
+from src.staging.network_metadata_staging import _metadata_from_record
 from src.discovery.workspace_registry import build_workspace_registry
 from src.library.paper_number_ledger import PaperNumberLedger
 import json
