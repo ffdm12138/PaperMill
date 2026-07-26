@@ -19,14 +19,16 @@ from typing import Any
 from loguru import logger
 
 from src.utils.identifiers import extract_doi_from_text, normalize_doi
+from src.utils.naming import sanitize_paper_name, validate_paper_name
 
-# Restored: heading matcher lost in the Stage-3 DOI-regex dedup; the PDF
-# DOI scan must stop at the references section (optional markdown marks).
+
+# The PDF DOI scan must stop at the references section, otherwise it
+# picks up a cited paper's DOI (optional markdown heading marks).
 _REFERENCES_HEADING_RE = re.compile(
     r"^\s{0,6}(?:#{1,6}\s*)?(references|bibliography|参考文献)",
     re.IGNORECASE | re.MULTILINE,
 )
-from src.utils.naming import sanitize_paper_name, validate_paper_name
+
 
 def extract_doi_from_filename(filename: str) -> str | None:
     """Try to extract a DOI from a PDF filename stem."""

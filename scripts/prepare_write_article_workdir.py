@@ -21,6 +21,7 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PROJECT_ROOT
 from src.catalog_folders.reader import CatalogFolderReader
 from src.utils.naming import safe_child, validate_job_id
+from src.utils.timestamps import now_iso
 from src.utils.path_utils import normalize_repo_path
 from src.utils.atomic_io import atomic_write_json
 
@@ -191,7 +192,7 @@ def prepare_workdir(args: argparse.Namespace) -> dict:
         "dry_run": not args.apply,
         "selected_count": len(planned),
         "papers": [_report_item(item) for item in planned],
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": now_iso(),
     }
 
     if not args.apply:

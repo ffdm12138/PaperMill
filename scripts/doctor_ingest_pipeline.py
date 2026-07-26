@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 
 from config.settings import PAPER_RAW_DIR, PROJECT_ROOT
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import now_iso
 
 
 DEFAULT_REPORT_PATH = PROJECT_ROOT / "reports" / "doctor_ingest_pipeline_report.json"
@@ -135,7 +135,7 @@ def build_report(*, run_tests: bool, paper_raw_dir: Path, project_root: Path) ->
     blocking = [step for step in steps if step.get("blocking")]
     return {
         "schema_version": "1.0",
-        "checked_at": datetime.now().isoformat(timespec="seconds"),
+        "checked_at": now_iso(),
         "valid": not blocking,
         "blocking_count": len(blocking),
         "steps": steps,

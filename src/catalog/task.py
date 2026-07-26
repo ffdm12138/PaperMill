@@ -1,12 +1,12 @@
 """Deterministic read-only Catalog Skill task envelopes."""
 from __future__ import annotations
 
-from datetime import datetime
 import json
 from pathlib import Path
 import re
 
 from src.utils.file_fingerprint import compute_sha256
+from src.utils.timestamps import now_iso
 from src.metadata.freeze import assert_metadata_frozen
 from src.utils.naming import sanitize_paper_name
 from src.utils.atomic_io import atomic_write_json
@@ -94,7 +94,7 @@ def build_task_envelope(folder: Path, paper_number: str) -> dict:
     year=str(metadata.get("year") or ""); first=str((metadata.get("first_author") or {}).get("family") or "").strip(); author_token=sanitize_paper_name(first)
     if not year.isdigit() or not first or author_token == "untitled": raise ValueError("frozen metadata requires year and first_author.family")
     source_hashes=dict(freeze.get("source_record_hashes") or {})
-    task={"schema_version":TASK_SCHEMA_VERSION,"catalog_schema_version":CATALOG_SCHEMA_VERSION,"skill_version":SKILL_VERSION,"paper_number":paper_number,"paper_name_prefix":f"{year}_{author_token}_","metadata_readonly_path":metadata_path.name,"metadata_freeze_path":f"{paper_number}.metadata_freeze.json","markdown_path":markdown.name,"images_dir":"images/","conversion_manifest_path":conversion.name,"source_abstract_candidates":_source_candidates(folder,markdown,source_hashes),"input_hashes":{"metadata_sha256":compute_sha256(metadata_path),"metadata_freeze_sha256":compute_sha256(folder/f"{paper_number}.metadata_freeze.json"),"markdown_sha256":compute_sha256(markdown),"conversion_manifest_sha256":compute_sha256(conversion),"image_hashes":{p.relative_to(folder).as_posix():compute_sha256(p) for p in sorted(images.rglob("*")) if p.is_file()},"source_record_hashes":source_hashes},"generated_at":datetime.now().astimezone().isoformat(timespec="seconds")}
+    task={"schema_version":TASK_SCHEMA_VERSION,"catalog_schema_version":CATALOG_SCHEMA_VERSION,"skill_version":SKILL_VERSION,"paper_number":paper_number,"paper_name_prefix":f"{year}_{author_token}_","metadata_readonly_path":metadata_path.name,"metadata_freeze_path":f"{paper_number}.metadata_freeze.json","markdown_path":markdown.name,"images_dir":"images/","conversion_manifest_path":conversion.name,"source_abstract_candidates":_source_candidates(folder,markdown,source_hashes),"input_hashes":{"metadata_sha256":compute_sha256(metadata_path),"metadata_freeze_sha256":compute_sha256(folder/f"{paper_number}.metadata_freeze.json"),"markdown_sha256":compute_sha256(markdown),"conversion_manifest_sha256":compute_sha256(conversion),"image_hashes":{p.relative_to(folder).as_posix():compute_sha256(p) for p in sorted(images.rglob("*")) if p.is_file()},"source_record_hashes":source_hashes},"generated_at":now_iso()}
     errors=validate_task_envelope(folder,paper_number,task)
     if errors: raise ValueError("; ".join(errors))
     return task

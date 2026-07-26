@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,6 +15,7 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from config.settings import PROJECT_ROOT
 from src.writer.bib import parse_blocks
 from src.utils.naming import safe_child, validate_job_id
+from src.utils.timestamps import now_iso
 from src.utils.path_utils import normalize_repo_path
 from src.utils.atomic_io import atomic_write_json
 
@@ -162,7 +162,7 @@ def check_tex_project(args: argparse.Namespace) -> dict:
         "paper_count": len(paper_dirs),
         "bib_count": len(blocks),
         "citation_count": len(cited),
-        "checked_at": datetime.now().isoformat(timespec="seconds"),
+        "checked_at": now_iso(),
     }
     reports_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(reports_dir / "format_check.json", report)

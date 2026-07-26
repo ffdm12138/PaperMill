@@ -20,7 +20,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils.timestamps import utc_now_iso  # noqa: E402
 
 # The audit engines live in src/discovery/audits/reset_state.py; this script
 # is the argparse wiring.  ``_audit_locks`` and ``_snapshot_paths`` are
@@ -34,10 +33,6 @@ from src.discovery.audits.reset_state import (  # noqa: E402,F401
     probe_existing_file_lock,
     resolve_safe_report_path,
 )
-
-
-def _now() -> str:
-    return utc_now_iso()
 
 
 def main() -> int:

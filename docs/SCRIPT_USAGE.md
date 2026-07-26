@@ -239,6 +239,42 @@ Audit/check/validate commands are read-only unless their own help explicitly
 offers an apply flag. Repair/reset/rollback/commit/stage/fetch/convert
 commands mutate only with their explicit apply/confirmation gates.
 
+## Write jobs: workflow selection and the two bib exporters
+
+`create_write_job.py --workflow` picks which downstream pipeline the job
+belongs to; it is persisted as `workflow` in `write/jobs/<job_id>/job.json`
+and every later gate reads it from there.
+
+| `--workflow` | persisted value | skill | plan file |
+| --- | --- | --- | --- |
+| `article` (default) | `catalog_tex_article` | `catalog_tex_writer` | — |
+| `review` | `catalog_review` | `catalog_review_writer` | `planning/review_plan.json` |
+| `proposal` | `catalog_research_proposal` | `catalog_research_proposal_writer` | `planning/proposal_plan.json` |
+
+```text
+python scripts/create_write_job.py --workflow review --categories 风沙运动 --limit 12
+```
+
+`proposal` additionally seeds `input/research_input.md` from a placeholder
+template. That file is user-authored: `check_write_planning_docs.py` fails
+closed while any TODO marker remains, and no skill may fill it in.
+
+`check_write_planning_docs.py --job-id <id>` validates the review/proposal
+intermediates and plan JSON (read-only; writes only its own report under
+`reports/`). It fails closed on an empty paper pool, a missing
+`tex/references.bib`, unresolvable `bib_key`s, evidence outside the pool, and
+any `results_plan` item whose status is not `planned`.
+
+Two bib exporters exist and are not interchangeable:
+
+- `export_write_job_bib.py --job-id <id>` — the review/proposal planning
+  pipeline. Reads only job-local `article/<paper_number>/*.metadata.json` and
+  writes `tex/references.bib`. Fails closed on a missing/ambiguous metadata
+  file, a non-citation-ready record, or a `--paper-numbers` value that is not
+  in `selected_catalog.json`.
+- `export_job_bib.py --job <id>` — the older tex-project path used by
+  `write_catalog_tex_article.py` via `src.writer.bib_manager`.
+
 ### Discovery staging benchmark
 
 `scripts/benchmark_discovery_staging.py` builds only synthetic temporary

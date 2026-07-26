@@ -139,7 +139,10 @@ class MinerULock:
                     time.sleep(self._poll_interval)
                     continue
 
-                # 写入锁文件
+                # 写入锁文件。
+                # 刻意保持 naive：inspect_mineru_lock 用 datetime.now() 减去
+                # 解析出的 started_at 求锁龄，改成 aware 会让减法抛 TypeError。
+                # 不要换成 src.utils.timestamps.now_iso()。
                 now = datetime.now().isoformat()
                 lock_data = {
                     "pid": pid,

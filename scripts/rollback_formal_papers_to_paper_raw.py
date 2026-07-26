@@ -103,14 +103,6 @@ class RollbackReport:
         })
 
 
-def _build_string_path(path: str) -> str:
-    """Ensure a path argument string is suitable for writing."""
-    # Prevent empty strings
-    if not path.strip():
-        return path
-    return path
-
-
 def _write_report(report_path: str, report: RollbackReport) -> None:
     """Atomically write the rollback report as JSON."""
     from src.utils.atomic_io import atomic_write_json

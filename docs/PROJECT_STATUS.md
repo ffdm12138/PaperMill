@@ -1,5 +1,56 @@
 # Project status
 
+## Post-refactor review sweep (2026-07-27)
+
+A three-way read-only audit of the consolidation series (structural diffs,
+ingest/mineru safety paths, cross-cutting integrity) found the moves themselves
+faithful — zero stale module references, decomposed functions line-for-line
+equivalent, CLI surfaces byte-compatible — and concentrated the real defects in
+the newly written write-job scripts. Fixed in this sweep:
+
+- `check_write_planning_docs.py` was fail-open: an empty `selected_catalog.json`
+  paper pool skipped every deep check (references.bib presence, matrix rows,
+  bib_key resolution, evidence-in-pool, `results_plan.status == planned`) and
+  still exited 0. The pool is now an error in its own right, all early exits
+  persist their report, malformed JSON becomes an error instead of a traceback,
+  and `input/research_input.md` is scanned with the full `TODO_MARKERS` set plus
+  the same length floor as every other intermediate.
+- `export_write_job_bib.py` silently ignored unknown `--paper-numbers` and
+  silently picked the first of several `*.metadata.json`. Both now fail closed;
+  `references.bib` is written atomically.
+- `src/discovery/drain_locks.py` used `Any` without importing it (latent
+  `NameError` under any runtime annotation evaluation); the dead
+  `DISCOVERY_LOCK_TIMEOUT` copy left in `pending_queue.py` after the split is
+  gone, along with 14 unused imports there.
+- Process enumeration no longer depends on `wmic` alone (absent from default
+  Windows 11 24H2+ installs): the probe falls back to `pwsh Get-CimInstance
+  Win32_Process` and raises `ProcessProbeError` when no backend works, so an
+  unverifiable PID is refused instead of being treated as stale — the pid file
+  survives and nothing gets killed on an unproven identity.
+- Layering guard blind spots closed: relative imports, `from src import X`, and
+  string imports (`__import__`/`importlib.import_module`) are now visible;
+  `ROOT_LEAVES` pins root membership so a new `src/*.py` cannot inherit
+  import-anything rights; sanctioned seams are covered by the no-root invariant;
+  the duplicated `SANCTIONED_LATE` entry that made its lazy-only constraint
+  unenforceable was removed; every src subpackage must carry `__init__.py`.
+- `src/staging/` and `config/` were missing `__init__.py`, so setuptools'
+  `find` would have dropped them from any wheel; both now have one.
+- Single-sourcing finished rather than half-done: five byte-identical
+  canonical-JSON encoders now call `src/utils/canonical_json.py`, and the
+  same-shape inline timestamps call `now_iso()`. Two sites keep a written
+  do-not-unify reason — `src/mineru/lock.py` (naive by necessity: lock age is
+  computed against a naive `datetime.now()`) and `scripts/test_runtime_workspace.py`
+  (standalone test infrastructure that must import without `src`).
+- `resume_commit` phase helpers take a frozen `_ResumeContext` instead of
+  eleven threaded keyword arguments, and an unknown journal phase now raises
+  instead of spinning the resume loop forever.
+
+Two record-keeping corrections to the commit history: the `_REFERENCES_HEADING_RE`
+definition added in 38478e0 was a real behavior fix, not part of the "pure
+split" — the pre-split code referenced an undefined name and raised `NameError`
+on every PDF DOI scan when PyMuPDF was installed. And the MinerU `except`
+narrowing that a04da78 claims happened in 95edec4, its parent.
+
 ## Architecture consolidation + writing skills (2026-07-27)
 
 Full-scope structural cleanup executed as gated stages on `main`, each stage
@@ -54,8 +105,8 @@ Single-day production hardening pass, executed as nine gated stages on
   configs) with reintroduction tombstones in the verifier and contract tests.
 - Single-sourced utilities (`src/utils/`: identifiers, timestamps, jsonio,
   atomic_io, fs, rate_limit); timezone-aware persistence is the contract
-  (the legacy writer-family naive stamps are a tracked proposal, see
-  `md/06_refactor_roadmap.md`).
+  (the writer-family naive stamps were converted in the 2026-07-27 review
+  sweep; the two remaining naive sites carry a written reason).
 - Layered packages enforced by `tests/hygiene/test_layering.py` (see
   `docs/ARCHITECTURE.md`); the four historical import cycles are gone; the
   paper_raw write lock has a single ranked acquisition point; the resolver's

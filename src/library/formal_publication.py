@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from filelock import FileLock
 
 from config.settings import PROJECT_ROOT
+from src.utils.canonical_json import canonical_sha256
 from src.utils.file_fingerprint import compute_sha256
 from src.utils.path_utils import normalize_repo_path, resolve_stored_path
 from src.utils.atomic_io import atomic_write_json_unlocked
@@ -65,11 +66,7 @@ def _entry_facts(entries: Mapping[str, Mapping[str, str]]) -> list[dict[str, str
 
 
 def publication_generation(entries: Mapping[str, Mapping[str, str]]) -> str:
-    payload = json.dumps(
-        _entry_facts(entries), ensure_ascii=False, sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return canonical_sha256(_entry_facts(entries))
 
 
 def _active_entries(

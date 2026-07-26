@@ -69,7 +69,6 @@ from src.metadata_resolve.evidence import local_evidence
 from src.metadata_resolve.scoring import MANUAL_REVIEW_THRESHOLD
 
 
-_read_json = read_json
 
 
 # ── Orchestrator ───────────────────────────────────────────────────────
@@ -141,7 +140,7 @@ def _resolve_metadata_candidates_impl(
 
     if not meta_path.exists():
         raise FileNotFoundError(f"metadata file missing: {meta_path}")
-    metadata = _read_json(meta_path, {})
+    metadata = read_json(meta_path, {})
     existing_doi = metadata_doi(metadata)
 
     pdf_sha256 = ""

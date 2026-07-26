@@ -12,6 +12,7 @@ from typing import Any
 from config.settings import MINERU_OUTPUT_CACHE_DIR
 from src.mineru.cleaner import MinerUOutputCleaner
 from src.utils.file_fingerprint import compute_file_hashes, compute_sha256
+from src.utils.timestamps import now_iso
 from src.utils.path_utils import normalize_repo_path
 from src.ingest.asset_manifest import write_asset_manifest
 from src.ingest.import_status import CONVERTED, write_import_status
@@ -181,7 +182,7 @@ class MinerUOutputCache:
                 "images_dir_relpath": images_dir.relative_to(tmp_dir).as_posix(),
                 "mineru_runner": runner,
                 "api_url": api_url,
-                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "created_at": now_iso(),
             }
             atomic_write_json(tmp_dir / CACHE_MANIFEST, manifest, indent=2)
             shutil.rmtree(target_dir, ignore_errors=True)
@@ -245,7 +246,7 @@ class MinerUOutputCache:
             "output_cache_hit": True,
             "output_cache_dir": normalize_repo_path(hit.cache_dir or ""),
             "output_cache_manifest": normalize_repo_path(hit.manifest_path or ""),
-            "converted_at": datetime.now().isoformat(timespec="seconds"),
+            "converted_at": now_iso(),
         }
         atomic_write_json(manifest_path, manifest, indent=2)
         write_import_status(

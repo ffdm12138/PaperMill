@@ -29,7 +29,6 @@ from src.metadata_resolve.candidates import (
 from src.metadata_resolve.sidecars import STATUS_MANUAL_REVIEW, STATUS_RESOLVE_FAILED
 
 
-_read_json = read_json
 
 
 def _has_required_metadata_fields(metadata: dict) -> bool:
@@ -88,7 +87,7 @@ def _apply_resolution_unlocked(
     folder = Path(folder)
     source_id = folder.name
     meta_path = folder / f"{source_id}.metadata.json"
-    metadata = _read_json(meta_path, {})
+    metadata = read_json(meta_path, {})
     paper_raw_root = Path(paper_raw_dir) if paper_raw_dir is not None else folder.parent
     papers_root = Path(papers_dir)
 

@@ -5,7 +5,6 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from config.settings import PROJECT_ROOT
 from src.writer.bib import parse_blocks
 from src.utils.naming import safe_child, validate_job_id
+from src.utils.timestamps import now_iso
 from src.utils.path_utils import normalize_repo_path
 from src.utils.atomic_io import atomic_write_json
 
@@ -161,7 +161,7 @@ def check_write_quality_text(args: argparse.Namespace) -> dict[str, Any]:
         "citation_count": len(cited),
         "missing_bib_citations": missing_bib_citations,
         "checks": checks,
-        "checked_at": datetime.now().isoformat(timespec="seconds"),
+        "checked_at": now_iso(),
     }
     reports_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(reports_dir / REPORT_NAME, report)

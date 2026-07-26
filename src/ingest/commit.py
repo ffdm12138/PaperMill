@@ -5,7 +5,9 @@ import json
 import os
 import shutil
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 from src.utils.file_fingerprint import compute_sha256
 from src.ingest.formalization import assert_formalization_current
@@ -308,21 +310,35 @@ def validate_committed_state(
 # ── Resume commit ─────────────────────────────────────────────────────
 
 
-def _resume_phase_prepared(
-    journal: dict,
-    *,
-    store: CommitJournalStore,
-    workspace: PaperRawWorkspace | None,
-    papers_dir: Path,
-    ledger_path: Path,
-    paper_raw_root: Path,
-    ledger: PaperNumberLedger,
-    staging: Path,
-    number,
-    paper_name,
-    fault_injector,
-) -> dict:
+@dataclass(frozen=True)
+class _ResumeContext:
+    """Transaction invariants, resolved once before the first phase runs.
+
+    ``staging``/``final`` are the *revalidated* paths, never the journal's own
+    fields, and the roots are the caller's trusted ones — phase helpers must
+    not re-derive either from the journal.
+    """
+
+    store: CommitJournalStore
+    workspace: PaperRawWorkspace | None
+    papers_dir: Path
+    ledger_path: Path
+    catalog_root: Path
+    paper_raw_root: Path
+    ledger: PaperNumberLedger
+    staging: Path
+    final: Path
+    number: str
+    paper_name: str
+    fault_injector: Callable[[str], Any] | None
+
+
+def _resume_phase_prepared(journal: dict, ctx: _ResumeContext) -> dict:
     """Resume the ``prepared`` phase: build the hidden staging directory."""
+    store, workspace, ledger = ctx.store, ctx.workspace, ctx.ledger
+    papers_dir, ledger_path, paper_raw_root = ctx.papers_dir, ctx.ledger_path, ctx.paper_raw_root
+    staging, number, paper_name = ctx.staging, ctx.number, ctx.paper_name
+    fault_injector = ctx.fault_injector
     if workspace is None:
         raise RuntimeError(
             "prepared transaction lost its source workspace"
@@ -364,21 +380,13 @@ def _resume_phase_prepared(
     return journal
 
 
-def _resume_phase_staging_complete(
-    journal: dict,
-    *,
-    store: CommitJournalStore,
-    workspace: PaperRawWorkspace | None,
-    papers_dir: Path,
-    ledger_path: Path,
-    ledger: PaperNumberLedger,
-    staging: Path,
-    final: Path,
-    number,
-    paper_name,
-    fault_injector,
-) -> dict:
+def _resume_phase_staging_complete(journal: dict, ctx: _ResumeContext) -> dict:
     """Resume ``staging_complete``: atomic formal install plus ledger activation."""
+    store, workspace, ledger = ctx.store, ctx.workspace, ctx.ledger
+    papers_dir, ledger_path = ctx.papers_dir, ctx.ledger_path
+    staging, final = ctx.staging, ctx.final
+    number, paper_name = ctx.number, ctx.paper_name
+    fault_injector = ctx.fault_injector
     # ── Atomic formal-install + ledger-activation ──────────────
     # Both os.replace(staging → final) and ledger activation happen
     # under the same PAPERS_INSTALL_RANK + LEDGER_RANK lock to
@@ -465,18 +473,11 @@ def _resume_phase_staging_complete(
     return journal
 
 
-def _resume_phase_final_installed(
-    journal: dict,
-    *,
-    store: CommitJournalStore,
-    papers_dir: Path,
-    ledger: PaperNumberLedger,
-    final: Path,
-    number,
-    paper_name,
-    fault_injector,
-) -> dict:
+def _resume_phase_final_installed(journal: dict, ctx: _ResumeContext) -> dict:
     """Resume ``final_installed``: ensure ledger activation and publication state."""
+    store, ledger, papers_dir = ctx.store, ctx.ledger, ctx.papers_dir
+    final, number, paper_name = ctx.final, ctx.number, ctx.paper_name
+    fault_injector = ctx.fault_injector
     # Final installed + ledger active already complete above;
     # this is a recovery path from a crash after ledger activation
     # but before journal phase advancement.
@@ -534,17 +535,11 @@ def _resume_phase_final_installed(
     return journal
 
 
-def _resume_phase_ledger_active(
-    journal: dict,
-    *,
-    store: CommitJournalStore,
-    papers_dir: Path,
-    catalog_root: Path,
-    ledger: PaperNumberLedger,
-    number,
-    fault_injector,
-) -> dict:
+def _resume_phase_ledger_active(journal: dict, ctx: _ResumeContext) -> dict:
     """Resume ``ledger_active``: request post-commit Catalog-folder reconciliation."""
+    store, ledger, papers_dir = ctx.store, ctx.ledger, ctx.papers_dir
+    catalog_root, number = ctx.catalog_root, ctx.number
+    fault_injector = ctx.fault_injector
     if _ledger_state(ledger, number) != "active":
         raise RuntimeError("ledger activation evidence missing")
     try:
@@ -565,16 +560,10 @@ def _resume_phase_ledger_active(
     return journal
 
 
-def _resume_phase_category_reconcile_requested(
-    journal: dict,
-    *,
-    store: CommitJournalStore,
-    papers_dir: Path,
-    ledger: PaperNumberLedger,
-    paper_raw_root: Path,
-    fault_injector,
-) -> dict:
+def _resume_phase_category_reconcile_requested(journal: dict, ctx: _ResumeContext) -> dict:
     """Resume ``category_reconcile_requested``: verify then delete the raw source."""
+    store, ledger, papers_dir = ctx.store, ctx.ledger, ctx.papers_dir
+    paper_raw_root, fault_injector = ctx.paper_raw_root, ctx.fault_injector
     validate_committed_state(
         journal,
         papers_dir=papers_dir,
@@ -589,15 +578,10 @@ def _resume_phase_category_reconcile_requested(
     return journal
 
 
-def _resume_phase_source_deleted(
-    journal: dict,
-    *,
-    store: CommitJournalStore,
-    papers_dir: Path,
-    ledger: PaperNumberLedger,
-    fault_injector,
-) -> dict:
+def _resume_phase_source_deleted(journal: dict, ctx: _ResumeContext) -> dict:
     """Resume ``source_deleted``: re-verify durable state and mark complete."""
+    store, ledger, papers_dir = ctx.store, ctx.ledger, ctx.papers_dir
+    fault_injector = ctx.fault_injector
     validate_committed_state(
         journal,
         papers_dir=papers_dir,
@@ -625,8 +609,6 @@ def resume_commit(
 ) -> dict:
     number = journal["paper_number"]
     paper_name = journal["paper_name"]
-    staging = Path(journal["staging_path"])
-    final = Path(journal["final_path"])
     ledger = PaperNumberLedger(ledger_path)
     paper_raw_root = Path(paper_raw_root).resolve()
     transaction_root = store.root
@@ -638,83 +620,36 @@ def resume_commit(
         papers_root=papers_dir,
         transaction_root=transaction_root,
     )
-    staging = validated["staging_path"]
-    final = validated["final_path"]
+    ctx = _ResumeContext(
+        store=store,
+        workspace=workspace,
+        papers_dir=papers_dir,
+        ledger_path=ledger_path,
+        catalog_root=catalog_root,
+        paper_raw_root=paper_raw_root,
+        ledger=ledger,
+        staging=validated["staging_path"],
+        final=validated["final_path"],
+        number=number,
+        paper_name=paper_name,
+        fault_injector=fault_injector,
+    )
 
+    phase_handlers = {
+        "prepared": _resume_phase_prepared,
+        "staging_complete": _resume_phase_staging_complete,
+        "final_installed": _resume_phase_final_installed,
+        "ledger_active": _resume_phase_ledger_active,
+        "category_reconcile_requested": _resume_phase_category_reconcile_requested,
+        "source_deleted": _resume_phase_source_deleted,
+    }
     while journal["phase"] != "complete":
-        phase = journal["phase"]
-
-        if phase == "prepared":
-            journal = _resume_phase_prepared(
-                journal,
-                store=store,
-                workspace=workspace,
-                papers_dir=papers_dir,
-                ledger_path=ledger_path,
-                paper_raw_root=paper_raw_root,
-                ledger=ledger,
-                staging=staging,
-                number=number,
-                paper_name=paper_name,
-                fault_injector=fault_injector,
+        handler = phase_handlers.get(journal["phase"])
+        if handler is None:
+            raise CommitRecoveryCorruptionError(
+                f"unknown commit journal phase {journal['phase']!r} for {number}"
             )
-
-        elif phase == "staging_complete":
-            journal = _resume_phase_staging_complete(
-                journal,
-                store=store,
-                workspace=workspace,
-                papers_dir=papers_dir,
-                ledger_path=ledger_path,
-                ledger=ledger,
-                staging=staging,
-                final=final,
-                number=number,
-                paper_name=paper_name,
-                fault_injector=fault_injector,
-            )
-
-        elif phase == "final_installed":
-            journal = _resume_phase_final_installed(
-                journal,
-                store=store,
-                papers_dir=papers_dir,
-                ledger=ledger,
-                final=final,
-                number=number,
-                paper_name=paper_name,
-                fault_injector=fault_injector,
-            )
-
-        elif phase == "ledger_active":
-            journal = _resume_phase_ledger_active(
-                journal,
-                store=store,
-                papers_dir=papers_dir,
-                catalog_root=catalog_root,
-                ledger=ledger,
-                number=number,
-                fault_injector=fault_injector,
-            )
-
-        elif phase == "category_reconcile_requested":
-            journal = _resume_phase_category_reconcile_requested(
-                journal,
-                store=store,
-                papers_dir=papers_dir,
-                ledger=ledger,
-                paper_raw_root=paper_raw_root,
-                fault_injector=fault_injector,
-            )
-
-        elif phase == "source_deleted":
-            journal = _resume_phase_source_deleted(
-                journal,
-                store=store,
-                papers_dir=papers_dir,
-                ledger=ledger,
-                fault_injector=fault_injector,
-            )
+        journal = handler(journal, ctx)
 
     return journal
 

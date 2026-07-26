@@ -10,6 +10,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.utils.canonical_json import canonical_sha256
 from src.utils.jsonio import read_json_strict
 from src.utils.identifiers import normalize_doi
 from src.utils.file_fingerprint import compute_file_hashes, compute_sha256
@@ -28,8 +29,7 @@ class DuplicateInspectionResult:
 
 
 def _canonical_json_sha(value: object) -> str:
-    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+    return canonical_sha256(value)
 
 
 def _read_json(path: Path) -> dict:

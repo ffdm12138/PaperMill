@@ -7,9 +7,6 @@ system offers a cross-resource atomic transaction.
 """
 from __future__ import annotations
 
-import json
-import hashlib
-import os
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import Enum
@@ -17,29 +14,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from filelock import FileLock, Timeout
+from filelock import Timeout
 
-from src.workspace.receipt import (
-    build_receipt_payload,
-    receipt_path_for,
-    write_or_validate_discovery_receipt,
-)
 from src.discovery.models import PaperCandidate
 from src.utils.identifiers import normalize_doi
-from src.discovery.contracts.page_journal import (
-    stable_hash,
-    title_resolution_key,
-)
 from src.discovery.drain_locks import doi_lock_path, drain_lock, resolution_lock_path
 from src.discovery.export_artifacts import (
     export_candidate_once,
-    export_paths,
-    inspect_emitted_primary_export,
     inspect_emitted_primary_export_cached,
-    validate_export_artifacts,
 )
 from src.discovery.stores.journal_drain_index import JournalDrainIndex
-from src.workspace.receipt import write_discovery_receipt
 from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_errors import ProviderRequestBudgetExhausted
 from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
@@ -47,12 +31,10 @@ from src.discovery.runtime.budgets import BatchDoiResolutionBudget
 from src.discovery.staging_gateway import MetadataStagingGateway
 from src.discovery.title_resolution import DurableTitleCache, TitleResolutionService
 from src.metadata.quality import is_valid_normalized_doi
-from src.utils.atomic_io import atomic_write_json_unlocked, atomic_write_text
 from src.utils.timestamps import utc_now_iso as _now_iso
 
 
 DISCOVERY_LEASE_SECONDS = 300
-DISCOVERY_LOCK_TIMEOUT = 30
 
 
 class DrainOutcome(str, Enum):

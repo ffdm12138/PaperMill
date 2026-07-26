@@ -162,7 +162,12 @@ def _system_temp_dir() -> Path:
 
 
 def _timestamp_iso() -> str:
-    """ISO-8601 timestamp in local timezone with seconds precision."""
+    """ISO-8601 timestamp in local timezone with seconds precision.
+
+    Byte-identical to ``src.utils.timestamps.now_iso`` but deliberately NOT
+    unified: this module is standalone test infrastructure that must import
+    without ``src`` on the path (it builds the workspace the suite runs in).
+    """
     import datetime
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 

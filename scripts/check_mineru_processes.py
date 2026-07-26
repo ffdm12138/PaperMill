@@ -29,7 +29,7 @@ from src.mineru.runtime import (
     snapshot_mineru_api,
     snapshot_nvidia_smi,
 )
-from src.mineru.service_manager import verify_gpu_runtime
+from src.mineru.service_manager import ProcessProbeError, iter_processes, verify_gpu_runtime
 from src.mineru.lock import read_mineru_lock_status, clear_stale_mineru_lock, LOCK_PATH
 from src.utils.process import is_pid_alive as _is_pid_alive
 
@@ -43,43 +43,38 @@ def _run_cmd(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
         return -1, "", str(e)
 
 
+def _process_kind(cmd_lower: str) -> str:
+    if "mineru-api" in cmd_lower:
+        return "mineru-api"
+    if "watcher" in cmd_lower:
+        return "watcher"
+    if "src.server" in cmd_lower:
+        return "python -m src.server"
+    if "mineru" in cmd_lower:
+        return "mineru CLI"
+    return "mineru-related"
+
+
 def _find_mineru_processes() -> list[dict]:
-    """查找所有 MinerU 相关进程（python + mineru + mineru-api）。"""
+    """查找所有 MinerU 相关进程（python + mineru + mineru-api）。
+
+    进程枚举复用 service_manager 的探测（wmic → pwsh CIM 回退），探测本身
+    失败时抛 ProcessProbeError，绝不退化成"没有进程"。
+    """
     procs = []
-    # Windows: use wmic / tasklist
-    try:
-        import subprocess as sp
-        r = sp.run(["wmic", "process", "get", "ProcessId,Name,CommandLine", "/format:csv"],
-                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
-        for line in r.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            lower = line.lower()
-            # 匹配 mineru / python 进程，且命令行包含 mineru 相关
-            if "mineru" in lower or ("python" in lower and ("mineru" in lower or "watcher" in lower or "batch_convert" in lower or "benchmark" in lower or "server" in lower)):
-                try:
-                    parts = line.rsplit(",", 2)
-                    if len(parts) >= 3:
-                        pid = parts[-1].strip()
-                        name = parts[-2].strip()
-                        cmdline = parts[0].strip() if len(parts) > 1 else ""
-                        cmd_lower = cmdline.lower()
-                        if "mineru-api" in cmd_lower:
-                            kind = "mineru-api"
-                        elif "watcher" in cmd_lower:
-                            kind = "watcher"
-                        elif "src.server" in cmd_lower:
-                            kind = "python -m src.server"
-                        elif "mineru" in cmd_lower:
-                            kind = "mineru CLI"
-                        else:
-                            kind = "mineru-related"
-                        procs.append({"pid": pid, "name": name, "cmdline": cmdline, "kind": kind})
-                except (ValueError, IndexError):
-                    pass
-    except Exception:
-        pass
+    for proc in iter_processes():
+        cmdline = str(proc.get("cmdline") or "")
+        name = str(proc.get("name") or "")
+        lower = f"{cmdline} {name}".lower()
+        related = "mineru" in lower or (
+            "python" in lower
+            and any(token in lower for token in
+                    ("mineru", "watcher", "batch_convert", "benchmark", "server"))
+        )
+        if not related:
+            continue
+        procs.append({"pid": str(proc.get("pid") or ""), "name": name,
+                      "cmdline": cmdline, "kind": _process_kind(cmdline.lower())})
     return procs
 
 
@@ -111,7 +106,12 @@ def _collect_snapshot() -> dict:
                 if len(parts) >= 3:
                     compute_procs.append({"pid": parts[0], "process_name": parts[1], "used_memory": parts[2]})
 
-    procs = _find_mineru_processes()
+    try:
+        procs = _find_mineru_processes()
+        probe_error = ""
+    except ProcessProbeError as exc:
+        procs = []
+        probe_error = str(exc)
     mineru_api_count = sum(1 for p in procs if p.get("kind") == "mineru-api")
     config = runtime_config_from_env()
     gpu_health = preflight_gpu()
@@ -127,6 +127,7 @@ def _collect_snapshot() -> dict:
             "compute_processes": compute_procs,
         },
         "mineru_processes": procs,
+        "process_probe_error": probe_error,
         "multiple_mineru_api_detected": mineru_api_count > 1,
         "mineru_api_health": api_health,
         "mineru_api_warning": mineru_api_failed_task_warning(api_health),
@@ -222,7 +223,12 @@ def main() -> int:
     for warning in service.get("warnings") or []:
         print(f"  WARNING: {warning}")
     print("  related processes:")
-    procs = _find_mineru_processes()
+    try:
+        procs = _find_mineru_processes()
+    except ProcessProbeError as exc:
+        procs = []
+        print(f"  ERROR: {exc}")
+        print("  (install PowerShell 7 'pwsh' or restore wmic to inspect processes)")
     if procs:
         for p in procs:
             cmd = p["cmdline"][:120] if p["cmdline"] else "(unknown)"

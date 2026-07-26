@@ -176,6 +176,70 @@ def test_paper_pool_mismatch_fails(tmp_path: Path):
     assert any("paper_pool mismatch" in err for err in result["errors"])
 
 
+def test_empty_selected_catalog_fails_closed(tmp_path: Path):
+    """An empty paper pool must never skip the deep checks (fail-open regression)."""
+    job_dir, _, _ = _make_review_job(tmp_path)
+    selected = json.loads(
+        (job_dir / "selected_catalog.json").read_text(encoding="utf-8"))
+    selected["papers"] = []
+    (job_dir / "selected_catalog.json").write_text(
+        json.dumps(selected, ensure_ascii=False), encoding="utf-8")
+    (job_dir / "tex" / "references.bib").unlink()
+
+    result = check_planning_docs(_args(tmp_path, job_dir.name))
+    assert result["passed"] is False
+    assert any("selects no papers" in err for err in result["errors"])
+    assert any("references.bib" in err for err in result["errors"])
+
+
+def test_missing_job_json_still_writes_report(tmp_path: Path):
+    job_dir, _, _ = _make_review_job(tmp_path)
+    (job_dir / "job.json").unlink()
+    result = check_planning_docs(_args(tmp_path, job_dir.name))
+    assert result["passed"] is False
+    report = json.loads(
+        (job_dir / "reports" / "planning_docs_check_report.json").read_text(encoding="utf-8"))
+    assert report["passed"] is False
+    assert report["job_id"] == job_dir.name
+
+
+def test_malformed_plan_json_reports_error_not_traceback(tmp_path: Path):
+    job_dir, _, _ = _make_review_job(tmp_path)
+    (job_dir / "planning" / "review_plan.json").write_text("{not json", encoding="utf-8")
+    result = check_planning_docs(_args(tmp_path, job_dir.name))
+    assert result["passed"] is False
+    assert any("invalid JSON" in err for err in result["errors"])
+
+
+@pytest.mark.parametrize("placeholder", ["TODO", "待填", "TEMPLATE_ONLY", "由大模型补全"])
+def test_proposal_research_input_rejects_every_todo_marker(tmp_path: Path, placeholder: str):
+    job_dir, _, _ = _make_review_job(tmp_path, job_id="003_proposal_markers_ghi789")
+    meta = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    meta["workflow"] = "catalog_research_proposal"
+    (job_dir / "job.json").write_text(json.dumps(meta), encoding="utf-8")
+    (job_dir / "input").mkdir()
+    (job_dir / "input" / "research_input.md").write_text(
+        _substantial(f"# 研究项目描述\n\n## 研究问题\n\n{placeholder}\n"), encoding="utf-8")
+
+    result = check_planning_docs(_args(tmp_path, job_dir.name))
+    assert result["passed"] is False
+    assert any("research_input.md" in err and "placeholder" in err
+               for err in result["errors"])
+
+
+def test_proposal_research_input_rejects_near_empty_file(tmp_path: Path):
+    job_dir, _, _ = _make_review_job(tmp_path, job_id="004_proposal_short_jkl012")
+    meta = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    meta["workflow"] = "catalog_research_proposal"
+    (job_dir / "job.json").write_text(json.dumps(meta), encoding="utf-8")
+    (job_dir / "input").mkdir()
+    (job_dir / "input" / "research_input.md").write_text("# 研究项目描述\n", encoding="utf-8")
+
+    result = check_planning_docs(_args(tmp_path, job_dir.name))
+    assert result["passed"] is False
+    assert any("research_input.md" in err and "empty" in err for err in result["errors"])
+
+
 def test_proposal_requires_filled_research_input(tmp_path: Path):
     job_dir, papers, plan = _make_review_job(tmp_path, job_id="002_proposal_demo_def456")
     meta = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))

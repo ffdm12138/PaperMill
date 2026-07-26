@@ -1,6 +1,7 @@
 """Provider raw-record canonicalization for network metadata staging."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -92,7 +93,7 @@ def combine_page_range(first_page: Any, last_page: Any) -> str:
     return first or last
 
 
-_OA_DATE_RE = __import__("re").compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
+_OA_DATE_RE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
 
 
 def _normalize_oa_date(value: Any) -> str:

@@ -18,6 +18,7 @@ from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.ingest.locking import paper_raw_write_lock
 from src.utils.path_utils import normalize_repo_path, resolve_stored_path
 from src.ingest.duplicate_guard import is_paper_raw_workspace
+from src.utils.canonical_json import canonical_sha256
 from src.utils.jsonio import read_json
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.library.paper_number_ledger import PaperNumberLedger, now_iso
@@ -98,10 +99,7 @@ def normalized_metadata_for_fingerprint(metadata: dict) -> dict:
 
 def metadata_fingerprint(metadata: dict) -> str:
     """sha256 over canonical JSON of the normalized metadata."""
-    import hashlib
-    normalized = normalized_metadata_for_fingerprint(metadata)
-    canonical = json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical_sha256(normalized_metadata_for_fingerprint(metadata))
 
 
 def _read_json(path: Path, default: Any = None) -> Any:

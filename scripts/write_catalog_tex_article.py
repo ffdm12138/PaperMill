@@ -5,7 +5,6 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 from config.settings import PROJECT_ROOT
 from src.writer.bib import bib_key_for_entry, bibtex_for_entry, parse_blocks
 from src.utils.naming import safe_child, validate_job_id
+from src.utils.timestamps import now_iso
 from src.utils.path_utils import normalize_repo_path
 from src.utils.atomic_io import atomic_write_json
 
@@ -226,7 +226,7 @@ def write_article(args: argparse.Namespace) -> dict:
         "paper_count": len(entries),
         "bib_keys": bib_keys,
         "tex_dir": normalize_repo_path(tex_dir),
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": now_iso(),
     }
     if not args.apply:
         return report

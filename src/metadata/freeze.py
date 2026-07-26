@@ -1,24 +1,21 @@
 """Metadata freeze receipts and strict immutable-closure verification."""
 from __future__ import annotations
 
-from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 
 from src.utils.file_fingerprint import compute_sha256
+from src.utils.timestamps import now_iso
 from src.metadata.citation_readiness import validate_citation_ready
 from src.metadata.pdf_match import validate_metadata_match_receipt
 from src.metadata.source_records import validate_metadata_source_record_exists
 from src.metadata.schema import validate_metadata_schema
 from src.utils.atomic_io import atomic_write_json
+from src.utils.canonical_json import canonical_json_bytes
 
 
 FREEZE_SCHEMA_VERSION = "1.0"
-
-
-def _canonical_csl_bytes(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _citation_hashes(metadata: dict) -> tuple[dict, list[str]]:
@@ -28,8 +25,8 @@ def _citation_hashes(metadata: dict) -> tuple[dict, list[str]]:
     if not first.ready or first.generated_csl is None or not first.generated_bibtex:
         errors.append("metadata is not citation-ready")
         return {}, errors
-    first_csl = _canonical_csl_bytes(first.generated_csl)
-    second_csl = _canonical_csl_bytes(second.generated_csl)
+    first_csl = canonical_json_bytes(first.generated_csl)
+    second_csl = canonical_json_bytes(second.generated_csl)
     first_bib = first.generated_bibtex.encode("utf-8")
     second_bib = (second.generated_bibtex or "").encode("utf-8")
     if first_csl != second_csl or first_bib != second_bib:
@@ -138,7 +135,7 @@ def freeze_metadata(folder: Path, paper_number: str) -> dict:
         "citation_artifacts": citation_hashes,
         "source_record_hashes": source_hashes,
         "revision": revision,
-        "frozen_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "frozen_at": now_iso(),
     }
     atomic_write_json(previous, receipt, indent=2)
     return receipt

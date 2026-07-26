@@ -37,10 +37,12 @@ from pathlib import Path, PurePosixPath
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+from src.utils.canonical_json import canonical_sha256
 from src.utils.repository_hygiene import (
     is_forbidden_snapshot_member,
     runtime_workspace_counts,
 )
+from src.utils.timestamps import now_iso
 ZIP_NAME_BASE = "mineru_snapshot"
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
@@ -346,13 +348,10 @@ class SnapshotMember:
 
 
 def _member_digest(members: list[SnapshotMember]) -> str:
-    payload = [
+    return canonical_sha256([
         {"path": member.path, "size_bytes": member.size_bytes, "sha256": member.sha256}
         for member in members
-    ]
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    ])
 
 
 def _build_snapshot_plan(files: list[str]) -> list[SnapshotMember]:
@@ -918,8 +917,7 @@ def main():
                 "archive_member_check": "passed",
             },
         }
-        import datetime
-        manifest["created_at"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        manifest["created_at"] = now_iso()
         zf.writestr("snapshot_manifest.json",
                     json.dumps(manifest, indent=2, ensure_ascii=False))
         count += 1  # manifest counts toward total

@@ -18,7 +18,6 @@ from src.library.formal_publication import (
     publication_state_path,
 )
 from src.ingest.locking import (
-    LEDGER_RANK,
     INDEX_PUBLISH_RANK,
     LEDGER_RANK,
     PAPER_RAW_GLOBAL_RANK,

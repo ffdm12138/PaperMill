@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +12,10 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 
 from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PROJECT_ROOT
 from scripts.prepare_write_article_workdir import prepare_workdir
-from src.utils.atomic_io import atomic_write_json
+from src.utils.atomic_io import atomic_write_json, atomic_write_text
 from src.utils.naming import safe_child, validate_job_id
 from src.utils.path_utils import normalize_repo_path
+from src.utils.timestamps import now_iso
 
 
 WRITE_DIR = PROJECT_ROOT / "write" / "jobs"
@@ -161,14 +161,9 @@ def create_write_job(args: argparse.Namespace) -> dict[str, Any]:
     reports_dir = safe_child(job_dir, "reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    readme_path = job_dir / "README.md"
-    summary_path = reports_dir / "selected_papers.md"
-    readme_path.write_text(
-        _job_readme(job_id, int(report.get("selected_count") or 0), args.workflow),
-        encoding="utf-8",
-    )
-    summary_path.write_text(_selected_summary(report), encoding="utf-8")
-
+    # job.json carries the workflow switch every downstream gate reads, so it is
+    # written before the descriptive files: an interrupted run then still shows
+    # the requested workflow rather than the default one.
     workflow_value = WORKFLOW_VALUES[args.workflow]
     if args.workflow != "article":
         job_json_path = job_dir / "job.json"
@@ -180,7 +175,15 @@ def create_write_job(args: argparse.Namespace) -> dict[str, Any]:
         input_dir.mkdir(parents=True, exist_ok=True)
         research_input = input_dir / "research_input.md"
         if not research_input.exists():
-            research_input.write_text(RESEARCH_INPUT_TEMPLATE, encoding="utf-8")
+            atomic_write_text(research_input, RESEARCH_INPUT_TEMPLATE)
+
+    readme_path = job_dir / "README.md"
+    summary_path = reports_dir / "selected_papers.md"
+    atomic_write_text(
+        readme_path,
+        _job_readme(job_id, int(report.get("selected_count") or 0), args.workflow),
+    )
+    atomic_write_text(summary_path, _selected_summary(report))
 
     result = {
         "job_id": job_id,
@@ -191,7 +194,7 @@ def create_write_job(args: argparse.Namespace) -> dict[str, Any]:
         "job_dir": normalize_repo_path(job_dir),
         "readme": normalize_repo_path(readme_path),
         "selected_summary": normalize_repo_path(summary_path),
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": now_iso(),
     }
     return result
 
@@ -214,7 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be >= 1")
     result = create_write_job(args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

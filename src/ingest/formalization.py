@@ -1,12 +1,12 @@
 """Read-only installation planning for a numeric paper_raw workspace."""
 from __future__ import annotations
 
-from datetime import datetime
 import json
 from pathlib import Path
 
 from src.catalog.freeze import assert_catalog_frozen
 from src.utils.file_fingerprint import compute_sha256
+from src.utils.timestamps import now_iso
 from src.ingest.duplicate_inspection import duplicate_inspection_sha256, inspect_ingest_duplicates
 from src.ingest.status import inspect_workspace_readiness, update_status
 from src.ingest.workspace import PaperRawWorkspace
@@ -75,7 +75,7 @@ def build_formalization_plan(workspace: PaperRawWorkspace, *, papers_dir: Path, 
         "duplicate_inspection":duplicate.to_dict(),"duplicate_inspection_sha256":duplicate_inspection_sha256(duplicate),
         "final_filenames":final_filenames,"marker_rewrite":{"schema_version":"1.0","paper_number":workspace.paper_number,"folder_name":paper_name,"state":"active","planned_paper_name":paper_name},
         "asset_manifest_plan":{"paper_number":workspace.paper_number,"paper_name":paper_name,"asset_names":final_filenames},
-        "created_at":datetime.now().astimezone().isoformat(timespec="seconds"),
+        "created_at":now_iso(),
     }
 
 def write_formalization_plan(workspace: PaperRawWorkspace, *, papers_dir: Path, ledger_path: Path|None=None)->dict:

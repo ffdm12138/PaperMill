@@ -14,6 +14,7 @@ from loguru import logger
 from config.settings import PROJECT_ROOT
 from filelock import FileLock
 from src.utils.atomic_io import atomic_write_json
+from src.utils.timestamps import now_iso
 
 WRITE_DIR = PROJECT_ROOT / "write" / "jobs"
 
@@ -62,8 +63,8 @@ def _empty_run_meta(job_id: str, job_dir: Path, topic: str, input_type: str,
     return {
         "job_id": job_id,
         "job_dir": str(job_dir),
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
         "input_type": input_type,
         "target": target,
         "language": language,
@@ -139,7 +140,7 @@ class JobManager:
 
     def save_meta(self, job_id: str, meta: dict) -> None:
         """原子写入 run_meta.json：tmp + os.replace，避免中断/并发损坏"""
-        meta["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        meta["updated_at"] = now_iso()
         p = self.job_dir(job_id) / "logs" / "run_meta.json"
         atomic_write_json(p, meta, indent=2)
 
@@ -170,7 +171,7 @@ class JobManager:
     def append_note(self, job_id: str, note: str) -> dict:
         def _fn(meta):
             meta.setdefault("notes", []).append(
-                f"[{datetime.now().isoformat(timespec='seconds')}] {note}")
+                f"[{now_iso()}] {note}")
             return meta
         return self._locked_meta(job_id, _fn)
 

@@ -118,62 +118,103 @@ def _norm_path(value: str | Path | None) -> str:
         return str(value).replace("\\", "/").lower()
 
 
-def _iter_processes() -> list[dict]:
+class ProcessProbeError(RuntimeError):
+    """No process-enumeration backend worked.
+
+    Distinct from "no matching process": an empty list would make a healthy
+    managed service look dead, so every probe failure is raised instead.
+    """
+
+
+def _run_probe(cmd: list[str]) -> str | None:
+    """Run one enumeration backend; None means this backend is unusable."""
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0 and not result.stdout.strip():
+        return None
+    return result.stdout
+
+
+# wmic is absent from a default Windows 11 24H2+ install, so the CIM lane via
+# PowerShell 7 (a repository prerequisite) is the supported successor.
+_WMIC_CMD = ["wmic", "process", "get", "ProcessId,Name,CommandLine", "/format:csv"]
+_CIM_CMD = [
+    "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+    "Get-CimInstance Win32_Process | ForEach-Object "
+    "{ $_.CommandLine + [char]9 + $_.Name + [char]9 + $_.ProcessId }",
+]
+
+
+def _parse_rows(text: str, separator: str, *, skip_csv_header: bool) -> list[dict]:
     procs: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or (skip_csv_header and line.lower().startswith("node,")):
+            continue
+        parts = line.rsplit(separator, 2)
+        if len(parts) < 3:
+            continue
+        procs.append({
+            "pid": parts[-1].strip(),
+            "name": parts[-2].strip(),
+            "cmdline": parts[0].strip(),
+        })
+    return procs
+
+
+def iter_processes() -> list[dict]:
+    """Every running process, or ``ProcessProbeError`` if none can be listed.
+
+    A zero-row result counts as a backend failure, not as "nothing is running":
+    this process itself is always in the table, so an empty parse means the
+    backend answered but told us nothing usable.
+    """
     if os.name == "nt":
-        try:
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,Name,CommandLine", "/format:csv"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-            )
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if not line or line.lower().startswith("node,"):
-                    continue
-                parts = line.rsplit(",", 2)
-                if len(parts) < 3:
-                    continue
-                procs.append({
-                    "pid": parts[-1].strip(),
-                    "name": parts[-2].strip(),
-                    "cmdline": parts[0].strip(),
-                })
-        except (OSError, subprocess.SubprocessError, ValueError):
-            pass
-    else:
-        try:
-            result = subprocess.run(
-                ["ps", "-eo", "pid=,comm=,args="],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-            )
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split(None, 2)
-                if len(parts) >= 3:
-                    procs.append({"pid": parts[0], "name": parts[1], "cmdline": parts[2]})
-        except (OSError, subprocess.SubprocessError, ValueError):
-            pass
+        for cmd, separator, csv_header in (
+            (_WMIC_CMD, ",", True),
+            (_CIM_CMD, "\t", False),
+        ):
+            output = _run_probe(cmd)
+            if output is None:
+                continue
+            procs = _parse_rows(output, separator, skip_csv_header=csv_header)
+            if procs:
+                return procs
+        raise ProcessProbeError(
+            "cannot enumerate processes: neither wmic nor "
+            "'pwsh Get-CimInstance Win32_Process' returned a usable process table"
+        )
+    output = _run_probe(["ps", "-eo", "pid=,comm=,args="])
+    procs: list[dict] = []
+    if output is not None:
+        for line in output.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) >= 3:
+                procs.append({"pid": parts[0], "name": parts[1], "cmdline": parts[2]})
+    if not procs:
+        raise ProcessProbeError(
+            "cannot enumerate processes: 'ps' returned no usable process table"
+        )
     return procs
 
 
 def find_processes_containing(token: str) -> list[dict]:
     token_l = token.lower()
-    return [p for p in _iter_processes() if token_l in str(p.get("cmdline", "")).lower()]
+    return [p for p in iter_processes() if token_l in str(p.get("cmdline", "")).lower()]
 
 
 def process_cmdline(pid: int) -> str:
     pid_s = str(pid)
-    for proc in _iter_processes():
+    for proc in iter_processes():
         if str(proc.get("pid")) == pid_s:
             return str(proc.get("cmdline") or "")
     return ""
@@ -200,7 +241,13 @@ def inspect_mineru_api_process(pid: int) -> dict:
     if pid <= 0:
         return identity
     pid_s = str(pid)
-    for proc in _iter_processes():
+    try:
+        processes = iter_processes()
+    except ProcessProbeError as exc:
+        # Never report a live process as dead just because the probe broke.
+        identity["probe_failed"] = str(exc)
+        return identity
+    for proc in processes:
         if str(proc.get("pid")) != pid_s:
             continue
         cmdline = str(proc.get("cmdline") or "")
@@ -285,6 +332,22 @@ def classify_mineru_api_service(
             "expected_port": expected_port,
             "api_url": api_url,
             "warnings": ["healthy API has no pid file"],
+        }
+    if identity.get("probe_failed"):
+        # Cannot prove the pid is dead — refuse rather than delete the pid file
+        # and treat a healthy managed service as stale.
+        return {
+            "verdict": "probe_unavailable",
+            "healthy": True,
+            "pid": pid,
+            "pid_file": str(pid_file),
+            "identity": identity,
+            "expected_exe": expected_exe,
+            "expected_port": expected_port,
+            "api_url": api_url,
+            "warnings": [
+                f"cannot verify PID {pid}: {identity['probe_failed']}"
+            ],
         }
     if not identity.get("live"):
         return {
@@ -444,6 +507,26 @@ def _classify_and_maybe_reuse(
             ),
             "next_command": MINERU_READY_NEXT_COMMAND,
         }, service_verdict_before
+    if service["verdict"] == "probe_unavailable":
+        return {
+            "ok": False,
+            "action": "failed",
+            "mineru_api_url": api_url,
+            "pid": service.get("pid"),
+            "pid_file": str(MINERU_API_PID_FILE),
+            "log_file": str(MINERU_API_LOG_FILE),
+            "health": "failed",
+            "port_open": True,
+            "service": service,
+            "service_verdict_before": service_verdict_before,
+            "service_verdict_after": service_verdict_before,
+            "message": (
+                "mineru-api is healthy but its PID cannot be verified: the "
+                "process probe failed (wmic missing and PowerShell 7 'pwsh' "
+                "unavailable?). Refusing to touch the pid file. Install pwsh "
+                "or stop the service manually."
+            ),
+        }, service_verdict_before
     if service.get("healthy"):
         # healthy_but_stale_pid with non-live pid: delete stale pid file and
         # reclassify before deciding whether to start or restart.
@@ -567,15 +650,19 @@ def _spawn_mineru_api(
         cuda_path=cuda_path,
     )
     log_handle = MINERU_API_LOG_FILE.open("a", encoding="utf-8")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    log_handle.close()
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    finally:
+        # The child inherited the descriptor; the parent's copy is closed either
+        # way so a failed spawn does not leak it.
+        log_handle.close()
     write_pid(proc.pid, MINERU_API_PID_FILE)
     return cmd, env, proc
 
@@ -778,16 +865,33 @@ def stop_services(
     stopped: list[int] = []
     warnings: list[str] = []
     targets: list[int] = []
+    probe_failed = False
+
+    def _find(token: str) -> list[dict]:
+        nonlocal probe_failed
+        try:
+            return find_processes_containing(token)
+        except ProcessProbeError as exc:
+            probe_failed = True
+            warnings.append(f"cannot enumerate processes: {exc}")
+            return []
 
     pid = read_pid(MINERU_API_PID_FILE)
     if pid is not None:
-        cmdline = process_cmdline(pid)
-        if "mineru-api" in cmdline.lower():
+        try:
+            cmdline = process_cmdline(pid)
+        except ProcessProbeError as exc:
+            probe_failed = True
+            warnings.append(f"cannot verify PID {pid} ({exc}); refusing to stop it")
+            cmdline = ""
+        if probe_failed:
+            pass
+        elif "mineru-api" in cmdline.lower():
             targets.append(pid)
         else:
             warnings.append(f"pid file points to PID {pid}, but command line is not mineru-api; skipped")
     elif all_mineru_api:
-        for proc in find_processes_containing("mineru-api"):
+        for proc in _find("mineru-api"):
             if "mineru-api" not in str(proc.get("cmdline", "")).lower():
                 continue
             try:
@@ -795,12 +899,12 @@ def stop_services(
             except (KeyError, TypeError, ValueError):
                 pass
     else:
-        found = find_processes_containing("mineru-api")
+        found = _find("mineru-api")
         if found:
             warnings.append("mineru-api process exists but no pid file was found; use --all-mineru-api to stop all")
 
     if all_mineru_api:
-        for proc in find_processes_containing("mineru-api"):
+        for proc in _find("mineru-api"):
             if "mineru-api" not in str(proc.get("cmdline", "")).lower():
                 continue
             try:
@@ -824,7 +928,7 @@ def stop_services(
     if web:
         web_result = stop_web_service(force=force)
 
-    ok = not any(w.startswith("failed to stop") for w in warnings)
+    ok = not probe_failed and not any(w.startswith("failed to stop") for w in warnings)
     if stopped:
         action = "stopped"
     elif warnings:
@@ -845,7 +949,11 @@ def stop_web_service(*, force: bool = False) -> dict:
     pid = read_pid(WEB_PID_FILE)
     if pid is None:
         return {"ok": True, "action": "not_running", "stopped_pids": [], "pid_file_removed": True}
-    cmdline = process_cmdline(pid)
+    try:
+        cmdline = process_cmdline(pid)
+    except ProcessProbeError as exc:
+        return {"ok": False, "action": "failed", "stopped_pids": [], "pid_file_removed": False,
+                "message": f"cannot verify web PID {pid} ({exc}); refusing to stop it"}
     if "src.server" not in cmdline and "-m src.server" not in cmdline:
         return {"ok": False, "action": "failed", "stopped_pids": [], "pid_file_removed": False,
                 "message": f"web pid file points to PID {pid}, but command line is not src.server"}

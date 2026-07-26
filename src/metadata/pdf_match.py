@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.discovery.models import normalize_doi
 from src.utils.file_fingerprint import compute_sha256
+from src.utils.timestamps import now_iso
 from src.metadata.normalization import canonical_title
 from src.metadata.pdf_identity import (
     CONFIDENCE_LEVELS,
@@ -165,7 +166,7 @@ def build_match_receipt(
         "provider_records": list(provider_records or []),
         "manual_confirmation": manual,
         "manual_errors": manual_errors,
-        "matched_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "matched_at": now_iso(),
     }
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 
+import pytest
+
 import scripts.start_mineru_services as start_cli
 import src.mineru.service_manager as sm
 
@@ -454,3 +456,87 @@ def test_restart_if_stale_safe_pid_action_is_restarted(monkeypatch, tmp_path):
     assert result["action"] == "restarted"
     assert result["service_verdict_before"] == "healthy_but_unmanaged"
     assert result["service_verdict_after"] == "managed_ready"
+
+
+# ── Process-probe backends ────────────────────────────────────────────
+
+
+class _Completed:
+    def __init__(self, stdout: str = "", returncode: int = 0):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = ""
+
+
+def test_iter_processes_falls_back_to_pwsh_cim_when_wmic_is_missing(monkeypatch):
+    """Windows 11 24H2+ ships without wmic; the CIM lane must take over."""
+    monkeypatch.setattr(sm.os, "name", "nt")
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        if cmd[0] == "wmic":
+            raise FileNotFoundError("wmic")
+        return _Completed("mineru-api --port 8000\tmineru-api.exe\t4242\n")
+
+    monkeypatch.setattr(sm.subprocess, "run", fake_run)
+    procs = sm.iter_processes()
+
+    assert [cmd[0] for cmd in seen] == ["wmic", "pwsh"]
+    assert procs == [{"pid": "4242", "name": "mineru-api.exe",
+                      "cmdline": "mineru-api --port 8000"}]
+
+
+def test_iter_processes_raises_when_every_backend_fails(monkeypatch):
+    """A broken probe must never look like 'no processes are running'."""
+    monkeypatch.setattr(sm.os, "name", "nt")
+    monkeypatch.setattr(sm.subprocess, "run",
+                        lambda cmd, **kwargs: (_ for _ in ()).throw(FileNotFoundError(cmd[0])))
+
+    with pytest.raises(sm.ProcessProbeError):
+        sm.iter_processes()
+
+
+def test_iter_processes_treats_an_empty_table_as_probe_failure(monkeypatch):
+    """This process is always in the table, so zero rows means the probe lied."""
+    monkeypatch.setattr(sm.os, "name", "nt")
+    monkeypatch.setattr(sm.subprocess, "run", lambda cmd, **kwargs: _Completed("\n"))
+
+    with pytest.raises(sm.ProcessProbeError):
+        sm.iter_processes()
+
+
+def test_probe_failure_keeps_the_pid_file_and_refuses_to_start(monkeypatch, tmp_path):
+    """Unverifiable PID: refuse, never delete the pid file as if it were stale."""
+    _patch_paths(monkeypatch, tmp_path)
+    sm.MINERU_API_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    sm.write_pid(4242, sm.MINERU_API_PID_FILE)
+    monkeypatch.setattr(sm, "health_ok", lambda api_url, timeout=2.0: True)
+    monkeypatch.setattr(sm, "port_is_open", lambda host, port, timeout=1.0: True)
+    monkeypatch.setattr(sm, "iter_processes",
+                        lambda: (_ for _ in ()).throw(sm.ProcessProbeError("no backend")))
+    monkeypatch.setattr(sm.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Popen called")))
+
+    service = sm.classify_mineru_api_service(
+        pid_file=sm.MINERU_API_PID_FILE, api_url="http://127.0.0.1:8000",
+        expected_exe="mineru-api", expected_port=8000)
+    assert service["verdict"] == "probe_unavailable"
+
+    result = sm.start_services(wait=False)
+    assert result["ok"] is False
+    assert sm.MINERU_API_PID_FILE.exists(), "pid file must survive a probe failure"
+
+
+def test_stop_services_refuses_to_kill_an_unverifiable_pid(monkeypatch, tmp_path):
+    _patch_paths(monkeypatch, tmp_path)
+    sm.MINERU_API_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    sm.write_pid(4242, sm.MINERU_API_PID_FILE)
+    monkeypatch.setattr(sm, "iter_processes",
+                        lambda: (_ for _ in ()).throw(sm.ProcessProbeError("no backend")))
+    monkeypatch.setattr(sm, "_terminate_pid",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not kill")))
+
+    result = sm.stop_services()
+    assert result["ok"] is False
+    assert "cannot verify PID 4242" in result["message"]

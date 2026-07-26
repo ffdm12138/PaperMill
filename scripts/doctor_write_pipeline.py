@@ -6,7 +6,6 @@ import json
 import shutil
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ from config.settings import CATALOG_FOLDER_ROOT, PROJECT_ROOT
 from scripts.check_write_quality_text import check_write_quality_text
 from scripts.check_write_tex_project import check_tex_project
 from src.utils.naming import safe_child, validate_job_id
+from src.utils.timestamps import now_iso
 from src.utils.path_utils import normalize_repo_path
 
 
@@ -165,7 +165,7 @@ def doctor_write_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     source_valid = not errors
     report = {
         "schema_version": "1.0",
-        "checked_at": datetime.now().isoformat(timespec="seconds"),
+        "checked_at": now_iso(),
         "valid": source_valid,
         "source_valid": source_valid,
         "runtime_ready": runtime_ready,

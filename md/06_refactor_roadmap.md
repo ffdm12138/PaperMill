@@ -71,15 +71,32 @@
 
 ## 后续提案（本轮不做，动手前先补条目细化）
 
-- [ ] writer 族 naive 时间戳 tz-aware 化：**行为变更**（持久化字符串形状改变），
-  需单独提案，涉及 `src/writer/job_manager.py` 等与 6 个写作脚本；
-  完成后把 `docs/PROJECT_STATUS.md` 的时间戳表述改回无条件形式。
+- [x] writer 族 naive 时间戳 tz-aware 化：`src/writer/job_manager.py`、
+  `catalog_matcher.py`、`ingest/mineru_output_cache.py` 与 6 个写作/doctor 脚本
+  统一走 `utils.timestamps.now_iso()`。核查过无解析方消费这些字段、无测试钉死
+  旧形状。两处保留 naive 并写明理由：`src/mineru/lock.py`（锁龄用 naive
+  `datetime.now()` 相减，改 aware 会抛 TypeError）、
+  `scripts/test_runtime_workspace.py`（独立测试基建，不得依赖 `src`）。
+  验收：hygiene + writer/ingest 定向套件 + fast gate（2026-07-27 复审波）。
 - [ ] `discovery/contracts/notebook.py` 关键词契约下沉，消解
   catalog_folders→discovery 豁免族（需评估 relevance/backfill 联动，代价大）。
 - [ ] relevance 五档 profile 的来源问题（PROJECT_STATUS 记录的"deliberately
   unresolved"），需要 frozen-taxonomy 方案。
 - [ ] `library ~ workspace` 2-cycle 的彻底消解（lifecycle 归属再讨论）。
-- [ ] 无用顶层 import 清理：粗扫描（AST，剔除 `annotations` 误报后）在
+- [~] 无用顶层 import 清理：粗扫描（AST，剔除 `annotations` 误报后）在
   src/scripts 报告约 300 处候选，但其中混有跨模块 re-export（删除会断下游），
   需要 pyflakes/ruff 级别的工具逐项确认；顺带评估是否把 lint 纳入验收门。
   2026-07-27 决定不在整改尾声批删，避免破坏 re-export 面。
+  2026-07-27 复审波已单独清掉一个确认安全的子集：`pending_queue.py` 拆分后
+  遗留的 14 个死导入（逐名 grep 确认无 `from ... import` 消费者、无 monkeypatch
+  目标），以及 `rollback.py` 重复的 `LEDGER_RANK`、`metadata_resolve` 的
+  `_read_json` 别名双份、audit 脚本无人调用的 `_now()`。余量仍待工具化确认。
+
+- [ ] `src/fetch/access_policy.py` 职责拆分：该模块现同时承载 resolver 策略与
+  paper_raw 候选分类（`classify_pdf_fetch_candidate` 会读文件系统）。复审波只
+  更正了 docstring 与去掉重复的 `_read_json`，拆到 `src/fetch/candidates.py`
+  留待独立提案——刚完成大搬迁，无功能收益的再搬动不划算。
+
+- [ ] 收紧 13 条已声明但无实际导入的 `ALLOWED` 边（`catalog_folders→catalog`、
+  `metadata_resolve→{fetch,library,workspace}`、`writer→{catalog,library}`
+  及 root 的 7 条）。属"授权宽于实需"，非违规。

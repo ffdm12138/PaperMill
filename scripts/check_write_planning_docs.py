@@ -10,8 +10,9 @@ skills inside one ``write/jobs/<job_id>/`` workspace:
 - ``reports/literature_matrix.md`` has one row per selected paper;
 - every referenced ``bib_key`` exists in ``tex/references.bib``;
 - every evidence reference points into the paper pool;
-- proposal only: ``input/research_input.md`` is filled in (no「（待填）」),
-  every ``results_plan`` item stays ``planned``, method references resolve.
+- proposal only: ``input/research_input.md`` is filled in (no placeholder
+  marker), every ``results_plan`` item stays ``planned``, method references
+  resolve.
 
 Writes ``reports/planning_docs_check_report.json``; exit 1 on any error.
 """
@@ -67,14 +68,41 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _check_intermediate(job_dir: Path, rel: str, errors: list[str]) -> None:
+def _load_json(path: Path, rel: str, errors: list[str]) -> dict | None:
+    """Read JSON, turning a malformed file into an error instead of a traceback."""
+    try:
+        return _read_json(path)
+    except json.JSONDecodeError as exc:
+        errors.append(f"{rel}: invalid JSON ({exc})")
+        return None
+
+
+def _finalize(job_id: str, job_dir: Path, workflow: str, errors: list[str]) -> dict:
+    """Build the report and persist it, so no run leaves a stale verdict on disk."""
+    result = {
+        "schema_version": "1.0",
+        "job_id": job_id,
+        "workflow": workflow,
+        "passed": not errors,
+        "errors": errors,
+        "checked_at": now_iso(),
+    }
+    if job_dir.is_dir():
+        reports_dir = safe_child(job_dir, "reports")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(reports_dir / "planning_docs_check_report.json", result, indent=2)
+    return result
+
+
+def _check_document(job_dir: Path, rel: str, errors: list[str],
+                    *, kind: str = "intermediate") -> None:
     path = job_dir / rel
     if not path.exists():
-        errors.append(f"missing intermediate: {rel}")
+        errors.append(f"missing {kind}: {rel}")
         return
     text = path.read_text(encoding="utf-8")
     if len(text.strip()) < 40:
-        errors.append(f"intermediate looks empty: {rel}")
+        errors.append(f"{kind} looks empty: {rel}")
         return
     for marker in TODO_MARKERS:
         if marker in text:
@@ -102,9 +130,11 @@ def check_planning_docs(args: argparse.Namespace) -> dict:
 
     job_meta_path = job_dir / "job.json"
     if not job_meta_path.exists():
-        return {"job_id": job_id, "passed": False,
-                "errors": [f"job.json not found: {job_meta_path}"]}
-    workflow = str(_read_json(job_meta_path).get("workflow") or "")
+        return _finalize(job_id, job_dir, "", [f"job.json not found: {job_meta_path}"])
+    job_meta = _load_json(job_meta_path, "job.json", errors)
+    if job_meta is None:
+        return _finalize(job_id, job_dir, "", errors)
+    workflow = str(job_meta.get("workflow") or "")
     if args.profile:
         workflow = {
             "review": "catalog_review",
@@ -112,45 +142,46 @@ def check_planning_docs(args: argparse.Namespace) -> dict:
         }[args.profile]
     spec = PROFILES.get(workflow)
     if spec is None:
-        return {"job_id": job_id, "passed": False, "errors": [
+        return _finalize(job_id, job_dir, workflow, [
             f"job workflow {workflow!r} is not a planning-docs workflow "
             "(expected catalog_review or catalog_research_proposal; "
             "override with --profile)"
-        ]}
+        ])
 
     for rel in spec["intermediates"]:
-        _check_intermediate(job_dir, rel, errors)
+        _check_document(job_dir, rel, errors)
 
     if spec["profile"] == "proposal":
-        research_input = job_dir / "input" / "research_input.md"
-        if not research_input.exists():
-            errors.append("missing input/research_input.md")
-        elif "（待填）" in research_input.read_text(encoding="utf-8"):
-            errors.append("input/research_input.md still contains「（待填）」placeholders")
+        _check_document(job_dir, "input/research_input.md", errors,
+                        kind="user research input")
 
     selected_path = job_dir / "selected_catalog.json"
     selected_numbers: set[str] = set()
     if not selected_path.exists():
         errors.append("missing selected_catalog.json")
     else:
+        selected = _load_json(selected_path, "selected_catalog.json", errors)
         selected_numbers = {
             str(item.get("paper_number") or "")
-            for item in _read_json(selected_path).get("papers") or []
+            for item in (selected or {}).get("papers") or []
         }
+        if selected is not None and not selected_numbers:
+            errors.append("selected_catalog.json selects no papers")
 
     plan_path = job_dir / spec["plan_file"]
     plan: dict = {}
     if not plan_path.exists():
         errors.append(f"missing plan: {spec['plan_file']}")
     else:
-        plan = _read_json(plan_path)
-        schema = _read_json(spec["schema"])
-        try:
-            jsonschema.validate(instance=plan, schema=schema)
-        except jsonschema.ValidationError as exc:
-            errors.append(f"{spec['plan_file']}: schema violation: {exc.message}")
+        plan = _load_json(plan_path, spec["plan_file"], errors) or {}
+        schema = _load_json(spec["schema"], str(spec["schema"]), errors)
+        if plan and schema is not None:
+            try:
+                jsonschema.validate(instance=plan, schema=schema)
+            except jsonschema.ValidationError as exc:
+                errors.append(f"{spec['plan_file']}: schema violation: {exc.message}")
 
-    if plan and selected_numbers:
+    if plan:
         pool = {str(p.get("paper_number") or "") for p in plan.get("paper_pool") or []}
         if pool != selected_numbers:
             missing = sorted(selected_numbers - pool)
@@ -172,15 +203,22 @@ def check_planning_docs(args: argparse.Namespace) -> dict:
             errors.append("missing tex/references.bib — run scripts/export_write_job_bib.py first")
         else:
             bib_keys = set(parse_blocks(bib_path.read_text(encoding="utf-8")))
-            plan_keys = {str(p.get("bib_key") or "") for p in plan.get("paper_pool") or []}
-            plan_keys.update(str(r.get("bib_key") or "") for r in _plan_evidence_refs(plan))
+            plan_keys: set[str] = set()
+            for entry in list(plan.get("paper_pool") or []) + _plan_evidence_refs(plan):
+                key = str(entry.get("bib_key") or "")
+                if not key:
+                    errors.append(
+                        "plan entry missing bib_key: "
+                        f"{entry.get('paper_number') or entry}"
+                    )
+                    continue
+                plan_keys.add(key)
             for key in sorted(plan_keys - bib_keys):
                 errors.append(f"plan bib_key not in references.bib: {key}")
 
-        pool_numbers = {str(p.get("paper_number") or "") for p in plan.get("paper_pool") or []}
         for ref in _plan_evidence_refs(plan):
             number = str(ref.get("paper_number") or "")
-            if number not in pool_numbers:
+            if number not in pool:
                 errors.append(f"evidence paper_number outside paper_pool: {number}")
 
         gap_ids = {str(g.get("gap_id") or "") for g in plan.get("research_gaps") or []}
@@ -202,18 +240,7 @@ def check_planning_docs(args: argparse.Namespace) -> dict:
                             f"results_plan {item.get('analysis_id')}: unknown method {method_id}"
                         )
 
-    result = {
-        "schema_version": "1.0",
-        "job_id": job_id,
-        "workflow": workflow,
-        "passed": not errors,
-        "errors": errors,
-        "checked_at": now_iso(),
-    }
-    reports_dir = safe_child(job_dir, "reports")
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(reports_dir / "planning_docs_check_report.json", result, indent=2)
-    return result
+    return _finalize(job_id, job_dir, workflow, errors)
 
 
 def build_parser() -> argparse.ArgumentParser:

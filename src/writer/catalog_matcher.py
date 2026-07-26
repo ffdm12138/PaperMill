@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 
 from src.catalog_folders.reader import CatalogFolderReader, create_safe_catalog_reader
 from src.utils.naming import validate_paper_name
+from src.utils.timestamps import now_iso
 from src.utils.atomic_io import atomic_write_json
 from src.writer.job_manager import JobManager
 
@@ -161,7 +161,7 @@ def confirm_selected_papers(
     atomic_write_json(sel_path, {
         "selected_papers": enriched,
         "selection_status": "confirmed",
-        "confirmed_at": datetime.now().isoformat(timespec="seconds"),
+        "confirmed_at": now_iso(),
         "confirmed_by": confirmed_by,
         "notes": "",
     }, indent=2)

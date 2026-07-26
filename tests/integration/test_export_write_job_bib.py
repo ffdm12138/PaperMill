@@ -92,3 +92,35 @@ def test_export_subset_by_paper_numbers(tmp_path: Path):
     assert result["passed"] is True
     assert result["count"] == 1
     assert result["entries"][0]["paper_number"] == only
+
+
+def test_export_fails_on_unknown_requested_paper_number(tmp_path: Path):
+    job_dir, papers = _make_job(tmp_path)
+    known = papers[0]["paper_number"]
+    ghost = "0000000000000099"
+    result = export_job_references(_args(tmp_path, job_dir.name, [known, ghost]))
+    assert result["passed"] is False
+    assert any(ghost in err for err in result["errors"])
+    assert not (job_dir / "tex" / "references.bib").exists()
+
+
+def test_export_fails_on_multiple_metadata_files(tmp_path: Path):
+    job_dir, papers = _make_job(tmp_path)
+    ambiguous = papers[1]
+    folder = job_dir / "article" / ambiguous["paper_number"]
+    (folder / "0000_Other_duplicate.metadata.json").write_text(
+        json.dumps(ambiguous["metadata"], ensure_ascii=False), encoding="utf-8")
+
+    result = export_job_references(_args(tmp_path, job_dir.name))
+    assert result["passed"] is False
+    assert any("multiple" in err and ambiguous["paper_number"] in err
+               for err in result["errors"])
+    assert not (job_dir / "tex" / "references.bib").exists()
+
+
+def test_export_reports_missing_selected_catalog_as_error(tmp_path: Path):
+    job_dir, _ = _make_job(tmp_path)
+    (job_dir / "selected_catalog.json").unlink()
+    result = export_job_references(_args(tmp_path, job_dir.name))
+    assert result["passed"] is False
+    assert any("selected_catalog.json" in err for err in result["errors"])

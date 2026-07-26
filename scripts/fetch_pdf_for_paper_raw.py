@@ -41,13 +41,7 @@ from src.ingest.stage_manifest import (
 )
 from src.ingest.paper_raw import PaperRawAllocator
 from src.utils.atomic_io import atomic_write_json
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+from src.utils.jsonio import read_json
 
 
 def _paper_numbers(root: Path, all_sources: bool, one: str | None) -> list[str]:
@@ -354,7 +348,7 @@ def _record_result(
     folder = candidate.folder
     meta_path = folder / f"{candidate.paper_number}.metadata.json"
 
-    metadata = _read_json(meta_path)
+    metadata = read_json(meta_path, {})
     fetch_record = _sanitized_fetch_record(result, attached, header_keys)
     # fetch_result.json is a SEPARATE file from metadata source records.
     # Never write the fetch result to metadata.source.raw_record_path.

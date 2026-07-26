@@ -1,4 +1,8 @@
-"""PDF access policy — 控制启用哪些 resolver 后端。"""
+"""PDF 获取策略与候选分类。
+
+两部分：``AccessPolicy`` 控制启用哪些 resolver 后端；
+``classify_pdf_fetch_candidate`` 判定一个 paper_raw 工作区是否该进入抓取。
+"""
 from __future__ import annotations
 
 import json
@@ -9,6 +13,7 @@ from typing import Any
 
 from src.metadata.quality import is_valid_normalized_doi
 from src.utils.identifiers import normalize_doi, validate_paper_raw_id
+from src.utils.jsonio import read_json
 
 
 class AccessMode(str, Enum):
@@ -131,13 +136,6 @@ class FetchCandidateStatus:
         }
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
 def classify_pdf_fetch_candidate(
     folder: Path,
     paper_number: str,
@@ -147,7 +145,7 @@ def classify_pdf_fetch_candidate(
     paper_number = validate_paper_raw_id(paper_number)
     meta_path = folder / f"{paper_number}.metadata.json"
     pdf_path = folder / f"{paper_number}.pdf"
-    status_data = _read_json(folder / ".import_status.json")
+    status_data = read_json(folder / ".import_status.json", {})
     import_status = str(status_data.get("status") or "")
 
     item = FetchCandidateStatus(
