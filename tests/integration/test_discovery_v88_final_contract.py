@@ -14,7 +14,7 @@ import pytest
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
-from src.services.rate_limit import default_config
+from src.utils.rate_limit import default_config
 from tests.helpers.fake_provider import discovery_page
 from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (

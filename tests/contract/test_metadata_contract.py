@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from src.services.source_records import (
+from src.metadata.source_records import (
     resolve_metadata_source_record_path,
     validate_metadata_source_record_exists,
 )

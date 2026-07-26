@@ -9,7 +9,7 @@ from pathlib import Path
 from src.file_fingerprint import compute_sha256
 from src.metadata.citation_readiness import validate_citation_ready
 from src.metadata.pdf_match import validate_metadata_match_receipt
-from src.services.source_records import validate_metadata_source_record_exists
+from src.metadata.source_records import validate_metadata_source_record_exists
 from src.metadata.schema import validate_metadata_schema
 from src.utils.atomic_io import atomic_write_json
 

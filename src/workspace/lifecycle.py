@@ -11,12 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.ingest.workspace_evidence import (
+from src.workspace.evidence import (
     EvidenceIssue,
     WorkspaceEvidence,
     inspect_workspace_evidence,
 )
-from src.ingest.workspace_readiness import (
+from src.workspace.readiness import (
     IngestProfile,
     WorkspaceReadiness,
     evaluate_metadata_staged,
@@ -29,8 +29,8 @@ class WorkspaceLifecycleInspection:
     """Complete snapshot of one workspace's lifecycle state.
 
     This is a backward-compatibility wrapper that combines
-    :class:`~src.ingest.workspace_evidence.WorkspaceEvidence` (pure file facts)
-    and :class:`~src.ingest.workspace_readiness.WorkspaceReadiness`
+    :class:`~src.workspace.evidence.WorkspaceEvidence` (pure file facts)
+    and :class:`~src.workspace.readiness.WorkspaceReadiness`
     (profile-aware readiness). New code should use those types directly.
     """
 

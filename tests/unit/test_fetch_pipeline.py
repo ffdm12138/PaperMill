@@ -393,7 +393,7 @@ def test_oa_helper_uses_unified_provider_client(monkeypatch, oa_fake_transport):
     assert "import requests" not in src_text
     assert "requests.get" not in src_text
 
-    from src.services.openalex_credentials import OpenAlexCredentials
+    from src.fetch.openalex_credentials import OpenAlexCredentials
     monkeypatch.setattr(
         oa_mod, "load_openalex_credentials",
         lambda *a, **k: OpenAlexCredentials(email=None, api_key=None),
@@ -692,7 +692,7 @@ def test_copy_pdf_copies_valid_pdf(monkeypatch, tmp_path):
 def test_fetch_openalex_uses_centralized_credentials(monkeypatch, oa_fake_transport):
     """With credentials set, resolve_openalex_pdf must pass them as params/headers."""
     import src.fetch.fetch_openalex as oa_mod
-    from src.services.openalex_credentials import OpenAlexCredentials
+    from src.fetch.openalex_credentials import OpenAlexCredentials
     from tests.helpers.fake_provider import http_response
 
     monkeypatch.setattr(
@@ -710,7 +710,7 @@ def test_fetch_openalex_uses_centralized_credentials(monkeypatch, oa_fake_transp
 def test_fetch_openalex_without_credentials_is_anonymous(monkeypatch, oa_fake_transport):
     """Without credentials, no mailto/Authorization must be sent."""
     import src.fetch.fetch_openalex as oa_mod
-    from src.services.openalex_credentials import OpenAlexCredentials
+    from src.fetch.openalex_credentials import OpenAlexCredentials
     from tests.helpers.fake_provider import http_response
 
     monkeypatch.setattr(
@@ -728,7 +728,7 @@ def test_fetch_openalex_without_credentials_is_anonymous(monkeypatch, oa_fake_tr
 def test_fetch_openalex_loads_credentials_once(monkeypatch, oa_fake_transport):
     """load_openalex_credentials must be called exactly once per resolve."""
     import src.fetch.fetch_openalex as oa_mod
-    from src.services.openalex_credentials import OpenAlexCredentials
+    from src.fetch.openalex_credentials import OpenAlexCredentials
     from tests.helpers.fake_provider import http_response
 
     call_count = 0
@@ -748,7 +748,7 @@ def test_fetch_openalex_loads_credentials_once(monkeypatch, oa_fake_transport):
 def test_fetch_openalex_does_not_persist_credentials(monkeypatch, oa_fake_transport):
     """FetchResult must not contain credential values in any field."""
     import src.fetch.fetch_openalex as oa_mod
-    from src.services.openalex_credentials import OpenAlexCredentials
+    from src.fetch.openalex_credentials import OpenAlexCredentials
     from tests.helpers.fake_provider import http_response
 
     monkeypatch.setattr(
@@ -771,7 +771,7 @@ def test_fetch_openalex_does_not_persist_credentials(monkeypatch, oa_fake_transp
 def test_fetch_openalex_error_does_not_leak_credentials(monkeypatch, oa_fake_transport):
     """Exception messages containing credentials must not leak into log or FetchResult.error."""
     import src.fetch.fetch_openalex as oa_mod
-    from src.services.openalex_credentials import OpenAlexCredentials
+    from src.fetch.openalex_credentials import OpenAlexCredentials
     from tests.helpers.fake_provider import Fault
 
     monkeypatch.setattr(

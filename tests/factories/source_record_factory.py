@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.services.source_records import (
+from src.metadata.source_records import (
     metadata_source_rel_path,
     write_metadata_source_record as _write_metadata_source_record,
 )

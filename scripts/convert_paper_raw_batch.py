@@ -19,7 +19,7 @@ from config.settings import PAPER_RAW_DIR
 from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_METHOD
 from src.utils.identifiers import normalize_doi
 from src.utils.identifiers import validate_paper_raw_id
-from src.services.metadata_quality import is_valid_normalized_doi
+from src.metadata.quality import is_valid_normalized_doi
 from src.ingest.paper_raw import PaperRawConverter
 from src.metadata.schema import metadata_doi
 from src.metadata.freeze import assert_metadata_frozen
@@ -381,7 +381,7 @@ def main() -> int:
             print(f"WARNING: smoke report check failed: {exc}", file=sys.stderr)
     converter = PaperRawConverter(args.paper_raw_dir)
     if args.output_cache_dir:
-        from src.services.mineru_output_cache import MinerUOutputCache
+        from src.ingest.mineru_output_cache import MinerUOutputCache
 
         converter.output_cache = MinerUOutputCache(args.output_cache_dir, cleaner=converter.cleaner)
     if args.ignore_output_cache:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from src.file_fingerprint import compute_sha256
 from src.ingest.locking import acquire_locks, transaction_requests
-from src.services.transaction_paths import (
+from src.ingest.transaction_paths import (
     TransactionIdentityError,
     TransactionPathError,
     validate_commit_journal,
@@ -52,7 +52,7 @@ def find_active_transaction_for_paper(
     ]
     rollback_root = root / "rollback"
     if rollback_root.exists():
-        from src.services.transaction_paths import validate_rollback_journal
+        from src.ingest.transaction_paths import validate_rollback_journal
         for path in sorted(rollback_root.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))

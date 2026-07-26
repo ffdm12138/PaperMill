@@ -31,7 +31,7 @@ from loguru import logger
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
 from src.utils.identifiers import validate_paper_raw_id
-from src.services.ingest_state import write_import_status
+from src.ingest.import_status import write_import_status
 from src.services.metadata_resolver import (
     apply_resolution,
     resolve_metadata_candidates,
@@ -49,7 +49,7 @@ from src.services.metadata_resolve_checkpoint import (
     save_checkpoint,
     is_done as checkpoint_is_done,
 )
-from src.services.rate_limit import ProviderRateLimiter, load_config as load_rate_config
+from src.utils.rate_limit import ProviderRateLimiter, load_config as load_rate_config
 from src.metadata.schema import metadata_doi
 from src.utils.atomic_io import atomic_write_json
 from src.metadata.pdf_identity import extract_pdf_identity_evidence

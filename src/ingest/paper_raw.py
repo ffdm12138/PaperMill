@@ -25,17 +25,17 @@ from src.metadata.schema import METADATA_SCHEMA_VERSION, empty_metadata, metadat
 from src.metadata.freeze import assert_metadata_frozen
 from src.naming import safe_child
 from src.path_utils import normalize_repo_path
-from src.services.asset_manifest import write_asset_manifest
-from src.services.ingest_duplicate_guard import (
+from src.ingest.asset_manifest import write_asset_manifest
+from src.ingest.duplicate_guard import (
     DuplicateIngestError,
     check_pdf_duplicate,
 )
 from src.utils.jsonio import read_json_strict
 from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id
-from src.services.ingest_state import METADATA_MANUAL_REVIEW_REQUIRED, STAGE_FAILED, write_import_status as _write_import_status
-from src.services.mineru_output_cache import MinerUOutputCache
-from src.services.source_records import ensure_raw_record_path_is_metadata_source, manual_metadata_source_record, metadata_source_rel_path, write_metadata_source_record
-from src.services.stage_manifest import doi_fetch_pdf_source, manual_pdf_source, read_stage_manifest, update_stage_manifest, write_stage_manifest
+from src.ingest.import_status import METADATA_MANUAL_REVIEW_REQUIRED, STAGE_FAILED, write_import_status as _write_import_status
+from src.ingest.mineru_output_cache import MinerUOutputCache
+from src.metadata.source_records import ensure_raw_record_path_is_metadata_source, manual_metadata_source_record, metadata_source_rel_path, write_metadata_source_record
+from src.ingest.stage_manifest import doi_fetch_pdf_source, manual_pdf_source, read_stage_manifest, update_stage_manifest, write_stage_manifest
 from src.utils.fs import replace_images_dir
 from src.utils.atomic_io import atomic_write_json, atomic_write_text
 

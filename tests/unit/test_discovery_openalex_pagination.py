@@ -13,7 +13,7 @@ from src.discovery.providers.provider_client import ProviderClient, ProviderTele
 from src.discovery.providers.provider_client import CircuitBreaker
 from src.discovery.execution.lane_models import DiscoveryLaneKey, LaneExecutionSpec, RequestSignature
 from src.discovery.search_openalex import search_openalex_page
-from src.services.rate_limit import ProviderRateLimiter, default_config
+from src.utils.rate_limit import ProviderRateLimiter, default_config
 from tests.helpers.fake_provider import FakeClock, FakeSleeper, FakeTransport, Fault, http_response
 
 

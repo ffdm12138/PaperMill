@@ -17,9 +17,9 @@ import pytest
 
 from src.services import metadata_enrichment_service as mes
 from src.services import metadata_resolver as mr
-from src.services.asset_manifest import write_asset_manifest
+from src.ingest.asset_manifest import write_asset_manifest
 from src.metadata.schema import empty_metadata
-from src.services.rate_limit import ProviderRateLimiter, default_config
+from src.utils.rate_limit import ProviderRateLimiter, default_config
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent

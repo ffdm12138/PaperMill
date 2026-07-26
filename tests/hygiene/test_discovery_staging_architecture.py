@@ -200,9 +200,9 @@ def test_source_record_scan_only_in_registry_or_recovery_or_audit():
     # Allowed: registry, legacy modules (Phase 10 cleanup), recovery tools
     allowed_files = {
         "src/discovery/workspace_registry.py",
-        "src/services/source_records.py",        # Writer, not scanner
+        "src/metadata/source_records.py",        # Writer, not scanner
         "src/services/network_metadata_staging.py",  # Path references, not scans
-        "src/ingest/workspace_evidence.py",      # Single-file reads, not scans
+        "src/workspace/evidence.py",      # Single-file reads, not scans
     }
     allowed_patterns = [
         "recover", "audit", "repair", "reconcile",
@@ -240,9 +240,9 @@ def test_discovery_receipt_scan_only_in_registry_or_recovery_or_audit():
     matches = scan_tokens(files, patterns)
     allowed_files = {
         "src/discovery/workspace_registry.py",
-        "src/discovery/discovery_receipt.py",
-        "src/ingest/workspace_evidence.py",      # Single-file reads, not scans
-        "src/ingest/workspace_lifecycle.py",     # Backward-compat layer
+        "src/workspace/receipt.py",
+        "src/workspace/evidence.py",      # Single-file reads, not scans
+        "src/workspace/lifecycle.py",     # Backward-compat layer
     }
     allowed_patterns = [
         "recover", "audit", "repair", "reconcile", "reconciliation",
@@ -338,7 +338,7 @@ def test_old_index_refresh_apis_are_deleted():
 
 
 def test_registry_indexes_are_pure_in_memory_modules():
-    for relative in ("src/discovery/workspace_index.py", "src/services/duplicate_index.py"):
+    for relative in ("src/discovery/workspace_index.py", "src/ingest/duplicate_index.py"):
         source = (ROOT / relative).read_text(encoding="utf-8")
         for forbidden in ("from pathlib import Path", "import json", ".glob(", ".rglob(", ".iterdir("):
             assert forbidden not in source, f"{relative} contains {forbidden}"
@@ -376,8 +376,8 @@ def test_no_bare_except_pass_in_safety_modules():
     equivalent patterns that silently swallow errors."""
     safety_modules = [
         "src/library/paper_number_ledger.py",
-        "src/ingest/workspace_lifecycle.py",
-        "src/services/ingest_duplicate_guard.py",
+        "src/workspace/lifecycle.py",
+        "src/ingest/duplicate_guard.py",
         "src/discovery/workspace_index.py",
         "src/ingest/commit.py",
         "src/ingest/formalization.py",

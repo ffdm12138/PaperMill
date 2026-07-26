@@ -12,7 +12,7 @@ from src.discovery.staging_context import DiscoveryStagingContext
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.metadata.normalization import merge_missing_metadata
 from src.metadata.schema import empty_metadata, validate_metadata_schema
-from src.services.metadata_quality import bibliographic_identity_gate, is_valid_normalized_doi
+from src.metadata.quality import bibliographic_identity_gate, is_valid_normalized_doi
 from src.services.network_metadata_canonical import canonicalize_network_record
 
 

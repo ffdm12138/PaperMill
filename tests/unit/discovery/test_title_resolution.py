@@ -12,7 +12,7 @@ import pytest
 from src.discovery.runtime.budgets import BatchDoiResolutionBudget
 from src.discovery.providers.provider_client import CircuitBreaker, ProviderClient, ProviderTelemetry
 from src.discovery.title_resolution import DurableTitleCache, TitleResolutionService
-from src.services.rate_limit import ProviderRateLimiter, default_config
+from src.utils.rate_limit import ProviderRateLimiter, default_config
 from tests.helpers.fake_provider import FakeClock, FakeSleeper, FakeTransport, http_response
 
 

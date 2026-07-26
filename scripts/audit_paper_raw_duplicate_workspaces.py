@@ -3,7 +3,7 @@
 This is a workspace-level audit: it groups physical ``data/paper_raw/<workspaces>``
 that share a PDF sha256 / md5 / DOI and decides, per group, which workspace to
 KEEP and which to drop (quarantine). The dedup index itself
-(``src.services.ingest_duplicate_guard.build_ingest_duplicate_index``) covers both
+(``src.ingest.duplicate_guard.build_ingest_duplicate_index``) covers both
 16-digit numbered workspaces and legacy/untitled workspaces; this script consumes
 that index and resolves a keep-rule per duplicate group.
 
@@ -32,11 +32,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR
-from src.services.ingest_duplicate_guard import (
+from src.ingest.duplicate_guard import (
     DuplicateIndex,
     build_ingest_duplicate_index,
 )
-from src.services.ingest_state import now_iso, read_import_status, write_import_status
+from src.ingest.import_status import now_iso, read_import_status, write_import_status
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json
 
@@ -120,7 +120,7 @@ def _asset_count(folder: Path) -> int:
 
 def _gather_workspaces(paper_raw_dir: Path, ledger: PaperNumberLedger) -> list[WorkspaceInfo]:
     """Collect candidate workspaces, excluding quarantined duplicate holding dir."""
-    from src.services.ingest_duplicate_guard import is_paper_raw_workspace, resolve_paper_raw_identity
+    from src.ingest.duplicate_guard import is_paper_raw_workspace, resolve_paper_raw_identity
 
     out: list[WorkspaceInfo] = []
     if not paper_raw_dir.exists():

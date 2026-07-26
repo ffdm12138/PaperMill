@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from src.services.source_records import (
+from src.metadata.source_records import (
     fetch_result_rel_path,
     is_fetch_result_path,
     metadata_source_rel_path,
     resolve_metadata_source_record_path,
-    write_fetch_result,
 )
+from src.fetch.fetch_result_record import write_fetch_result
 from src.ingest.paper_raw import PaperRawAllocator
 from tests.factories.pdf_factory import write_fake_pdf
 
@@ -74,7 +74,7 @@ def test_fetch_result_does_not_overwrite_metadata_source(tmp_path):
 
 @pytest.mark.contract
 def test_source_record_validator_strict_requires_nonempty_path(tmp_path):
-    from src.services.source_records import validate_metadata_source_record_exists
+    from src.metadata.source_records import validate_metadata_source_record_exists
 
     folder = tmp_path / "paper_raw" / "0000000000000001"
     folder.mkdir(parents=True)
@@ -96,7 +96,7 @@ def test_source_record_validator_strict_requires_nonempty_path(tmp_path):
 def test_source_record_rejects_non_metadata_source_filenames(tmp_path, bad_filename):
     """raw_record_path must match ``metadata_source.*.json`` — legacy filenames
     like ``test.json`` / ``crossref.json`` / ``fetch_result.json`` are invalid."""
-    from src.services.source_records import resolve_metadata_source_record_path
+    from src.metadata.source_records import resolve_metadata_source_record_path
 
     folder = tmp_path / "paper_raw" / "0000000000000001"
     folder.mkdir(parents=True)
@@ -112,7 +112,7 @@ def test_source_record_rejects_non_metadata_source_filenames(tmp_path, bad_filen
 @pytest.mark.contract
 def test_source_record_accepts_canonical_metadata_source_path(tmp_path):
     """``source_records/metadata_source.<provider>.json`` is the canonical path."""
-    from src.services.source_records import resolve_metadata_source_record_path
+    from src.metadata.source_records import resolve_metadata_source_record_path
 
     folder = tmp_path / "paper_raw" / "0000000000000001"
     (folder / "source_records").mkdir(parents=True)

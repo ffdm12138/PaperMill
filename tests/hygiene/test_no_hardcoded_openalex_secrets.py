@@ -22,7 +22,7 @@ OPENALEX_ALLOWED_FILES = {
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
     "scripts/pack_repo.py",
-    "src/services/openalex_credentials.py",
+    "src/fetch/openalex_credentials.py",
 }
 SCAN_SUFFIXES = {".py", ".md", ".txt", ".ps1", ".bat", ".sh", ".yaml", ".yml", ".toml"}
 
@@ -73,7 +73,7 @@ def test_openalex_consumers_use_centralized_module():
     for path in consumer_files:
         text = path.read_text(encoding="utf-8")
         # Must import from the centralized module
-        assert "from src.services.openalex_credentials import" in text, (
+        assert "from src.fetch.openalex_credentials import" in text, (
             f"{path.name} does not import from openalex_credentials"
         )
         # Must NOT access os.environ directly for credential vars

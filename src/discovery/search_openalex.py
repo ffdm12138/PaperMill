@@ -22,7 +22,7 @@ from src.discovery.providers.provider_errors import (
     ProviderRequestBudgetExhausted,
 )
 from src.discovery.providers.provider_models import DiscoveryPage, failed_page
-from src.services.openalex_credentials import (
+from src.fetch.openalex_credentials import (
     OpenAlexCredentials,
     load_openalex_credentials,
     safe_request_error_summary,

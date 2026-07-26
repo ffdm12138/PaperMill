@@ -12,7 +12,7 @@ from pathlib import Path
 from filelock import Timeout as FileLockTimeout
 
 from src.catalog.freeze import assert_catalog_frozen
-from src.discovery.formal_publication import (
+from src.library.formal_publication import (
     publish_formal_publication_state_unlocked,
     publication_state_path,
 )
@@ -35,7 +35,7 @@ from src.ingest.workspace import PaperRawWorkspace, validate_workspace_contents
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.library.validation import validate_formal_paper
 from src.metadata.freeze import assert_metadata_frozen
-from src.services.transaction_paths import (
+from src.ingest.transaction_paths import (
     check_destructive_path,
     rollback_quarantine_path,
     rollback_staging_path,
@@ -441,10 +441,10 @@ def resolve_paper_number_by_paper_name(
     ``ambiguous_paper_name``, or ``repair_required``.
 
     The *paper_name* string is validated via
-    :func:`~src.services.transaction_paths.validate_paper_name` before
+    :func:`~src.ingest.transaction_paths.validate_paper_name` before
     resolution.
     """
-    from src.services.transaction_paths import validate_paper_name as _validate_pid
+    from src.ingest.transaction_paths import validate_paper_name as _validate_pid
 
     pid = _validate_pid(str(paper_name))
     return _resolve_paper_number_from_paper_name(

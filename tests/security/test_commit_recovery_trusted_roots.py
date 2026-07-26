@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from src.ingest.commit_recovery import reconcile_commits
-from src.services.transaction_paths import TransactionPathError
+from src.ingest.transaction_paths import TransactionPathError
 from src.ingest.commit import CommitRecoveryCorruptionError, commit_paper_raw
 from src.ingest.formalization import write_formalization_plan
 from tests.integration.test_frozen_v32_transaction_pipeline import _workspace

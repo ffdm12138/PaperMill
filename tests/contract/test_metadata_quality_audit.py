@@ -5,7 +5,7 @@ from pathlib import Path
 
 from scripts.audit_metadata_quality import main as audit_main
 from scripts.pack_repo import _should_pack
-from src.services.metadata_quality import audit_metadata_library, metadata_quality_hard_errors
+from src.metadata.quality import audit_metadata_library, metadata_quality_hard_errors
 from tests.factories.metadata_factory import make_minimal_metadata
 
 

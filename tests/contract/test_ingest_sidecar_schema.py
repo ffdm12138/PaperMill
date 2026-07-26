@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from src.fetch.models import FetchResult
-from src.services.source_records import (
+from src.metadata.source_records import (
     InvalidProviderIdentityError,
     fetch_result_rel_path,
     is_fetch_result_path,
@@ -20,7 +20,7 @@ from src.services.source_records import (
 )
 from src.ingest.paper_raw import PaperRawAllocator
 from src.metadata.schema import empty_metadata
-from src.services.ingest_state import read_import_status
+from src.ingest.import_status import read_import_status
 from config.settings import PAPER_NUMBER_LEDGER_PATH
 
 

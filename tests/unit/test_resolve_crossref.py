@@ -9,7 +9,7 @@ from src.discovery.resolve_crossref import (
     resolve_crossref_by_title,
     resolve_doi_by_title,
 )
-from src.services.rate_limit import ProviderRateLimiter, default_config
+from src.utils.rate_limit import ProviderRateLimiter, default_config
 from tests.helpers.fake_provider import FakeClock, FakeSleeper, FakeTransport, Fault, http_response
 
 

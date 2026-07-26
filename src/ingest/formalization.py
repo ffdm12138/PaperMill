@@ -22,7 +22,7 @@ def build_formalization_plan(workspace: PaperRawWorkspace, *, papers_dir: Path, 
 
     # ── Gate: only metadata_staged workspaces can be formalized ──────────
     from src.library.paper_number_ledger import LEDGER_METADATA_STAGED
-    from src.ingest.workspace_lifecycle import inspect_workspace_lifecycle
+    from src.workspace.lifecycle import inspect_workspace_lifecycle
 
     item = (ledger.load().get("items") or {}).get(workspace.paper_number)
     state = str((item or {}).get("state", ""))

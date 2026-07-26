@@ -18,9 +18,9 @@ from src.metadata.pdf_match import build_match_receipt,write_match_receipt
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.metadata.schema import empty_metadata
 from src.utils.atomic_io import atomic_write_json
-from src.services.stage_manifest import write_stage_manifest
-from src.services.ingest_state import write_import_status
-from src.discovery.discovery_receipt import build_receipt_payload, write_or_validate_discovery_receipt
+from src.ingest.stage_manifest import write_stage_manifest
+from src.ingest.import_status import write_import_status
+from src.workspace.receipt import build_receipt_payload, write_or_validate_discovery_receipt
 
 NUMBER="0000000000000001"
 

@@ -6,7 +6,7 @@ import hashlib
 import re
 from typing import Mapping
 
-from src.services.metadata_quality import is_valid_normalized_doi, normalized_metadata_doi
+from src.metadata.quality import is_valid_normalized_doi, normalized_metadata_doi
 from src.metadata.citation import bibtex_from_metadata, format_reference_from_metadata
 
 

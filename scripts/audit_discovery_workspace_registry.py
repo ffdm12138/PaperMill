@@ -25,7 +25,7 @@ from src.discovery.workspace_registry import (
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.library.paper_number_state import ALL_LEDGER_STATES, TERMINAL_LEDGER_STATES
 from src.path_utils import resolve_stored_path
-from src.services.duplicate_index import DuplicateIndex
+from src.ingest.duplicate_index import DuplicateIndex
 from src.utils.identifiers import PAPER_NUMBER_RE
 
 

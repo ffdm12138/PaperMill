@@ -50,7 +50,7 @@ def _client(
     telemetry: ProviderTelemetry | None = None,
     provider: str = "openalex",
 ):
-    from src.services.rate_limit import ProviderRateLimiter, default_config
+    from src.utils.rate_limit import ProviderRateLimiter, default_config
 
     clock = clock or FakeClock()
     sleeper = sleeper or FakeSleeper(clock)
@@ -161,7 +161,7 @@ def test_non_429_retry_after_uses_normal_backoff() -> None:
 
 def test_shared_gate_deadline_stops_before_http_attempt() -> None:
     """Deadline expiration at Retry-After gate is not permission to send."""
-    from src.services.rate_limit import default_config
+    from src.utils.rate_limit import default_config
 
     cfg = default_config()
     cfg["global"]["paper_interval_seconds"] = 0.0
@@ -193,7 +193,7 @@ def test_shared_gate_deadline_stops_before_http_attempt() -> None:
 
 def test_shared_gate_cancellation_stops_before_http_attempt() -> None:
     """A cancelled gate wait does not consume budget or bypass cooldown."""
-    from src.services.rate_limit import default_config
+    from src.utils.rate_limit import default_config
 
     cfg = default_config()
     cfg["global"]["paper_interval_seconds"] = 0.0
@@ -311,7 +311,7 @@ def test_circuit_breaker_half_open_recovers() -> None:
     breaker = CircuitBreaker(failure_threshold=1, recovery_seconds=30.0)
     clock = FakeClock()
     transport = FakeTransport([http_response(500), http_response(200, {"ok": True})])
-    from src.services.rate_limit import ProviderRateLimiter, default_config
+    from src.utils.rate_limit import ProviderRateLimiter, default_config
 
     cfg = default_config()
     cfg["global"]["paper_interval_seconds"] = 0.0

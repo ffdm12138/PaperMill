@@ -16,11 +16,11 @@ from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/loggi
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.discovery.workspace_registry import WorkspaceRegistrySnapshot, build_workspace_registry
-from src.ingest.workspace_evidence import inspect_workspace_evidence
-from src.ingest.workspace_readiness import evaluate_metadata_staged
+from src.workspace.evidence import inspect_workspace_evidence
+from src.workspace.readiness import evaluate_metadata_staged
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.path_utils import resolve_stored_path
-from src.services.ingest_state import METADATA_INCOMPLETE, write_import_status
+from src.ingest.import_status import METADATA_INCOMPLETE, write_import_status
 
 
 def _duplicate_plan(

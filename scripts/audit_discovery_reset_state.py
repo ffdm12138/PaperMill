@@ -553,7 +553,7 @@ def _audit_formal(
         }
     try:
         from src.library.validation import validate_formal_paper
-        from src.discovery.formal_publication import validate_publication_state
+        from src.library.formal_publication import validate_publication_state
     except Exception as exc:
         finding = _finding("formal_validator_unavailable", "repair", "formal", papers_dir, str(exc))
         return {"exists": papers_dir.exists(), "papers": [], "expected": expected, "health": "INVALID", "violations": [str(exc)], "findings": [finding.to_dict()]}
@@ -1018,13 +1018,13 @@ def _audit_transaction_dir(
         validated = None
         try:
             if data_root is not None and kind == "commit":
-                from src.services.transaction_paths import validate_commit_journal
+                from src.ingest.transaction_paths import validate_commit_journal
                 validated = validate_commit_journal(
                     raw, journal_path=path, paper_raw_root=raw_root,
                     papers_root=papers_root, transaction_root=transaction_root,
                 )
             elif data_root is not None and kind == "rollback":
-                from src.services.transaction_paths import validate_rollback_journal
+                from src.ingest.transaction_paths import validate_rollback_journal
                 validated = validate_rollback_journal(
                     raw, journal_path=path, paper_raw_root=raw_root,
                     papers_root=papers_root, transaction_root=transaction_root,

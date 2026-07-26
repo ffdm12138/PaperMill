@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from src.discovery.discovery_receipt import (
+from src.workspace.receipt import (
     DiscoveryReceiptConflictError,
     PersistedReceiptIdentity,
     ReceiptLookupIdentity,

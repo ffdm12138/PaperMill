@@ -678,7 +678,7 @@ def test_provider_failure_counting_through_full_telemetry_chain():
         ProviderClient, RequestSpec, CircuitBreaker,
     )
     from src.discovery.providers.provider_telemetry import ProviderTelemetry
-    from src.services.rate_limit import default_config, ProviderRateLimiter
+    from src.utils.rate_limit import default_config, ProviderRateLimiter
     from tests.helpers.fake_provider import (
         FakeClock, FakeSleeper, FakeTransport, Fault, http_response,
     )

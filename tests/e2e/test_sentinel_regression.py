@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from src.services.transaction_paths import (
+from src.ingest.transaction_paths import (
     check_destructive_path,
     validate_commit_journal,
     validate_rollback_journal,

@@ -11,13 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from src.services.source_records import (
+from src.metadata.source_records import (
     InvalidProviderIdentityError,
     SourceRecordPathEscapeError,
     normalize_provider_slug,
-    write_fetch_result,
     write_metadata_source_record,
 )
+from src.fetch.fetch_result_record import write_fetch_result
 
 pytestmark = pytest.mark.security
 

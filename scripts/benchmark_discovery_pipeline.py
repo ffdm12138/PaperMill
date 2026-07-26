@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
-from src.discovery.formal_publication import publish_formal_publication_state
+from src.library.formal_publication import publish_formal_publication_state
 from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
 from src.discovery.contracts.page_journal import request_signature

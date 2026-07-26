@@ -8,7 +8,7 @@ import pytest
 
 from src.library.paper_number_ledger import LEDGER_METADATA_STAGED, LEDGER_RESERVED, PaperNumberLedger
 from src.library.paper_number_state import InvalidLedgerTransition, assert_ledger_transition
-from src.services.ingest_state import STAGE_FAILED, write_import_status
+from src.ingest.import_status import STAGE_FAILED, write_import_status
 from tests.factories.paper_raw_factory import (
     create_active_formal_workspace,
     create_metadata_staged_network_workspace,

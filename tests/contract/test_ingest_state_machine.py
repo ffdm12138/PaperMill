@@ -10,8 +10,8 @@ import pytest
 from src.ingest.status import read_status, update_status
 from src.ingest.workspace import PaperRawWorkspace
 
-from src.services import ingest_state
-from src.services.ingest_state import (
+from src.ingest import import_status as ingest_state
+from src.ingest.import_status import (
     CATALOG_READY,
     COMMIT_FAILED,
     COMMITTED,

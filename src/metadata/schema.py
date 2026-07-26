@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.services.source_records import (
+from src.metadata.source_records import (
     SourceRecordPathEscapeError,
     validate_metadata_source_rel_path,
 )

@@ -1,9 +1,9 @@
-"""Unit tests for src.services.openalex_credentials."""
+"""Unit tests for src.fetch.openalex_credentials."""
 from __future__ import annotations
 
 import pytest
 
-from src.services.openalex_credentials import (
+from src.fetch.openalex_credentials import (
     OpenAlexCredentials,
     load_openalex_credentials,
     safe_request_error_summary,

@@ -49,7 +49,7 @@ from src.discovery.providers.provider_telemetry import (
     ProviderTelemetry,
     TelemetryScope,
 )
-from src.services.rate_limit import ProviderRateLimiter, default_config, load_config
+from src.utils.rate_limit import ProviderRateLimiter, default_config, load_config
 
 RequestPurpose = Literal["discovery_page", "title_resolution", "metadata_resolution"]
 

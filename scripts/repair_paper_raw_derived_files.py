@@ -42,11 +42,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
-from src.services.asset_manifest import build_asset_manifest, read_asset_manifest, write_asset_manifest
-from src.services.catalog_asset_refs import inspect_legacy_catalog_fields
-from src.services.ingest_duplicate_guard import is_paper_raw_workspace, read_best_metadata_json
+from src.ingest.asset_manifest import build_asset_manifest, read_asset_manifest, write_asset_manifest
+from src.catalog.asset_refs import inspect_legacy_catalog_fields
+from src.ingest.duplicate_guard import is_paper_raw_workspace, read_best_metadata_json
 from src.utils.identifiers import PAPER_NUMBER_RE
-from src.services.ingest_state import now_iso
+from src.ingest.import_status import now_iso
 from src.services.paper_number_admin import metadata_fingerprint
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.utils.atomic_io import atomic_write_json

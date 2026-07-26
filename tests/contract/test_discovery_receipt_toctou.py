@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from src.discovery.discovery_receipt import (
+from src.workspace.receipt import (
     DiscoveryReceiptConflictError,
     build_receipt_payload,
     receipt_path_for,

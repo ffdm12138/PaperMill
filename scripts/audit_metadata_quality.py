@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import CATALOG_STATE_ROOT, PAPERS_DIR
-from src.services.metadata_quality import audit_metadata_library
+from src.metadata.quality import audit_metadata_library
 from src.utils.atomic_io import atomic_write_json
 
 

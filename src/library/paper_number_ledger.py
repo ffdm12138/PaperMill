@@ -14,7 +14,7 @@ from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.naming import safe_child
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.utils.atomic_io import atomic_write_json
-from src.ingest.marker import parse_marker_number, write_paper_number_marker
+from src.library.marker import parse_marker_number, write_paper_number_marker
 from src.utils.timestamps import now_iso
 from src.library.paper_number_state import (
     ALLOWED_LEDGER_TRANSITIONS,
@@ -346,7 +346,7 @@ class PaperNumberLedger:
           as a state. Incomplete workspaces stay ``reserved`` so the index
           re-scans them.
         """
-        from src.ingest.workspace_lifecycle import inspect_workspace_lifecycle
+        from src.workspace.lifecycle import inspect_workspace_lifecycle
 
         items = data.setdefault("items", {})
         for number, item in list(items.items()):
@@ -965,7 +965,7 @@ class PaperNumberLedger:
             # the transaction coordinator performs the same publication under
             # its ranked papers/index locks.
             try:
-                from src.discovery.formal_publication import (
+                from src.library.formal_publication import (
                     publish_formal_publication_state,
                     publication_state_path,
                 )

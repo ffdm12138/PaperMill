@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.services.rate_limit import (
+from src.utils.rate_limit import (
     ProviderRateLimiter,
     default_config,
     _parse_interval_seconds,
@@ -48,8 +48,8 @@ class FakeClock:
     Usage::
 
         clock = FakeClock(now=100.0)
-        with patch("src.services.rate_limit.time.monotonic", clock.monotonic), \
-             patch("src.services.rate_limit.time.sleep", clock.sleep):
+        with patch("src.utils.rate_limit.time.monotonic", clock.monotonic), \
+             patch("src.utils.rate_limit.time.sleep", clock.sleep):
             ...
 
     ``clock.sleeps`` accumulates every sleep duration; ``clock._now`` advances
@@ -85,8 +85,8 @@ def test_provider_min_interval_respected():
     rl.jitter = 0.0
     rl.begin_paper()
 
-    with patch("src.services.rate_limit.time.monotonic", clock.monotonic), \
-         patch("src.services.rate_limit.time.sleep", clock.sleep):
+    with patch("src.utils.rate_limit.time.monotonic", clock.monotonic), \
+         patch("src.utils.rate_limit.time.sleep", clock.sleep):
         rl.wait("crossref")   # first call: no sleep (last_request_at == 0)
         clock.sleeps.clear()
         rl.wait("crossref")   # second call: should sleep ~0.3s
@@ -106,8 +106,8 @@ def test_paper_interval_respected():
     rl.set_provider_min_interval("openalex", 0.0)
     rl.jitter = 0.0
 
-    with patch("src.services.rate_limit.time.monotonic", clock.monotonic), \
-         patch("src.services.rate_limit.time.sleep", clock.sleep):
+    with patch("src.utils.rate_limit.time.monotonic", clock.monotonic), \
+         patch("src.utils.rate_limit.time.sleep", clock.sleep):
         # Paper 1: first request (no prior paper → no paper interval)
         rl.begin_paper()
         clock.sleeps.clear()
@@ -140,8 +140,8 @@ def test_paper_interval_respected_three_papers():
     rl.set_provider_min_interval("openalex", 0.0)
     rl.jitter = 0.0
 
-    with patch("src.services.rate_limit.time.monotonic", clock.monotonic), \
-         patch("src.services.rate_limit.time.sleep", clock.sleep):
+    with patch("src.utils.rate_limit.time.monotonic", clock.monotonic), \
+         patch("src.utils.rate_limit.time.sleep", clock.sleep):
         # Paper 1: no prior paper → no paper-interval sleep
         rl.begin_paper()
         clock.sleeps.clear()
@@ -181,8 +181,8 @@ def test_same_paper_multiple_providers_no_double_paper_interval():
     rl.set_provider_min_interval("openalex", 0.0)
     rl.jitter = 0.0
 
-    with patch("src.services.rate_limit.time.monotonic", clock.monotonic), \
-         patch("src.services.rate_limit.time.sleep", clock.sleep):
+    with patch("src.utils.rate_limit.time.monotonic", clock.monotonic), \
+         patch("src.utils.rate_limit.time.sleep", clock.sleep):
         # Paper 1: crossref (triggers paper interval once)
         rl.begin_paper()
         clock.sleeps.clear()
@@ -323,8 +323,8 @@ def test_single_threaded_no_parallel_requests():
     rl.set_provider_min_interval("crossref", 0.1)
     rl.jitter = 0.0
 
-    with patch("src.services.rate_limit.time.monotonic", clock.monotonic), \
-         patch("src.services.rate_limit.time.sleep", clock.sleep):
+    with patch("src.utils.rate_limit.time.monotonic", clock.monotonic), \
+         patch("src.utils.rate_limit.time.sleep", clock.sleep):
         for i in range(3):
             if i > 0:
                 rl.begin_paper()
@@ -389,7 +389,7 @@ def test_stats_accumulate():
     rl = ProviderRateLimiter(default_config())
     rl.set_paper_interval(0.0)
     rl.set_provider_min_interval("crossref", 0.0)
-    with patch("src.services.rate_limit.time.sleep", lambda s: None):
+    with patch("src.utils.rate_limit.time.sleep", lambda s: None):
         rl.wait("crossref")
         rl.wait("openalex")
     stats = rl.stats_dict()
@@ -410,7 +410,7 @@ def test_pace_paper_skips_provider_min_interval():
     rl = ProviderRateLimiter(cfg)
     rl.set_provider_min_interval("crossref", 99.0)
     slept: list[float] = []
-    with patch("src.services.rate_limit.time.sleep", lambda s: slept.append(s)):
+    with patch("src.utils.rate_limit.time.sleep", lambda s: slept.append(s)):
         rl.begin_paper()
         rl.pace_paper("crossref")   # first paper: no previous -> no sleep
         rl.pace_paper("crossref")   # same paper again: still no sleep

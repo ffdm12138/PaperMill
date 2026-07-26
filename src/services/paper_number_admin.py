@@ -17,7 +17,7 @@ from filelock import FileLock
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.ingest.locking import paper_raw_write_lock
 from src.path_utils import normalize_repo_path, resolve_stored_path
-from src.services.ingest_duplicate_guard import is_paper_raw_workspace
+from src.ingest.duplicate_guard import is_paper_raw_workspace
 from src.utils.jsonio import read_json
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.library.paper_number_ledger import PaperNumberLedger, now_iso
@@ -741,7 +741,7 @@ class PaperNumberAdminService:
         any rewrite. The backup dict enables emergency restore if the rewrite
         corrupts a bibliographic field.
         """
-        from src.services.ingest_duplicate_guard import read_best_metadata_json
+        from src.ingest.duplicate_guard import read_best_metadata_json
 
         fingerprints: dict[str, str] = {}
         backups: dict[str, dict] = {}
@@ -758,7 +758,7 @@ class PaperNumberAdminService:
         metadata_backups: dict[str, dict],
     ) -> list[dict[str, Any]]:
         """Compare post-rewrite fingerprints to pre-rewrite. Returns mismatches."""
-        from src.services.ingest_duplicate_guard import read_best_metadata_json
+        from src.ingest.duplicate_guard import read_best_metadata_json
 
         mismatches: list[dict[str, Any]] = []
         for item in mapping["items"]:

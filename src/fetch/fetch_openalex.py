@@ -9,7 +9,7 @@ from loguru import logger
 from src.utils.identifiers import normalize_doi
 from src.discovery.providers.provider_client import ProviderRuntime, RequestSpec
 from src.fetch.models import FetchResult
-from src.services.openalex_credentials import (
+from src.fetch.openalex_credentials import (
     load_openalex_credentials,
     safe_request_error_summary,
 )

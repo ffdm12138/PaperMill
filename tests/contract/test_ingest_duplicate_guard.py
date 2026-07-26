@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from src.file_fingerprint import compute_file_hashes
-from src.services.ingest_duplicate_guard import (
+from src.ingest.duplicate_guard import (
     DuplicateIndex,
     DuplicateRef,
     build_ingest_duplicate_index,
@@ -198,7 +198,7 @@ def test_doi_only_index_does_not_hash_pdfs(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("DOI-only index must not hash PDFs")
 
-    monkeypatch.setattr("src.services.ingest_duplicate_guard.compute_file_hashes", boom)
+    monkeypatch.setattr("src.ingest.duplicate_guard.compute_file_hashes", boom)
     index = DuplicateIndex()
     index.add_doi_ref(DuplicateRef(
         scope="paper_raw", paper_number=PN1, paper_name="", folder=str(folder),

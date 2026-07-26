@@ -4,7 +4,7 @@ from src.discovery import resolve_crossref, search_openalex
 from src.discovery.models import PaperCandidate
 from src.discovery.providers.provider_models import DiscoveryPage, ProviderSearchRequest
 from src.discovery.search_openalex import parse_openalex_work
-from src.services.openalex_credentials import OpenAlexCredentials, safe_request_error_summary
+from src.fetch.openalex_credentials import OpenAlexCredentials, safe_request_error_summary
 
 
 pytestmark = pytest.mark.unit
@@ -17,7 +17,7 @@ def _install_runtime(monkeypatch, transport, *, max_retries: int = 0) -> None:
     mocks: both modules now route HTTP through the unified ProviderClient.
     """
     from src.discovery.providers.provider_client import ProviderRuntime
-    from src.services.rate_limit import default_config
+    from src.utils.rate_limit import default_config
     from tests.helpers.fake_provider import FakeClock, FakeSleeper
 
     cfg = default_config()

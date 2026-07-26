@@ -1066,7 +1066,7 @@ class OpenAlexDoiVerifier:
             ProviderPermanentError,
             ProviderRequestBudgetExhausted,
         )
-        from src.services.openalex_credentials import load_openalex_credentials
+        from src.fetch.openalex_credentials import load_openalex_credentials
 
         credentials = load_openalex_credentials()
         params: dict[str, Any] = {

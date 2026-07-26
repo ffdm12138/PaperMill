@@ -16,9 +16,9 @@ from src.utils.identifiers import normalize_doi
 from src.file_fingerprint import compute_file_hashes
 from src.path_utils import normalize_repo_path, resolve_stored_path
 from src.utils.identifiers import PAPER_NUMBER_RE
-from src.services.asset_manifest import pdf_hashes_from_manifest
-from src.services.stage_manifest import staged_pdf_hashes
-from src.services.duplicate_index import DuplicateIndex, DuplicateIndexView, DuplicateRef, unique_refs_full
+from src.ingest.asset_manifest import pdf_hashes_from_manifest
+from src.ingest.stage_manifest import staged_pdf_hashes
+from src.ingest.duplicate_index import DuplicateIndex, DuplicateIndexView, DuplicateRef, unique_refs_full
 
 
 @dataclass

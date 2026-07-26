@@ -21,17 +21,17 @@ from src.utils.identifiers import normalize_doi
 from src.fetch.access_policy import AccessMode, AccessPolicy
 import src.fetch.fetch_pipeline as fetch_pipeline
 from src.fetch.pdf_transport import TRANSPORT_POLICY, sanitize_for_persistence, sanitize_url_for_persistence
-from src.services.ingest_duplicate_guard import DuplicateIngestError
+from src.ingest.duplicate_guard import DuplicateIngestError
 from src.utils.identifiers import validate_paper_raw_id
-from src.services.ingest_state import write_import_status
-from src.services.metadata_quality import is_valid_normalized_doi
-from src.services.source_records import (
+from src.ingest.import_status import write_import_status
+from src.metadata.quality import is_valid_normalized_doi
+from src.metadata.source_records import (
     ensure_raw_record_path_is_metadata_source,
     fetch_result_rel_path,
     resolve_metadata_source_record_path,
-    write_fetch_result,
 )
-from src.services.stage_manifest import (
+from src.fetch.fetch_result_record import write_fetch_result
+from src.ingest.stage_manifest import (
     doi_fetch_pdf_source,
     read_stage_manifest,
     update_stage_manifest,

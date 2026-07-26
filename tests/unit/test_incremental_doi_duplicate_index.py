@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.services.ingest_duplicate_guard import DuplicateIndex, DuplicateRef
+from src.ingest.duplicate_guard import DuplicateIndex, DuplicateRef
 
 
 def _ref(number: str) -> DuplicateRef:

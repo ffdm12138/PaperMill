@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from src.services.source_records import metadata_source_rel_path
+from src.metadata.source_records import metadata_source_rel_path
 from src.metadata.schema import empty_metadata
 
 

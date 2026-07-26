@@ -11,16 +11,16 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
 from src.discovery.workspace_index import DiscoveryIdentityRef, DiscoveryWorkspaceIndex
-from src.discovery.formal_publication import (
+from src.library.formal_publication import (
     read_publication_state_header,
     validate_publication_state,
 )
-from src.ingest.workspace_evidence import WorkspaceEvidence, inspect_workspace_evidence
-from src.ingest.workspace_readiness import WorkspaceReadiness, evaluate_metadata_staged
+from src.workspace.evidence import WorkspaceEvidence, inspect_workspace_evidence
+from src.workspace.readiness import WorkspaceReadiness, evaluate_metadata_staged
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.library.paper_number_state import ALL_LEDGER_STATES, TERMINAL_LEDGER_STATES
 from src.path_utils import resolve_stored_path
-from src.services.duplicate_index import DuplicateIndex, DuplicateRef
+from src.ingest.duplicate_index import DuplicateIndex, DuplicateRef
 from src.utils.identifiers import PAPER_NUMBER_RE
 from src.file_fingerprint import compute_sha256
 from src.discovery.staging_metrics import NullStagingMetricsObserver, StagingMetricsObserver

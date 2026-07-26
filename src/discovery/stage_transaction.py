@@ -21,7 +21,7 @@ from src.discovery.workspace_registry import (
 )
 from src.discovery.staging_metrics import NullStagingMetricsObserver, StagingMetricsObserver
 from src.ingest.paper_raw import PaperRawAllocator
-from src.discovery.discovery_receipt import (
+from src.workspace.receipt import (
     DiscoveryReceiptConflictError,
     build_receipt_payload,
     write_or_validate_discovery_receipt,
@@ -29,9 +29,9 @@ from src.discovery.discovery_receipt import (
 from src.library.paper_number_ledger import LockedLedgerSession, PaperNumberLedger
 from src.metadata.schema import METADATA_SCHEMA_VERSION, metadata_doi, validate_metadata_schema
 from src.path_utils import normalize_repo_path
-from src.services.ingest_state import write_import_status
-from src.services.source_records import ensure_raw_record_path_is_metadata_source, write_metadata_source_record
-from src.services.stage_manifest import write_stage_manifest
+from src.ingest.import_status import write_import_status
+from src.metadata.source_records import ensure_raw_record_path_is_metadata_source, write_metadata_source_record
+from src.ingest.stage_manifest import write_stage_manifest
 from src.utils.atomic_io import atomic_write_json
 
 

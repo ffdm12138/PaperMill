@@ -19,7 +19,7 @@ from src.ingest.locking import (
     LockRequest,
     acquire_locks,
 )
-from src.discovery.formal_publication import (
+from src.library.formal_publication import (
     publish_formal_publication_state_unlocked,
     publication_state_path,
     validate_publication_state,
@@ -32,7 +32,7 @@ from src.ingest.transactions import (
 from src.ingest.workspace import PaperRawWorkspace
 from src.library.validation import validate_formal_paper
 from src.library.paper_number_ledger import PaperNumberLedger
-from src.services.transaction_paths import (
+from src.ingest.transaction_paths import (
     check_destructive_path,
     validate_commit_journal,
     commit_staging_path,

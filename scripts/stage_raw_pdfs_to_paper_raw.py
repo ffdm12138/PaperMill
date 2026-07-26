@@ -13,7 +13,7 @@ from loguru import logger
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR, RAW_DIR
 from src.file_fingerprint import compute_file_hashes
-from src.services.ingest_duplicate_guard import DuplicateIngestError, check_pdf_duplicate
+from src.ingest.duplicate_guard import DuplicateIngestError, check_pdf_duplicate
 from src.library.paper_number_ledger import PaperNumberLedger
 from src.ingest.paper_raw import PaperRawAllocator
 
@@ -26,7 +26,7 @@ def _is_pdf(path: Path) -> bool:
 
 
 def _active_workspace_count(paper_raw_dir: Path) -> int:
-    from src.services.ingest_duplicate_guard import is_paper_raw_workspace
+    from src.ingest.duplicate_guard import is_paper_raw_workspace
     if not paper_raw_dir.exists():
         return 0
     return sum(

@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPERS_DIR, TRANSACTION_ROOT
-from src.discovery.formal_publication import (
+from src.library.formal_publication import (
     publish_formal_publication_state_unlocked,
     publication_state_path,
 )
@@ -164,7 +164,7 @@ def run(*, papers: Path, ledger_path: Path, transactions: Path,
         state_lock = Path(str(publication_state_path(papers)) + ".lock")
         with acquire_locks(
             *transaction_requests(transactions / "locks", numbers),
-            LockRequest.path_lock(LEDGER_RANK, ledger._lock_path),
+            LockRequest.path_lock(LEDGER_RANK, ledger.lock_path),
             LockRequest.path_lock(PAPERS_INSTALL_RANK, papers / ".papers_install.lock"),
             LockRequest.path_lock(INDEX_PUBLISH_RANK, state_lock),
         ):

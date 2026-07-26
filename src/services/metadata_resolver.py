@@ -49,6 +49,7 @@ from loguru import logger
 from filelock import FileLock
 
 from config.settings import PAPER_RAW_DIR, PAPERS_DIR
+from src.ingest.import_status import write_import_status
 from src.ingest.locking import paper_raw_write_lock
 from src.discovery.models import PaperCandidate
 from src.utils.jsonio import read_json
@@ -60,7 +61,7 @@ from src.discovery.resolve_crossref import (
 )
 from src.discovery.search_openalex import search_openalex
 from src.file_fingerprint import compute_sha256
-from src.services.ingest_duplicate_guard import check_doi_duplicate, check_pdf_duplicate
+from src.ingest.duplicate_guard import check_doi_duplicate, check_pdf_duplicate
 from src.services.markdown_metadata_extractor import (
     extract_front_matter_candidates_from_markdown,
     extract_metadata_from_markdown,
@@ -72,11 +73,11 @@ from src.services.metadata_enrichment_service import (
     extract_doi_from_filename,
     extract_doi_from_pdf_file,
 )
-from src.services.metadata_quality import bibliographic_identity_gate
-from src.services.rate_limit import ProviderRateLimiter, default_config
+from src.metadata.quality import bibliographic_identity_gate
+from src.utils.rate_limit import ProviderRateLimiter, default_config
 from src.metadata.schema import empty_metadata, first_author_family, metadata_doi, validate_metadata_schema
 from src.metadata.normalization import merge_missing_metadata
-from src.services.source_records import write_metadata_source_record
+from src.metadata.source_records import write_metadata_source_record
 from src.utils.atomic_io import atomic_write_json
 from src.utils.timestamps import now_iso as _now_iso
 
@@ -1345,7 +1346,7 @@ def _apply_resolution_unlocked(
             for candidate in report.candidates
             for reason in candidate.gate_reasons
         ))
-        _write_import_status(folder, STATUS_MANUAL_REVIEW, "no DOI-bearing candidate to apply")
+        write_import_status(folder, STATUS_MANUAL_REVIEW, reason="no DOI-bearing candidate to apply")
         return {"applied": False, "status": "no_candidate", "paper_number": source_id, "paper_raw_id": source_id,
                 "chosen_candidate_id": candidate_id or report.best_candidate_id,
                 "warnings": candidate_warnings or ["no DOI-bearing candidate"]}
@@ -1381,7 +1382,7 @@ def _apply_resolution_unlocked(
         reason = "; ".join(fail_reasons) if fail_reasons else (
             "candidate not auto-matched and --manual-confirm not given"
         )
-        _write_import_status(folder, status, reason)
+        write_import_status(folder, status, reason=reason)
         return {"applied": False, "status": "manual_review_required", "paper_number": source_id, "paper_raw_id": source_id,
                 "chosen_candidate_id": chosen.candidate_id, "warnings": fail_reasons or [reason]}
 
@@ -1390,7 +1391,7 @@ def _apply_resolution_unlocked(
     merged.pop("metadata_match", None)
     schema_errors = validate_metadata_schema(merged)
     if schema_errors:
-        _write_import_status(folder, STATUS_MANUAL_REVIEW, "; ".join(schema_errors))
+        write_import_status(folder, STATUS_MANUAL_REVIEW, reason="; ".join(schema_errors))
         return {"applied": False, "status": "schema_error", "paper_number": source_id, "paper_raw_id": source_id,
                 "chosen_candidate_id": chosen.candidate_id, "warnings": schema_errors}
 
@@ -1398,7 +1399,7 @@ def _apply_resolution_unlocked(
     provider = str(source.get("provider") or chosen.source or "metadata_resolution")
     # raw_record_path must always point at a metadata source record, never at
     # fetch_result.json. Use source_records/metadata_source.<provider>.json.
-    from src.services.source_records import ensure_raw_record_path_is_metadata_source
+    from src.metadata.source_records import ensure_raw_record_path_is_metadata_source
     raw_record_path = ensure_raw_record_path_is_metadata_source(
         source.get("raw_record_path") or "", provider,
     )
@@ -1406,7 +1407,7 @@ def _apply_resolution_unlocked(
     merged["source"] = source
     write_metadata_source_record(folder, provider, chosen.to_dict())
     atomic_write_json(meta_path, merged, indent=2)
-    _write_import_status(folder, "metadata_resolved", f"citation metadata selected from candidate {chosen.candidate_id}; PDF match pending")
+    write_import_status(folder, "metadata_resolved", reason=f"citation metadata selected from candidate {chosen.candidate_id}; PDF match pending")
 
     report.applied = True
     report.applied_status = new_status
@@ -1414,12 +1415,6 @@ def _apply_resolution_unlocked(
 
     return {"applied": True, "status": new_status, "paper_number": source_id, "paper_raw_id": source_id,
             "chosen_candidate_id": chosen.candidate_id, "doi": chosen.doi, "warnings": merge_warnings}
-
-
-def _write_import_status(folder: Path, status: str, reason: str) -> None:
-    """Canonical .import_status.json writer (delegates to ingest_state)."""
-    from src.services.ingest_state import write_import_status
-    write_import_status(folder, status, reason=reason)
 
 
 # ── Side-file writers ──────────────────────────────────────────────────

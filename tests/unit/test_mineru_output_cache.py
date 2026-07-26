@@ -8,7 +8,7 @@ import pytest
 
 import scripts.convert_paper_raw_batch as batch
 from config.settings import MINERU_BACKEND, MINERU_EFFORT, MINERU_LANG, MINERU_METHOD
-from src.services.mineru_output_cache import MinerUOutputCache
+from src.ingest.mineru_output_cache import MinerUOutputCache
 from src.ingest.paper_raw import PaperRawConverter
 from src.metadata.schema import empty_metadata
 

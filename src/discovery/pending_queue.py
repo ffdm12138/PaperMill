@@ -19,7 +19,7 @@ from typing import Any, Mapping
 
 from filelock import FileLock, Timeout
 
-from src.discovery.discovery_receipt import (
+from src.workspace.receipt import (
     build_receipt_payload,
     receipt_path_for,
     write_or_validate_discovery_receipt,
@@ -37,7 +37,7 @@ from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, Discove
 from src.discovery.runtime.budgets import BatchDoiResolutionBudget
 from src.discovery.staging_gateway import MetadataStagingGateway
 from src.discovery.title_resolution import DurableTitleCache, TitleResolutionService
-from src.services.metadata_quality import is_valid_normalized_doi
+from src.metadata.quality import is_valid_normalized_doi
 from src.utils.atomic_io import atomic_write_json_unlocked, atomic_write_text
 from src.utils.timestamps import utc_now_iso as _now_iso
 
@@ -187,7 +187,7 @@ def write_discovery_receipt(
 ) -> Path:
     """Write (or idempotently validate) a discovery receipt for a workspace.
 
-    Thin wrapper around the shared :mod:`src.discovery.discovery_receipt`
+    Thin wrapper around the shared :mod:`src.workspace.receipt`
     service so all callers — allocator, drain loop, reconciliation, and tests —
     share one writer with identical conflict semantics. Raises
     :class:`DiscoveryReceiptConflictError` if an existing receipt's identity

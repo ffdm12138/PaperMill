@@ -14,7 +14,7 @@ from config.settings import (
     PAPER_RAW_DIR,
     PAPERS_DIR,
 )
-from src.services.ingest_state import CATALOG_READY, READY_FOR_COMMIT, read_import_status
+from src.ingest.import_status import CATALOG_READY, READY_FOR_COMMIT, read_import_status
 from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id
 from src.ingest.formalization import write_formalization_plan
 from src.ingest.workspace import PaperRawWorkspace
@@ -74,7 +74,7 @@ def main() -> int:
                     "formalization": str(workspace.formalization),
                 })
             else:
-                from src.services.ingest_state import read_import_status as _ris
+                from src.ingest.import_status import read_import_status as _ris
 
                 status = _ris(folder).get("status")
                 item["current_status"] = status

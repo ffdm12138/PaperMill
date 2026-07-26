@@ -7,7 +7,7 @@ from scripts import fetch_pdf_for_paper_raw as fetch_cli
 from scripts import pack_repo
 from scripts import resolve_paper_raw_metadata as resolve_cli
 from src.fetch import fetch_pipeline
-from src.services.rate_limit import default_config
+from src.utils.rate_limit import default_config
 
 
 PAPER_NUMBER = "0000000000000001"

@@ -224,23 +224,6 @@ def write_metadata_source_record(
     return target
 
 
-def write_fetch_result(
-    folder: str | Path,
-    fetch_record: dict[str, Any],
-) -> Path:
-    """Write a PDF fetch result record to ``source_records/fetch_result.json``.
-
-    This is the ONLY writer for fetch results. It must never overwrite a
-    metadata source record.
-    """
-    from src.fetch.pdf_transport import sanitize_for_persistence
-
-    path = resolve_safe_source_record_target(Path(folder), FETCH_RESULT_FILENAME)
-    atomic_write_json(path, {"fetch_result": sanitize_for_persistence(fetch_record)}, indent=2)
-    resolve_safe_source_record_target(Path(folder), path.name)
-    return path
-
-
 def is_fetch_result_path(rel_path: str) -> bool:
     """True when a stored raw_record_path points at the fetch result file."""
     if not rel_path:

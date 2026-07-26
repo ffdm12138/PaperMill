@@ -15,11 +15,11 @@ from src.utils.identifiers import normalize_doi
 from src.file_fingerprint import compute_file_hashes
 from src.naming import safe_child
 from src.metadata.freeze import assert_metadata_frozen
-from src.services.ingest_duplicate_guard import check_doi_duplicate, check_pdf_duplicate
+from src.ingest.duplicate_guard import check_doi_duplicate, check_pdf_duplicate
 from src.utils.identifiers import PAPER_NUMBER_RE, validate_paper_raw_id
-from src.services.ingest_state import write_import_status
-from src.services.metadata_quality import is_valid_normalized_doi
-from src.services.source_records import validate_metadata_source_record_exists
+from src.ingest.import_status import write_import_status
+from src.metadata.quality import is_valid_normalized_doi
+from src.metadata.source_records import validate_metadata_source_record_exists
 from src.ingest.models import now_iso
 from src.metadata.schema import validate_metadata_schema
 from src.utils.atomic_io import atomic_write_json

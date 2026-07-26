@@ -14,8 +14,8 @@ class _Transaction:
     def __init__(self, result: DiscoveryStageResult) -> None:
         self.result = result
 
-    def stage_candidate(self, *args, **kwargs) -> DiscoveryStageResult:
-        return self.result
+    def stage_candidates_batch(self, candidates, **kwargs):
+        return tuple(self.result for _ in candidates)
 
 
 class _FairReleaseTransaction:

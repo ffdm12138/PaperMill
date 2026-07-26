@@ -16,7 +16,7 @@ from src.discovery.providers.provider_client import ProviderClient
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from src.discovery.relevance_runtime import RelevanceRuntimePaths
 from src.discovery.models import PaperCandidate
-from src.services.rate_limit import default_config
+from src.utils.rate_limit import default_config
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )

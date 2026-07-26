@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from src.ingest.workspace_evidence import inspect_workspace_evidence
-from src.ingest.workspace_readiness import IngestProfile, evaluate_metadata_staged
+from src.workspace.evidence import inspect_workspace_evidence
+from src.workspace.readiness import IngestProfile, evaluate_metadata_staged
 from tests.factories.paper_raw_factory import (
     create_manual_pdf_workspace,
     create_network_metadata_workspace,

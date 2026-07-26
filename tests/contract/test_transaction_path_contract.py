@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from src.services.transaction_paths import (
+from src.ingest.transaction_paths import (
     TransactionContainmentError,
     TransactionIdentityError,
     TransactionPathError,

@@ -60,7 +60,7 @@ def test_incremental_refresh_reuses_formal_hash_closure(tmp_path: Path, monkeypa
         ledger_path=ledger.path,
     )
 
-    import src.discovery.formal_publication as publication
+    import src.library.formal_publication as publication
 
     calls = 0
     original = publication.compute_sha256

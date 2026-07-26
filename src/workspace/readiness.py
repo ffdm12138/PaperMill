@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from src.ingest.workspace_evidence import EvidenceIssue, WorkspaceEvidence
+from src.workspace.evidence import EvidenceIssue, WorkspaceEvidence
 
 
 class IngestProfile(str, Enum):
@@ -123,7 +123,7 @@ def evaluate_metadata_staged(
     ready = len(missing) == 0
 
     # Unsettled: the workspace needs re-scanning (no stable metadata yet).
-    from src.library.paper_number_ledger import LEDGER_ALLOCATING, LEDGER_RESERVED
+    from src.library.paper_number_state import LEDGER_ALLOCATING, LEDGER_RESERVED
     unsettled = (
         evidence.ledger_state in {LEDGER_ALLOCATING, LEDGER_RESERVED}
         or not evidence.metadata_valid
