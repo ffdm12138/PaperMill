@@ -1,26 +1,21 @@
-"""Conservative publisher PDF lookup from Crossref metadata."""
-from urllib.parse import quote
+"""Conservative publisher PDF lookup from Crossref metadata.
 
-import requests
+The Crossref work lookup goes through the unified ``ProviderClient``
+(shared limiter, retry/backoff, circuit breaker, proxy-configured
+transport); only the PDF binary download itself uses ``pdf_transport``.
+"""
 from loguru import logger
 
+from src.discovery.resolve_crossref import get_crossref_work_by_doi
 from src.fetch.models import FetchResult
-from src.fetch.proxy import get_fetch_proxies
-
-
-CROSSREF_WORK_URL = "https://api.crossref.org/works"
 
 
 def resolve_publisher_pdf(doi: str) -> FetchResult:
-    try:
-        response = requests.get(f"{CROSSREF_WORK_URL}/{quote(doi, safe='')}", timeout=20, proxies=get_fetch_proxies())
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        logger.warning(f"Publisher PDF lookup failed for {doi!r}: {exc}")
-        return FetchResult(doi=doi, source="publisher", error=str(exc))
+    message = get_crossref_work_by_doi(doi)
+    if message is None:
+        logger.warning(f"Publisher PDF lookup failed for {doi!r}")
+        return FetchResult(doi=doi, source="publisher", error="crossref work lookup failed")
 
-    message = data.get("message") or {}
     licenses = message.get("license") or []
     if not licenses:
         return FetchResult(doi=doi, source="publisher", metadata=message, error="no OA license signal")
@@ -39,4 +34,3 @@ def resolve_publisher_pdf(doi: str) -> FetchResult:
                 metadata=message,
             )
     return FetchResult(doi=doi, source="publisher", metadata=message, error="no PDF link")
-

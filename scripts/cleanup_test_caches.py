@@ -103,16 +103,24 @@ def _write_report(entries: list[dict], report_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _dir_size_and_count(root: Path) -> tuple[int, int]:
-    """Return (total_bytes, file_count) for all files under *root*."""
+    """Return (total_bytes, file_count) for all files under *root*.
+
+    Broken junctions / dangling symlinks make ``rglob`` itself raise
+    ``OSError`` while scanning; size accounting is best-effort, so fall
+    back to a shallow scan instead of crashing the whole cleanup.
+    """
     total = 0
     count = 0
-    for p in root.rglob("*"):
-        if p.is_file():
-            try:
-                total += p.stat().st_size
-                count += 1
-            except OSError:
-                pass
+    try:
+        for p in root.rglob("*"):
+            if p.is_file():
+                try:
+                    total += p.stat().st_size
+                    count += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
     return total, count
 
 

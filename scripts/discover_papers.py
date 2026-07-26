@@ -1,6 +1,6 @@
 """Run discovery for one Chinese classification notebook.
 
-The CLI selects a schema-v3 notebook by ``keyword_zh``.  It never accepts a
+The CLI selects a schema-v4 notebook by ``keyword_zh``.  It never accepts a
 free-standing provider query: every active Chinese and English search query is
 read from the selected notebook and sent to both OpenAlex and Crossref.
 """
@@ -23,8 +23,18 @@ from config.settings import (  # noqa: E402
     PAPERS_DIR,
 )
 from src.discovery.cli_plan import load_keyword_plan  # noqa: E402
-from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch  # noqa: E402
-from src.discovery.workspace import WorkspaceResolver  # noqa: E402
+from src.discovery.coordinator import (
+    DiscoveryOptions,
+    DiscoveryRuntimeDependencies,
+    run_discovery_batch_with_dependencies,
+)  # noqa: E402
+from src.discovery.staging_gateway import MetadataStagingGateway  # noqa: E402
+from src.discovery.stores.bundle import DiscoveryStoreBundleV4  # noqa: E402
+from src.discovery.workspace import DiscoveryWorkspace, WorkspaceResolver  # noqa: E402
+from src.discovery.maintenance_gate import (  # noqa: E402
+    MigrationMaintenanceLockError,
+    assert_discovery_write_allowed,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -40,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--keyword-zh",
         required=True,
-        help="Exact Chinese classification keyword of an existing schema-v3 notebook.",
+        help="Exact Chinese classification keyword of an existing schema-v4 notebook.",
     )
     parser.add_argument("--mode", choices=["hybrid", "refresh", "backfill"], default="hybrid")
     parser.add_argument("--refresh-pages", type=int, default=2)
@@ -74,6 +84,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--hide-existing", action="store_true")
+    parser.add_argument(
+        "--migration-receipts-dir",
+        type=Path,
+        default=None,
+        help="Migration-only: directory for durable legacy-seed receipts written "
+             "when pending candidates with origin 'legacy_candidate_seed' are "
+             "consumed. Must live outside the generation workspace tree. "
+             "Normal production runs leave this unset.",
+    )
     return parser
 
 
@@ -103,31 +122,60 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         )
 
 
+def _workspace_from_path(root: Path) -> DiscoveryWorkspace:
+    """Build a v4 workspace reference from an explicit root path (test/staging).
+
+    The directory name becomes the generation id.  All standard v4
+    subdirectories are created if absent.
+    """
+    root = root.resolve()
+    ws = DiscoveryWorkspace(
+        generation_id=root.name,
+        root=root,
+        keyword_notebook_dir=root / "keyword_notebooks",
+        lane_states_dir=root / "lane_states",
+        page_journals_dir=root / "page_journals",
+        pending_candidates_dir=root / "pending_candidates",
+        indexes_dir=root / "indexes",
+        exports_dir=root / "exports",
+        reports_dir=root / "reports",
+        locks_dir=root / "locks",
+    )
+    ws.ensure_dirs()
+    return ws
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     _validate_args(parser, args)
 
-    # Resolve workspace
-    ws = None
+    # Fail closed while a discovery migration maintenance window is active.
+    # The gate is unconditional: --workspace-root (test/staging path) does
+    # NOT exempt a run.  The in-process migration smoke passes because it
+    # owns the lock in this process; no external CLI can forge that.
+    try:
+        assert_discovery_write_allowed()
+    except MigrationMaintenanceLockError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+
+    # Resolve workspace — production uses the active v4 pointer; tests may
+    # override with an explicit workspace root.  No silent fallback to legacy
+    # flat directories.
     if args.workspace_root:
-        from src.discovery.workspace import DiscoveryWorkspace
-        ws = DiscoveryWorkspace.from_generation_id(args.workspace_root.name)
+        ws = _workspace_from_path(args.workspace_root)
     else:
         try:
             ws = WorkspaceResolver().resolve_active()
-        except Exception:
-            pass  # Fall back to defaults for backward compat
-
-    nb_dir = ws.keyword_notebook_dir if ws else DISCOVERY_DIR / "keyword_notebooks"
-    pg_dir = ws.page_journals_dir if ws else DISCOVERY_DIR / "pending_pages"
-    lk_dir = ws.locks_dir if ws else DISCOVERY_DIR / "locks"
-    ex_dir = ws.exports_dir if ws else DISCOVERY_DIR / "exports"
+        except Exception as exc:
+            print(f"[ERROR] discovery workspace resolution failed: {exc}", file=sys.stderr)
+            return 1
 
     try:
         plan = load_keyword_plan(
             args.keyword_zh,
-            nb_dir,
+            ws.keyword_notebook_dir,
             mode=args.mode,
             refresh_pages=args.refresh_pages,
             backfill_pages=args.backfill_pages,
@@ -148,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     options = DiscoveryOptions(
+        workspace=ws,
         mode=args.mode,
         refresh_pages=args.refresh_pages,
         backfill_pages=args.backfill_pages,
@@ -161,10 +210,6 @@ def main(argv: list[str] | None = None) -> int:
         apply=args.apply,
         skip_duplicates=args.skip_duplicates,
         hide_existing=args.hide_existing,
-        notebook_dir=nb_dir,
-        pending_pages_dir=pg_dir,
-        locks_dir=lk_dir,
-        exports_dir=ex_dir,
         until_exhausted=args.until_exhausted,
         max_pages_total=args.max_pages_total,
         max_provider_requests_total=args.max_provider_requests_total,
@@ -173,7 +218,27 @@ def main(argv: list[str] | None = None) -> int:
         resume_pending_candidates=args.resume_pending_candidates,
         title_resolution_cache_dir=DISCOVERY_DIR / "title_resolution_cache",
     )
-    batch_report = run_discovery_batch([args.keyword_zh], options=options, max_workers=2)
+    deps = DiscoveryRuntimeDependencies(
+        bundle=DiscoveryStoreBundleV4.from_workspace(
+            ws, migration_receipts_dir=args.migration_receipts_dir
+        ),
+        paper_raw_dir=args.paper_raw_dir,
+        papers_dir=args.papers_dir,
+        ledger_path=args.ledger_path,
+        locks_dir=ws.locks_dir,
+        exports_dir=ws.exports_dir,
+        output_dir=ws.exports_dir,
+        relevance_cache_dir=DISCOVERY_DIR / "relevance_raw_work_cache",
+        title_resolution_cache_dir=DISCOVERY_DIR / "title_resolution_cache",
+        metadata_gateway=MetadataStagingGateway(
+            paper_raw_dir=args.paper_raw_dir,
+            papers_dir=args.papers_dir,
+            ledger_path=args.ledger_path,
+        ),
+    )
+    batch_report = run_discovery_batch_with_dependencies(
+        [args.keyword_zh], deps=deps, options=options, max_workers=2
+    )
     report = batch_report.keywords[0].to_dict() if batch_report.keywords else batch_report.to_dict()
 
     prefix = "[OK]" if batch_report.exit_code == 0 else "[ERROR]"

@@ -83,6 +83,7 @@ def test_valid_library_passes(tmp_path):
         papers_dir=papers_dir,
         ledger_path=ledger_path,
         catalog_root=catalog_root,
+        notebook_dir=tmp_path / "notebooks",
     )
 
     # Report structure
@@ -130,6 +131,7 @@ def test_pending_papers_invalid(tmp_path):
         papers_dir=papers_dir,
         ledger_path=ledger_path,
         catalog_root=catalog_root,
+        notebook_dir=tmp_path / "notebooks",
     )
 
     # Paper is pending → classification not complete → not valid
@@ -159,6 +161,7 @@ def test_uses_writer_category_safe_key(tmp_path):
         papers_dir=papers_dir,
         ledger_path=ledger_path,
         catalog_root=catalog_root,
+        notebook_dir=tmp_path / "notebooks",
     )
 
     # Must contain writer_category_safe
@@ -197,6 +200,7 @@ def test_folder_integrity_failure(tmp_path):
         papers_dir=papers_dir,
         ledger_path=ledger_path,
         catalog_root=catalog_root,
+        notebook_dir=tmp_path / "notebooks",
     )
 
     # Missing all membership causes errors

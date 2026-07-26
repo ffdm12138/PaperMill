@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.discovery.contracts.page_journal import JournalCorruptError
 from src.discovery.stores.page_journal_store import PageJournalStoreV4
 
 
@@ -26,23 +27,31 @@ class JournalIndexV4:
     _total_candidates: int = 0
 
     @classmethod
-    def build(cls, store: PageJournalStoreV4) -> "JournalIndexV4":
-        """Rebuild the index from scratch by scanning all v4 page journals."""
+    def build(cls, store: "PageJournalStoreV4") -> "JournalIndexV4":
+        """Rebuild the index from scratch by scanning all v4 page journals.
+
+        Unreadable or corrupt journals are skipped here on purpose: journal
+        corruption is surfaced fail-closed by ``JournalDrainIndex.build`` and
+        the coordinator's repair attribution path, which re-read every page.
+        """
         index = cls(_store=store)
         for path in store.list_all():
-            journal = store.read(path)
-            if journal is None:
+            try:
+                page = store.read(path)
+            except (OSError, JournalCorruptError):
                 continue
-            pid = journal.page_id
+            if page is None:
+                continue
+            pid = page.get("page_id")
             if not pid:
                 continue
             index._by_page_id[pid] = path
-            kid = journal.keyword_id
+            kid = page.get("keyword_id")
             if kid:
                 index._by_keyword.setdefault(kid, set()).add(pid)
-            if journal.state == "drained":
+            if page.get("state") == "drained":
                 index._drained_pages.add(pid)
-            index._total_candidates += len(journal.candidates)
+            index._total_candidates += len(page.get("candidates", []))
         return index
 
     @property

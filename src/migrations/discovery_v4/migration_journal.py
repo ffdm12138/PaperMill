@@ -1,8 +1,12 @@
 """Discovery v4 migration journal — durable state tracking.
 
-States: planned → inventory_complete → archive_prepared → notebooks_staged
-     → candidates_extracted → workspace_built → preflight_validated
-     → smoke_passed → cutover_committed → legacy_cleaned → finalized
+States: planned → inventory_complete → archive_prepared → workspace_built
+     → notebooks_staged → candidates_extracted → preflight_validated
+     → smoke_failed (recoverable) → smoke_passed → cutover_committed
+     → legacy_cleaned → finalized
+
+ABORTED is a terminal state reachable from any pre-cutover state, and from
+cutover_committed via --rollback (the only post-cutover escape).
 """
 from __future__ import annotations
 
@@ -29,17 +33,55 @@ class MigrationState(str, Enum):
     CANDIDATES_EXTRACTED = "candidates_extracted"
     WORKSPACE_BUILT = "workspace_built"
     PREFLIGHT_VALIDATED = "preflight_validated"
+    SMOKE_FAILED = "smoke_failed"
     SMOKE_PASSED = "smoke_passed"
     CUTOVER_COMMITTED = "cutover_committed"
     LEGACY_CLEANED = "legacy_cleaned"
     FINALIZED = "finalized"
+    ABORTED = "aborted"
 
 
-# Ordered states — any state can transition to any later state
-_ORDERED_STATES = tuple(MigrationState)
+# Ordered happy-path states; adjacent transitions only.
+_ORDERED_STATES = (
+    MigrationState.PLANNED,
+    MigrationState.INVENTORY_COMPLETE,
+    MigrationState.ARCHIVE_PREPARED,
+    MigrationState.WORKSPACE_BUILT,
+    MigrationState.NOTEBOOKS_STAGED,
+    MigrationState.CANDIDATES_EXTRACTED,
+    MigrationState.PREFLIGHT_VALIDATED,
+    MigrationState.SMOKE_PASSED,
+    MigrationState.CUTOVER_COMMITTED,
+    MigrationState.LEGACY_CLEANED,
+    MigrationState.FINALIZED,
+)
+
 VALID_TRANSITIONS: dict[MigrationState, frozenset[MigrationState]] = {}
 for _i, _s in enumerate(_ORDERED_STATES):
-    VALID_TRANSITIONS[_s] = frozenset(_ORDERED_STATES[_i + 1:])
+    _next_states: set[MigrationState] = set()
+    if _i + 1 < len(_ORDERED_STATES):
+        _next_states.add(_ORDERED_STATES[_i + 1])
+    VALID_TRANSITIONS[_s] = frozenset(_next_states)
+
+# Smoke failure is a recoverable side-branch from preflight.
+VALID_TRANSITIONS[MigrationState.PREFLIGHT_VALIDATED] = frozenset(
+    VALID_TRANSITIONS[MigrationState.PREFLIGHT_VALIDATED] | {MigrationState.SMOKE_FAILED}
+)
+VALID_TRANSITIONS[MigrationState.SMOKE_FAILED] = frozenset(
+    {MigrationState.SMOKE_PASSED, MigrationState.ABORTED}
+)
+
+# ABORTED is terminal and may be entered from any pre-cutover state, and from
+# CUTOVER_COMMITTED via --rollback.  LEGACY_CLEANED and FINALIZED never abort.
+for _s in MigrationState:
+    if _s not in {
+        MigrationState.LEGACY_CLEANED,
+        MigrationState.FINALIZED,
+        MigrationState.ABORTED,
+    }:
+        VALID_TRANSITIONS[_s] = frozenset(VALID_TRANSITIONS[_s] | {MigrationState.ABORTED})
+
+VALID_TRANSITIONS[MigrationState.ABORTED] = frozenset()  # terminal
 
 
 @dataclass

@@ -20,14 +20,15 @@ from typing import Any, Callable, Iterable, Mapping
 
 from filelock import FileLock
 
-from src.discovery.keyword_notebook import KeywordNotebookStore, resolve_existing_notebook, validate_notebook
-from src.discovery.page_journal import (
+from src.discovery.contracts.notebook import resolve_existing_notebook, validate_notebook
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from src.discovery.contracts.page_journal import (
     CandidateLifecycleClass,
-    PageJournalStore,
     classify_candidate_lifecycle,
     is_profile_closeable_candidate,
     transform_page_for_profile_closure,
 )
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.relevance import (
     MATCHER_SCHEMA_VERSION,
     RelevanceReason,
@@ -692,7 +693,7 @@ def build_relevance_profile_plan(
     early_closeable = 0
     for definition in definitions:
         keyword = definition["keyword_zh"]
-        nb = notebook_store.require_v3(keyword)
+        nb = notebook_store.require_v4(keyword)
         profile, _resolved = _profile_with_resolved_taxonomy(definition["profile"], snapshot)
         kid = str(nb["keyword_id"])
         for page_path in sorted(Path(pending_pages_dir).glob(f"{kid}/*/*/*/*.json")):
@@ -750,7 +751,7 @@ def build_relevance_profile_plan(
         notebook_path = resolve_existing_notebook(keyword, Path(notebook_dir))
         if notebook_path is None:
             raise RelevanceProfileTransactionError(f"notebook not found for {keyword!r}")
-        nb = notebook_store.require_v3(keyword)
+        nb = notebook_store.require_v4(keyword)
         profile, resolved = _profile_with_resolved_taxonomy(definition["profile"], snapshot)
         old_generation = int(nb.get("relevance_generation") or 1)
         new_generation = old_generation + 1

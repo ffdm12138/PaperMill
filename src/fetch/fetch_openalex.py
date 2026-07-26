@@ -1,10 +1,14 @@
-"""OpenAlex DOI lookup for OA PDF locations."""
-import requests
+"""OpenAlex DOI lookup for OA PDF locations.
+
+The works lookup goes through the unified ``ProviderClient`` (shared
+limiter, retry/backoff, circuit breaker, proxy-configured transport);
+only the PDF binary download itself uses ``pdf_transport``.
+"""
 from loguru import logger
 
 from src.discovery.models import normalize_doi
+from src.discovery.providers.provider_client import ProviderRuntime, RequestSpec
 from src.fetch.models import FetchResult
-from src.fetch.proxy import get_fetch_proxies
 from src.services.openalex_credentials import (
     load_openalex_credentials,
     safe_request_error_summary,
@@ -23,10 +27,17 @@ def resolve_openalex_pdf(doi: str) -> FetchResult:
         params["mailto"] = credentials.email
     if credentials.api_key:
         headers["Authorization"] = f"Bearer {credentials.api_key}"
+    spec = RequestSpec(
+        provider="openalex",
+        purpose="metadata_resolution",
+        url=OPENALEX_WORKS_URL,
+        params=params,
+        headers=headers,
+        timeout_seconds=20,
+    )
     try:
-        response = requests.get(OPENALEX_WORKS_URL, params=params, headers=headers, timeout=20, proxies=get_fetch_proxies())
-        response.raise_for_status()
-        data = response.json()
+        outcome = ProviderRuntime.get().client("openalex").execute(spec)
+        data = outcome.json()
     except Exception as exc:
         safe_error = safe_request_error_summary(exc)
         logger.warning("OpenAlex DOI lookup failed for {!r}: {}", doi, safe_error)
@@ -58,4 +69,3 @@ def resolve_openalex_pdf(doi: str) -> FetchResult:
         oa_status=oa.get("oa_status") or "oa",
         metadata=meta,
     )
-

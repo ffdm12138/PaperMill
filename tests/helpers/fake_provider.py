@@ -57,6 +57,11 @@ class FakeTransport:
             raise item.exc
         return item
 
+    def script_append(self, *items: RawResponse | Fault) -> None:
+        """Append scripted responses/faults (for fixtures built before the script)."""
+        with self._lock:
+            self._script.extend(items)
+
     @property
     def request_count(self) -> int:
         return len(self.requests)

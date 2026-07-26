@@ -41,7 +41,7 @@ Do not use title substring matching, discovery provenance, `research_domains`
 as an automatic truth, other papers, full text, PDF, network search, or any
 retired global index. Multiple matches and zero matches are both valid.
 
-Catalog folders are sourced only from enabled schema-v3 notebooks. The Chinese
+Catalog folders are sourced only from enabled schema-v4 notebooks. The Chinese
 `keyword_zh` is the category identity; English `search_queries` are discovery
 inputs and never become categories or directory names.
 

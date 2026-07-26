@@ -14,7 +14,7 @@ from src.discovery.execution.lane_models import LaneCounters, LaneOutcome, LaneS
 from src.discovery.pending_queue import DrainOutcome, DrainReport
 
 
-REPORT_SCHEMA_VERSION = "3.1"
+REPORT_SCHEMA_VERSION = "4.0"
 STOP_REASONS: frozenset[str] = frozenset(reason.value for reason in StopReason)
 CLEAN_STOP_REASONS: frozenset[str] = frozenset({
     StopReason.PROVIDER_EXHAUSTED.value,
@@ -235,10 +235,10 @@ def _mode_lane_report(outcomes: Iterable[LaneOutcome]) -> LaneReport:
     states = [outcome.state for outcome in materialized]
     if all(state == LaneState.EXHAUSTED for state in states):
         representative = next(outcome for outcome in materialized if outcome.state == LaneState.EXHAUSTED)
-    elif any(state == LaneState.COMPLETED for state in states):
-        representative = next(outcome for outcome in materialized if outcome.state == LaneState.COMPLETED)
     elif any(state == LaneState.BUDGET_STOPPED for state in states):
         representative = next(outcome for outcome in materialized if outcome.state == LaneState.BUDGET_STOPPED)
+    elif any(state == LaneState.COMPLETED for state in states):
+        representative = next(outcome for outcome in materialized if outcome.state == LaneState.COMPLETED)
     else:
         representative = materialized[0]
     report.status = representative.state.value

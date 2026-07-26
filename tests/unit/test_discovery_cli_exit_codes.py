@@ -6,7 +6,8 @@ import pytest
 
 import scripts.discover_papers as discover_script
 import scripts.discover_papers_concurrent as concurrent_script
-from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id
+from src.discovery.contracts.notebook import keyword_id
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 
@@ -35,7 +36,7 @@ class _Keyword:
 
     def to_dict(self):
         return {
-            "schema_version": "3.0",
+            "schema_version": "4.0",
             "keyword_zh": self.keyword_zh,
             "status": self.status,
             "mode": "hybrid",
@@ -83,7 +84,7 @@ class _Batch:
 
     def to_dict(self):
         return {
-            "schema_version": "3.0",
+            "schema_version": "4.0",
             "status": self.status,
             "exit_code": self.exit_code,
             "keywords": [],
@@ -92,20 +93,18 @@ class _Batch:
 
 
 def test_single_keyword_cli_returns_coordinator_exit_code(tmp_path):
-    notebooks = tmp_path / "notebooks"
+    workspace_root = tmp_path / "ws"
+    notebooks = workspace_root / "keyword_notebooks"
     _seed_ready(notebooks, "风吹雪")
     with patch.object(
         discover_script,
-        "run_discovery_batch",
+        "run_discovery_batch_with_dependencies",
         return_value=_Batch(["风吹雪"], "partial_success", 2),
     ):
         rc = discover_script.main([
             "--keyword-zh", "风吹雪",
-            "--keyword-notebook-dir", str(notebooks),
+            "--workspace-root", str(workspace_root),
             "--output-dir", str(tmp_path / "out"),
-            "--pending-pages-dir", str(tmp_path / "pages"),
-            "--discovery-locks-dir", str(tmp_path / "locks"),
-            "--exports-dir", str(tmp_path / "exports"),
             "--paper-raw-dir", str(tmp_path / "paper_raw"),
             "--papers-dir", str(tmp_path / "papers"),
             "--ledger-path", str(tmp_path / "ledger.json"),
@@ -114,24 +113,22 @@ def test_single_keyword_cli_returns_coordinator_exit_code(tmp_path):
 
 
 def test_multi_keyword_cli_returns_coordinator_exit_code(tmp_path):
-    notebooks = tmp_path / "notebooks"
+    workspace_root = tmp_path / "ws"
+    notebooks = workspace_root / "keyword_notebooks"
     keywords = ["风吹雪", "雪粒破碎", "风洞实验"]
     for keyword in keywords:
         _seed_ready(notebooks, keyword)
     argv = sum((["--keyword-zh", value] for value in keywords), [])
     with patch.object(
         concurrent_script,
-        "run_discovery_batch",
+        "run_discovery_batch_with_dependencies",
         return_value=_Batch(keywords, "failed", 1),
     ):
         rc = concurrent_script.main_internal([
             *argv,
-            "--keyword-notebook-dir", str(notebooks),
+            "--workspace-root", str(workspace_root),
             "--output-dir", str(tmp_path / "out"),
             "--report-dir", str(tmp_path / "reports"),
-            "--pending-pages-dir", str(tmp_path / "pages"),
-            "--discovery-locks-dir", str(tmp_path / "locks"),
-            "--exports-dir", str(tmp_path / "exports"),
             "--paper-raw-dir", str(tmp_path / "paper_raw"),
             "--papers-dir", str(tmp_path / "papers"),
             "--ledger-path", str(tmp_path / "ledger.json"),
@@ -140,23 +137,25 @@ def test_multi_keyword_cli_returns_coordinator_exit_code(tmp_path):
 
 
 def test_disabled_single_notebook_is_only_successful_skip(tmp_path):
-    notebooks = tmp_path / "notebooks"
+    workspace_root = tmp_path / "ws"
+    notebooks = workspace_root / "keyword_notebooks"
     _seed_ready(notebooks, "风吹雪")
     KeywordNotebookStore(notebooks).set_enabled("风吹雪", False)
-    with patch.object(discover_script, "run_discovery_batch") as run_batch:
+    with patch.object(discover_script, "run_discovery_batch_with_dependencies") as run_batch:
         rc = discover_script.main([
             "--keyword-zh", "风吹雪",
-            "--keyword-notebook-dir", str(notebooks),
+            "--workspace-root", str(workspace_root),
         ])
     assert rc == 0
     run_batch.assert_not_called()
 
 
 def test_missing_single_notebook_fails_without_provider_call(tmp_path):
-    with patch.object(discover_script, "run_discovery_batch") as run_batch:
+    workspace_root = tmp_path / "missing"
+    with patch.object(discover_script, "run_discovery_batch_with_dependencies") as run_batch:
         rc = discover_script.main([
             "--keyword-zh", "风吹雪",
-            "--keyword-notebook-dir", str(tmp_path / "missing"),
+            "--workspace-root", str(workspace_root),
             "--dry-run",
         ])
     assert rc == 1

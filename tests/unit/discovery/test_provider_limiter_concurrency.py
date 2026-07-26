@@ -5,8 +5,9 @@ import pytest
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.models import PaperCandidate
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from tests.helpers.fake_provider import discovery_page
 
 
@@ -14,15 +15,19 @@ pytestmark = pytest.mark.unit
 
 
 def _options(tmp_path):
+    workspace = make_test_workspace(
+        tmp_path,
+        notebook_dir=tmp_path / "notebooks",
+        page_journals_dir=tmp_path / "pages",
+        locks_dir=tmp_path / "locks",
+        exports_dir=tmp_path / "exports",
+    )
     return DiscoveryOptions(
         mode="refresh",
         refresh_pages=1,
         backfill_pages=1,
         max_candidates=10,
-        notebook_dir=tmp_path / "notebooks",
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=workspace,
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -60,7 +65,7 @@ def test_typed_fetcher_receives_one_shared_provider_limiter_per_batch(tmp_path):
         )
 
     options = _options(tmp_path)
-    _seed(options.notebook_dir)
+    _seed(options.workspace.keyword_notebook_dir)
     run_discovery_batch(
         ["主题甲", "主题乙"], options=options, max_workers=2,
         page_fetcher=CallbackProviderPageFetcher(fetch),
@@ -90,7 +95,7 @@ def test_typed_fetcher_receives_batch_bound_clients(tmp_path):
         )
 
     options = _options(tmp_path)
-    _seed(options.notebook_dir)
+    _seed(options.workspace.keyword_notebook_dir)
 
     run_discovery_batch(
         ["主题甲", "主题乙"], options=options, max_workers=2,

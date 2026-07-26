@@ -42,7 +42,7 @@ class TelemetryScope:
             )
 
     def _flat_key(self) -> str:
-        """Flat key for backward-compatible snapshot output."""
+        """Flat key for the frozen snapshot output shape."""
         return f"{self.provider}.{self.purpose}"
 
 
@@ -73,8 +73,8 @@ class ProviderTelemetry:
 
     Replaces the flat ``provider.purpose.metric`` key scheme.  Every
     record call requires a :class:`TelemetryScope`.  The ``snapshot()``
-    and ``totals()`` methods retain backward-compatible output shapes
-    for the report builder.
+    and ``totals()`` methods emit the frozen flat output shape that the
+    report builder consumes.
     """
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -116,8 +116,8 @@ class ProviderTelemetry:
     def snapshot(self) -> dict[str, int]:
         """Flat snapshot keyed by ``"{provider}.{purpose}.{metric}"``.
 
-        Backward-compatible with the report builder's
-        ``check_aggregate_conservation()``.
+        This flat shape is the frozen contract consumed by the report
+        builder's ``check_aggregate_conservation()``.
         """
         with self._lock:
             result: dict[str, int] = {}

@@ -8,7 +8,9 @@ from typing import Callable
 import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from src.discovery.stores.bundle import DiscoveryStoreBundleV4
+from src.discovery.workspace import DiscoveryWorkspace
 from src.discovery.execution.lane_models import LaneExecutionSpec
 from src.discovery.providers.provider_client import ProviderClient
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
@@ -18,6 +20,7 @@ from src.services.rate_limit import default_config
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.fake_provider import discovery_page
 
 
@@ -25,7 +28,7 @@ pytestmark = pytest.mark.unit
 
 
 def _seed_ready_notebook(store: KeywordNotebookStore, keyword_zh: str) -> None:
-    """Create a v3 notebook with bilingual queries needed for discovery readiness."""
+    """Create a v4 notebook with bilingual queries needed for discovery readiness."""
     store.ensure_notebook(keyword_zh)
     store.sync_search_queries(keyword_zh, add=[
         {"query": keyword_zh, "language": "zh"},
@@ -33,6 +36,38 @@ def _seed_ready_notebook(store: KeywordNotebookStore, keyword_zh: str) -> None:
     ])
     bind_test_relevance_profile(store, keyword_zh)
     store.set_enabled(keyword_zh, True)
+
+
+def _make_bundle(tmp_path: Path, keyword_zh: str) -> tuple[DiscoveryWorkspace, DiscoveryStoreBundleV4]:
+    """Seed a v4 staging workspace and return its workspace + store bundle."""
+    root = tmp_path / "discovery"
+    ws = DiscoveryWorkspace(
+        generation_id="test",
+        root=root,
+        keyword_notebook_dir=root / "keyword_notebooks",
+        lane_states_dir=root / "lane_states",
+        page_journals_dir=root / "page_journals",
+        pending_candidates_dir=root / "pending_candidates",
+        indexes_dir=root / "indexes",
+        exports_dir=root / "exports",
+        reports_dir=root / "reports",
+        locks_dir=root / "locks",
+    )
+    ws.ensure_dirs()
+    bundle = DiscoveryStoreBundleV4.from_workspace(ws)
+    _seed_ready_notebook(bundle.notebooks, keyword_zh)
+    return ws, bundle
+
+
+def _ws(tmp_path: Path, nb_dir: Path) -> DiscoveryWorkspace:
+    """Explicit v4 workspace over this test's flat directory layout."""
+    return make_test_workspace(
+        tmp_path,
+        notebook_dir=nb_dir,
+        page_journals_dir=tmp_path / "pages",
+        locks_dir=tmp_path / "locks",
+        exports_dir=tmp_path / "exports",
+    )
 
 
 def _page(
@@ -84,17 +119,11 @@ def test_global_page_budget_counts_network_requests(tmp_path: Path):
             exhausted=False,
         )
 
-    nb_dir = tmp_path / "notebooks"
-    _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
-
+    ws, bundle = _make_bundle(tmp_path, "风吹雪")
     options = DiscoveryOptions(
+        workspace=ws,
         mode="backfill", refresh_pages=2, backfill_pages=2,
         max_pages_total=2, max_candidates=10,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
-        output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
@@ -102,7 +131,7 @@ def test_global_page_budget_counts_network_requests(tmp_path: Path):
         crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
     report = run_discovery_batch(
-        ["风吹雪"], options=options, max_workers=4, page_fetcher=_fetcher(fetch),
+        ["风吹雪"], options=options, bundle=bundle, max_workers=4, page_fetcher=_fetcher(fetch),
     )
     assert len(calls) == 2
     assert report.exit_code == 0
@@ -141,10 +170,7 @@ def test_hybrid_refresh_does_not_consume_backfill_page_budget(tmp_path: Path):
     options = DiscoveryOptions(
         mode="hybrid", refresh_pages=1, backfill_pages=5,
         max_pages_total=2, max_candidates=50,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -174,10 +200,7 @@ def test_refresh_windows_are_durably_closed_with_signature_and_page_ids(tmp_path
     _seed_ready_notebook(store, "风吹雪")
     options = DiscoveryOptions(
         mode="hybrid", refresh_pages=1, backfill_pages=1, max_candidates=8,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -191,7 +214,7 @@ def test_refresh_windows_are_durably_closed_with_signature_and_page_ids(tmp_path
         ),
     )
     assert report.status == "success"
-    notebook = store.require_v3("风吹雪")
+    notebook = store.require_v4("风吹雪")
     expected_refresh = {
         lane["request_signature"]
         for lane in report.physical_lanes
@@ -213,7 +236,7 @@ def test_v2_provider_page_journal_repairs_without_provider_or_cursor_advance(tmp
     nb_dir = tmp_path / "notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
-    notebook = store.require_v3("风吹雪")
+    notebook = store.require_v4("风吹雪")
     keyword_id = notebook["keyword_id"]
     query_id = next(iter(notebook["search_queries"]))
     legacy = (
@@ -227,10 +250,7 @@ def test_v2_provider_page_journal_repairs_without_provider_or_cursor_advance(tmp
     }), encoding="utf-8")
     options = DiscoveryOptions(
         mode="backfill", backfill_pages=1, max_candidates=8,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -249,6 +269,54 @@ def test_v2_provider_page_journal_repairs_without_provider_or_cursor_advance(tmp
     assert store.get_backfill_state("风吹雪", query_id, "openalex")["cursor"] == "*"
 
 
+def test_v3_page_journal_attributes_repair_to_owning_keyword_only(tmp_path: Path):
+    """A non-4.0 journal fails closed and is attributed to its keyword_zh.
+
+    The retired ("", "3.0") schema whitelist no longer shields old journals
+    from per-keyword attribution: the owning keyword receives
+    repair_required while unrelated keywords stay unaffected.
+    """
+    nb_dir = tmp_path / "notebooks"
+    store = KeywordNotebookStore(nb_dir)
+    _seed_ready_notebook(store, "风吹雪")
+    _seed_ready_notebook(store, "风沙物理学")
+    notebook = store.require_v4("风吹雪")
+    keyword_id = notebook["keyword_id"]
+    query_id = next(iter(notebook["search_queries"]))
+    legacy = (
+        tmp_path / "pages" / keyword_id / query_id / "openalex" / "backfill" / "legacy.json"
+    )
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({
+        "schema_version": "3.0",
+        "page_id": "legacy",
+        "keyword_zh": "风吹雪",
+        "request_signature": "hash-only",
+    }), encoding="utf-8")
+    options = DiscoveryOptions(
+        mode="backfill", backfill_pages=1, max_candidates=8,
+        workspace=_ws(tmp_path, nb_dir),
+        output_dir=tmp_path / "out",
+        paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "ledger.json",
+        crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
+    )
+    report = run_discovery_batch(
+        ["风吹雪", "风沙物理学"], options=options, max_workers=1,
+        page_fetcher=_fetcher(
+            lambda _spec, _cursor, _client: pytest.fail("v3 journal must stop before provider I/O"),
+        ),
+    )
+    assert report.status == "repair_required"
+    by_keyword = {kw.keyword_zh: kw for kw in report.keywords}
+    assert any(
+        "provider_page_journal_repair_required" in error
+        for error in by_keyword["风吹雪"].errors
+    )
+    assert by_keyword["风沙物理学"].errors == []
+
+
 def test_drain_exception_is_typed_and_staging_consumer_is_joined(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
@@ -263,10 +331,7 @@ def test_drain_exception_is_typed_and_staging_consumer_is_joined(
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -302,10 +367,7 @@ def test_refresh_lifecycle_write_failure_is_repair_required(
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -354,10 +416,7 @@ def test_scope_request_budget_is_reported_as_lane_budget_stop(
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
         max_provider_requests_total=1,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -409,10 +468,7 @@ def test_title_resolution_request_budget_is_a_typed_drain_stop(
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
         max_provider_requests_total=1,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -486,10 +542,7 @@ def test_report_surfaces_provider_request_telemetry(tmp_path: Path, monkeypatch)
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=50,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -561,10 +614,7 @@ def test_until_exhausted_with_request_budget_valve_only(tmp_path: Path, monkeypa
         mode="backfill", until_exhausted=True,
         backfill_pages=5, max_pages_total=None,
         max_provider_requests_total=2, max_candidates=50,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -593,10 +643,7 @@ def test_report_aggregation_uses_in_memory_objects(tmp_path: Path):
 
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=5,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -609,7 +656,7 @@ def test_report_aggregation_uses_in_memory_objects(tmp_path: Path):
         max_workers=2,
         page_fetcher=_fetcher(lambda spec, cursor, _client: _page(spec, cursor)),
     )
-    assert report.to_dict()["schema_version"] == "3.1"
+    assert report.to_dict()["schema_version"] == "4.0"
     assert report.aggregate["keywords"]["total"] == 2
     assert len(list((tmp_path / "pages").glob("**/*.json"))) >= 2
     assert report.pipeline_metrics["journal_full_scans"] == 1
@@ -641,8 +688,7 @@ def test_invalid_or_unready_notebook_fails_closed_without_provider_calls(tmp_pat
     calls = []
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, backfill_pages=1, max_candidates=0,
-        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
         crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
@@ -669,8 +715,7 @@ def test_disabled_notebook_is_the_only_zero_exit_skip(tmp_path: Path):
     store.set_enabled("风吹雪", False)
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, backfill_pages=1, max_candidates=0,
-        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
     )
@@ -706,8 +751,7 @@ def test_durable_applying_profile_journal_blocks_before_provider_io(tmp_path: Pa
     calls = []
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, backfill_pages=1, max_candidates=0,
-        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
         relevance_runtime_paths=runtime_paths,
@@ -740,8 +784,7 @@ def test_two_chinese_and_two_english_queries_schedule_both_providers(tmp_path: P
     calls = []
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, backfill_pages=1, max_candidates=0,
-        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
     )
@@ -770,8 +813,7 @@ def test_two_chinese_and_two_english_queries_schedule_both_providers(tmp_path: P
 
 
 def test_until_exhausted_drains_provider_journal_and_staging_queue(tmp_path: Path):
-    nb_dir = tmp_path / "notebooks"
-    _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
+    ws, bundle = _make_bundle(tmp_path, "风吹雪")
     counter = 0
     counter_lock = threading.Lock()
 
@@ -786,23 +828,21 @@ def test_until_exhausted_drains_provider_journal_and_staging_queue(tmp_path: Pat
         ], exhausted=True)
 
     options = DiscoveryOptions(
+        workspace=ws,
         mode="backfill", until_exhausted=True, max_pages_total=4,
-        max_candidates=1, notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages", locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports", output_dir=tmp_path / "out",
+        max_candidates=1,
         paper_raw_dir=tmp_path / "paper_raw", papers_dir=tmp_path / "papers",
         ledger_path=tmp_path / "ledger.json",
         crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
     )
 
     report = run_discovery_batch(
-        ["风吹雪"], options=options, max_workers=4, page_fetcher=_fetcher(fetch))
+        ["风吹雪"], options=options, bundle=bundle, max_workers=4, page_fetcher=_fetcher(fetch))
 
     assert report.status == "success"
     assert report.keywords[0].backfill.states_exhausted == 4
     assert report.aggregate["pending"]["remaining"] == 0
     assert report.aggregate["candidates"]["emitted"] == 12
-    assert report.pipeline_metrics["journal_full_scans"] == 1
 
 
 def test_consumer_exception_is_reported_without_queue_join_deadlock(
@@ -828,8 +868,7 @@ def test_consumer_exception_is_reported_without_queue_join_deadlock(
     monkeypatch.setattr(coordinator, "drain_pending_candidates", fail_once_in_consumer)
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=1,
-        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
         crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
@@ -889,8 +928,7 @@ def test_candidate_weighted_queue_applies_dynamic_backpressure(
 
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=3,
-        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        workspace=_ws(tmp_path, nb_dir),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
         crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),

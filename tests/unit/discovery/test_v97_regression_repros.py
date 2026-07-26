@@ -25,7 +25,7 @@ from unittest import mock
 import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.execution.lane_models import (
     DiscoveryLaneKey,
     LaneCounters,
@@ -65,6 +65,7 @@ from tests.helpers.relevance_profiles import (
     bind_test_relevance_profile,
     relevance_candidate,
 )
+from tests.helpers.discovery_workspace import make_test_workspace
 
 
 pytestmark = pytest.mark.unit
@@ -244,8 +245,13 @@ def test_backpressure_does_not_blank_completed_lanes_via_coordinator(
     options = DiscoveryOptions(
         mode="hybrid", refresh_pages=1, backfill_pages=1,
         max_candidates=3, max_pending_candidates=5, resume_pending_candidates=2,
-        notebook_dir=nb_dir, pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks", exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(
+            tmp_path,
+            notebook_dir=nb_dir,
+            page_journals_dir=tmp_path / "pages",
+            locks_dir=tmp_path / "locks",
+            exports_dir=tmp_path / "exports",
+        ),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
         crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),
@@ -673,7 +679,8 @@ def test_runtime_context_manager_normal_shutdown_does_not_set_cancellation():
 
     Phase 3: normal completion → closed_event set, cancellation_token unset.
     """
-    from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime, ShutdownReason
+    from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime
+    from src.discovery.contracts.enums import ShutdownReason
 
     runtime = DiscoveryBatchRuntime()
     with runtime:
@@ -691,7 +698,8 @@ def test_runtime_context_manager_normal_shutdown_does_not_set_cancellation():
 
 def test_runtime_context_manager_interrupt_sets_cancellation():
     """0.6b — KeyboardInterrupt must set cancellation_token."""
-    from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime, ShutdownReason
+    from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime
+    from src.discovery.contracts.enums import ShutdownReason
 
     runtime = DiscoveryBatchRuntime()
     try:

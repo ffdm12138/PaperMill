@@ -2,9 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from src.discovery.keyword_notebook import keyword_id, query_identity
+from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import INITIAL_CURSOR, request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 
 
 pytestmark = pytest.mark.unit

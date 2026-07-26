@@ -7,6 +7,7 @@ stores from flat paths.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from src.discovery.stores.notebook_store import NotebookStoreV4
 from src.discovery.stores.page_journal_store import PageJournalStoreV4
@@ -35,11 +36,19 @@ class DiscoveryStoreBundleV4:
     receipts: MigrationReceiptStoreV4 | None = None
 
     @classmethod
-    def from_workspace(cls, workspace: DiscoveryWorkspace) -> "DiscoveryStoreBundleV4":
+    def from_workspace(
+        cls,
+        workspace: DiscoveryWorkspace,
+        *,
+        migration_receipts_dir: Path | None = None,
+    ) -> "DiscoveryStoreBundleV4":
         """Create a complete store bundle from a DiscoveryWorkspace.
 
         All stores share the same workspace root.  JournalIndexV4 is
-        rebuilt from scratch by scanning page journals.
+        rebuilt from scratch by scanning page journals.  ``receipts`` stays
+        ``None`` for normal production batches; migration-driven drains pass
+        an explicit ``migration_receipts_dir`` (outside the manifest-hashed
+        generation tree) so consumed legacy seeds leave a durable receipt.
         """
         page_store = PageJournalStoreV4(workspace)
         return cls(
@@ -49,5 +58,9 @@ class DiscoveryStoreBundleV4:
             pending=PendingCandidateStoreV4(workspace),
             index=JournalIndexV4.build(page_store),
             reports=ReportStoreV4(workspace),
-            receipts=None,  # migration-only; production batches don't need it
+            receipts=(
+                MigrationReceiptStoreV4(receipts_dir=migration_receipts_dir)
+                if migration_receipts_dir is not None
+                else None
+            ),
         )

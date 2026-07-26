@@ -18,7 +18,7 @@ class TestExhaustionEvidenceHardcoding:
     def test_missing_response_metadata_is_repair_required(self):
         """There is no status fallback and no fabricated exhaustion evidence."""
         from src.discovery.execution.lane_executor import _response_metadata_from_page
-        from src.discovery.page_journal import JournalCorruptError
+        from src.discovery.contracts.page_journal import JournalCorruptError
         from src.discovery.providers.provider_models import DiscoveryPage
 
         # Create a page with http_status=None (like a recovered page)

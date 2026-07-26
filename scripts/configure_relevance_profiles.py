@@ -16,11 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import (  # noqa: E402
-    DISCOVERY_KEYWORD_NOTEBOOK_DIR,
-    DISCOVERY_PENDING_PAGES_DIR,
-    DATA_DIR,
-)
+from config.settings import DATA_DIR  # noqa: E402
 from src.discovery.relevance_profiles import (  # noqa: E402
     RelevanceProfilePlanError,
     RelevanceProfileTransactionError,
@@ -31,6 +27,10 @@ from src.discovery.relevance_profiles import (  # noqa: E402
     resume_relevance_profile_transaction,
 )
 from src.discovery.relevance_runtime import RelevanceRuntimePaths  # noqa: E402
+from src.discovery.runtime_context import (  # noqa: E402
+    DiscoveryRuntimeUnavailableError,
+    resolve_active_runtime,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -51,8 +51,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--taxonomy-snapshot", type=Path, help="Pre-fetched taxonomy snapshot JSON (offline --plan).")
     parser.add_argument("--allow-network-taxonomy", action="store_true",
                         help="Authorize real OpenAlex taxonomy fetch during --plan.")
-    parser.add_argument("--notebook-root", "--keyword-notebook-dir", dest="keyword_notebook_dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
-    parser.add_argument("--journal-root", "--pending-pages-dir", dest="pending_pages_dir", type=Path, default=DISCOVERY_PENDING_PAGES_DIR)
+    parser.add_argument(
+        "--workspace-root", type=Path, default=None,
+        help="Override the active discovery workspace root (for tests/staging).",
+    )
     parser.add_argument(
         "--transaction-root", "--transactions-root", dest="transactions_root",
         type=Path,
@@ -156,9 +158,10 @@ def main(argv: list[str] | None = None) -> int:
                     taxonomy_semantic_sha256=str(
                         raw.get("taxonomy_semantic_sha256") or ""),
                 )
+            ctx = resolve_active_runtime(workspace_root=args.workspace_root)
             runtime_paths = RelevanceRuntimePaths.resolve(
-                notebook_root=args.keyword_notebook_dir,
-                journal_root=args.pending_pages_dir,
+                notebook_root=ctx.notebook_root,
+                journal_root=ctx.page_journal_root,
                 transaction_root=args.transactions_root,
             )
             plan = build_relevance_profile_plan(
@@ -197,7 +200,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(f"[ERROR] relevance profile plan failed: {exc}", file=sys.stderr)
         return 1
-    except (OSError, ValueError, RelevanceProfileTransactionError) as exc:
+    except (OSError, ValueError, RelevanceProfileTransactionError,
+            DiscoveryRuntimeUnavailableError) as exc:
         print(f"[ERROR] relevance profile configuration failed: {exc}", file=sys.stderr)
         return 1
 

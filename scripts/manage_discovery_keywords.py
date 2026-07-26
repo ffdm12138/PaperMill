@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Manage strict schema-v3 bilingual discovery keyword notebooks.
+"""Manage strict schema-v4 bilingual discovery keyword notebooks.
 
 ``keyword_zh`` is the sole Chinese classification identity.  Chinese and
 English provider search strings are explicit ``search_queries`` owned by the
@@ -18,14 +18,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import DISCOVERY_KEYWORD_NOTEBOOK_DIR  # noqa: E402
-from src.discovery.keyword_notebook import (  # noqa: E402
-    KeywordNotebookStore,
+from src.discovery.contracts.notebook import (  # noqa: E402
     NotebookCorruptError,
     detect_query_language,
     pagination_signature,
     validate_discovery_readiness,
 )
+from src.discovery.runtime_context import (  # noqa: E402
+    DiscoveryRuntimeUnavailableError,
+    resolve_active_runtime,
+)
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 
 
 def _print_keyword_summary(item: dict) -> None:
@@ -81,13 +84,14 @@ def _require_keyword(value: str | None, parser: argparse.ArgumentParser) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Manage strict v3 Chinese topics and bilingual search queries.",
+        description="Manage strict v4 Chinese topics and bilingual search queries.",
     )
     parser.add_argument(
-        "--keyword-notebook-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR,
+        "--workspace-root", type=Path, default=None,
+        help="Override the active discovery workspace root (for tests/staging).",
     )
     actions = parser.add_mutually_exclusive_group(required=True)
-    actions.add_argument("--list", action="store_true", help="List all v3 notebooks.")
+    actions.add_argument("--list", action="store_true", help="List all v4 notebooks.")
     actions.add_argument("--show", action="store_true", help="Show one complete notebook.")
     actions.add_argument("--create", action="store_true", help="Create one Chinese topic.")
     actions.add_argument("--enable", action="store_true", help="Enable one ready topic.")
@@ -125,7 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    store = KeywordNotebookStore(args.keyword_notebook_dir)
+    try:
+        ctx = resolve_active_runtime(workspace_root=args.workspace_root)
+    except DiscoveryRuntimeUnavailableError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    store = KeywordNotebookStore(ctx.notebook_root)
     try:
         if args.list:
             items = store.list_keywords()
@@ -137,7 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.check_ready and not args.keyword_zh:
             payloads = [
-                _readiness_payload(store.require_v3(item["keyword_zh"]))
+                _readiness_payload(store.require_v4(item["keyword_zh"]))
                 for item in store.list_keywords()
             ]
             print(json.dumps(payloads, ensure_ascii=False, indent=2))
@@ -146,7 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         keyword_zh = _require_keyword(args.keyword_zh, parser)
 
         if args.show:
-            print(json.dumps(store.require_v3(keyword_zh), ensure_ascii=False, indent=2))
+            print(json.dumps(store.require_v4(keyword_zh), ensure_ascii=False, indent=2))
             return 0
 
         if args.create:
@@ -218,7 +227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.enable:
-            candidate = deepcopy(store.require_v3(keyword_zh))
+            candidate = deepcopy(store.require_v4(keyword_zh))
             candidate["enabled"] = True
             readiness = validate_discovery_readiness(candidate)
             if not readiness:
@@ -239,7 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.check_ready:
-            payload = _readiness_payload(store.require_v3(keyword_zh))
+            payload = _readiness_payload(store.require_v4(keyword_zh))
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 0 if payload["ready"] else 2
 

@@ -47,6 +47,7 @@ class StopReason(str, Enum):
     """Frozen stop-reason vocabulary — every lane terminal event maps to
     exactly one entry.  No other module defines a parallel set."""
     REFRESH_WINDOW_COMPLETE = "refresh_window_complete"
+    BACKFILL_PAGE_COMPLETE = "backfill_page_complete"
     PROVIDER_EXHAUSTED = "provider_exhausted"
     LANE_PAGE_BUDGET_REACHED = "lane_page_budget_reached"
     BATCH_PAGE_BUDGET_REACHED = "batch_page_budget_reached"
@@ -589,7 +590,7 @@ class GenerationHistoryEntry:
         """Strict parser: exact keys only, no type coercion, no defaults.
 
         Raises ``ValueError`` on extra/missing keys, ``TypeError`` on wrong types.
-        This is the validator used by notebook ``require_v3()``.
+        This is the validator used by notebook ``require_v4()``.
         """
         _ALLOWED_KEYS = frozenset({
             "generation", "request_signature", "closed_at", "reason",
@@ -625,7 +626,7 @@ class GenerationHistoryEntry:
         if self.items_returned_total < 0:
             errors.append(f"items_returned_total must be >= 0, got {self.items_returned_total}")
         if errors:
-            from src.discovery.keyword_notebook import NotebookCorruptError
+            from src.discovery.contracts.notebook import NotebookCorruptError
             raise NotebookCorruptError(
                 f"GenerationHistoryEntry validation failed: {'; '.join(errors)}"
             )
@@ -824,7 +825,7 @@ class LaneExecutionSpec:
     request_signature: RequestSignature
     keyword_zh: str
     query: str
-    query_language: Literal["zh", "en"]
+    query_language: Literal["zh", "en", "mixed"]
     relevance_profile_hash: str
     order: str | None = None
     topic_filter: str = ""
@@ -835,8 +836,8 @@ class LaneExecutionSpec:
             raise ValueError("LaneExecutionSpec key/signature hash mismatch")
         if not self.keyword_zh.strip() or not self.query.strip():
             raise ValueError("LaneExecutionSpec keyword_zh and query must be non-blank")
-        if self.query_language not in {"zh", "en"}:
-            raise ValueError("LaneExecutionSpec.query_language must be zh or en")
+        if self.query_language not in {"zh", "en", "mixed"}:
+            raise ValueError("LaneExecutionSpec.query_language must be zh, en, or mixed")
         if not self.relevance_profile_hash:
             raise ValueError("LaneExecutionSpec.relevance_profile_hash must be non-blank")
         if self.key.mode == "refresh" and not self.refresh_run_id:

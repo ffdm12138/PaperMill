@@ -6,9 +6,9 @@ import pytest
 from src.discovery.constants import INITIAL_CURSOR
 from src.discovery.contracts.candidate import (
     CANDIDATE_ORIGIN_VALUES,
-    LegacyCandidateSeedV4,
     PendingCandidateV4,
 )
+from src.migrations.discovery_v4.legacy_contracts import LegacyCandidateSeedV4
 from src.discovery.contracts.page_journal import (
     PAGE_SCHEMA_VERSION_V4,
     PAGE_V4_FIELDS,

@@ -11,11 +11,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from config.settings import CATALOG_FOLDER_ROOT, DISCOVERY_KEYWORD_NOTEBOOK_DIR, PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH
+from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.reconcile import reconcile_catalog_folders
 from src.catalog_folders.registry import sync_registry
 from src.catalog_folders.task_planner import plan_tasks
+from src.discovery.runtime_context import (
+    DiscoveryRuntimeUnavailableError,
+    resolve_active_runtime,
+)
 from src.library.paper_number_ledger import PaperNumberLedger
 
 
@@ -24,7 +28,8 @@ def main(argv=None):
         description="Sync category registry from DOI keyword notebooks and reconcile folders."
     )
     parser.add_argument("--catalog-root", type=Path, default=CATALOG_FOLDER_ROOT)
-    parser.add_argument("--notebook-dir", type=Path, default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
+    parser.add_argument("--workspace-root", type=Path, default=None,
+                        help="Override the active discovery workspace root (for tests/staging).")
     parser.add_argument("--papers-dir", type=Path, default=PAPERS_DIR)
     parser.add_argument("--ledger-path", type=Path, default=PAPER_NUMBER_LEDGER_PATH)
     parser.add_argument("--apply", action="store_true",
@@ -33,11 +38,17 @@ def main(argv=None):
                         help="Only update the registry file; skip folders, tasks, and reconcile")
     args = parser.parse_args(argv)
 
+    try:
+        ctx = resolve_active_runtime(workspace_root=args.workspace_root)
+    except DiscoveryRuntimeUnavailableError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+
     registry_path = args.catalog_root / ".state" / "category_registry.json"
 
     # Step 1: sync registry from notebooks (this overwrites the file)
     reg_report = sync_registry(
-        notebook_dir=args.notebook_dir,
+        notebook_dir=ctx.notebook_root,
         registry_path=registry_path,
         apply=args.apply,
     )

@@ -97,59 +97,6 @@ class DiscoveryPage:
         }
 
 
-def classify_http_error(
-    exc: Exception,
-) -> tuple[str, FailureClass, int | None, float | None]:
-    """Classify a requests exception into (error_type, failure_class, http_status, retry_after).
-
-    Classification rules:
-    - 400, 401, 403 (no rate-limit evidence), 404, 410, 422: **terminal**
-    - 403 with Retry-After header: **retryable** (rate-limited)
-    - 408, 425, 429, 500, 502, 503, 504: **retryable**
-    - ConnectionError / Timeout: **transient** (no http_status)
-    - Unknown: **retryable** (safe default)
-
-    The returned ``error_type`` is the exception class name.  The
-    ``retry_after_seconds`` is parsed from the ``Retry-After`` header
-    when present.
-    """
-    try:
-        import requests
-    except ImportError:  # pragma: no cover — requests is a hard dependency
-        requests = None  # type: ignore[assignment]
-
-    if requests is not None and isinstance(exc, requests.HTTPError):
-        response = getattr(exc, "response", None)
-        status = response.status_code if response is not None else None
-        if status is not None:
-            # Parse Retry-After header (if present) for rate-limit signals.
-            retry_after: float | None = None
-            if response is not None:
-                ra = response.headers.get("Retry-After")
-                if ra:
-                    try:
-                        retry_after = float(ra)
-                    except (ValueError, TypeError):
-                        pass
-            # Terminal HTTP statuses (won't succeed on retry).
-            if status in (400, 401, 404, 410, 422):
-                return type(exc).__name__, "terminal", status, None
-            # 403: terminal unless there is rate-limit evidence.
-            if status == 403:
-                if retry_after is not None:
-                    return type(exc).__name__, "retryable", status, retry_after
-                return type(exc).__name__, "terminal", status, None
-            # Retryable HTTP statuses.
-            if status in (408, 425, 429, 500, 502, 503, 504):
-                return type(exc).__name__, "retryable", status, retry_after
-            # Unknown HTTP status — default to retryable.
-            return type(exc).__name__, "retryable", status, retry_after
-    if requests is not None and isinstance(exc, (requests.ConnectionError, requests.Timeout)):
-        return type(exc).__name__, "transient", None, None
-    # Unknown exception — default to retryable.
-    return type(exc).__name__, "retryable", None, None
-
-
 def failed_page(
     *,
     provider: str,

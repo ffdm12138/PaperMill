@@ -12,13 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from src.discovery.keyword_notebook import (
+from src.discovery.contracts.notebook import (
     CursorConflictError,
     INITIAL_CURSOR,
-    KeywordNotebookStore,
     pagination_signature,
     query_identity,
 )
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 
 
 pytestmark = pytest.mark.unit

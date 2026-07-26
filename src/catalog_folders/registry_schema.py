@@ -15,7 +15,7 @@ from src.catalog_folders.exceptions import (
     FilesystemNameCollision,
 )
 from src.catalog_folders.registry import definition_hash, validate_catalog_keyword
-from src.discovery.keyword_notebook import keyword_id, normalize_keyword
+from src.discovery.contracts.notebook import keyword_id, normalize_keyword
 
 
 _UNSAFE_PATH = re.compile(r'[<>:"|?*\x00-\x1f]|\.\.|^/|^[A-Z]:', re.IGNORECASE)

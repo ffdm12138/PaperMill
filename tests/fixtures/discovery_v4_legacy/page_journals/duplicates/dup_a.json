@@ -1,0 +1,86 @@
+{
+ "schema_version": "2.0",
+ "page_id": "p0000000000000000000000000000000",
+ "keyword_id": "aaaaaaaaaaaaaaaa",
+ "keyword_zh": "测试关键词",
+ "query_id": "bbbbbbbbbbbbbbbb",
+ "query": "example query",
+ "query_language": "en",
+ "provider": "openalex",
+ "lane": "backfill",
+ "generation": 2,
+ "request_cursor": "*",
+ "next_cursor": "cursor-next",
+ "request_signature": {
+  "sort": "relevance",
+  "filters": {}
+ },
+ "page_sequence": null,
+ "refresh_run_id": null,
+ "fetched_at": "2026-01-01T00:00:00+00:00",
+ "cursor_committed_at": "2026-01-01T00:00:01+00:00",
+ "drained_at": "2026-01-01T00:00:02+00:00",
+ "state": "drained",
+ "provider_exhausted": false,
+ "statistics": {
+  "returned": 1,
+  "pending": 1,
+  "terminal": 0,
+  "staged": 0,
+  "emitted": 0,
+  "existing_duplicate": 0,
+  "duplicate_observation": 0,
+  "invalid": 0,
+  "unresolved": 0,
+  "failed_retryable": 0,
+  "failed_terminal": 0,
+  "relevance_profile_unbound": 0,
+  "relevance_passed": 0,
+  "relevance_rejected": 0,
+  "relevance_verification_deferred": 0,
+  "relevance_candidate_invalid": 0
+ },
+ "candidates": [
+  {
+   "candidate_id": "c00000000000000000000000000000c1",
+   "status": "pending",
+   "attempts": 0,
+   "last_error": null,
+   "terminal_reason": null,
+   "staged_paper_number": null,
+   "claimed_by": null,
+   "claimed_at": null,
+   "lease_expires_at": null,
+   "export_id": null,
+   "export_path": null,
+   "emitted_at": null,
+   "reconciled": false,
+   "candidate": {
+    "title": "Example legacy title",
+    "year": 2020,
+    "authors": [
+     "Au, One",
+     "Au, Two"
+    ],
+    "doi": "10.5555/dup-shared",
+    "venue": "Example Venue",
+    "abstract": "Example abstract.",
+    "source": "openalex",
+    "source_id": "https://openalex.org/W3347581484",
+    "url": "https://doi.org/10.5555/dup-shared",
+    "pdf_url": "",
+    "open_access": false,
+    "citation_count": 0,
+    "confidence": 0.0,
+    "query": "example query",
+    "domain_id": null,
+    "doi_resolution": {},
+    "existing_duplicate_refs": [],
+    "duplicate_indexed": false,
+    "raw": {
+     "id": "example"
+    }
+   }
+  }
+ ]
+}

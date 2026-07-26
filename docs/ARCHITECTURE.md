@@ -20,7 +20,7 @@ category definitions.
 An LLM reads one paper Catalog and records an independent positive or negative
 decision for every active category.
 
-Every active discovery notebook uses schema v3: `keyword_zh` is its sole
+Every active discovery notebook uses schema v4: `keyword_zh` is its sole
 Chinese classification identity, while `search_queries` contains the enabled
 Chinese and English strings sent to OpenAlex/Crossref. Discovery runs both
 languages and stores refresh/backfill progress independently per query and

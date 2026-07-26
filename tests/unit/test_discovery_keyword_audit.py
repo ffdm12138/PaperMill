@@ -9,37 +9,34 @@ from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 import scripts.audit_discovery_keyword_index_sources as audit
 from src.catalog_folders.registry import definition_hash
-from src.discovery.keyword_notebook import (
-    KeywordNotebookStore,
+from src.discovery.contracts.notebook import (
     keyword_id,
     notebook_filename,
     query_identity,
 )
+from src.discovery.runtime_context import (
+    DiscoveryRuntimeContext,
+    runtime_context_from_workspace,
+)
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+from tests.helpers.discovery_workspace import make_test_workspace
 
 
 pytestmark = pytest.mark.unit
 
 
-def _configure(monkeypatch: pytest.MonkeyPatch, root: Path) -> Path:
-    notebooks = root / "notebooks"
-    pending = root / "pending_pages"
-    discovery = root / "discovery"
-    exports = discovery / "exports"
-    locks = root / "locks"
+def _configure(monkeypatch: pytest.MonkeyPatch, root: Path) -> DiscoveryRuntimeContext:
+    """Build an isolated v4 workspace context plus catalog roots for the audit."""
     catalog = root / "catalog"
     state = root / "catalog_state"
-    for path in (notebooks, pending, exports, locks, catalog, state):
+    for path in (catalog, state):
         path.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(audit, "DISCOVERY_KEYWORD_NOTEBOOK_DIR", notebooks)
-    monkeypatch.setattr(audit, "DISCOVERY_PENDING_PAGES_DIR", pending)
-    monkeypatch.setattr(audit, "DISCOVERY_DIR", discovery)
-    monkeypatch.setattr(audit, "DISCOVERY_EXPORTS_DIR", exports)
-    monkeypatch.setattr(audit, "DISCOVERY_LOCKS_DIR", locks)
     monkeypatch.setattr(audit, "CATALOG_FOLDER_ROOT", catalog)
     monkeypatch.setattr(audit, "CATALOG_STATE_ROOT", state)
-    return notebooks
+    return runtime_context_from_workspace(make_test_workspace(root / "ws"))
 
 
 def _seed_notebook(root: Path, keyword_zh: str = "风吹雪", *, enabled: bool = True) -> dict:
@@ -52,7 +49,7 @@ def _seed_notebook(root: Path, keyword_zh: str = "风吹雪", *, enabled: bool =
     if enabled:
         bind_test_relevance_profile(store, keyword_zh)
         store.set_enabled(keyword_zh, True)
-    return store.require_v3(keyword_zh)
+    return store.require_v4(keyword_zh)
 
 
 def _write_registry(root: Path, notebook: dict) -> None:
@@ -74,17 +71,19 @@ def _write_registry(root: Path, notebook: dict) -> None:
     )
 
 
-def _audit_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[dict, dict]:
-    notebooks = _configure(monkeypatch, tmp_path)
-    notebook = _seed_notebook(notebooks)
+def _audit_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> tuple[DiscoveryRuntimeContext, dict, dict]:
+    ctx = _configure(monkeypatch, tmp_path)
+    notebook = _seed_notebook(ctx.notebook_root)
     _write_registry(tmp_path / "catalog_state", notebook)
     # Create the category directory so audit does not warn about a missing one.
     (tmp_path / "catalog" / notebook["keyword_zh"]).mkdir(parents=True, exist_ok=True)
-    return audit.run_audit(), notebook
+    return ctx, audit.run_audit(ctx), notebook
 
 
 def test_valid_bilingual_notebook_passes_strict_audit(monkeypatch, tmp_path: Path):
-    report, _ = _audit_ready(monkeypatch, tmp_path)
+    ctx, report, _ = _audit_ready(monkeypatch, tmp_path)
     assert report["notebook_schema_safe"] is True
     assert report["discovery_query_ready"] is True
     assert report["backfill_state_safe"] is True
@@ -95,23 +94,23 @@ def test_valid_bilingual_notebook_passes_strict_audit(monkeypatch, tmp_path: Pat
 
 
 def test_missing_chinese_query_fails_readiness(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     payload = json.loads(path.read_text(encoding="utf-8"))
     for entry in payload["search_queries"].values():
         if entry["language"] == "zh":
             entry["active"] = False
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "readiness" for row in report["errors"])
     assert report["discovery_query_ready"] is False
 
 
 @pytest.mark.parametrize("kind", ["keyword_id", "legacy", "query_id"])
 def test_notebook_identity_and_legacy_shape_fail_closed(monkeypatch, tmp_path: Path, kind: str):
-    _configure(monkeypatch, tmp_path)
-    notebook = _seed_notebook(tmp_path / "notebooks")
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx = _configure(monkeypatch, tmp_path)
+    notebook = _seed_notebook(ctx.notebook_root)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     payload = json.loads(path.read_text(encoding="utf-8"))
     if kind == "keyword_id":
         payload["keyword_id"] = "0" * 16
@@ -121,20 +120,20 @@ def test_notebook_identity_and_legacy_shape_fail_closed(monkeypatch, tmp_path: P
         first = next(iter(payload["search_queries"].values()))
         first["query_id"] = "0" * 16
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert report["errors"]
     assert report["notebook_schema_safe"] is False
 
 
 def test_missing_provider_generation_fails_schema_audit(monkeypatch, tmp_path: Path):
-    _configure(monkeypatch, tmp_path)
-    notebook = _seed_notebook(tmp_path / "notebooks")
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx = _configure(monkeypatch, tmp_path)
+    notebook = _seed_notebook(ctx.notebook_root)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     payload = json.loads(path.read_text(encoding="utf-8"))
     query = next(iter(payload["search_queries"].values()))
     del query["providers"]["openalex"]["backfill"]["generation"]
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
 
 
@@ -174,14 +173,16 @@ def _write_page(root: Path, *, keyword_zh: str, keyword_id_value: str, query_id_
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
 
-def _multi_generation_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[dict, str, dict, dict]:
-    notebooks = _configure(monkeypatch, tmp_path)
-    notebook = _seed_notebook(notebooks)
+def _multi_generation_fixture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> tuple[DiscoveryRuntimeContext, dict, str, dict, dict]:
+    ctx = _configure(monkeypatch, tmp_path)
+    notebook = _seed_notebook(ctx.notebook_root)
     _write_registry(tmp_path / "catalog_state", notebook)
     qid = query_identity("en", "blowing snow")
     sig1 = request_signature(page_size=10)
     sig2 = request_signature(page_size=20)
-    path = notebooks / notebook_filename(notebook["keyword_zh"])
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     payload = json.loads(path.read_text(encoding="utf-8"))
     backfill = payload["search_queries"][qid]["providers"]["openalex"]["backfill"]
     backfill.update({
@@ -208,144 +209,144 @@ def _multi_generation_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     })
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     _write_page(
-        tmp_path / "pending_pages", keyword_zh=notebook["keyword_zh"],
+        ctx.page_journal_root, keyword_zh=notebook["keyword_zh"],
         keyword_id_value=notebook["keyword_id"], query_id_value=qid,
         signature=sig1, page_id="historical-page", generation=1,
         next_cursor="c1", state="cursor_committed",
     )
     _write_page(
-        tmp_path / "pending_pages", keyword_zh=notebook["keyword_zh"],
+        ctx.page_journal_root, keyword_zh=notebook["keyword_zh"],
         keyword_id_value=notebook["keyword_id"], query_id_value=qid,
         signature=sig2, page_id="current-page", generation=2,
         next_cursor="d1", state="cursor_committed",
     )
-    return payload, qid, sig1, sig2
+    return ctx, payload, qid, sig1, sig2
 
 
 def test_audit_accepts_two_independent_generations(monkeypatch, tmp_path: Path):
-    _multi_generation_fixture(monkeypatch, tmp_path)
-    report = audit.run_audit()
+    ctx, _, _, _, _ = _multi_generation_fixture(monkeypatch, tmp_path)
+    report = audit.run_audit(ctx)
     assert report["errors"] == []
     assert report["summary"]["historical_generations"] == 1
     assert report["summary"]["current_generations"] == 1
 
 
 def test_audit_checks_current_generation_against_current_state(monkeypatch, tmp_path: Path):
-    payload, qid, _, _ = _multi_generation_fixture(monkeypatch, tmp_path)
+    ctx, payload, qid, _, _ = _multi_generation_fixture(monkeypatch, tmp_path)
     payload["search_queries"][qid]["providers"]["openalex"]["backfill"]["cursor"] = "wrong"
-    path = tmp_path / "notebooks" / notebook_filename(payload["keyword_zh"])
+    path = ctx.notebook_root / notebook_filename(payload["keyword_zh"])
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "backfill_state" and row.get("generation") == 2 for row in report["errors"])
 
 
 def test_audit_checks_old_generation_against_history(monkeypatch, tmp_path: Path):
-    payload, qid, _, _ = _multi_generation_fixture(monkeypatch, tmp_path)
+    ctx, payload, qid, _, _ = _multi_generation_fixture(monkeypatch, tmp_path)
     history = payload["search_queries"][qid]["providers"]["openalex"]["backfill"]["generation_history"]
     history[0]["last_committed_page_id"] = "missing-history-page"
-    path = tmp_path / "notebooks" / notebook_filename(payload["keyword_zh"])
+    path = ctx.notebook_root / notebook_filename(payload["keyword_zh"])
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "backfill_state" and row.get("generation") == 1 for row in report["errors"])
 
 
 def test_audit_rejects_branch_inside_one_generation(monkeypatch, tmp_path: Path):
-    _, qid, _, sig2 = _multi_generation_fixture(monkeypatch, tmp_path)
-    notebook_path = next((tmp_path / "notebooks").glob("*.json"))
+    ctx, _, qid, _, sig2 = _multi_generation_fixture(monkeypatch, tmp_path)
+    notebook_path = next((ctx.notebook_root).glob("*.json"))
     notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
     _write_page(
-        tmp_path / "pending_pages", keyword_zh=notebook["keyword_zh"],
+        ctx.page_journal_root, keyword_zh=notebook["keyword_zh"],
         keyword_id_value=notebook["keyword_id"], query_id_value=qid,
         signature=sig2, page_id="current-branch", generation=2,
         next_cursor="d2", state="cursor_committed",
     )
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any("divergent" in row["message"] or "multiple" in row["message"] for row in report["errors"])
 
 
 def test_audit_rejects_signature_mismatch_inside_generation(monkeypatch, tmp_path: Path):
-    payload, qid, sig1, _ = _multi_generation_fixture(monkeypatch, tmp_path)
+    ctx, payload, qid, sig1, _ = _multi_generation_fixture(monkeypatch, tmp_path)
     _write_page(
-        tmp_path / "pending_pages", keyword_zh=payload["keyword_zh"],
+        ctx.page_journal_root, keyword_zh=payload["keyword_zh"],
         keyword_id_value=payload["keyword_id"], query_id_value=qid,
         signature=sig1, page_id="wrong-signature", generation=2,
         next_cursor="bad", state="cursor_committed",
     )
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "page_journal" and row.get("generation") == 2 for row in report["errors"])
 
 
 def test_audit_rejects_generation_missing_from_history(monkeypatch, tmp_path: Path):
-    payload, qid, _, sig2 = _multi_generation_fixture(monkeypatch, tmp_path)
+    ctx, payload, qid, _, sig2 = _multi_generation_fixture(monkeypatch, tmp_path)
     _write_page(
-        tmp_path / "pending_pages", keyword_zh=payload["keyword_zh"],
+        ctx.page_journal_root, keyword_zh=payload["keyword_zh"],
         keyword_id_value=payload["keyword_id"], query_id_value=qid,
         signature=sig2, page_id="orphan-generation", generation=3,
         next_cursor="g3", state="cursor_committed",
     )
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "generation" and row.get("generation") == 3 for row in report["errors"])
 
 
 def test_audit_rejects_duplicate_request_cursor_within_generation(monkeypatch, tmp_path: Path):
-    payload, qid, _, sig2 = _multi_generation_fixture(monkeypatch, tmp_path)
+    ctx, payload, qid, _, sig2 = _multi_generation_fixture(monkeypatch, tmp_path)
     _write_page(
-        tmp_path / "pending_pages", keyword_zh=payload["keyword_zh"],
+        ctx.page_journal_root, keyword_zh=payload["keyword_zh"],
         keyword_id_value=payload["keyword_id"], query_id_value=qid,
         signature=sig2, page_id="duplicate-request", generation=2,
         next_cursor="d1", state="cursor_committed",
     )
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any("multiple page journals share one opaque request cursor" in row["message"] for row in report["errors"])
 
 
 def test_orphan_page_and_signature_mismatch_fail_closed(monkeypatch, tmp_path: Path):
-    _configure(monkeypatch, tmp_path)
-    notebook = _seed_notebook(tmp_path / "notebooks")
+    ctx = _configure(monkeypatch, tmp_path)
+    notebook = _seed_notebook(ctx.notebook_root)
     qid = query_identity("en", "blowing snow")
     _write_page(
-        tmp_path / "pending_pages",
+        ctx.page_journal_root,
         keyword_zh=notebook["keyword_zh"],
         keyword_id_value=notebook["keyword_id"],
         query_id_value=qid,
     )
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "page_journal" for row in report["errors"])
 
     other_qid = query_identity("en", "unmapped query")
     _write_page(
-        tmp_path / "pending_pages",
+        ctx.page_journal_root,
         keyword_zh="雪崩动力学",
         keyword_id_value=keyword_id("雪崩动力学"),
         query_id_value=other_qid,
         query="unmapped query",
         page_id="orphan-page",
     )
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any("orphan" in row["message"] for row in report["errors"])
 
 
 def test_english_query_is_not_a_catalog_category(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
     assert report["errors"] == []
     assert "blowing snow" not in [row["keyword_zh"] for row in report["identities"]]
     assert notebook["keyword_zh"] == "风吹雪"
 
 
 def test_disabled_draft_can_be_unready_without_audit_error(monkeypatch, tmp_path: Path):
-    _configure(monkeypatch, tmp_path)
-    KeywordNotebookStore(tmp_path / "notebooks").ensure_notebook("风吹雪")
-    report = audit.run_audit()
+    ctx = _configure(monkeypatch, tmp_path)
+    KeywordNotebookStore(ctx.notebook_root).ensure_notebook("风吹雪")
+    report = audit.run_audit(ctx)
     assert report["errors"] == []
     assert report["summary"]["disabled_drafts"] == 1
     assert report["warnings"]
 
 
 def test_pristine_unbound_lane_is_summary_only(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
     # Create category directory to suppress catalog_category warning
     (tmp_path / "catalog" / notebook["keyword_zh"]).mkdir(parents=True, exist_ok=True)
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert report["errors"] == []
     # 2 queries (zh, en) × 2 providers (openalex, crossref) = 4 pristine lanes
     assert report["summary"]["pristine_unbound_lanes"] == 4
@@ -360,37 +361,37 @@ def _set_backfill(path: Path, query_str: str, provider: str, field_updates: dict
 
 
 def test_cursor_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"cursor": "c1"})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
     assert report["notebook_schema_safe"] is False
 
 
 def test_pages_succeeded_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"pages_succeeded": 1})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
     assert report["notebook_schema_safe"] is False
 
 
 def test_pages_committed_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"pages_committed": 1})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
     assert report["notebook_schema_safe"] is False
 
 
 def test_items_returned_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"items_returned_total": 1})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     # The notebook fails schema validation because the shared strict-pristine
     # predicate rejects non-pristine unbound state at schema-check time.
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
@@ -398,46 +399,46 @@ def test_items_returned_without_signature_is_error(monkeypatch, tmp_path: Path):
 
 
 def test_exhausted_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"exhausted": True})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
     assert report["notebook_schema_safe"] is False
 
 
 def test_last_committed_page_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"last_committed_page_id": "some-page"})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
     assert report["notebook_schema_safe"] is False
 
 
 def test_terminal_failure_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"terminal_failure": True})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
     assert report["notebook_schema_safe"] is False
 
 
 def test_terminal_failure_timestamp_without_signature_is_error(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"terminal_failure_at": "2026-01-01T00:00:00"})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
     assert report["notebook_schema_safe"] is False
 
 
 def test_last_error_without_signature_is_warning(monkeypatch, tmp_path: Path):
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     _set_backfill(path, "blowing snow", "openalex", {"last_error": "something went wrong"})
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     # Schema validator now rejects all non-pristine unbound states, so this
     # is an error (notebook_schema), not a warning.
     assert any(row["kind"] == "notebook_schema" for row in report["errors"])
@@ -446,13 +447,13 @@ def test_last_error_without_signature_is_warning(monkeypatch, tmp_path: Path):
 
 def test_pristine_unbound_lane_not_in_warnings(monkeypatch, tmp_path: Path):
     """A pristine unbound lane must not generate per-lane warnings."""
-    report, _ = _audit_ready(monkeypatch, tmp_path)
+    ctx, report, _ = _audit_ready(monkeypatch, tmp_path)
     assert not any(row["kind"] == "generation" for row in report["warnings"])
 
 
 def test_pristine_unbound_lane_count_is_exact(monkeypatch, tmp_path: Path):
     """The pristine count must exactly match never-activated lanes with no warnings."""
-    report, _ = _audit_ready(monkeypatch, tmp_path)
+    ctx, report, _ = _audit_ready(monkeypatch, tmp_path)
     # 2 queries (zh + en) x 2 providers (openalex + crossref) = 4 pristine lanes
     assert report["summary"]["pristine_unbound_lanes"] == 4
     assert report["errors"] == []
@@ -466,17 +467,17 @@ def test_page_journal_without_signature_is_error(monkeypatch, tmp_path: Path):
     committed page journal already exists for the current generation, the lane
     has durable progress and must not be classified as pristine unbound.
     """
-    report, notebook = _audit_ready(monkeypatch, tmp_path)
+    ctx, report, notebook = _audit_ready(monkeypatch, tmp_path)
     qid = query_identity("en", "blowing snow")
     # Write a page journal for the current generation (default generation=1).
     # The notebook state has no request_signature.
     _write_page(
-        tmp_path / "pending_pages",
+        ctx.page_journal_root,
         keyword_zh=notebook["keyword_zh"],
         keyword_id_value=notebook["keyword_id"],
         query_id_value=qid,
     )
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     # Must raise a generation error (durable progress without signature).
     assert any(
         row["kind"] == "generation"
@@ -492,12 +493,12 @@ def test_page_journal_without_signature_is_error(monkeypatch, tmp_path: Path):
 
 
 def test_audit_is_read_only(monkeypatch, tmp_path: Path):
-    _configure(monkeypatch, tmp_path)
-    notebook = _seed_notebook(tmp_path / "notebooks")
+    ctx = _configure(monkeypatch, tmp_path)
+    notebook = _seed_notebook(ctx.notebook_root)
     _write_registry(tmp_path / "catalog_state", notebook)
     paths = [path for path in tmp_path.rglob("*") if path.is_file()]
     before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
-    audit.run_audit()
+    audit.run_audit(ctx)
     after_paths = [path for path in tmp_path.rglob("*") if path.is_file()]
     after = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in after_paths}
     assert before == after
@@ -505,20 +506,20 @@ def test_audit_is_read_only(monkeypatch, tmp_path: Path):
 
 def test_audit_is_read_only_with_page_journal(monkeypatch, tmp_path: Path):
     """Audit must not write notebooks, generate signatures, modify cursors, or delete page journals."""
-    _configure(monkeypatch, tmp_path)
-    notebook = _seed_notebook(tmp_path / "notebooks")
+    ctx = _configure(monkeypatch, tmp_path)
+    notebook = _seed_notebook(ctx.notebook_root)
     _write_registry(tmp_path / "catalog_state", notebook)
     qid = query_identity("en", "blowing snow")
     sig = request_signature(page_size=10)
     # Set a valid signature so the page journal is not an error — we want to
     # verify the audit leaves everything untouched even on a clean pass.
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     payload = json.loads(path.read_text(encoding="utf-8"))
     backfill = payload["search_queries"][qid]["providers"]["openalex"]["backfill"]
     backfill["request_signature"] = sig["hash"]
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     _write_page(
-        tmp_path / "pending_pages",
+        ctx.page_journal_root,
         keyword_zh=notebook["keyword_zh"],
         keyword_id_value=notebook["keyword_id"],
         query_id_value=qid,
@@ -528,7 +529,7 @@ def test_audit_is_read_only_with_page_journal(monkeypatch, tmp_path: Path):
         state="cursor_committed",
     )
     # Also bump the notebook counters so the page chain is consistent.
-    path = tmp_path / "notebooks" / notebook_filename(notebook["keyword_zh"])
+    path = ctx.notebook_root / notebook_filename(notebook["keyword_zh"])
     payload = json.loads(path.read_text(encoding="utf-8"))
     backfill = payload["search_queries"][qid]["providers"]["openalex"]["backfill"]
     backfill.update({
@@ -542,7 +543,7 @@ def test_audit_is_read_only_with_page_journal(monkeypatch, tmp_path: Path):
 
     paths = [path for path in tmp_path.rglob("*") if path.is_file()]
     before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
-    report = audit.run_audit()
+    report = audit.run_audit(ctx)
     assert report["errors"] == []
     after_paths = [path for path in tmp_path.rglob("*") if path.is_file()]
     after = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in after_paths}

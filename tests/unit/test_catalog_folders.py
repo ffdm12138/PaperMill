@@ -11,7 +11,8 @@ from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
 from src.catalog_folders.registry import (
     category_from_notebook, definition_hash, validate_catalog_keyword,
 )
-from src.discovery.keyword_notebook import KeywordNotebookStore, notebook_path
+from src.discovery.contracts.notebook import notebook_path
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.file_fingerprint import compute_sha256
 
 

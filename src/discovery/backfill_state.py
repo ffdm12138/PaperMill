@@ -336,7 +336,7 @@ def validate_backfill_state_exact(
     *,
     allow_unbound: bool,
 ) -> None:
-    """Validate a backfill state against the exact v3 schema.
+    """Validate a backfill state against the exact v4 schema.
 
     Parameters
     ----------

@@ -15,10 +15,11 @@ import pytest
 
 from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime, ActiveRelevanceProfiles
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
-from src.discovery.page_journal import PageJournalStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier,
     bind_test_relevance_profile,
@@ -169,10 +170,13 @@ def test_candidate_drain_formal_entry_via_batch(
 
     opts = DiscoveryOptions(
         mode="backfill", max_candidates=10,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(
+            tmp_path,
+            notebook_dir=nb_dir,
+            page_journals_dir=tmp_path / "pages",
+            locks_dir=tmp_path / "locks",
+            exports_dir=tmp_path / "exports",
+        ),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -266,9 +270,8 @@ def test_candidate_drain_context_manager_basics(tmp_path: Path):
     """CandidateDrainCoordinator context manager starts/stops consumer thread."""
     import threading
     from src.discovery.runtime.candidate_drain import CandidateDrainCoordinator
-    from src.discovery.page_journal import PageJournalStore
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
-    from src.discovery.coordinator import DiscoveryOptions
 
     journal = PageJournalStore(tmp_path / "pages")
     runtime = DiscoveryBatchRuntime.create(
@@ -283,7 +286,6 @@ def test_candidate_drain_context_manager_basics(tmp_path: Path):
     coord = CandidateDrainCoordinator(
         runtime=runtime,
         journal=journal,
-        options=DiscoveryOptions(),
         worker_id="test",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -435,10 +437,13 @@ def test_dynamic_backpressure_formal_production_path(
         max_candidates=50,
         max_pending_candidates=5,
         resume_pending_candidates=2,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(
+            tmp_path,
+            notebook_dir=nb_dir,
+            page_journals_dir=tmp_path / "pages",
+            locks_dir=tmp_path / "locks",
+            exports_dir=tmp_path / "exports",
+        ),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -480,7 +485,7 @@ def test_dynamic_backpressure_formal_production_path(
     # Batch must complete without crashing — basic smoke test for
     # backpressure-aware scheduling.  The STAGING_QUEUE_CAPACITY
     # monkeypatch may not affect already-captured default_factory
-    # lambdas, so we don't assert exact skip counts.
+    # lambdas, so we don't check exact skip counts.
     assert report.status != "repair_required", (
         f"Batch must not be repair_required, got {report.status!r}"
     )
@@ -497,9 +502,10 @@ import json, sys, threading
 from pathlib import Path
 sys.path.insert(0, r'{repo_root}')
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )
@@ -517,12 +523,16 @@ nb_dir = Path(r'{nb_dir}')
 store = KeywordNotebookStore(nb_dir)
 _seed(store, "深度学习")
 
-opts = DiscoveryOptions(
-    mode="backfill", max_candidates=10,
+workspace = make_test_workspace(
+    Path(r'{work_dir}'),
     notebook_dir=nb_dir,
-    pending_pages_dir=Path(r'{pages_dir}'),
+    page_journals_dir=Path(r'{pages_dir}'),
     locks_dir=Path(r'{locks_dir}'),
     exports_dir=Path(r'{exports_dir}'),
+)
+opts = DiscoveryOptions(
+    mode="backfill", max_candidates=10,
+    workspace=workspace,
     output_dir=Path(r'{out_dir}'),
     paper_raw_dir=Path(r'{paper_raw_dir}'),
     papers_dir=Path(r'{papers_dir}'),
@@ -601,6 +611,7 @@ def test_keyboard_interrupt_subprocess_regression(tmp_path: Path):
 
     script = _INTERRUPT_SCRIPT.format(
         repo_root=str(repo_root),
+        work_dir=str(tmp_path),
         nb_dir=str(nb_dir),
         pages_dir=str(pages_dir),
         locks_dir=str(locks_dir),
@@ -833,10 +844,13 @@ def test_zero_durable_progress_returns_failed_exit_1(
     opts = DiscoveryOptions(
         mode="backfill",
         max_candidates=10,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(
+            tmp_path,
+            notebook_dir=nb_dir,
+            page_journals_dir=tmp_path / "pages",
+            locks_dir=tmp_path / "locks",
+            exports_dir=tmp_path / "exports",
+        ),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",

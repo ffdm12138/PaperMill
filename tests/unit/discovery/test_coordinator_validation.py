@@ -2,6 +2,7 @@ import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
+from tests.helpers.discovery_workspace import make_test_workspace
 
 
 pytestmark = pytest.mark.unit
@@ -13,10 +14,7 @@ def _options(tmp_path, **overrides):
         refresh_pages=0,
         backfill_pages=1,
         max_candidates=0,
-        notebook_dir=tmp_path / "notebooks",
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",

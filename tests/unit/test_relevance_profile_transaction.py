@@ -5,9 +5,12 @@ from pathlib import Path
 import pytest
 
 from src.discovery.constants import INITIAL_CURSOR
-from src.discovery.keyword_notebook import KeywordNotebookStore, query_identity
+from src.discovery.contracts.notebook import query_identity
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+from src.discovery.contracts.page_journal import _compute_checksum
 from src.discovery.relevance_profiles import (
     RelevanceProfilePlanError,
     RelevanceProfileTransactionError,
@@ -17,6 +20,16 @@ from src.discovery.relevance_profiles import (
     resume_relevance_profile_transaction,
 )
 from tests.helpers.relevance_profiles import relevance_profile
+
+
+def _write_page_dict(page_path: Path, page: dict) -> None:
+    """Recompute page checksum and write the exact bytes back.
+
+    Tests mutate page dictionaries in-place; any rewrite must keep the
+    checksum consistent with ``PageJournalStore.read`` validation.
+    """
+    page["checksum"] = _compute_checksum(page)
+    page_path.write_text(json.dumps(page, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _taxonomy() -> TaxonomySnapshot:
@@ -60,7 +73,7 @@ def _setup(tmp_path: Path):
     old = relevance_profile(object_term="old sand")
     store.set_relevance_profile("风沙动力学", old, generation=2)
     store.set_enabled("风沙动力学", True)
-    nb = store.require_v3("风沙动力学")
+    nb = store.require_v4("风沙动力学")
     journal = PageJournalStore(pages)
     page = journal.make_synthetic_page(
         page_id="old", keyword_id=nb["keyword_id"], keyword_zh=nb["keyword_zh"],
@@ -94,7 +107,7 @@ def test_plan_closes_old_passed_candidate_independent_of_backfill_generation(tmp
     candidate = PageJournalStore(pages).read(page_path)["candidates"][0]
     assert candidate["relevance"]["state"] == "rejected"
     assert candidate["relevance"]["verification"]["status"] == "profile_superseded"
-    assert KeywordNotebookStore(notebooks).require_v3("风沙动力学")["relevance_profile"]["profile_hash"] == new["profile_hash"]
+    assert KeywordNotebookStore(notebooks).require_v4("风沙动力学")["relevance_profile"]["profile_hash"] == new["profile_hash"]
 
 
 def test_apply_refuses_second_plan_while_foreign_journal_is_applying(tmp_path: Path):
@@ -123,7 +136,7 @@ def test_profile_apply_never_rewrites_completed_terminal_relevance(
     page = journal.read(page_path)
     page["candidates"][0]["status"] = terminal_status
     page["candidates"][0]["terminal_reason"] = terminal_status
-    page_path.write_text(json.dumps(page, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_page_dict(page_path, page)
     before_candidate = json.dumps(
         page["candidates"][0], ensure_ascii=False, sort_keys=True,
     ).encode("utf-8")
@@ -154,7 +167,7 @@ def test_last_page_drift_causes_zero_transaction_or_page_writes(tmp_path: Path):
               for path in (first_path, second_path)}
     second_page = PageJournalStore(pages).read(second_path)
     second_page["candidates"][0]["last_error"] = "drift"
-    second_path.write_text(json.dumps(second_page, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_page_dict(second_path, second_page)
     drift_hash = hashlib.sha256(second_path.read_bytes()).hexdigest()
 
     with pytest.raises(RelevanceProfileTransactionError, match="page drift"):
@@ -169,7 +182,7 @@ def test_unknown_lifecycle_globally_blocks_plan_with_non_applicable_report(tmp_p
     notebooks, pages, transactions, page_path, profiles, _new = _setup(tmp_path)
     page = json.loads(page_path.read_text(encoding="utf-8"))
     page["candidates"][0]["status"] = "future_unreviewed_state"
-    page_path.write_text(json.dumps(page, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_page_dict(page_path, page)
 
     with pytest.raises(RelevanceProfilePlanError) as caught:
         build_relevance_profile_plan(
@@ -191,7 +204,7 @@ def test_recovery_required_old_profile_candidate_blocks_whole_plan(
     notebooks, pages, transactions, page_path, profiles, _new = _setup(tmp_path)
     page = PageJournalStore(pages).read(page_path)
     page["candidates"][0]["status"] = status
-    page_path.write_text(json.dumps(page, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_page_dict(page_path, page)
 
     with pytest.raises(RelevanceProfilePlanError) as caught:
         build_relevance_profile_plan(

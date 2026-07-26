@@ -15,9 +15,10 @@ if str(ROOT) not in sys.path:
 
 from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.formal_publication import publish_formal_publication_state
-from src.discovery.keyword_notebook import keyword_id, query_identity
+from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.pending_queue import drain_pending_candidates
 from src.library.paper_number_ledger import PaperNumberLedger
 from tests.factories.paper_raw_factory import (

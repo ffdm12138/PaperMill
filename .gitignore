@@ -35,8 +35,14 @@ data/discovery/active_generation.json
 data/discovery/generations/**
 data/discovery/legacy_inventory_report.json
 data/discovery/legacy_archive/**
+data/discovery/legacy_retained/**
 data/discovery/migrations/**
 data/discovery/title_resolution_cache/**
+# v4 --clean-legacy retirement tombstone FILES (dir patterns above miss them)
+data/discovery/keyword_notebooks
+data/discovery/pending_pages
+# Operator/repair evidence — ignored local state, never committed
+artifacts/**
 data/catalog/*
 data/catalog/.*
 data/catalog/metadata_quality_report.json

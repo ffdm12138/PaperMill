@@ -199,7 +199,12 @@ def resolve_doi_match_by_title(
     )
 
 
-def get_crossref_work_by_doi(doi: str, *, client: ProviderClient | None = None) -> dict | None:
+def get_crossref_work_by_doi(
+    doi: str,
+    *,
+    client: ProviderClient | None = None,
+    timeout_seconds: float = 20,
+) -> dict | None:
     """按 DOI 取 Crossref work 的 message dict，网络错误返回 None。"""
     doi = normalize_doi(doi)
     if not doi:
@@ -208,7 +213,7 @@ def get_crossref_work_by_doi(doi: str, *, client: ProviderClient | None = None) 
         provider=CROSSREF_PROVIDER,
         purpose="metadata_resolution",
         url=f"{CROSSREF_WORKS_URL}/{doi}",
-        timeout_seconds=20,
+        timeout_seconds=timeout_seconds,
     )
     try:
         outcome = _runtime_client(client).execute(spec)

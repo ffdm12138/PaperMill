@@ -6,9 +6,10 @@ import json
 
 import pytest
 
-from src.discovery.keyword_notebook import keyword_id, query_identity
+from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import INITIAL_CURSOR, PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import INITIAL_CURSOR, request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.pending_queue import drain_pending_candidates
 from src.discovery.staging_context import DiscoveryStagingContext
@@ -67,7 +68,7 @@ def test_matched_metadata_staged_workspace_is_revalidated_after_context_creation
     assert report["staged"] == 0
 
 
-def test_inspect_doi_revalidates_matched_workspace(tmp_path: Path):
+def test_classify_existing_doi_revalidates_matched_workspace(tmp_path: Path):
     doi = "10.1000/stale-inspection"
     folder = create_metadata_staged_network_workspace(tmp_path, doi=doi)
     context = DiscoveryStagingContext.create(
@@ -75,7 +76,7 @@ def test_inspect_doi_revalidates_matched_workspace(tmp_path: Path):
         ledger_path=tmp_path / "ledger.json")
     (folder / f"{folder.name}.metadata.json").unlink()
 
-    result = context.transaction.inspect_doi(doi)
+    result = context.transaction.classify_existing_doi(doi)
 
     assert result.status == "repair_required"
     assert result.error is not None
@@ -106,7 +107,7 @@ def test_hide_existing_defers_candidate_when_primary_is_damaged(
 
     from src.discovery.runtime.batch_runtime import (
         DiscoveryBatchRuntime, DiscoveryPipelineMetrics, RepairBacklog)
-    from src.discovery.page_journal import JournalDrainIndex
+    from src.discovery.stores.journal_drain_index import JournalDrainIndex
     runtime = DiscoveryBatchRuntime(
         staging_context=context,
         journal_index=JournalDrainIndex.build(

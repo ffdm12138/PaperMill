@@ -18,7 +18,7 @@ import pytest
 
 from src.discovery.runtime.budgets import DualScopePageBudget
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.pending_queue import DrainOutcome, DrainReport
 from src.discovery.reporting.report_builder import (
     KeywordReportInput,
@@ -27,6 +27,7 @@ from src.discovery.reporting.report_builder import (
 )
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier,
     bind_test_relevance_profile,
@@ -54,10 +55,13 @@ def _options(nb_dir: Path, work_dir: Path, **overrides) -> DiscoveryOptions:
     kw = dict(
         mode="backfill",
         max_candidates=10,
-        notebook_dir=nb_dir,
-        pending_pages_dir=work_dir / "pages",
-        locks_dir=work_dir / "locks",
-        exports_dir=work_dir / "exports",
+        workspace=make_test_workspace(
+            work_dir,
+            notebook_dir=nb_dir,
+            page_journals_dir=work_dir / "pages",
+            locks_dir=work_dir / "locks",
+            exports_dir=work_dir / "exports",
+        ),
         output_dir=work_dir / "out",
         paper_raw_dir=work_dir / "paper_raw",
         papers_dir=work_dir / "papers",
@@ -244,9 +248,10 @@ from pathlib import Path
 sys.path.insert(0, r"{project_root}")
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )
@@ -268,10 +273,13 @@ _seed(nb_dir, "扬沙")
 
 opts = DiscoveryOptions(
     mode="backfill", max_candidates=10,
-    notebook_dir=nb_dir,
-    pending_pages_dir=work / "pages",
-    locks_dir=work / "locks",
-    exports_dir=work / "exports",
+    workspace=make_test_workspace(
+        work,
+        notebook_dir=nb_dir,
+        page_journals_dir=work / "pages",
+        locks_dir=work / "locks",
+        exports_dir=work / "exports",
+    ),
     output_dir=work / "out",
     paper_raw_dir=work / "paper_raw",
     papers_dir=work / "papers",

@@ -1,4 +1,4 @@
-"""Unit tests for src/discovery/keyword_notebook.py — v3 schema only."""
+"""Unit tests for the v4 notebook contract (src/discovery/contracts/notebook.py)."""
 from __future__ import annotations
 
 import json
@@ -7,13 +7,11 @@ from pathlib import Path
 import pytest
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
-from src.discovery.keyword_notebook import (
+from src.discovery.contracts.notebook import (
     INITIAL_CURSOR,
     SCHEMA_VERSION,
     DiscoveryNotReadyError,
     DiscoveryReadiness,
-    KeywordNotebookStore,
-    LegacyNotebookSchemaError,
     NotebookCorruptError,
     UnsupportedNotebookSchemaError,
     composite_backfill_signature,
@@ -27,6 +25,7 @@ from src.discovery.keyword_notebook import (
     validate_notebook,
     validate_discovery_readiness,
 )
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.execution.lane_models import ExhaustionEvidence, ProviderResponseMetadata
 from tests.fixtures.legacy.notebook_v2 import (
     RETIRED_QUERY_CONTAINER_FIELD,
@@ -236,11 +235,11 @@ class TestDiscoveryReadiness:
         assert r.ready is False
 
 
-# ── v3 notebook CRUD ─────────────────────────────────────────────────
+# ── v4 notebook CRUD ─────────────────────────────────────────────────
 
 
-class TestV3Lifecycle:
-    def test_ensure_notebook_creates_v3(self, tmp_path: Path):
+class TestV4Lifecycle:
+    def test_ensure_notebook_creates_v4(self, tmp_path: Path):
         store = KeywordNotebookStore(tmp_path)
         nb = store.ensure_notebook("风吹雪")
         assert nb["schema_version"] == SCHEMA_VERSION
@@ -313,7 +312,7 @@ class TestV3Lifecycle:
                 {"query": "风吹雪", "language": "zh"},
                 {"query": "english 风吹雪", "language": "en"},
             ])
-        assert store.require_v3("风吹雪")["search_queries"] == {}
+        assert store.require_v4("风吹雪")["search_queries"] == {}
         with pytest.raises(ValueError, match="unknown disable"):
             store.sync_search_queries("风吹雪", disable=["blowing snow"])
 
@@ -324,7 +323,7 @@ class TestV3Lifecycle:
             {"query": "Blowing Snow", "language": "en"},
             {"query": "blowing snow", "language": "en"},
         ], reason="curation", operator="tester")
-        nb = store.require_v3("风吹雪")
+        nb = store.require_v4("风吹雪")
         assert len(nb["search_queries"]) == 1
         assert nb["definition_history"][-1]["reason"] == "curation"
 
@@ -334,7 +333,7 @@ class TestV3Lifecycle:
         store.sync_search_queries("风吹雪", add=[
             {"query": "风吹雪 blowing snow", "language": "mixed"},
         ])
-        nb = store.require_v3("风吹雪")
+        nb = store.require_v4("风吹雪")
         row = next(iter(nb["search_queries"].values()))
         assert row["language"] == "mixed"
 
@@ -351,7 +350,7 @@ class TestV3Lifecycle:
         en = [q for q in queries if q["language"] == "en"][0]
         assert en["source"] == "curated"
 
-    def test_require_v3_ready_passes_with_bilingual(self, tmp_path: Path):
+    def test_require_v4_ready_passes_with_bilingual(self, tmp_path: Path):
         store = KeywordNotebookStore(tmp_path)
         store.ensure_notebook("风吹雪")
         store.sync_search_queries("风吹雪", add=[
@@ -360,10 +359,10 @@ class TestV3Lifecycle:
         ])
         bind_test_relevance_profile(store, "风吹雪")
         store.set_enabled("风吹雪", True)
-        nb = store.require_v3_ready("风吹雪")
+        nb = store.require_v4_ready("风吹雪")
         assert nb["keyword_zh"] == "风吹雪"
 
-    def test_require_v3_ready_fails_without_english(self, tmp_path: Path):
+    def test_require_v4_ready_fails_without_english(self, tmp_path: Path):
         store = KeywordNotebookStore(tmp_path)
         store.ensure_notebook("风吹雪")
         store.sync_search_queries("风吹雪", add=[{"query": "风吹雪", "language": "zh"}])
@@ -376,7 +375,7 @@ class TestV3Lifecycle:
         store.ensure_notebook("风吹雪")
         store.set_enabled("风吹雪", False)
         with pytest.raises(DiscoveryNotReadyError, match="disabled"):
-            store.require_v3_ready("风吹雪")
+            store.require_v4_ready("风吹雪")
 
     def test_enabled_invalid_notebook_mutation_does_not_write(self, tmp_path: Path):
         store = KeywordNotebookStore(tmp_path)
@@ -409,7 +408,7 @@ class TestV3Lifecycle:
     def test_public_validator_rejects_malformed_v3(self, tmp_path: Path, mutation):
         store = KeywordNotebookStore(tmp_path)
         store.ensure_notebook("风吹雪")
-        nb = json.loads(json.dumps(store.require_v3("风吹雪")))
+        nb = json.loads(json.dumps(store.require_v4("风吹雪")))
         mutation(nb)
         with pytest.raises(NotebookCorruptError):
             validate_notebook(nb)
@@ -450,7 +449,7 @@ class TestCursorOps:
         query_b = _query_id("query B")
         store.commit_backfill_cursor("测试主题", query_b, "crossref", expected_cursor="*", next_cursor="B5", committed_page_id="test-page", items_this_page=3, exhausted=False)
         store.sync_search_queries("测试主题", disable=["query B"])
-        nb = store.require_v3("测试主题")
+        nb = store.require_v4("测试主题")
         assert query_b in nb["search_queries"]
         assert nb["search_queries"][query_b]["active"] is False
         assert nb["search_queries"][query_b]["providers"]["crossref"]["backfill"]["cursor"] == "B5"
@@ -471,7 +470,7 @@ class TestCursorOps:
         query_id_value = _query_id("query A")
         store.complete_refresh("测试主题", query_id_value, "openalex", status="success", pages_scanned=3, items_returned=150)
         store.commit_backfill_cursor("测试主题", query_id_value, "openalex", expected_cursor="*", next_cursor="X1", committed_page_id="test-page", items_this_page=5, exhausted=False)
-        nb = store.require_v3("测试主题")
+        nb = store.require_v4("测试主题")
         r = nb["search_queries"][query_id_value]["providers"]["openalex"]["refresh"]
         assert r["pages_scanned_last_run"] == 3
         assert r["items_returned_last_run"] == 150
@@ -485,7 +484,7 @@ class TestCursorOps:
         store.commit_backfill_cursor("测试主题", query_id_value, "openalex", expected_cursor="*", next_cursor="C3", committed_page_id="test-page", items_this_page=5, exhausted=False)
         store.record_backfill_error("测试主题", query_id_value, "openalex", error="timeout")
         assert store.get_backfill_cursor("测试主题", query_id_value, "openalex") == "C3"
-        nb = store.require_v3("测试主题")
+        nb = store.require_v4("测试主题")
         assert nb["search_queries"][query_id_value]["providers"]["openalex"]["backfill"]["last_error"] == "timeout"
 
     def test_exhausted_flag_set(self, tmp_path: Path):
@@ -534,7 +533,32 @@ class TestCursorOps:
         payload = v2_notebook_payload(kid)
         path.write_text(json.dumps(payload), encoding="utf-8")
         store = KeywordNotebookStore(tmp_path)
-        with pytest.raises(LegacyNotebookSchemaError):
+        with pytest.raises(UnsupportedNotebookSchemaError):
+            store.load(kw)
+
+    def test_legacy_v3_notebook_in_v4_workspace_rejected(self, tmp_path: Path):
+        """A real-structure schema-3.0 notebook placed inside a v4 workspace's
+        keyword_notebooks/ must fail closed on production read — the active
+        store never parses legacy input; it must be migrated first."""
+        from tests.helpers.discovery_workspace import make_test_workspace
+
+        fixture_dir = (
+            Path(__file__).resolve().parents[1]
+            / "fixtures" / "discovery_v4_legacy" / "notebooks"
+        )
+        fixture_path = sorted(fixture_dir.glob("*.json"))[0]
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        assert payload["schema_version"] == "3.0"
+        kw = payload["keyword_zh"]
+
+        workspace = make_test_workspace(tmp_path / "workspace")
+        dest = workspace.keyword_notebook_dir / fixture_path.name
+        dest.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        store = KeywordNotebookStore(workspace)
+        with pytest.raises(UnsupportedNotebookSchemaError):
             store.load(kw)
 
     def test_unknown_schema_rejected(self, tmp_path: Path):
@@ -559,9 +583,9 @@ class TestKeywordIdStability:
     def test_adding_english_query_does_not_change_keyword_id(self, tmp_path: Path):
         store = KeywordNotebookStore(tmp_path)
         store.ensure_notebook("风吹雪")
-        kid_before = store.require_v3("风吹雪")["keyword_id"]
+        kid_before = store.require_v4("风吹雪")["keyword_id"]
         store.sync_search_queries("风吹雪", add=[{"query": "blowing snow", "language": "en"}])
-        kid_after = store.require_v3("风吹雪")["keyword_id"]
+        kid_after = store.require_v4("风吹雪")["keyword_id"]
         assert kid_before == kid_after
 
 
@@ -579,7 +603,7 @@ class TestReset:
         store.reset_backfill("测试主题", reason="test", pag_sig=sig)
         assert store.get_backfill_cursor("测试主题", query_id_value, "openalex") == INITIAL_CURSOR
         assert store.get_backfill_cursor("测试主题", query_id_value, "crossref") == INITIAL_CURSOR
-        nb = store.require_v3("测试主题")
+        nb = store.require_v4("测试主题")
         assert len(nb.get("reset_history", [])) == 1
 
     def test_reset_does_not_affect_other_keywords(self, tmp_path: Path):
@@ -600,7 +624,7 @@ class TestReset:
         sig = pagination_signature()
         _seed_queries(store, "测试主题", ["query A"], sig)
         store.reset_backfill("测试主题", reason="test", pag_sig=sig)
-        assert store.require_v3("测试主题") is not None
+        assert store.require_v4("测试主题") is not None
 
 
 # ── pagination signature ─────────────────────────────────────────────
@@ -695,10 +719,10 @@ class TestListShow:
         assert summary["ready"] is False
 
 
-# ── v3 notebook does not contain legacy fields ───────────────────────
+# ── v4 notebook does not contain legacy fields ───────────────────────
 
 
-class TestV3NoLegacyFields:
+class TestV4NoLegacyFields:
     def test_empty_notebook_has_no_keyword_field(self, tmp_path: Path):
         store = KeywordNotebookStore(tmp_path)
         nb = store.ensure_notebook("风吹雪")

@@ -1,6 +1,41 @@
 from __future__ import annotations
 
-from src.discovery.relevance import validate_relevance_profile
+from src.discovery.relevance import validate_relevance_profile, validate_relevance_profile_source
+
+
+def retired_sentinel_profile() -> dict:
+    """The removed pre-profile compatibility sentinel (fixture-only).
+
+    Production must fail closed on any notebook still carrying this shape;
+    only tests may construct it.
+    """
+    return validate_relevance_profile_source({
+        "schema_version": "1.0",
+        "matcher_schema_version": "1.0",
+        "openalex": {
+            "filter_level": "subfield",
+            "resolved": False,
+            "filter_ids": ["S0"],
+            "filter_labels": ["__legacy_unbound__"],
+            "refresh_sort": "publication_date:desc",
+            "backfill_sort": "cited_by_count:desc",
+        },
+        "crossref": {
+            "scope_policy": "require_openalex_subfield",
+            "refresh_sort": "published",
+            "refresh_order": "desc",
+            "backfill_sort": "relevance",
+            "backfill_order": "desc",
+        },
+        "anchors": {
+            "required_groups": [
+                {"name": "object", "terms": ["__legacy_all__"]},
+                {"name": "process", "terms": ["__legacy_all__2"]},
+            ],
+            "negative_any": [],
+            "missing_abstract_policy": "require_all_groups_in_title",
+        },
+    })
 
 
 def relevance_profile(*, object_term: str = "wind-blown sand") -> dict:
@@ -47,7 +82,7 @@ def bind_test_relevance_profile(store, keyword_zh: str) -> dict:
         "missing_abstract_policy": "require_all_groups_in_title",
     }
     normalized = validate_relevance_profile(profile)
-    current = store.require_v3(keyword_zh)
+    current = store.require_v4(keyword_zh)
     store.set_relevance_profile(
         keyword_zh, normalized,
         generation=int(current.get("relevance_generation") or 1) + 1,

@@ -245,7 +245,7 @@ def test_discovery_receipt_scan_only_in_registry_or_recovery_or_audit():
         "src/ingest/workspace_lifecycle.py",     # Backward-compat layer
     }
     allowed_patterns = [
-        "recover", "audit", "repair", "reconcile",
+        "recover", "audit", "repair", "reconcile", "reconciliation",
     ]
     offenders = []
     for rel, token, _ in matches:

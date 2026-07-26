@@ -8,15 +8,15 @@ import pytest
 from src.discovery.backfill_transaction import run_backfill_page_transaction
 from src.discovery.constants import INITIAL_CURSOR
 from src.discovery.execution.lane_models import DiscoveryLaneKey, LaneExecutionSpec, RequestSignature
-from src.discovery.keyword_notebook import keyword_id, query_identity
+from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import (
+from src.discovery.contracts.page_journal import (
     InvalidStateTransition,
     JournalCorruptError,
-    PageJournalStore,
     backfill_page_id,
     request_signature,
 )
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 
 
@@ -362,3 +362,40 @@ def test_legacy_page_no_relevance_blocked_from_cursor_commit(
     path = store.write_page(page)
     with pytest.raises(InvalidStateTransition, match="missing a relevance record"):
         store.mark_cursor_committed(path)
+
+
+def test_mixed_language_lane_and_page_are_accepted(tmp_path: Path) -> None:
+    """QueryLanguage.MIXED is a distinct identity (enums.py docstring): the
+    lane spec and the page journal must accept it — never coerce to zh."""
+    mixed_query = "风沙 wind sand transport"
+    mixed_qid = query_identity("mixed", mixed_query)
+    signature = RequestSignature.from_dict_strict(request_signature(page_size=25))
+    spec = LaneExecutionSpec(
+        key=DiscoveryLaneKey(
+            keyword_id=KEYWORD_ID,
+            query_id=mixed_qid,
+            provider=PROVIDER,
+            mode="backfill",
+            generation=1,
+            request_signature=signature.hash,
+        ),
+        request_signature=signature,
+        keyword_zh=KEYWORD_ZH,
+        query=mixed_query,
+        query_language="mixed",
+        relevance_profile_hash="test-profile",
+    )
+    assert spec.query_language == "mixed"
+
+    store = PageJournalStore(tmp_path / "pages")
+    page = store.make_synthetic_page(
+        page_id="p-mixed", keyword_id=KEYWORD_ID, keyword_zh=KEYWORD_ZH,
+        query_id=mixed_qid, query=mixed_query, query_language="mixed",
+        provider=PROVIDER, lane="backfill",
+        request_signature_value=request_signature(page_size=25),
+        request_cursor=INITIAL_CURSOR, next_cursor="next",
+        provider_exhausted=False,
+        candidates=[],
+    )
+    assert page["query_language"] == "mixed"
+    assert page["query_id"] == mixed_qid

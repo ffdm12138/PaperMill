@@ -2,7 +2,7 @@
 
 Representative matrix (not field-exhaustive).  Field-level coverage is in
 unit tests: test_backfill_state, test_keyword_notebook,
-test_discovery_keyword_audit_v3, etc.
+test_discovery_keyword_audit, etc.
 """
 from __future__ import annotations
 
@@ -19,13 +19,13 @@ from src.discovery.backfill_state import (
     is_strictly_pristine_unbound_backfill,
     resolve_backfill_generation_binding,
 )
-from src.discovery.keyword_notebook import (
-    KeywordNotebookStore,
+from src.discovery.contracts.notebook import (
     notebook_filename,
     query_identity,
     validate_notebook,
 )
-from src.discovery.page_journal import request_signature
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from src.discovery.contracts.page_journal import request_signature
 
 pytestmark = pytest.mark.contract
 
@@ -41,7 +41,7 @@ def _make_store(tmp_path: Path) -> tuple[KeywordNotebookStore, dict]:
     ])
     bind_test_relevance_profile(store, KEYWORD)
     store.set_enabled(KEYWORD, True)
-    return store, store.require_v3(KEYWORD)
+    return store, store.require_v4(KEYWORD)
 
 
 def _backfill_from(nb: dict) -> dict:
@@ -192,21 +192,19 @@ def test_audit_strict_pristine_is_summary_only(tmp_path):
     from scripts.audit_discovery_keyword_index_sources import run_audit
     from src.catalog_folders.registry import definition_hash
     import scripts.audit_discovery_keyword_index_sources as audit_module
-    notebooks = tmp_path / "nb"; pending = tmp_path / "pg"
-    reg = tmp_path / "reg"; locks = tmp_path / "locks"
-    exports = tmp_path / "exports"; catalog = tmp_path / "cat"
-    for p in (notebooks, pending, reg, locks, exports, catalog): p.mkdir()
-    audit_module.DISCOVERY_KEYWORD_NOTEBOOK_DIR = notebooks
-    audit_module.DISCOVERY_PENDING_PAGES_DIR = pending
-    audit_module.DISCOVERY_LOCKS_DIR = locks; audit_module.DISCOVERY_EXPORTS_DIR = exports
-    audit_module.DISCOVERY_DIR = tmp_path / "disc"
+    from src.discovery.runtime_context import runtime_context_from_workspace
+    from tests.helpers.discovery_workspace import make_test_workspace
+    ctx = runtime_context_from_workspace(make_test_workspace(tmp_path / "ws"))
+    notebooks = ctx.notebook_root; pending = ctx.page_journal_root
+    reg = tmp_path / "reg"; catalog = tmp_path / "cat"
+    for p in (reg, catalog): p.mkdir()
     audit_module.CATALOG_FOLDER_ROOT = catalog; audit_module.CATALOG_STATE_ROOT = reg
     store = KeywordNotebookStore(notebooks)
     store.ensure_notebook("测试审计"); store.sync_search_queries("测试审计", add=[
         {"query": "测试审计", "language": "zh", "source": "pytest"},
         {"query": "audit test", "language": "en", "source": "pytest"},
     ]); bind_test_relevance_profile(store, "测试审计"); store.set_enabled("测试审计", True)
-    nb = store.require_v3("测试审计")
+    nb = store.require_v4("测试审计")
     row = {"category_id": nb["keyword_id"], "keyword_zh": nb["keyword_zh"],
            "normalized_keyword_zh": nb["keyword_zh"], "directory_name": nb["keyword_zh"],
            "source_notebook": notebook_filename(nb["keyword_zh"]),
@@ -216,7 +214,7 @@ def test_audit_strict_pristine_is_summary_only(tmp_path):
     (reg / "category_registry.json").write_text(json.dumps(
         {"schema_version": "1.0", "categories": [row]}, ensure_ascii=False), encoding="utf-8")
     (catalog / nb["keyword_zh"]).mkdir(parents=True, exist_ok=True)
-    report = run_audit()
+    report = run_audit(ctx)
     assert report["errors"] == []
     assert report["summary"]["pristine_unbound_lanes"] == 4
 
@@ -224,25 +222,23 @@ def test_audit_strict_pristine_is_summary_only(tmp_path):
 def test_audit_page_journal_without_sig_state_only(tmp_path):
     """Page journal on disk with state-only pristine notebook is audit error."""
     from src.discovery.models import PaperCandidate
-    from src.discovery.page_journal import PageJournalStore
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from scripts.audit_discovery_keyword_index_sources import run_audit
     from src.catalog_folders.registry import definition_hash
     import scripts.audit_discovery_keyword_index_sources as audit_module
-    notebooks = tmp_path / "nb"; pending = tmp_path / "pg"
-    reg = tmp_path / "reg"; locks = tmp_path / "locks"
-    exports = tmp_path / "exports"; catalog = tmp_path / "cat"
-    for p in (notebooks, pending, reg, locks, exports, catalog): p.mkdir()
-    audit_module.DISCOVERY_KEYWORD_NOTEBOOK_DIR = notebooks
-    audit_module.DISCOVERY_PENDING_PAGES_DIR = pending
-    audit_module.DISCOVERY_LOCKS_DIR = locks; audit_module.DISCOVERY_EXPORTS_DIR = exports
-    audit_module.DISCOVERY_DIR = tmp_path / "disc"
+    from src.discovery.runtime_context import runtime_context_from_workspace
+    from tests.helpers.discovery_workspace import make_test_workspace
+    ctx = runtime_context_from_workspace(make_test_workspace(tmp_path / "ws"))
+    notebooks = ctx.notebook_root; pending = ctx.page_journal_root
+    reg = tmp_path / "reg"; catalog = tmp_path / "cat"
+    for p in (reg, catalog): p.mkdir()
     audit_module.CATALOG_FOLDER_ROOT = catalog; audit_module.CATALOG_STATE_ROOT = reg
     store = KeywordNotebookStore(notebooks)
     store.ensure_notebook("测试审计"); store.sync_search_queries("测试审计", add=[
         {"query": "测试审计", "language": "zh", "source": "pytest"},
         {"query": "audit test", "language": "en", "source": "pytest"},
     ]); bind_test_relevance_profile(store, "测试审计"); store.set_enabled("测试审计", True)
-    nb = store.require_v3("测试审计")
+    nb = store.require_v4("测试审计")
     row = {"category_id": nb["keyword_id"], "keyword_zh": nb["keyword_zh"],
            "normalized_keyword_zh": nb["keyword_zh"], "directory_name": nb["keyword_zh"],
            "source_notebook": notebook_filename(nb["keyword_zh"]),
@@ -266,7 +262,7 @@ def test_audit_page_journal_without_sig_state_only(tmp_path):
         provider="openalex", lane="backfill", page_id="p1")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
-    report = run_audit()
+    report = run_audit(ctx)
     assert any(row["kind"] == "generation" for row in report["errors"])
     assert report["backfill_state_safe"] is False
 

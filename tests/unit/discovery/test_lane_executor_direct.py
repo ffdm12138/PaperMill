@@ -88,8 +88,8 @@ class TestDirectExecutorExceptionHandling:
                 DiscoveryBatchRuntime,
                 ActiveRelevanceProfiles,
             )
-            from src.discovery.keyword_notebook import KeywordNotebookStore
-            from src.discovery.page_journal import PageJournalStore
+            from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+            from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
             from src.discovery.runtime.budgets import DualScopePageBudget
             from dataclasses import dataclass
 
@@ -156,8 +156,8 @@ class TestDirectExecutorExceptionHandling:
                 DiscoveryBatchRuntime,
                 ActiveRelevanceProfiles,
             )
-            from src.discovery.keyword_notebook import KeywordNotebookStore
-            from src.discovery.page_journal import PageJournalStore
+            from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+            from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
             from src.discovery.runtime.budgets import DualScopePageBudget
             from dataclasses import dataclass
 

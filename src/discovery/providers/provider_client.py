@@ -99,15 +99,30 @@ class _TimeClock:
 
 
 class RequestsTransport:
-    """Production transport built on ``requests`` (the only requests user)."""
+    """Production transport built on ``requests`` (the only requests user).
+
+    Proxy policy is explicit project configuration only: proxies come from
+    ``config.settings.FETCH_PROXY`` (via ``src.fetch.proxy.get_fetch_proxies``)
+    and ambient ``HTTP_PROXY``/``HTTPS_PROXY`` environment variables are
+    deliberately ignored (``trust_env=False``) so behavior never depends on
+    whatever shell happened to launch the process.
+    """
 
     def __init__(self, proxies: dict[str, str] | None = None) -> None:
         self._proxies = proxies
+        self._session: Any = None
+
+    def _get_session(self) -> Any:
+        if self._session is None:
+            import requests  # local import: the single allowed requests call-site
+
+            session = requests.Session()
+            session.trust_env = False
+            self._session = session
+        return self._session
 
     def send(self, spec: "RequestSpec", timeout_seconds: float) -> RawResponse:
-        import requests  # local import: the single allowed requests call-site
-
-        response = requests.get(
+        response = self._get_session().get(
             spec.url,
             params=spec.params,
             headers=spec.headers,

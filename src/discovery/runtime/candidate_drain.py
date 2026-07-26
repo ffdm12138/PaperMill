@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime
+from src.discovery.staging_gateway import MetadataStagingGateway
 from src.discovery.pending_queue import (
     DrainOutcome,
     DrainReport,
@@ -47,13 +48,16 @@ class CandidateDrainCoordinator:
 
     runtime: DiscoveryBatchRuntime
     journal: Any  # PageJournalStore
-    options: Any  # DiscoveryOptions
     worker_id: str
     paper_raw_dir: Path
     papers_dir: Path
     ledger_path: Path
     locks_dir: Path
     exports_dir: Path
+    gateway: MetadataStagingGateway | None = None
+    pending_store: Any = None  # PendingCandidateStoreV4; None disables store drain
+    receipt_store: Any = None  # MigrationReceiptStoreV4; migration drains only
+    staging_no_progress_timeout_seconds: float = 300.0
     skip_duplicates: bool = False
     hide_existing: bool = False
     max_candidates: int = 50
@@ -81,12 +85,15 @@ class CandidateDrainCoordinator:
     _last_progress: float = field(default=0.0, repr=False)
     _consumer: threading.Thread | None = field(default=None, repr=False)
     _drains: dict[str, list[DrainReport]] = field(default_factory=dict, repr=False)
+    _all_drains: dict[str, list[DrainReport]] = field(default_factory=dict, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     # ── public API ────────────────────────────────────────────────────
 
     def __enter__(self) -> "CandidateDrainCoordinator":
         self._last_progress = time.monotonic()
+        self._drains.clear()
+        self._all_drains.clear()
         self._consumer = threading.Thread(
             target=self._run_consumer,
             name="discovery-staging-consumer",
@@ -96,7 +103,6 @@ class CandidateDrainCoordinator:
         return self
 
     def __exit__(self, *args: Any) -> bool:
-        self._closed = True
         diagnostic = self.close()
         if diagnostic is not None:
             # Surface consumer lifecycle issues — they indicate a bug
@@ -143,6 +149,12 @@ class CandidateDrainCoordinator:
         accumulated counts for budget exhaustion via budget_exhausted().
         """
         self.runtime.guard.ensure_open()
+        if self.gateway is None:
+            self.gateway = MetadataStagingGateway(
+                paper_raw_dir=self.paper_raw_dir,
+                papers_dir=self.papers_dir,
+                ledger_path=self.ledger_path,
+            )
         try:
             result = drain_pending_candidates(
                 journal=self.journal,
@@ -160,9 +172,36 @@ class CandidateDrainCoordinator:
                 skip_duplicates=self.skip_duplicates,
                 hide_existing=self.hide_existing,
                 runtime=self.runtime,
+                gateway=self.gateway,
+                pending_store=self.pending_store,
+                receipt_store=self.receipt_store,
             )
-            # Track accumulated processed count for budget exhaustion (locked)
-            with self._state_lock:
+            self._track_drain_result(keyword_id, result, phase=phase)
+            return result
+        except ProviderRequestBudgetExhausted:
+            result = DrainReport.budget_stopped(
+                reason="provider_request_budget_reached",
+            )
+            self._track_drain_result(keyword_id, result, phase=phase)
+            return result
+        except Exception as exc:
+            result = DrainReport.retryable_failed(exc, phase=phase)
+            self._track_drain_result(keyword_id, result, phase=phase)
+            return result
+
+    def _track_drain_result(
+        self, keyword_id: str, result: DrainReport, *, phase: str
+    ) -> None:
+        """Record a drain result in the appropriate aggregate bucket.
+
+        Incremental (initial/consumer) drains feed the pending report and the
+        per-keyword candidate budget.  Final drains are recorded only for
+        coordinator-level outcome diagnostics so they are not double-counted
+        against the incremental pending report.
+        """
+        with self._state_lock:
+            self._all_drains.setdefault(keyword_id, []).append(result)
+            if phase not in {"final", "final_until_exhausted"}:
                 prior = self._drains.setdefault(keyword_id, [])
                 prior.append(result)
                 total_processed = sum(r.processed for r in prior)
@@ -172,17 +211,16 @@ class CandidateDrainCoordinator:
                     and total_processed >= self.max_candidates
                 ):
                     self._budget_exhausted.add(keyword_id)
-            return result
-        except ProviderRequestBudgetExhausted:
-            return DrainReport.budget_stopped(
-                reason="provider_request_budget_reached",
-            )
-        except Exception as exc:
-            return DrainReport.failed(exc, phase=phase)
 
     def close(self) -> str | None:
-        """Send sentinel, wait for consumer, return diagnostic or None."""
-        timeout = getattr(self.options, "staging_no_progress_timeout_seconds", 300.0)
+        """Send sentinel, wait for consumer, return diagnostic or None.
+
+        Idempotent: once closed, subsequent calls return None immediately.
+        """
+        if self._closed:
+            return None
+        self._closed = True
+        timeout = self.staging_no_progress_timeout_seconds
         diagnostic: str | None = None
         consumer_join_timeout = min(10.0, timeout)
 
@@ -192,7 +230,7 @@ class CandidateDrainCoordinator:
         while time.monotonic() < sentinel_deadline:
             # If consumer already dead, no point waiting
             if self._consumer is not None and not self._consumer.is_alive():
-                diagnostic = "staging_consumer_died_before_close"
+                diagnostic = diagnostic or "staging_consumer_died_before_close"
                 break
             try:
                 self._queue.put(None, timeout=min(1.0, timeout))
@@ -235,10 +273,12 @@ class CandidateDrainCoordinator:
 
     @property
     def outcome(self) -> DrainOutcome:
-        """Aggregate drain outcome across all drains."""
+        """Aggregate drain outcome across all drains (incremental and final)."""
         worst: DrainOutcome = DrainOutcome.COMPLETED
         with self._state_lock:
-            reports_list = [r for reports in self._drains.values() for r in reports]
+            reports_list = [
+                r for reports in self._all_drains.values() for r in reports
+            ]
         for report in reports_list:
                 if report.outcome == DrainOutcome.REPAIR_REQUIRED:
                     return DrainOutcome.REPAIR_REQUIRED
@@ -252,6 +292,7 @@ class CandidateDrainCoordinator:
 
     @property
     def drain_reports(self) -> dict[str, list[DrainReport]]:
+        """Incremental drain reports only (initial and consumer drains)."""
         with self._state_lock:
             return {k: list(v) for k, v in self._drains.items()}
 
@@ -274,24 +315,14 @@ class CandidateDrainCoordinator:
                         prior = self._drains.setdefault(keyword_id, [])
                         processed = sum(report.processed for report in prior)
                     remaining = max(0, self.max_candidates - processed)
-                    current = self.drain(
+                    self.drain(
                         keyword_id,
                         min(candidate_count, remaining),
                         phase="consumer",
                     )
-                    with self._state_lock:
-                        prior.append(current)
-                        if (
-                            not self.until_exhausted
-                            and self.max_candidates > 0
-                            and sum(report.processed for report in prior) >= self.max_candidates
-                        ):
-                            self._budget_exhausted.add(keyword_id)
                 except Exception as exc:
-                    with self._state_lock:
-                        self._drains.setdefault(keyword_id, []).append(
-                            DrainReport.failed(exc, phase="consumer"),
-                        )
+                    failed_report = DrainReport.retryable_failed(exc, phase="consumer")
+                    self._track_drain_result(keyword_id, failed_report, phase="consumer")
                     with self._progress_lock:
                         self._consumer_failures.append(
                             f"staging_consumer_exception:{type(exc).__name__}:{str(exc)[:400]}"

@@ -12,7 +12,7 @@ import inspect
 
 import pytest
 
-from src.discovery.keyword_notebook import (
+from src.discovery.contracts.notebook import (
     PAGINATION_SCHEMA_VERSION,
     composite_backfill_signature,
     pagination_signature,

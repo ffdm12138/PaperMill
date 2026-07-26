@@ -17,7 +17,8 @@ from src.catalog_folders.reconcile import reconcile_catalog_folders
 from src.catalog_folders.registry import load_categories, sync_registry
 from src.catalog_folders.task_planner import plan_tasks
 from src.catalog_folders.validation import doctor
-from src.discovery.keyword_notebook import KeywordNotebookStore, notebook_path
+from src.discovery.contracts.notebook import notebook_path
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 

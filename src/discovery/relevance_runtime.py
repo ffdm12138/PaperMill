@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from config.settings import DISCOVERY_KEYWORD_NOTEBOOK_DIR, TRANSACTION_ROOT
+from config.settings import DISCOVERY_GENERATIONS_DIR, TRANSACTION_ROOT
 
 
 @dataclass(frozen=True)
@@ -39,11 +39,19 @@ class RelevanceRuntimePaths:
         journal_root = Path(journal_root)
         if transaction_root is None:
             # Production keeps relevance transactions beside the other
-            # repository transactions.  Isolated callers (tests and local
-            # sandboxes) keep the historical sibling layout so the resolver
-            # remains self-contained and never makes the coordinator rebuild
-            # this policy.
-            if notebook_root.resolve() == Path(DISCOVERY_KEYWORD_NOTEBOOK_DIR).resolve():
+            # repository transactions.  Production notebooks live in the
+            # active v4 generation workspace
+            # (``<generations>/<generation_id>/keyword_notebooks``); the
+            # migration staging area (``<generations>/.staging/<id>``) and
+            # isolated callers (tests and local sandboxes) keep the
+            # historical sibling layout so the resolver remains
+            # self-contained and never makes the coordinator rebuild this
+            # policy.
+            resolved = notebook_root.resolve()
+            if (
+                resolved.name == "keyword_notebooks"
+                and resolved.parent.parent == Path(DISCOVERY_GENERATIONS_DIR).resolve()
+            ):
                 transaction_root = Path(TRANSACTION_ROOT) / "relevance_profiles"
             else:
                 transaction_root = notebook_root.parent / "transactions" / "relevance_profiles"

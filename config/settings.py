@@ -184,12 +184,13 @@ CITATION_STYLE = _env_str("MINERU_CITATION_STYLE", "author-year")
 SUPPORTED_FORMATS = {".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg"}
 
 # 确保目录存在（导入即创建，有副作用）
+# 注意：legacy 扁平目录 DISCOVERY_KEYWORD_NOTEBOOK_DIR / DISCOVERY_PENDING_PAGES_DIR
+# 不在此自动创建——v4 迁移后它们由迁移/审计工具按需显式创建，缺失即失败。
 for d in [
     RAW_DIR, PAPER_RAW_DIR, PAPERS_DIR,
     MINERU_TMP_DIR, MINERU_LOG_DIR,
     CATALOG_FOLDER_ROOT, CATALOG_STATE_ROOT, DISCOVERY_DIR,
-    DISCOVERY_KEYWORD_NOTEBOOK_DIR,
-    DISCOVERY_PENDING_PAGES_DIR, DISCOVERY_LOCKS_DIR, DISCOVERY_EXPORTS_DIR,
+    DISCOVERY_LOCKS_DIR, DISCOVERY_EXPORTS_DIR,
     JOBS_DIR, UPLOAD_STAGING_DIR,
 ]:
     d.mkdir(parents=True, exist_ok=True)

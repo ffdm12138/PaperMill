@@ -659,7 +659,7 @@ def _audit_notebooks(data_root: Path) -> dict[str, Any]:
             "profile_hashes": {}, "findings": [finding.to_dict()],
         }
     from src.discovery.backfill_state import describe_nonpristine_unbound_backfill, is_strictly_pristine_unbound_backfill
-    from src.discovery.keyword_notebook import validate_discovery_readiness, validate_notebook
+    from src.discovery.contracts.notebook import validate_discovery_readiness, validate_notebook
     try:
         entries = sorted(root.iterdir(), key=lambda item: item.name)
     except OSError as exc:
@@ -769,10 +769,12 @@ def _audit_page_journals(data_root: Path, profile_hashes: dict[str, str]) -> dic
             "exists": True, "total_pages": 0, "pages": 0,
             "total_candidates": 0, "findings": [finding.to_dict()],
         }
-    from src.discovery.page_journal import (
-        JournalDrainIndex, PageJournalStore,
-        classify_candidate_lifecycle, validate_journal_drain_index,
+    from src.discovery.contracts.page_journal import (
+        classify_candidate_lifecycle,
+        validate_journal_drain_index,
     )
+    from src.discovery.stores.journal_drain_index import JournalDrainIndex
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     store = PageJournalStore(pending)
     total_pages = 0
     total_candidates = 0
@@ -836,7 +838,7 @@ def _audit_page_journals(data_root: Path, profile_hashes: dict[str, str]) -> dic
             index_violations = [f"{type(exc).__name__}: {exc}"]
     for detail in index_violations:
         findings.append(_finding("journal_drain_index_invalid", "repair", "page_journal", pending, detail))
-    from src.discovery.page_journal import NONTERMINAL_CANDIDATE_STATES
+    from src.discovery.contracts.page_journal import NONTERMINAL_CANDIDATE_STATES
     unfinished_statuses = NONTERMINAL_CANDIDATE_STATES
     unfinished = sum(count for status, count in by_candidate_status.items() if status in unfinished_statuses)
     return {

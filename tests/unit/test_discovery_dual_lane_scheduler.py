@@ -6,21 +6,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.discovery.keyword_notebook import (
+from src.discovery.contracts.notebook import (
     INITIAL_CURSOR,
-    KeywordNotebookStore,
     query_identity,
 )
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.coordinator import (
     DiscoveryOptions, _profile_filters, _profile_order, _profile_sort,
-    run_discovery_batch,
+    _validate_provider_request_shape, run_discovery_batch,
 )
 from src.discovery.execution.lane_models import LaneExecutionSpec
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_client import ProviderClient
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )
@@ -46,11 +48,12 @@ def _seed_ready(root: Path, *, page_size: int) -> KeywordNotebookStore:
     )
     bind_test_relevance_profile(store, KEYWORD_ZH)
     store.set_enabled(KEYWORD_ZH, True)
-    notebook = store.require_v3(KEYWORD_ZH)
+    notebook = store.require_v4(KEYWORD_ZH)
     for entry in notebook["search_queries"].values():
         for provider in ("openalex", "crossref"):
             sort = _profile_sort(notebook, provider, "backfill")
-            order = _profile_order(notebook, provider, "backfill")
+            order = _profile_order(notebook, "backfill")
+            sort, order = _validate_provider_request_shape(provider, sort, order)
             signature = request_signature(
                 sort=sort,
                 filters=_profile_filters(notebook, provider, "backfill", sort, order),
@@ -120,7 +123,7 @@ def _install_fake_fetch(monkeypatch, openalex_pages, crossref_pages):
         )
 
     fetcher = CallbackProviderPageFetcher(_fetch)
-    monkeypatch.setattr("src.discovery.coordinator.ProviderPageFetcher", lambda: fetcher)
+    monkeypatch.setattr("src.discovery.providers.provider_page_fetcher.ProviderPageFetcher", lambda: fetcher)
     return calls
 
 
@@ -129,6 +132,11 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
                    notebook_dir: Path, paper_raw_dir: Path | None = None,
                    papers_dir: Path | None = None, hide_existing=False):
     runtime_base = notebook_dir / ".discovery_runtime"
+    workspace = make_test_workspace(
+        runtime_base,
+        notebook_dir=notebook_dir,
+        page_journals_dir=runtime_base / "pending_pages",
+    )
     options = DiscoveryOptions(
         mode=mode,
         refresh_pages=refresh_pages,
@@ -136,10 +144,7 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
         page_size=page_size,
         max_candidates=max_candidates,
         hide_existing=hide_existing,
-        notebook_dir=notebook_dir,
-        pending_pages_dir=runtime_base / "pending_pages",
-        locks_dir=runtime_base / "locks",
-        exports_dir=runtime_base / "exports",
+        workspace=workspace,
         output_dir=runtime_base / "output",
         paper_raw_dir=paper_raw_dir or (runtime_base / "paper_raw"),
         papers_dir=papers_dir or (runtime_base / "papers"),
@@ -149,7 +154,7 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
     batch_report = run_discovery_batch([keyword], options=options, max_workers=2)
     report_obj = batch_report.keywords[0]
     candidates = []
-    journal = PageJournalStore(options.pending_pages_dir)
+    journal = PageJournalStore(workspace.page_journals_dir)
     for ref in journal.list_pages([report_obj.keyword_id]):
         data = journal.read(ref.path)
         for item in data.get("candidates", []):

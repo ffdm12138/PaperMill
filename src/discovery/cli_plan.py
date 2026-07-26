@@ -1,6 +1,6 @@
 """Read-only discovery planning helpers for CLI entry points.
 
-The CLI selects a schema-v3 notebook by its Chinese classification keyword.
+The CLI selects a schema-v4 notebook by its Chinese classification keyword.
 Provider queries are read exclusively from that notebook's active
 ``search_queries``.  These helpers deliberately do not acquire file locks or
 create directories, so ``--dry-run`` can validate and display a plan without
@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.discovery.keyword_notebook import (
+from src.discovery.contracts.notebook import (
     DiscoveryNotReadyError,
     NotebookCorruptError,
     resolve_existing_notebook,
@@ -46,7 +46,7 @@ def load_keyword_plan(
     """Return a validated, mutation-free execution plan for one notebook."""
     path = resolve_existing_notebook(keyword_zh, Path(notebook_dir))
     if path is None:
-        raise FileNotFoundError(f"no schema-v3 notebook for keyword_zh: {keyword_zh!r}")
+        raise FileNotFoundError(f"no schema-v4 notebook for keyword_zh: {keyword_zh!r}")
     notebook = _read_notebook(path)
     if notebook["keyword_zh"] != keyword_zh.strip():
         raise NotebookCorruptError(

@@ -10,11 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime, ShutdownReason
+from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime
+from src.discovery.contracts.enums import ShutdownReason
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier,
     bind_test_relevance_profile,
@@ -61,10 +63,13 @@ def test_runtime_lifecycle_normal_completion(tmp_path: Path, monkeypatch: pytest
 
     opts = DiscoveryOptions(
         mode="backfill", max_candidates=10,
-        notebook_dir=nb_dir,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(
+            tmp_path,
+            notebook_dir=nb_dir,
+            page_journals_dir=tmp_path / "pages",
+            locks_dir=tmp_path / "locks",
+            exports_dir=tmp_path / "exports",
+        ),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -112,7 +117,8 @@ def test_runtime_lifecycle_verify_context_manager_works(tmp_path: Path):
     `with runtime:` in coordinator.py. This test confirms the
     underlying lifecycle transitions work as expected.
     """
-    from src.discovery.page_journal import JournalDrainIndex, PageJournalStore
+    from src.discovery.stores.journal_drain_index import JournalDrainIndex
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles
 
     journal = PageJournalStore(tmp_path / "pages")
@@ -148,7 +154,7 @@ def test_runtime_lifecycle_verify_context_manager_works(tmp_path: Path):
 
 def test_runtime_lifecycle_exception_exit(tmp_path: Path):
     """When context exits with an exception, runtime sets cancellation and FAILED."""
-    from src.discovery.page_journal import PageJournalStore
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles
 
     journal = PageJournalStore(tmp_path / "pages")
@@ -179,7 +185,7 @@ def test_runtime_lifecycle_exception_exit(tmp_path: Path):
 
 def test_runtime_lifecycle_keyboard_interrupt(tmp_path: Path):
     """KeyboardInterrupt in context → INTERRUPTED reason, cancellation set."""
-    from src.discovery.page_journal import PageJournalStore
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles
 
     journal = PageJournalStore(tmp_path / "pages")

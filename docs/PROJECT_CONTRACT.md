@@ -74,7 +74,7 @@ cursor. Provider pages are journaled before cursor CAS. Pending candidates use
 leases and DOI/title-resolution locks, and the allocator's final duplicate gate
 remains authoritative.
 
-The production migration scope is the five enabled Chinese schema-v3 notebooks.
+The production data set contains five enabled Chinese keyword notebooks; legacy schema-v3 notebooks must be migrated to schema v4 before discovery can use them.
 Inventory and a fixed reviewed source mapping must precede any authorized
 apply; the applied transaction must preserve every query, provider generation,
 request signature, cursor, generation history, and page journal. Mapping and
@@ -153,13 +153,13 @@ page journals.
     paper_number。分类 semantic decision 不因纯 rename 自动失效。
 32. 禁止 fake classifier 写真实分类；禁止根据候选目录猜测并生成 notebook；
     禁止重置真实 provider cursor。
-33. Active discovery notebook 只接受 schema v3；`keyword_zh` 是唯一中文分类
+33. Active discovery notebook 只接受 schema v4；`keyword_zh` 是唯一中文分类
     identity，`search_queries` 同时保存中文和英文 provider query。
 34. `enabled=true` 必须同时拥有 active zh/en query；disabled draft 可以暂时
     not-ready。任何 enabled 定义修改若不能保持 ready，必须整笔失败且不写入。
 35. Discovery audit 只读并校验 notebook、provider generation/signature、page
     journal、provenance 与 registry 的 identity closure；不能修复或移动运行时文件。
-36. Discovery recovery v3 当前只支持 inspect；输出必须绑定
+36. Discovery recovery for legacy v3 notebooks 当前只支持 inspect；输出必须绑定
     `keyword_id/query_id/provider/generation/request_signature` 与 page-chain 证明，
     cursor 分叉、signature/generation 冲突或无证明状态必须 fail closed。
 37. Network discovery staging 只有

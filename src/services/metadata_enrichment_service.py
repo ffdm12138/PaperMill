@@ -411,30 +411,25 @@ def normalize_bibliographic_metadata(raw: dict, source: str = "") -> dict:
 
 # ── Crossref API query ─────────────────────────────────────────────────
 
-CROSSREF_API_URL = "https://api.crossref.org/works/{doi}"
-
-
 def query_crossref_by_doi(doi: str, timeout: int = 15) -> dict | None:
     """Query Crossref API for work metadata by DOI.
 
     Returns the raw 'message' dict from Crossref response, or None on failure.
     This function IS the network-callable unit — tests must mock it.
+
+    HTTP goes through the unified ``ProviderClient`` (shared limiter,
+    retry/backoff, circuit breaker, proxy-configured transport) via
+    :func:`src.discovery.resolve_crossref.get_crossref_work_by_doi`.
     """
-    import requests
-    from src.fetch.proxy import get_fetch_proxies
+    from src.discovery.resolve_crossref import get_crossref_work_by_doi
 
     normalized = normalize_doi(doi)
     if not normalized:
         return None
-    url = CROSSREF_API_URL.format(doi=normalized)
-    try:
-        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "mineru-literature-manager/1.0"}, proxies=get_fetch_proxies())
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("message")
-    except Exception as exc:
-        logger.warning(f"Crossref query failed for DOI {doi!r}: {exc}")
-        return None
+    message = get_crossref_work_by_doi(normalized, timeout_seconds=timeout)
+    if message is None:
+        logger.warning(f"Crossref query failed for DOI {doi!r}")
+    return message
 
 
 # ── Enrichment orchestration ───────────────────────────────────────────

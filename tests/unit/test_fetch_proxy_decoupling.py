@@ -54,7 +54,7 @@ def test_discovery_resolve_crossref_uses_proxy():
     assert "from src.fetch.proxy import get_fetch_proxies" not in src
     assert "proxies=get_fetch_proxies()" not in src
     assert "import requests" not in src
-    transport_src = (ROOT / "src" / "discovery" / "provider_client.py").read_text(encoding="utf-8")
+    transport_src = (ROOT / "src" / "discovery" / "providers" / "provider_client.py").read_text(encoding="utf-8")
     assert "from src.fetch.proxy import get_fetch_proxies" in transport_src
     assert "RequestsTransport(proxies=get_fetch_proxies())" in transport_src
 
@@ -66,19 +66,74 @@ def test_discovery_search_openalex_uses_proxy():
     assert "from src.fetch.proxy import get_fetch_proxies" not in src
     assert "proxies=get_fetch_proxies()" not in src
     assert "import requests" not in src
-    transport_src = (ROOT / "src" / "discovery" / "provider_client.py").read_text(encoding="utf-8")
+    transport_src = (ROOT / "src" / "discovery" / "providers" / "provider_client.py").read_text(encoding="utf-8")
     assert "RequestsTransport(proxies=get_fetch_proxies())" in transport_src
 
 
-def test_metadata_resolver_uses_proxy():
-    """metadata_resolver 的 _requests.get 调用必须传 proxies。"""
+def test_metadata_resolver_has_no_direct_http():
+    """metadata_resolver 不得直连 requests——OpenAlex/Crossref HTTP 统一走
+    ProviderClient(代理由 RequestsTransport 强制注入,见上方 transport 测试)。"""
     src = (ROOT / "src" / "services" / "metadata_resolver.py").read_text(encoding="utf-8")
-    assert "from src.fetch.proxy import get_fetch_proxies" in src
-    assert "proxies=get_fetch_proxies()" in src
+    assert "import requests" not in src
+    assert "requests.get" not in src
+    assert "proxies=get_fetch_proxies()" not in src
 
 
-def test_metadata_enrichment_service_uses_proxy():
-    """metadata_enrichment_service 的 requests.get 必须传 proxies。"""
+def test_metadata_enrichment_service_has_no_direct_http():
+    """metadata_enrichment_service 不得直连 requests——Crossref HTTP 统一走
+    ProviderClient(代理由 RequestsTransport 强制注入,见上方 transport 测试)。"""
     src = (ROOT / "src" / "services" / "metadata_enrichment_service.py").read_text(encoding="utf-8")
-    assert "from src.fetch.proxy import get_fetch_proxies" in src
-    assert "proxies=get_fetch_proxies()" in src
+    assert "import requests" not in src
+    assert "requests.get" not in src
+    assert "proxies=get_fetch_proxies()" not in src
+
+
+def test_provider_transport_ignores_ambient_proxy_env(monkeypatch):
+    """RequestsTransport uses an explicit Session with trust_env=False, so
+    ambient HTTP(S)_PROXY never leaks into discovery HTTP; the configured
+    FETCH_PROXY dict is passed explicitly on every request."""
+    from src.discovery.providers.provider_client import (
+        RequestsTransport,
+        RequestSpec,
+    )
+
+    class FakeResponse:
+        status_code = 200
+        headers: dict = {}
+        content = b"{}"
+
+    created: list = []
+
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+            self.calls = []
+            created.append(self)
+
+        def get(self, url, params=None, headers=None, timeout=None, proxies=None):
+            self.calls.append({"url": url, "proxies": proxies})
+            return FakeResponse()
+
+    import requests
+    monkeypatch.setattr(requests, "Session", FakeSession)
+
+    proxies = {"http": "http://127.0.0.1:1", "https": "http://127.0.0.1:1"}
+    transport = RequestsTransport(proxies=proxies)
+    spec = RequestSpec(
+        provider="openalex",
+        purpose="discovery_page",
+        url="https://example.org/works",
+    )
+    transport.send(spec, 5.0)
+
+    assert len(created) == 1
+    assert created[0].trust_env is False
+    assert created[0].calls[0]["proxies"] == proxies
+
+    # Direct mode: proxies=None is passed explicitly; the session still
+    # ignores ambient environment configuration.
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient-proxy:9")
+    direct = RequestsTransport(proxies=None)
+    direct.send(spec, 5.0)
+    assert created[1].trust_env is False
+    assert created[1].calls[0]["proxies"] is None

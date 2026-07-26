@@ -23,7 +23,9 @@ from src.discovery.runtime.budgets import (
     DualScopePageBudget,
     ProviderRequestBudget,
 )
-from src.discovery.page_journal import JournalDrainIndex, PageJournalStore
+from src.discovery.contracts.enums import ShutdownReason
+from src.discovery.stores.journal_drain_index import JournalDrainIndex
+from src.discovery.stores.page_journal_store import PageJournalStoreV4
 from src.discovery.providers.provider_client import (
     ProviderClient,
     ProviderRuntime,
@@ -100,9 +102,6 @@ class ActiveRelevanceProfiles:
         if any(not key or not value for key, value in materialized.items()):
             raise ValueError("active relevance profile bindings must be non-blank")
         return cls(MappingProxyType(materialized))
-
-
-from src.discovery.contracts.enums import ShutdownReason  # unified — re-exported for backward compat
 
 
 class RuntimeState(str, Enum):
@@ -330,7 +329,7 @@ class DiscoveryBatchRuntime:
                 component._runtime_guard = self._guard
 
     @classmethod
-    def create(cls, *, journal: PageJournalStore, paper_raw_dir: Path,
+    def create(cls, *, journal: PageJournalStoreV4, paper_raw_dir: Path,
                papers_dir: Path, ledger_path: Path, needs_staging: bool,
                active_relevance_profiles: ActiveRelevanceProfiles,
                repair_probe_budget_per_batch: int = 20,

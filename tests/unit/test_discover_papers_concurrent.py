@@ -9,14 +9,16 @@ import pytest
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 import scripts.discover_papers_concurrent as mod
-from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id
+from src.discovery.contracts.notebook import keyword_id
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 
 
 pytestmark = pytest.mark.unit
 
 
 def _seed_ready(root: Path, keyword_zh: str) -> None:
-    store = KeywordNotebookStore(root)
+    notebooks = root / "keyword_notebooks"
+    store = KeywordNotebookStore(notebooks)
     store.ensure_notebook(keyword_zh)
     store.sync_search_queries(
         keyword_zh,
@@ -59,7 +61,7 @@ def _fake_batch(keywords: list[str], statuses: list[str] | None = None, *, exit_
 
         def to_dict(self):
             return {
-                "schema_version": "3.0",
+                "schema_version": "4.0",
                 "status": self.status,
                 "exit_code": self.exit_code,
                 "keywords": [
@@ -80,13 +82,24 @@ def test_parse_args_reads_chinese_keyword_file(tmp_path: Path):
     assert args.max_workers == 4
 
 
-def test_parse_args_rejects_free_queries_and_out_of_range_batch():
+def test_parse_args_rejects_free_queries_and_validates_batch_size():
     with pytest.raises(SystemExit) as exc:
         mod._parse_args(["--query", "snow"])
     assert exc.value.code == 2
-    with pytest.raises(SystemExit) as exc:
-        mod._parse_args(["--keyword-zh", "风吹雪"])
-    assert exc.value.code == 2
+
+
+def test_main_rejects_too_few_keywords(tmp_path: Path):
+    """Broad discovery requires 3--8 keywords; this is enforced after
+    --from-enabled-notebooks expansion in main_internal, not in _parse_args."""
+    workspace_root = tmp_path / "workspace"
+    _seed_ready(workspace_root, "风吹雪")
+    rc = mod.main_internal([
+        "--keyword-zh", "风吹雪",
+        "--workspace-root", str(workspace_root),
+        "--output-dir", str(tmp_path / "out"),
+        "--report-dir", str(tmp_path / "reports"),
+    ])
+    assert rc == 1
 
 
 def test_parse_args_enforces_three_or_four_workers():
@@ -120,19 +133,19 @@ def test_until_exhausted_decoupled_from_max_pages_total():
 def test_dry_run_is_read_only_and_lists_all_bilingual_provider_lanes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    notebooks = tmp_path / "notebooks"
+    workspace_root = tmp_path / "workspace"
     keywords = ["风吹雪", "雪粒破碎", "风洞实验"]
     for keyword in keywords:
-        _seed_ready(notebooks, keyword)
+        _seed_ready(workspace_root, keyword)
     report_dir = tmp_path / "reports"
     output_dir = tmp_path / "output"
 
     argv = sum((["--keyword-zh", value] for value in keywords), [])
-    with patch.object(mod, "run_discovery_batch") as run_batch:
+    with patch.object(mod, "run_discovery_batch_with_dependencies") as run_batch:
         rc = mod.main_internal([
             *argv,
             "--dry-run",
-            "--keyword-notebook-dir", str(notebooks),
+            "--workspace-root", str(workspace_root),
             "--report-dir", str(report_dir),
             "--output-dir", str(output_dir),
         ])
@@ -166,30 +179,41 @@ def test_dry_run_is_read_only_and_lists_all_bilingual_provider_lanes(
 
 
 def test_from_enabled_notebooks_excludes_disabled(tmp_path: Path):
-    notebooks = tmp_path / "notebooks"
+    workspace_root = tmp_path / "workspace"
     for keyword in ["风吹雪", "雪粒破碎", "风洞实验", "积雪输运"]:
-        _seed_ready(notebooks, keyword)
-    KeywordNotebookStore(notebooks).set_enabled("积雪输运", False)
-    args = mod._parse_args([
-        "--from-enabled-notebooks",
-        "--keyword-notebook-dir", str(notebooks),
-    ])
-    assert set(args.keywords) == {"风吹雪", "雪粒破碎", "风洞实验"}
+        _seed_ready(workspace_root, keyword)
+    KeywordNotebookStore(workspace_root / "keyword_notebooks").set_enabled("积雪输运", False)
+
+    batch = _fake_batch(["风吹雪", "雪粒破碎", "风洞实验"])
+    with patch.object(mod, "run_discovery_batch_with_dependencies", return_value=batch) as run_batch:
+        rc = mod.main_internal([
+            "--from-enabled-notebooks",
+            "--workspace-root", str(workspace_root),
+            "--output-dir", str(tmp_path / "out"),
+            "--report-dir", str(tmp_path / "reports"),
+            "--paper-raw-dir", str(tmp_path / "paper_raw"),
+            "--papers-dir", str(tmp_path / "papers"),
+            "--ledger-path", str(tmp_path / "ledger.json"),
+        ])
+
+    assert rc == 0
+    selected, = run_batch.call_args.args
+    assert set(selected) == {"风吹雪", "雪粒破碎", "风洞实验"}
 
 
 def test_main_calls_one_coordinator_with_chinese_notebook_identities(tmp_path: Path):
-    notebooks = tmp_path / "notebooks"
+    workspace_root = tmp_path / "workspace"
     keywords = ["风吹雪", "雪粒破碎", "风洞实验"]
     for keyword in keywords:
-        _seed_ready(notebooks, keyword)
+        _seed_ready(workspace_root, keyword)
     argv = sum((["--keyword-zh", value] for value in keywords), [])
     batch = _fake_batch(keywords)
 
-    with patch.object(mod, "run_discovery_batch", return_value=batch) as run_batch:
+    with patch.object(mod, "run_discovery_batch_with_dependencies", return_value=batch) as run_batch:
         rc = mod.main_internal([
             *argv,
             "--max-workers", "3",
-            "--keyword-notebook-dir", str(notebooks),
+            "--workspace-root", str(workspace_root),
             "--output-dir", str(tmp_path / "out"),
             "--report-dir", str(tmp_path / "reports"),
         ])
@@ -208,11 +232,15 @@ def test_missing_notebook_fails_before_coordinator_and_before_writes(tmp_path: P
     keywords = ["风吹雪", "雪粒破碎", "风洞实验"]
     argv = sum((["--keyword-zh", value] for value in keywords), [])
     report_dir = tmp_path / "reports"
-    with patch.object(mod, "run_discovery_batch") as run_batch:
+    workspace_root = tmp_path / "missing"
+    with patch.object(mod, "run_discovery_batch_with_dependencies") as run_batch:
         rc = mod.main_internal([
             *argv,
-            "--keyword-notebook-dir", str(tmp_path / "missing"),
+            "--workspace-root", str(workspace_root),
             "--report-dir", str(report_dir),
+            "--paper-raw-dir", str(tmp_path / "paper_raw"),
+            "--papers-dir", str(tmp_path / "papers"),
+            "--ledger-path", str(tmp_path / "ledger.json"),
         ])
     assert rc == 1
     run_batch.assert_not_called()

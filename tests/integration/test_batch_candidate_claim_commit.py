@@ -3,8 +3,9 @@ from pathlib import Path
 import pytest
 
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
-from src.discovery.keyword_notebook import keyword_id, query_identity
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+from src.discovery.contracts.notebook import keyword_id, query_identity
 
 pytestmark = pytest.mark.integration
 

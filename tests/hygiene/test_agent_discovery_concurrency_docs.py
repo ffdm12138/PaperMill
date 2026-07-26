@@ -59,7 +59,7 @@ def test_agents_docs_document_dual_lane_notebooks():
         assert "Refresh" in text and "Backfill" in text, f"{rel} missing Refresh/Backfill"
         assert "keyword_notebooks" in text, f"{rel} missing notebook dir ref"
         assert "manage_discovery_keywords.py" in text, f"{rel} missing manage script ref"
-        assert "keyword notebook schema v3" in text, f"{rel} missing strict v3 contract"
+        assert "keyword notebook schema v4" in text, f"{rel} missing strict v4 contract"
         assert "keyword_zh" in text and "search_queries" in text
         assert "query text never becomes a Catalog category" in text
         assert "Active discovery never expands queries" in text

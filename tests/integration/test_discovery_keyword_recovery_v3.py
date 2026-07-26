@@ -6,10 +6,11 @@ from pathlib import Path
 import pytest
 
 import scripts.recover_discovery_keyword_notebooks as recovery
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
-from src.discovery.keyword_notebook import query_identity
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+from src.discovery.contracts.notebook import query_identity
 
 
 pytestmark = pytest.mark.integration
@@ -30,7 +31,7 @@ def test_recovery_cli_inspect_is_explicitly_read_only(
         {"query": "风吹雪", "language": "zh"},
         {"query": "blowing snow", "language": "en"},
     ], pag_sig=signature["hash"])
-    notebook = store.require_v3("风吹雪")
+    notebook = store.require_v4("风吹雪")
     qid = query_identity("en", "blowing snow")
     journal = PageJournalStore(pages)
     page = journal.make_synthetic_page(

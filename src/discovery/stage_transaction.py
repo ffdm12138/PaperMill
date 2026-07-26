@@ -74,9 +74,6 @@ class DiscoveryStageResult:
     error: StageTransactionError | None = None
 
 
-StageTransactionResult = DiscoveryStageResult
-
-
 class DiscoveryStageTransaction:
     """Refresh, reconcile, allocate/write, and publish under one lock.
 
@@ -456,10 +453,6 @@ class DiscoveryStageTransaction:
                 workspace_path=self.paper_raw_dir / number,
                 receipt_path=str(result.get("receipt_path") or ""), identity_refs=identity_refs,
             )
-
-    def inspect_doi(self, normalized_doi: str) -> DiscoveryStageResult:
-        """Compatibility alias for read-only classification."""
-        return self.classify_existing_doi(normalized_doi)
 
     def classify_existing_doi(self, normalized_doi: str) -> DiscoveryStageResult:
         """Refresh once and classify without allocating a raw workspace."""

@@ -1,4 +1,12 @@
-"""In-process DOI discovery coordinator (v100).
+"""In-process DOI discovery coordinator (v102).
+
+v102: core coordinator is bundle-only; ``DiscoveryRuntimeDependencies`` is the
+sole dependency object, and production scripts call
+``run_discovery_batch_with_dependencies`` after constructing dependencies
+explicitly.  ``run_discovery_batch`` remains a test-oriented composition-root
+wrapper that builds dependencies from an explicit ``DiscoveryWorkspace``
+(``options.workspace``) or a supplied bundle; the transitional flat-path
+fallback and ``DiscoveryRuntimeDependencies.from_options`` are removed.
 
 v101: dead code removed, single-source report model from report_builder.
 
@@ -6,9 +14,9 @@ This is the single active engine used by both single-keyword and multi-keyword
 CLI entrypoints. It coordinates journal-first provider paging, pending drains,
 global lane concurrency, provider limiters, and report aggregation.
 
-Architecture (v100)::
+Architecture (v102)::
 
-    run_discovery_batch
+    run_discovery_batch_with_dependencies
     → _run_discovery_batch_unlocked
     → with DiscoveryBatchRuntime factory as runtime:
     → with CandidateDrainCoordinator(...) as drain:
@@ -34,49 +42,36 @@ from filelock import FileLock, Timeout as FileLockTimeout
 
 from config.settings import (
     DISCOVERY_DIR,
-    DISCOVERY_EXPORTS_DIR,
-    DISCOVERY_KEYWORD_NOTEBOOK_DIR,
-    DISCOVERY_LOCKS_DIR,
-    DISCOVERY_PENDING_PAGES_DIR,
     PAPER_NUMBER_LEDGER_PATH,
     PAPER_RAW_DIR,
     PAPERS_DIR,
 )
-from src.discovery.workspace import (
-    DiscoveryWorkspace,
-    WorkspaceResolver,
-)
+from src.discovery.stores.bundle import DiscoveryStoreBundleV4
+from src.discovery.workspace import DiscoveryWorkspace
 from src.discovery.runtime.batch_runtime import (
     ActiveRelevanceProfiles,
     DiscoveryBatchRuntime,
     DiscoveryPipelineMetrics,
-    ShutdownReason,
 )
+from src.discovery.contracts.enums import ShutdownReason
 from src.discovery.runtime.candidate_drain import CandidateDrainCoordinator
 from src.discovery.execution.lane_executor import execute_refresh_lane, execute_backfill_lane
 from src.discovery.reporting.report_builder import ReportBuilder  # module-level for test monkeypatching
-from src.discovery.keyword_notebook import (
+from src.discovery.staging_gateway import MetadataStagingGateway
+from src.discovery.contracts.notebook import (
     PROVIDERS,
-    KeywordNotebookStore,
-    LegacyNotebookSchemaError,
     NotebookCorruptError,
     UnsupportedNotebookSchemaError,
     _active_queries,
     keyword_id as make_keyword_id,
     validate_discovery_readiness,
 )
-from src.discovery.page_journal import (
-    PageJournalStore,
-    parse_iso,
-    refresh_page_id,
-    request_signature,
-)
+from src.discovery.contracts.page_journal import parse_iso
 from src.discovery.relevance_runtime import RelevanceRuntimePaths
 from src.discovery.relevance import (
     OpenAlexDoiVerifier,
     RawOpenAlexWorkCache,
     evaluate_page_candidates,
-    is_legacy_unbound_profile,
     openalex_topic_filter,
 )
 from src.discovery.pending_queue import DrainReport, drain_pending_candidates
@@ -103,45 +98,60 @@ class DiscoveryOptions:
     max_pending_candidates: int = 1000
     resume_pending_candidates: int = 700
     staging_no_progress_timeout_seconds: float = 300.0
-    notebook_dir: Path = DISCOVERY_KEYWORD_NOTEBOOK_DIR
-    pending_pages_dir: Path = DISCOVERY_PENDING_PAGES_DIR
-    locks_dir: Path = DISCOVERY_LOCKS_DIR
-    exports_dir: Path = DISCOVERY_EXPORTS_DIR
     output_dir: Path = DISCOVERY_DIR / "doi_candidates"
     paper_raw_dir: Path = PAPER_RAW_DIR
     papers_dir: Path = PAPERS_DIR
     ledger_path: Path = PAPER_NUMBER_LEDGER_PATH
+    # Cross-generation correctness caches (file-generation/fingerprint
+    # bound): deliberately global, never inside a per-generation workspace.
     relevance_cache_dir: Path = DISCOVERY_DIR / "relevance_raw_work_cache"
     title_resolution_cache_dir: Path = DISCOVERY_DIR / "title_resolution_cache"
     relevance_runtime_paths: RelevanceRuntimePaths | None = None
     # Tests and isolated callers may inject a DOI verifier.  Production uses
     # the raw-Work cache backed OpenAlex verifier created by the coordinator.
     crossref_scope_verifier: Any | None = None
-    # v4 workspace (primary path source).  When set, all directory attributes
-    # derive from the workspace.  Production CLI auto-resolves the active
-    # workspace via WorkspaceResolver.  Flat-path attributes remain as
-    # properties for backward-compatible test injection.
+    # v4 workspace (sole discovery directory source).  When set, the report
+    # output directory derives from the workspace; flat-path attributes were
+    # removed with the transitional ``from_options`` helper.
     workspace: DiscoveryWorkspace | None = None
 
     def __post_init__(self) -> None:
-        # Resolve flat paths from workspace when available
         if self.workspace is not None:
-            if self.notebook_dir == DISCOVERY_KEYWORD_NOTEBOOK_DIR:
-                object.__setattr__(self, "notebook_dir", self.workspace.keyword_notebook_dir)
-            if self.pending_pages_dir == DISCOVERY_PENDING_PAGES_DIR:
-                object.__setattr__(self, "pending_pages_dir", self.workspace.page_journals_dir)
-            if self.locks_dir == DISCOVERY_LOCKS_DIR:
-                object.__setattr__(self, "locks_dir", self.workspace.locks_dir)
-            if self.exports_dir == DISCOVERY_EXPORTS_DIR:
-                object.__setattr__(self, "exports_dir", self.workspace.exports_dir)
             object.__setattr__(self, "output_dir", self.workspace.exports_dir)
 
 
-def _profile_sort(nb: dict[str, Any], provider: str, lane: str, options: DiscoveryOptions) -> str | None:
+@dataclass(frozen=True)
+class DiscoveryRuntimeDependencies:
+    """Bundle-scoped dependencies injected into the discovery core.
+
+    The core coordinator receives exactly one ``DiscoveryRuntimeDependencies``
+    instance and never calls ``WorkspaceResolver.resolve_active()`` or reads
+    discovery paths from ``config.settings``.  All paths are supplied by the
+    composition root (CLI/scripts/tests).
+    """
+
+    bundle: DiscoveryStoreBundleV4
+    paper_raw_dir: Path
+    papers_dir: Path
+    ledger_path: Path
+    locks_dir: Path
+    exports_dir: Path
+    output_dir: Path
+    relevance_cache_dir: Path
+    title_resolution_cache_dir: Path
+    relevance_runtime_paths: RelevanceRuntimePaths | None = None
+    crossref_scope_verifier: Any | None = None
+    metadata_gateway: MetadataStagingGateway | None = None
+    staging_no_progress_timeout_seconds: float = 300.0
+
+    @property
+    def workspace(self) -> DiscoveryWorkspace:
+        return self.bundle.notebooks.workspace
+
+
+def _profile_sort(nb: dict[str, Any], provider: str, lane: str) -> str | None:
     profile = nb.get("relevance_profile")
     if isinstance(profile, dict):
-        if is_legacy_unbound_profile(profile):
-            return None
         if provider == "openalex":
             return str(profile["openalex"]["refresh_sort" if lane == "refresh" else "backfill_sort"])
         return str(profile["crossref"]["refresh_sort" if lane == "refresh" else "backfill_sort"])
@@ -151,8 +161,6 @@ def _profile_sort(nb: dict[str, Any], provider: str, lane: str, options: Discove
 def _profile_order(nb: dict[str, Any], lane: str) -> str | None:
     profile = nb.get("relevance_profile")
     if isinstance(profile, dict):
-        if is_legacy_unbound_profile(profile):
-            return None
         return str(profile["crossref"]["refresh_order" if lane == "refresh" else "backfill_order"])
     return None
 
@@ -161,13 +169,11 @@ def _profile_filters(nb: dict[str, Any], provider: str, lane: str, sort: str | N
     profile = nb.get("relevance_profile")
     if not isinstance(profile, dict):
         return {"provider": provider, "lane": lane, "sort": sort or "", "order": order or ""}
-    if is_legacy_unbound_profile(profile):
-        return {}
     return {
         "provider": provider,
         "lane": lane,
         "profile_hash": profile["profile_hash"],
-        "openalex_filter": "" if is_legacy_unbound_profile(profile) else openalex_topic_filter(profile),
+        "openalex_filter": openalex_topic_filter(profile),
         "scope_policy": profile["crossref"]["scope_policy"],
         "sort": sort or "",
         "order": order or "",
@@ -258,7 +264,8 @@ def _validate_discovery_options(
 def _run_discovery_batch_unlocked(
     keywords: list[str],
     *,
-    options: "DiscoveryOptions | None" = None,
+    deps: DiscoveryRuntimeDependencies,
+    options: "DiscoveryOptions",
     max_workers: int = 4,
     page_fetcher: "Any" = None,
 ) -> "BatchDiscoveryReport":
@@ -269,17 +276,16 @@ def _run_discovery_batch_unlocked(
         DiscoveryLaneKey, LaneCounters, LaneExecutionSpec, LaneOutcome,
         LaneState, RequestSignature, StopReason,
     )
-    from src.discovery.page_journal import JournalCorruptError, PAGE_SCHEMA_VERSION
+    from src.discovery.contracts.page_journal import JournalCorruptError, PAGE_SCHEMA_VERSION
     from src.discovery.providers.provider_page_fetcher import ProviderPageFetcher
     from src.discovery.reporting.report_builder import KeywordReportInput
     from src.discovery.execution.lane_services import RefreshStateService
     from src.discovery.title_resolution import TitleResolutionService, DurableTitleCache
 
-    options = options or DiscoveryOptions()
     _validate_discovery_options(options, keywords, max_workers=max_workers)
     page_fetcher = page_fetcher or ProviderPageFetcher()
-    notebook = KeywordNotebookStore(options.notebook_dir)
-    journal = PageJournalStore(options.pending_pages_dir)
+    notebook = deps.bundle.notebooks
+    journal = deps.bundle.pages
     builder = ReportBuilder()
     page_budget = DualScopePageBudget(
         per_lane_limit=None if options.until_exhausted else options.backfill_pages,
@@ -292,7 +298,7 @@ def _run_discovery_batch_unlocked(
         for summary in notebook.list_keywords():
             if not summary["enabled"]:
                 continue
-            current = notebook.require_v3(str(summary["keyword_zh"]))
+            current = notebook.require_v4(str(summary["keyword_zh"]))
             readiness = validate_discovery_readiness(current)
             if not readiness:
                 raise RuntimeError(
@@ -302,8 +308,7 @@ def _run_discovery_batch_unlocked(
             active_profiles[str(current["keyword_id"])] = str(
                 current["relevance_profile"]["profile_hash"]
             )
-    except (RuntimeError, NotebookCorruptError, LegacyNotebookSchemaError,
-            UnsupportedNotebookSchemaError) as exc:
+    except (RuntimeError, NotebookCorruptError, UnsupportedNotebookSchemaError) as exc:
         global_error = str(exc)
     if global_error:
         return builder.build(
@@ -329,9 +334,9 @@ def _run_discovery_batch_unlocked(
     try:
         runtime = DiscoveryBatchRuntime.create(
             journal=journal,
-            paper_raw_dir=options.paper_raw_dir,
-            papers_dir=options.papers_dir,
-            ledger_path=options.ledger_path,
+            paper_raw_dir=deps.paper_raw_dir,
+            papers_dir=deps.papers_dir,
+            ledger_path=deps.ledger_path,
             needs_staging=bool(options.stage_to_paper_raw or options.hide_existing),
             active_relevance_profiles=ActiveRelevanceProfiles.build(active_profiles),
             persist_repair_cursor=bool(options.apply and options.stage_to_paper_raw),
@@ -340,33 +345,37 @@ def _run_discovery_batch_unlocked(
             page_budget=page_budget,
         )
     except JournalCorruptError as exc:
-        # v4: per-keyword isolation — map v2/v3 journals to their keyword_ids
-        # and only those keywords receive repair_required.  Unaffected keywords
-        # continue normally.  When keyword attribution is impossible, every
-        # keyword receives the error (existing behaviour).
+        # v4: per-keyword isolation — attribute journals whose schema is not
+        # the active v4 page schema to their keyword_zh so only those keywords
+        # receive repair_required.  Unaffected keywords continue normally.
+        # When attribution is impossible or unreliable, every keyword receives
+        # the error (fail closed).
         error_msg = f"provider_page_journal_repair_required:{exc}"
-        affected_keywords: dict[str, set[str]] = {}
+        affected_keywords: set[str] = set()
+        attribution_reliable = True
         try:
-            # Best-effort attribution: read the offending journal path from
-            # the error context if available
-            for path in options.pending_pages_dir.rglob("*.json"):
+            for path in sorted(deps.bundle.pages.root_dir.rglob("*.json")):
                 try:
-                    raw = path.read_text(encoding="utf-8")
-                    data = json.loads(raw)
-                    if isinstance(data, dict):
-                        schema_ver = data.get("schema_version", "")
-                        if schema_ver not in ("", "3.0") and schema_ver != PAGE_SCHEMA_VERSION:
-                            kw = str(data.get("keyword_zh", "") or "")
-                            if kw:
-                                affected_keywords.setdefault(kw, set()).add("legacy_journal")
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    # An unreadable journal makes per-keyword attribution
+                    # unreliable; fail all keywords instead of guessing.
+                    attribution_reliable = False
+                    break
+                if isinstance(data, dict):
+                    schema_ver = str(data.get("schema_version") or "")
+                    if schema_ver != PAGE_SCHEMA_VERSION:
+                        kw = str(data.get("keyword_zh", "") or "")
+                        if kw:
+                            affected_keywords.add(kw)
+        except OSError:
+            attribution_reliable = False
+        if not attribution_reliable:
+            affected_keywords.clear()
 
         keyword_inputs: list[KeywordReportInput] = []
         for keyword in keywords:
-            is_affected = bool(keyword in affected_keywords)
+            is_affected = keyword in affected_keywords
             keyword_inputs.append(KeywordReportInput(
                 keyword_zh=keyword,
                 keyword_id=make_keyword_id(keyword),
@@ -396,29 +405,32 @@ def _run_discovery_batch_unlocked(
         runtime.title_resolution_service = TitleResolutionService(
             client=runtime.provider_client("crossref"),
             budget=doi_budget,
-            cache=DurableTitleCache(options.title_resolution_cache_dir),
+            cache=DurableTitleCache(deps.title_resolution_cache_dir),
             runtime_guard=runtime.guard,
         )
-        cache_dir = options.relevance_cache_dir
-        if cache_dir == DiscoveryOptions().relevance_cache_dir and options.notebook_dir != DISCOVERY_KEYWORD_NOTEBOOK_DIR:
-            cache_dir = Path(options.notebook_dir).parent / ".relevance_raw_work_cache"
+        cache_dir = deps.relevance_cache_dir
+        if cache_dir == DiscoveryOptions().relevance_cache_dir:
+            # The default cache belongs to the v4 workspace generation root
+            # (``.relevance_raw_work_cache`` is an intentional generation-root
+            # child); only an explicit override keeps a caller-chosen path.
+            cache_dir = deps.workspace.root / ".relevance_raw_work_cache"
         default_scope_verifier = OpenAlexDoiVerifier(
             cache=RawOpenAlexWorkCache(cache_dir),
             client=runtime.provider_client("openalex"),
         )
-        scope_verifier = options.crossref_scope_verifier or default_scope_verifier
+        scope_verifier = deps.crossref_scope_verifier or default_scope_verifier
         refresh_state = RefreshStateService(notebook)
 
         with CandidateDrainCoordinator(
             runtime=runtime,
             journal=journal,
-            options=options,
+            staging_no_progress_timeout_seconds=deps.staging_no_progress_timeout_seconds,
             worker_id=f"worker-{uuid.uuid4().hex[:12]}",
-            paper_raw_dir=options.paper_raw_dir,
-            papers_dir=options.papers_dir,
-            ledger_path=options.ledger_path,
-            locks_dir=options.locks_dir,
-            exports_dir=options.exports_dir,
+            paper_raw_dir=deps.paper_raw_dir,
+            papers_dir=deps.papers_dir,
+            ledger_path=deps.ledger_path,
+            locks_dir=deps.locks_dir,
+            exports_dir=deps.exports_dir,
             skip_duplicates=options.skip_duplicates,
             hide_existing=options.hide_existing,
             max_candidates=options.max_candidates,
@@ -428,6 +440,9 @@ def _run_discovery_batch_unlocked(
             apply=options.apply,
             doi_resolution_budget=options.doi_resolution_budget,
             until_exhausted=options.until_exhausted,
+            gateway=deps.metadata_gateway,
+            pending_store=deps.bundle.pending,
+            receipt_store=deps.bundle.receipts,
         ) as drain:
             # deferred relevance retry helper
             def retry_due_deferred(keyword_id: str, profile: dict) -> None:
@@ -491,7 +506,7 @@ def _run_discovery_batch_unlocked(
                     "backpressure": False, "errors": [], "terminal_status": None,
                 }
                 try:
-                    nb = notebook.require_v3(keyword)
+                    nb = notebook.require_v4(keyword)
                     record["keyword_id"] = nb["keyword_id"]
                     if not nb["enabled"]:
                         record["terminal_status"] = "skipped"
@@ -514,8 +529,7 @@ def _run_discovery_batch_unlocked(
                             if record["backpressure"]:
                                 initial.backpressure = True
                             record["nb"] = nb
-                except (FileNotFoundError, NotebookCorruptError, LegacyNotebookSchemaError,
-                        UnsupportedNotebookSchemaError, RuntimeError) as exc:
+                except (FileNotFoundError, NotebookCorruptError, UnsupportedNotebookSchemaError, RuntimeError) as exc:
                     record["terminal_status"] = "failed"
                     record["errors"].append(str(exc))
                 records.append(record)
@@ -538,7 +552,7 @@ def _run_discovery_batch_unlocked(
                                 continue
                             sort, order = _validate_provider_request_shape(
                                 provider,
-                                _profile_sort(nb, provider, mode, options),
+                                _profile_sort(nb, provider, mode),
                                 _profile_order(nb, mode),
                             )
                             signature = RequestSignature.create(
@@ -608,7 +622,7 @@ def _run_discovery_batch_unlocked(
                     )
                 return execute_backfill_lane(
                     spec, runtime=runtime, notebook=notebook,
-                    journal=journal, options=options,
+                    journal=journal, locks_dir=deps.locks_dir,
                     page_fetcher=page_fetcher,
                     candidate_budget_exhausted=candidate_budget_is_exhausted,
                     notify_staging=drain.notify,
@@ -635,6 +649,16 @@ def _run_discovery_batch_unlocked(
             interrupted = sched_snapshot.error in ("keyboard_interrupt", "cancelled")
             if interrupted:
                 runtime.cancel(ShutdownReason.INTERRUPTED)
+
+            # Close the drain coordinator before the final drain.  Lanes are
+            # done, so the consumer thread must finish processing all of its
+            # queued notifications before we can compute the remaining budget
+            # accurately.  close() is idempotent so __exit__ becomes a no-op.
+            if not interrupted:
+                drain_diagnostic = drain.close()
+                if drain_diagnostic is not None:
+                    for record in records:
+                        record["errors"].append(drain_diagnostic)
 
             # ── final drain ──
             # Skip final drain after interrupt — runtime is no longer OPEN.
@@ -707,23 +731,53 @@ def run_discovery_batch(
     keywords: list[str],
     *,
     options: "DiscoveryOptions | None" = None,
+    bundle: "DiscoveryStoreBundleV4 | None" = None,
     max_workers: int = 4,
     page_fetcher: "Any" = None,
 ) -> "BatchDiscoveryReport":
-    """Run an isolated batch while excluding profile-apply transactions."""
+    """Run an isolated batch while excluding profile-apply transactions.
+
+    This is the test-oriented composition-root entry point.  It builds a
+    ``DiscoveryRuntimeDependencies`` object from the supplied options and
+    bundle, then delegates to the core coordinator.  Callers must supply an
+    explicit ``DiscoveryWorkspace`` (``options.workspace``) or a ready
+    ``DiscoveryStoreBundleV4``; the legacy flat-path fallback was removed with
+    ``DiscoveryRuntimeDependencies.from_options``.
+    """
     from src.discovery.relevance_runtime import RelevanceRuntimePaths
     from src.discovery.relevance_profiles import list_applying_relevance_profile_transactions
     from filelock import FileLock, Timeout as FileLockTimeout
 
     effective = options or DiscoveryOptions()
-    # v4: auto-resolve active workspace when no explicit workspace set
-    if effective.workspace is None:
-        resolver = WorkspaceResolver()
-        effective.workspace = resolver.resolve_active()
-        # Re-run post_init to derive flat paths from workspace
-        effective.__post_init__()
-    runtime_paths = effective.relevance_runtime_paths or RelevanceRuntimePaths.resolve_default(
-        notebook_root=effective.notebook_dir, journal_root=effective.pending_pages_dir,
+    if bundle is None:
+        if effective.workspace is None:
+            raise RuntimeError(
+                "run_discovery_batch requires options.workspace or an explicit "
+                "DiscoveryStoreBundleV4 bundle; the flat-path fallback is removed"
+            )
+        bundle = DiscoveryStoreBundleV4.from_workspace(effective.workspace)
+    workspace = bundle.notebooks.workspace
+    deps = DiscoveryRuntimeDependencies(
+        bundle=bundle,
+        paper_raw_dir=Path(effective.paper_raw_dir),
+        papers_dir=Path(effective.papers_dir),
+        ledger_path=Path(effective.ledger_path),
+        locks_dir=workspace.locks_dir,
+        exports_dir=workspace.exports_dir,
+        output_dir=Path(effective.output_dir),
+        relevance_cache_dir=Path(effective.relevance_cache_dir),
+        title_resolution_cache_dir=Path(effective.title_resolution_cache_dir),
+        relevance_runtime_paths=effective.relevance_runtime_paths,
+        crossref_scope_verifier=effective.crossref_scope_verifier,
+        metadata_gateway=MetadataStagingGateway(
+            paper_raw_dir=Path(effective.paper_raw_dir),
+            papers_dir=Path(effective.papers_dir),
+            ledger_path=Path(effective.ledger_path),
+        ),
+        staging_no_progress_timeout_seconds=effective.staging_no_progress_timeout_seconds,
+    )
+    runtime_paths = deps.relevance_runtime_paths or RelevanceRuntimePaths.resolve_default(
+        notebook_root=deps.bundle.notebooks.notebook_dir, journal_root=deps.bundle.pages.root_dir,
     )
     Path(runtime_paths.lock_path).parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(runtime_paths.lock_path), timeout=0)
@@ -740,7 +794,60 @@ def run_discovery_batch(
             )
         try:
             return _run_discovery_batch_unlocked(
-                keywords, options=effective, max_workers=max_workers, page_fetcher=page_fetcher,
+                keywords, deps=deps, options=effective, max_workers=max_workers, page_fetcher=page_fetcher,
+            )
+        except KeyboardInterrupt:
+            from src.discovery.reporting.report_builder import BatchDiscoveryReport
+            return BatchDiscoveryReport(
+                status="interrupted",
+                exit_code=130,
+                keywords=[],
+                aggregate={},
+                pipeline_metrics={},
+            )
+    finally:
+        lock.release()
+
+
+def run_discovery_batch_with_dependencies(
+    keywords: list[str],
+    *,
+    deps: DiscoveryRuntimeDependencies,
+    options: "DiscoveryOptions | None" = None,
+    max_workers: int = 4,
+    page_fetcher: "Any" = None,
+) -> "BatchDiscoveryReport":
+    """Core composition-root entry point for callers with explicit dependencies.
+
+    Acquires the relevance-profile exclusion lock, validates that no profile
+    transaction is applying, and runs the discovery core.  This is the
+    function production scripts should call after resolving the active
+    workspace and constructing ``DiscoveryRuntimeDependencies``.
+    """
+    from src.discovery.relevance_runtime import RelevanceRuntimePaths
+    from src.discovery.relevance_profiles import list_applying_relevance_profile_transactions
+    from filelock import FileLock, Timeout as FileLockTimeout
+
+    effective = options or DiscoveryOptions()
+    runtime_paths = deps.relevance_runtime_paths or RelevanceRuntimePaths.resolve_default(
+        notebook_root=deps.bundle.notebooks.notebook_dir, journal_root=deps.bundle.pages.root_dir,
+    )
+    Path(runtime_paths.lock_path).parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(runtime_paths.lock_path), timeout=0)
+    try:
+        lock.acquire()
+    except FileLockTimeout as exc:
+        raise RuntimeError("relevance profile transaction is applying; discovery is fail-closed") from exc
+    try:
+        applying = list_applying_relevance_profile_transactions(Path(runtime_paths.transaction_root))
+        if applying:
+            raise RuntimeError(
+                "relevance profile transaction is durably applying; discovery is fail-closed: "
+                + ",".join(map(str, applying))
+            )
+        try:
+            return _run_discovery_batch_unlocked(
+                keywords, deps=deps, options=effective, max_workers=max_workers, page_fetcher=page_fetcher,
             )
         except KeyboardInterrupt:
             from src.discovery.reporting.report_builder import BatchDiscoveryReport

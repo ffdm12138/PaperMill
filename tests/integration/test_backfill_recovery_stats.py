@@ -6,15 +6,16 @@ from pathlib import Path
 import pytest
 
 from src.discovery.backfill_transaction import run_backfill_page_transaction
-from src.discovery.keyword_notebook import KeywordNotebookStore, query_identity
+from src.discovery.contracts.notebook import query_identity
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.execution.lane_models import DiscoveryLaneKey, LaneExecutionSpec, RequestSignature
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import (
+from src.discovery.contracts.page_journal import (
     INITIAL_CURSOR,
-    PageJournalStore,
     backfill_page_id,
     request_signature,
 )
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from tests.helpers.fake_provider import discovery_page
 from tests.helpers.relevance_profiles import finalize_all_passed
@@ -34,7 +35,7 @@ def _seed(notebook: KeywordNotebookStore, signature_hash: str) -> dict:
         add=[{"query": QUERY, "language": "en"}],
         pag_sig=signature_hash,
     )
-    return notebook.require_v3(KEYWORD_ZH)
+    return notebook.require_v4(KEYWORD_ZH)
 
 
 def _spec(notebook: KeywordNotebookStore, nb: dict, signature: dict) -> LaneExecutionSpec:

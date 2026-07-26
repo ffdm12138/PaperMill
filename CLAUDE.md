@@ -159,7 +159,13 @@ before cursor CAS. Use `manage_discovery_keywords.py` for notebook operations.
 Pending work uses leases and DOI/title-resolution locks; `max_candidates` is a
 drain budget and never discards fetched candidates.
 
-Only keyword notebook schema v3 is active. One notebook owns one Chinese
+The page journal is the sole production candidate carrier.
+`PendingCandidateStoreV4` is a migration-only transitional drain channel:
+written only by the v4 migrator, drained by normal discovery runs, and its
+directory removed by `--clean-legacy` once empty (see
+`docs/ADR_DISCOVERY_V4_MIGRATION_FINAL.md`).
+
+Only keyword notebook schema v4 is active. One notebook owns one Chinese
 classification identity (`keyword_zh`) and multiple curated `search_queries`.
 Every enabled Chinese and English query runs against both OpenAlex and
 Crossref, but query text never becomes a Catalog category, directory, task
@@ -172,11 +178,11 @@ provider-lane plan.
 Enabled notebooks must always be bilingual-ready. New incomplete definitions
 are disabled drafts, and store-level enable/mutation checks fail closed if
 readiness would be lost. `audit_discovery_keyword_index_sources.py` is strict
-v3 and read-only. `recover_discovery_keyword_notebooks.py --inspect` is the
-only v3 recovery mode; recovery apply is unavailable until a plan-bound writer
+v4 and read-only. `recover_discovery_keyword_notebooks.py --inspect` is the
+only recovery mode for legacy v3 notebooks; recovery apply is unavailable until a plan-bound writer
 is independently verified.
 
-The current production migration covers five enabled Chinese v3 notebooks.
+The production set contains five enabled Chinese keyword notebooks; legacy v3 notebooks must be migrated to v4 before discovery can use them.
 Inventory and a fixed reviewed mapping/plan precede any authorized apply, and
 the applied transaction preserves queries, provider generation/signature,
 cursors, generation history, and page journals. Real mapping and plan evidence

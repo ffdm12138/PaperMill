@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.discovery.keyword_notebook import CursorConflictError, KeywordNotebookStore, query_identity
-from src.discovery.page_journal import INITIAL_CURSOR, request_signature
+from src.discovery.contracts.notebook import CursorConflictError, query_identity
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from src.discovery.contracts.page_journal import INITIAL_CURSOR, request_signature
 
 
 pytestmark = pytest.mark.unit

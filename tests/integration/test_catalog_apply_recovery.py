@@ -13,7 +13,8 @@ import pytest
 
 from src.catalog_folders.formal_registry import FormalPaper, FormalPaperRegistry
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
-from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id as derive_keyword_id
+from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.catalog_folders.registry import load_categories, sync_registry
 from src.catalog_folders.reconcile import reconcile_catalog_folders
 from src.catalog_folders.result_validator import apply_result

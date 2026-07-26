@@ -25,7 +25,8 @@ from src.catalog_folders.registry import (
     sync_registry,
     validate_catalog_keyword,
 )
-from src.discovery.keyword_notebook import KeywordNotebookStore, empty_notebook
+from src.discovery.contracts.notebook import empty_notebook
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -40,7 +41,7 @@ def _write_notebook(notebook_dir: Path, keyword: str, *,
                     provider_error: str | None = None,
                     enabled: bool = True,
                     filename: str | None = None) -> Path:
-    """Write a complete schema-v3 keyword notebook for testing.
+    """Write a complete schema-v4 keyword notebook for testing.
 
     Query entries are built through the public notebook store so provider
     state stays structurally valid.  Explicit identity overrides are reserved
@@ -57,7 +58,7 @@ def _write_notebook(notebook_dir: Path, keyword: str, *,
                 reason="test_fixture",
                 operator="pytest",
             )
-            data = store.require_v3(keyword)
+            data = store.require_v4(keyword)
     data["classification"] = {
         "guidance_zh": guidance_zh,
         "aliases_zh": aliases_zh or [],

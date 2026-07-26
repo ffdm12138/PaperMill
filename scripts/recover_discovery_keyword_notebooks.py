@@ -29,11 +29,11 @@ from config.settings import (  # noqa: E402
     DISCOVERY_PENDING_PAGES_DIR,
 )
 from src.discovery.constants import INITIAL_CURSOR  # noqa: E402
-from src.discovery.keyword_notebook import (  # noqa: E402
+from src.discovery.contracts.notebook import (  # noqa: E402
     PROVIDERS,
     validate_notebook,
 )
-from src.discovery.page_journal import validate_page  # noqa: E402
+from src.discovery.contracts.page_journal import validate_page  # noqa: E402
 
 
 class RecoveryApplyUnavailable(RuntimeError):

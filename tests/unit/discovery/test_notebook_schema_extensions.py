@@ -13,13 +13,13 @@ import copy
 
 import pytest
 
-from src.discovery.keyword_notebook import (
-    KeywordNotebookStore,
+from src.discovery.contracts.notebook import (
     NotebookCorruptError,
     _empty_search_query,
     empty_notebook,
     validate_notebook,
 )
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 
 
 def _nb_with_query() -> dict:
@@ -119,7 +119,7 @@ def _make_store(tmp_path):
         search_queries=[{"query": "风蚀", "language": "zh"}],
         enabled=False,
     )
-    nb = store.require_v3("风蚀测试")
+    nb = store.require_v4("风蚀测试")
     qid = next(iter(nb["search_queries"]))
     return store, "风蚀测试", qid
 

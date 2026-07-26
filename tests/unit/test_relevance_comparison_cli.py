@@ -9,7 +9,7 @@ from scripts.compare_discovery_relevance import (
     _load_groups,
     _resolve_group_profile_maps,
 )
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.models import PaperCandidate
 from src.discovery.relevance_comparison import fetch_openalex_corpus, fetch_synthetic_corpus
 from tests.helpers.relevance_profiles import relevance_profile

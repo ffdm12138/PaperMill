@@ -42,8 +42,6 @@ class RelevanceState(str, Enum):
 
 
 SCOPE_POLICY_REQUIRE_OPENALEX_SUBFIELD = "require_openalex_subfield"
-LEGACY_UNBOUND_FILTER_ID = "S0"
-LEGACY_UNBOUND_LABEL = "__legacy_unbound__"
 _OPENALEX_RELEVANCE_FIELD = "relevance" + "_score"
 
 
@@ -73,15 +71,6 @@ class RelevanceReason(str, Enum):
 
 
 RELEVANCE_REASON_VALUES = frozenset(reason.value for reason in RelevanceReason)
-
-
-def is_legacy_unbound_profile(profile: Mapping[str, Any]) -> bool:
-    openalex = profile.get("openalex") if isinstance(profile, Mapping) else None
-    return bool(
-        isinstance(openalex, Mapping)
-        and openalex.get("filter_ids") == [LEGACY_UNBOUND_FILTER_ID]
-        and openalex.get("filter_labels") == [LEGACY_UNBOUND_LABEL]
-    )
 
 
 def _canonical_text(value: Any) -> str:
@@ -297,12 +286,7 @@ def validate_relevance_profile_source(
     resolved = openalex["resolved"]
     if not isinstance(resolved, bool):
         raise RelevanceProfileError("openalex.resolved must be boolean")
-    legacy_unbound = (
-        resolved is False
-        and filter_ids == [LEGACY_UNBOUND_FILTER_ID]
-        and openalex.get("filter_labels") == [LEGACY_UNBOUND_LABEL]
-    )
-    if require_resolved and not resolved and not legacy_unbound:
+    if require_resolved and not resolved:
         raise RelevanceProfileError("active relevance profiles must resolve OpenAlex subfields")
     if require_resolved and not filter_ids:
         raise RelevanceProfileError("openalex.filter_ids must contain at least one ID")
@@ -381,42 +365,6 @@ def validate_relevance_profile_source(
         raise RelevanceProfileError("relevance_profile.profile_hash does not match content")
     normalized["profile_hash"] = calculated_hash
     return normalized
-
-
-def legacy_unbound_profile() -> dict[str, Any]:
-    """Create the compatibility profile for pre-profile test/fixture notebooks.
-
-    Active operator notebooks should replace this sentinel through the
-    plan-bound configuration tool.  It intentionally makes no provider
-    relevance claim and prevents old v3 fixtures from becoming unclaimable.
-    """
-    return validate_relevance_profile_source({
-        "schema_version": RELEVANCE_PROFILE_SCHEMA_VERSION,
-        "matcher_schema_version": MATCHER_SCHEMA_VERSION,
-        "openalex": {
-            "filter_level": "subfield",
-            "resolved": False,
-            "filter_ids": [LEGACY_UNBOUND_FILTER_ID],
-            "filter_labels": [LEGACY_UNBOUND_LABEL],
-            "refresh_sort": "publication_date:desc",
-            "backfill_sort": "cited_by_count:desc",
-        },
-        "crossref": {
-            "scope_policy": SCOPE_POLICY_REQUIRE_OPENALEX_SUBFIELD,
-            "refresh_sort": "published",
-            "refresh_order": "desc",
-            "backfill_sort": "relevance",
-            "backfill_order": "desc",
-        },
-        "anchors": {
-            "required_groups": [
-                {"name": "object", "terms": ["__legacy_all__"]},
-                {"name": "process", "terms": ["__legacy_all__2"]},
-            ],
-            "negative_any": [],
-            "missing_abstract_policy": "require_all_groups_in_title",
-        },
-    })
 
 
 def openalex_topic_filter(profile: Mapping[str, Any]) -> str:
@@ -716,10 +664,6 @@ def evaluate_candidate(
     prior_attempts: int = 0,
 ) -> RelevanceDecision:
     profile = validate_relevance_profile(profile)
-    if is_legacy_unbound_profile(profile):
-        raise RelevanceProfileError(
-            "profile_unbound relevance sentinel cannot evaluate discovery candidates"
-        )
     anchor_decision = _evaluate_anchor_candidate(candidate, profile)
     if anchor_decision is not None:
         return anchor_decision
@@ -873,7 +817,7 @@ def evaluate_page_candidates(
             if not isinstance(payload, dict):
                 raise ValueError("candidate payload is not an object")
             candidate = PaperCandidate.from_dict(payload)
-            if provider == "crossref" and not is_legacy_unbound_profile(normalized_profile):
+            if provider == "crossref":
                 # Anchor filtering is deliberately local and precedes any
                 # OpenAlex DOI request.  Missing DOI is a local rejection.
                 anchor_decision = _evaluate_anchor_candidate(candidate, normalized_profile)

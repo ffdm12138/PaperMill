@@ -6,7 +6,7 @@ from src.catalog_folders.assignment import load_assignment, valid_decisions
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.reader import list_categories, read_category_members
 from src.catalog_folders.registry import load_categories
-from src.discovery.keyword_notebook import (
+from src.discovery.contracts.notebook import (
     validate_discovery_readiness,
     validate_notebook,
 )

@@ -22,11 +22,12 @@ import threading
 import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.execution.lane_models import DiscoveryLaneKey, LaneExecutionSpec, RequestSignature
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from src.services.rate_limit import default_config
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )
@@ -66,10 +67,13 @@ def _fetcher(callback) -> CallbackProviderPageFetcher:
 def _options(tmp_path: Path, **overrides) -> DiscoveryOptions:
     base = dict(
         mode="backfill", refresh_pages=1, backfill_pages=2, max_candidates=50,
-        notebook_dir=tmp_path / "notebooks",
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(
+            tmp_path,
+            notebook_dir=tmp_path / "notebooks",
+            page_journals_dir=tmp_path / "pages",
+            locks_dir=tmp_path / "locks",
+            exports_dir=tmp_path / "exports",
+        ),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -183,11 +187,11 @@ def test_generation_history_three_rollovers_round_trip(tmp_path: Path):
     """Generation history must round-trip through the validator after 3
     consecutive signature rollovers.  The writer and validator must reference
     one typed schema (no hand-written allowed-key drift)."""
-    from src.discovery.page_journal import request_signature
+    from src.discovery.contracts.page_journal import request_signature
 
     store = KeywordNotebookStore(tmp_path / "notebooks")
     _seed_ready_notebook(store, "风吹雪")
-    nb = store.require_v3("风吹雪")
+    nb = store.require_v4("风吹雪")
     kid = nb["keyword_id"]
     query_id = next(iter(nb["search_queries"]))
     provider = "openalex"
@@ -205,7 +209,7 @@ def test_generation_history_three_rollovers_round_trip(tmp_path: Path):
     store.ensure_backfill_generation("风吹雪", query_id, provider, request_signature_hash=sig_d["hash"])
 
     # Reload from disk - the validator must accept the written history.
-    reloaded = store.require_v3("风吹雪")
+    reloaded = store.require_v4("风吹雪")
     bf = reloaded["search_queries"][query_id]["providers"][provider]["backfill"]
     assert bf["generation"] == 4, f"expected generation 4 after 3 rollovers, got {bf['generation']}"
     history = bf["generation_history"]
@@ -231,13 +235,14 @@ def test_exhausted_journal_replay_no_unbound_local_error(tmp_path: Path):
     """
     from src.discovery.backfill_transaction import run_backfill_page_transaction
     from src.discovery.providers.provider_client import ProviderRuntime, ProviderTelemetry
-    from src.discovery.page_journal import PageJournalStore, backfill_page_id, request_signature
-    from src.discovery.keyword_notebook import KeywordNotebookStore
+    from src.discovery.contracts.page_journal import backfill_page_id, request_signature
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+    from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 
     nb_dir = tmp_path / "notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
-    nb = store.require_v3("风吹雪")
+    nb = store.require_v4("风吹雪")
     kid = nb["keyword_id"]
     query_id = next(iter(nb["search_queries"]))
     provider = "openalex"

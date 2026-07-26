@@ -13,7 +13,8 @@ import pytest
 
 from src.catalog_folders.formal_registry import FormalPaper, FormalPaperRegistry
 from src.catalog_folders.reader import CatalogFolderReader
-from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id as derive_keyword_id
+from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.catalog_folders.registry import sync_registry
 from src.catalog_folders.reconcile import reconcile_catalog_folders
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
@@ -217,7 +218,7 @@ def test_fully_safe_allows_writer(catalog_env):
 
     from src.catalog_folders.assignment import load_assignment, valid_decisions
     from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION
-    from src.discovery.keyword_notebook import keyword_id as derive_keyword_id
+    from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
     from src.catalog_folders.registry import load_categories
     from src.file_fingerprint import compute_sha256
 

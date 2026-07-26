@@ -4,16 +4,16 @@ import pytest
 
 from src.discovery.constants import INITIAL_CURSOR
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import (
-    JournalDrainIndex,
+from src.discovery.contracts.page_journal import (
     JournalCorruptError,
-    PageJournalStore,
     page_is_drain_visible,
     request_signature,
     select_stable_emitted_primary,
     validate_journal_drain_index,
 )
-from src.discovery.keyword_notebook import keyword_id, query_identity
+from src.discovery.stores.journal_drain_index import JournalDrainIndex
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+from src.discovery.contracts.notebook import keyword_id, query_identity
 
 PROFILE_HASH = "test-active-profile"
 
@@ -431,6 +431,6 @@ def _emitted_by_id_snapshot_patch():
 
 
 # Import the module for the stable-selection unit test.
-import src.discovery.page_journal as page_journal_module
+import src.discovery.contracts.page_journal as page_journal_module
 
 _emitted_by_id_snapshot_patch()

@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.discovery.relevance import validate_relevance_profile  # noqa: E402
-from src.discovery.keyword_notebook import KeywordNotebookStore  # noqa: E402
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore  # noqa: E402
 from src.discovery.relevance_comparison import (  # noqa: E402,F401
     SamplePageRequest,
     fetch_openalex_corpus,
@@ -137,7 +137,7 @@ def _resolve_group_profile_maps(
             if len(identity) == 16 and all(ch in "0123456789abcdef" for ch in identity.lower()):
                 kid = identity.lower()
             else:
-                notebook = store.require_v3(identity)
+                notebook = store.require_v4(identity)
                 kid = str(notebook["keyword_id"])
             if kid in label_by_kid:
                 existing_label = label_by_kid[kid]

@@ -354,38 +354,57 @@ def test_download_pdf_uses_pdf_transport(monkeypatch, tmp_path):
     assert captured["kwargs"]["stream"] is True
 
 
-def test_oa_helper_passes_proxies(monkeypatch):
-    """fetch_openalex.resolve_openalex_pdf must pass proxies to requests.get."""
+@pytest.fixture
+def oa_fake_transport():
+    """Install a FakeTransport-backed ProviderRuntime singleton; restore after.
+
+    ``resolve_openalex_pdf`` goes through the unified ProviderClient, so
+    tests observe the outgoing ``RequestSpec`` on the fake transport instead
+    of monkeypatching ``requests.get``.  ``max_retries=0`` keeps one logical
+    call == one transport send (parity with the old single-shot behavior).
+    """
+    from src.discovery.providers.provider_client import ProviderRuntime
+    from tests.helpers.fake_provider import FakeClock, FakeSleeper, FakeTransport
+
+    transport = FakeTransport()
+    clock = FakeClock()
+    runtime = ProviderRuntime(
+        transport=transport, sleeper=FakeSleeper(clock), clock=clock, max_retries=0
+    )
+    prev = ProviderRuntime._instance
+    ProviderRuntime.reset_for_tests(runtime)
+    try:
+        yield transport
+    finally:
+        ProviderRuntime._instance = prev
+
+
+def test_oa_helper_uses_unified_provider_client(monkeypatch, oa_fake_transport):
+    """resolve_openalex_pdf must go through ProviderClient (no raw requests).
+
+    Proxy injection is a transport concern: the production singleton wires
+    ``RequestsTransport(proxies=get_fetch_proxies())`` (pinned by
+    test_fetch_proxy_decoupling), so no per-call proxies argument exists.
+    """
     import src.fetch.fetch_openalex as oa_mod
-    import src.fetch.proxy as proxy_mod
+    from tests.helpers.fake_provider import http_response
 
-    monkeypatch.setattr(proxy_mod, "FETCH_PROXY", "http://127.0.0.1:7890", raising=False)
+    src_text = Path(oa_mod.__file__).read_text(encoding="utf-8")
+    assert "import requests" not in src_text
+    assert "requests.get" not in src_text
 
-    # Isolate from real system env vars
     from src.services.openalex_credentials import OpenAlexCredentials
     monkeypatch.setattr(
         oa_mod, "load_openalex_credentials",
         lambda *a, **k: OpenAlexCredentials(email=None, api_key=None),
     )
 
-    captured = {}
-
-    class _FakeResp:
-        headers = {"content-type": "application/json"}
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"results": []}
-
-    def _fake_get(url, *, params=None, headers=None, timeout=20, proxies=None, **kw):
-        captured["proxies"] = proxies
-        return _FakeResp()
-
-    monkeypatch.setattr(oa_mod.requests, "get", _fake_get)
+    oa_fake_transport.script_append(http_response(200, {"results": []}))
     oa_mod.resolve_openalex_pdf("10.1000/test")
-    assert captured["proxies"] == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+    assert len(oa_fake_transport.requests) == 1
+    spec = oa_fake_transport.requests[0]
+    assert spec.provider == "openalex"
+    assert spec.purpose == "metadata_resolution"
 
 
 def test_limit_content_rejects_oversize_content_length_without_reading_body():
@@ -670,72 +689,47 @@ def test_copy_pdf_copies_valid_pdf(monkeypatch, tmp_path):
 
 # ── Fetch OpenAlex credential tests ─────────────────────
 
-def test_fetch_openalex_uses_centralized_credentials(monkeypatch):
+def test_fetch_openalex_uses_centralized_credentials(monkeypatch, oa_fake_transport):
     """With credentials set, resolve_openalex_pdf must pass them as params/headers."""
     import src.fetch.fetch_openalex as oa_mod
     from src.services.openalex_credentials import OpenAlexCredentials
+    from tests.helpers.fake_provider import http_response
 
     monkeypatch.setattr(
         oa_mod, "load_openalex_credentials",
         lambda *a, **k: OpenAlexCredentials(email="fetch@test.org", api_key="fetch-test-key-abc"),
     )
 
-    captured = {}
-
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"results": []}
-
-    def _fake_get(url, *, params=None, headers=None, timeout=20, proxies=None, **kw):
-        captured["params"] = params
-        captured["headers"] = headers
-        return _FakeResp()
-
-    monkeypatch.setattr(oa_mod.requests, "get", _fake_get)
-
+    oa_fake_transport.script_append(http_response(200, {"results": []}))
     oa_mod.resolve_openalex_pdf("10.1000/test")
-    assert captured["params"].get("mailto") == "fetch@test.org"
-    assert captured["headers"].get("Authorization") == "Bearer fetch-test-key-abc"
+    spec = oa_fake_transport.requests[0]
+    assert spec.params.get("mailto") == "fetch@test.org"
+    assert spec.headers.get("Authorization") == "Bearer fetch-test-key-abc"
 
 
-def test_fetch_openalex_without_credentials_is_anonymous(monkeypatch):
+def test_fetch_openalex_without_credentials_is_anonymous(monkeypatch, oa_fake_transport):
     """Without credentials, no mailto/Authorization must be sent."""
     import src.fetch.fetch_openalex as oa_mod
     from src.services.openalex_credentials import OpenAlexCredentials
+    from tests.helpers.fake_provider import http_response
 
     monkeypatch.setattr(
         oa_mod, "load_openalex_credentials",
         lambda *a, **k: OpenAlexCredentials(),
     )
 
-    captured = {}
-
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"results": []}
-
-    def _fake_get(url, *, params=None, headers=None, timeout=20, proxies=None, **kw):
-        captured["params"] = params
-        captured["headers"] = headers
-        return _FakeResp()
-
-    monkeypatch.setattr(oa_mod.requests, "get", _fake_get)
-
+    oa_fake_transport.script_append(http_response(200, {"results": []}))
     oa_mod.resolve_openalex_pdf("10.1000/test")
-    assert "mailto" not in captured["params"]
-    assert "Authorization" not in captured["headers"]
+    spec = oa_fake_transport.requests[0]
+    assert "mailto" not in spec.params
+    assert "Authorization" not in spec.headers
 
 
-def test_fetch_openalex_loads_credentials_once(monkeypatch):
+def test_fetch_openalex_loads_credentials_once(monkeypatch, oa_fake_transport):
     """load_openalex_credentials must be called exactly once per resolve."""
     import src.fetch.fetch_openalex as oa_mod
     from src.services.openalex_credentials import OpenAlexCredentials
+    from tests.helpers.fake_provider import http_response
 
     call_count = 0
 
@@ -746,37 +740,26 @@ def test_fetch_openalex_loads_credentials_once(monkeypatch):
 
     monkeypatch.setattr(oa_mod, "load_openalex_credentials", counting_loader)
 
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"results": []}
-
-    monkeypatch.setattr(oa_mod.requests, "get", lambda *a, **kw: _FakeResp())
-
+    oa_fake_transport.script_append(http_response(200, {"results": []}))
     oa_mod.resolve_openalex_pdf("10.1000/test")
     assert call_count == 1, f"Expected 1 call, got {call_count}"
 
 
-def test_fetch_openalex_does_not_persist_credentials(monkeypatch):
+def test_fetch_openalex_does_not_persist_credentials(monkeypatch, oa_fake_transport):
     """FetchResult must not contain credential values in any field."""
     import src.fetch.fetch_openalex as oa_mod
     from src.services.openalex_credentials import OpenAlexCredentials
+    from tests.helpers.fake_provider import http_response
 
     monkeypatch.setattr(
         oa_mod, "load_openalex_credentials",
         lambda *a, **k: OpenAlexCredentials(email="no-leak@test.org", api_key="no-leak-key-abc"),
     )
 
-    class _FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"results": [{"open_access": {"is_oa": True, "oa_url": "https://example.org/paper.pdf"}}]}
-
-    monkeypatch.setattr(oa_mod.requests, "get", lambda *a, **kw: _FakeResp())
+    oa_fake_transport.script_append(http_response(
+        200,
+        {"results": [{"open_access": {"is_oa": True, "oa_url": "https://example.org/paper.pdf"}}]},
+    ))
 
     result = oa_mod.resolve_openalex_pdf("10.1000/test")
     result_str = str(result)
@@ -785,10 +768,11 @@ def test_fetch_openalex_does_not_persist_credentials(monkeypatch):
     assert "no-leak" not in result_str
 
 
-def test_fetch_openalex_error_does_not_leak_credentials(monkeypatch):
+def test_fetch_openalex_error_does_not_leak_credentials(monkeypatch, oa_fake_transport):
     """Exception messages containing credentials must not leak into log or FetchResult.error."""
     import src.fetch.fetch_openalex as oa_mod
     from src.services.openalex_credentials import OpenAlexCredentials
+    from tests.helpers.fake_provider import Fault
 
     monkeypatch.setattr(
         oa_mod, "load_openalex_credentials",
@@ -801,10 +785,7 @@ def test_fetch_openalex_error_does_not_leak_credentials(monkeypatch):
                 "GET https://api.openalex.org/works?filter=doi:10.1000/test&mailto=err-leak@test.org"
             )
 
-    monkeypatch.setattr(
-        oa_mod.requests, "get",
-        lambda *a, **kw: (_ for _ in ()).throw(LeakyException()),
-    )
+    oa_fake_transport.script_append(Fault(LeakyException()))
 
     # Capture logs
     log_lines = []

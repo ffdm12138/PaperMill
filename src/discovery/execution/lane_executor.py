@@ -17,7 +17,8 @@ from src.discovery.backfill_transaction import (
 from src.discovery.runtime.batch_runtime import DiscoveryBatchRuntime
 from src.discovery.runtime.budgets import AcquireResult
 from src.discovery.constants import INITIAL_CURSOR
-from src.discovery.keyword_notebook import CursorConflictError, KeywordNotebookStore
+from src.discovery.contracts.notebook import CursorConflictError
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.execution.lane_models import (
     DiscoveryLaneKey,
     ExhaustionEvidence,
@@ -31,7 +32,8 @@ from src.discovery.execution.lane_models import (
 )
 from src.discovery.execution.lane_services import RefreshStateService
 from src.discovery.execution.lane_state_machine import LaneEvent, LaneMachine
-from src.discovery.page_journal import JournalCorruptError, PageJournalStore, refresh_page_id
+from src.discovery.contracts.page_journal import JournalCorruptError, refresh_page_id
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_client import ProviderClient
 from src.discovery.providers.provider_errors import (
     CircuitOpenError,
@@ -369,7 +371,7 @@ def execute_backfill_lane(
     runtime: DiscoveryBatchRuntime,
     notebook: KeywordNotebookStore,
     journal: PageJournalStore,
-    options: Any,
+    locks_dir: Path,
     page_fetcher: ProviderPageFetcher,
     candidate_budget_exhausted: CandidateBudgetExhausted | None = None,
     notify_staging: StagingNotifier | None = None,
@@ -405,7 +407,7 @@ def execute_backfill_lane(
                     spec,
                     notebook_store=notebook,
                     journal_store=journal,
-                    locks_dir=Path(options.locks_dir),
+                    locks_dir=locks_dir,
                     page_fetcher=page_fetcher,
                     client=client,
                     finalize_page=finalize_page,

@@ -53,7 +53,7 @@ or negative decisions. Category members link to complete formal directories.
 Writing browses category folders and citations still come only from Metadata.
 Default and source snapshots are runtime-zero.
 
-Discovery keyword notebooks use schema v3. One notebook owns one Chinese
+Discovery keyword notebooks use schema v4. One notebook owns one Chinese
 `keyword_zh` classification identity plus multiple enabled Chinese and English
 `search_queries`; all queries participate in OpenAlex/Crossref discovery with
 independent provider progress. Only `keyword_zh` enters the Catalog registry.
@@ -62,9 +62,9 @@ changes do not invalidate existing classification decisions.
 
 Enabled notebooks are required to be bilingual-ready. `ensure_notebook` creates
 an incomplete notebook as a disabled draft; `set_enabled(True)` and every
-definition mutation enforce readiness atomically. The v3 audit is strict and
-read-only. Recovery currently supports only `--inspect`, because v3 apply is
-not exposed until a plan-bound writer can be independently verified.
+definition mutation enforce readiness atomically. The audit is strict and
+read-only. Recovery currently supports only `--inspect`, because legacy v3
+apply is not exposed until a plan-bound writer can be independently verified.
 
 ## Catalog status
 

@@ -18,8 +18,6 @@ from src.discovery.contracts.enums import (
 )
 from src.discovery.contracts.candidate import (
     CANDIDATE_ORIGIN_VALUES,
-    CANDIDATE_SEED_SCHEMA_VERSION_V4,
-    LegacyCandidateSeedV4,
     PendingCandidateV4,
 )
 from src.discovery.contracts.lane_state import (
@@ -32,11 +30,24 @@ from src.discovery.contracts.manifest import (
     ActiveGenerationPointerV4,
     DiscoveryWorkspaceManifestV4,
 )
+from src.discovery.contracts.notebook import (
+    NOTEBOOK_SCHEMA_VERSION_V4,
+    NOTEBOOK_TOP_LEVEL_FIELDS,
+    NOTEBOOK_TOP_LEVEL_REQUIRED,
+    NotebookContractError,
+    KeywordNotebookV4,
+)
 from src.discovery.contracts.page_journal import (
     PAGE_SCHEMA_VERSION_V4,
     PAGE_V4_FIELDS,
     ProviderPageJournalV4,
     UnexpectedNonV4StateError,
+)
+from src.discovery.contracts.report import (
+    REPORT_SCHEMA_VERSION_V4,
+    BatchDiscoveryReportV4,
+    KeywordDiscoveryReportV4,
+    LaneReportV4,
 )
 
 __all__ = [
@@ -50,8 +61,6 @@ __all__ = [
     "ShutdownReason",
     # Candidate
     "CANDIDATE_ORIGIN_VALUES",
-    "CANDIDATE_SEED_SCHEMA_VERSION_V4",
-    "LegacyCandidateSeedV4",
     "PendingCandidateV4",
     # Lane state
     "LANE_STATE_SCHEMA_VERSION_V4",
@@ -61,9 +70,20 @@ __all__ = [
     "WORKSPACE_MANIFEST_SCHEMA_VERSION_V4",
     "ActiveGenerationPointerV4",
     "DiscoveryWorkspaceManifestV4",
+    # Notebook
+    "NOTEBOOK_SCHEMA_VERSION_V4",
+    "NOTEBOOK_TOP_LEVEL_FIELDS",
+    "NOTEBOOK_TOP_LEVEL_REQUIRED",
+    "NotebookContractError",
+    "KeywordNotebookV4",
     # Page journal
     "PAGE_SCHEMA_VERSION_V4",
     "PAGE_V4_FIELDS",
     "ProviderPageJournalV4",
     "UnexpectedNonV4StateError",
+    # Report
+    "REPORT_SCHEMA_VERSION_V4",
+    "BatchDiscoveryReportV4",
+    "KeywordDiscoveryReportV4",
+    "LaneReportV4",
 ]

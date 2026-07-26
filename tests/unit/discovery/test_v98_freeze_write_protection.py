@@ -62,7 +62,7 @@ pytestmark = pytest.mark.unit
 
 def _closed_runtime(tmp_path: Path) -> DiscoveryBatchRuntime:
     """Create and close a runtime via context manager for testing."""
-    from src.discovery.page_journal import PageJournalStore
+    from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles
 
     journal = PageJournalStore(tmp_path / "pages")
@@ -235,7 +235,6 @@ class TestCandidateDrainCoordinatorRejectsAfterClose:
         drain = CandidateDrainCoordinator(
             runtime=runtime,
             journal=None,  # won't be reached — guard rejects first
-            options=None,
             worker_id="test",
             paper_raw_dir=tmp_path,
             papers_dir=tmp_path,
@@ -251,7 +250,6 @@ class TestCandidateDrainCoordinatorRejectsAfterClose:
         drain = CandidateDrainCoordinator(
             runtime=runtime,
             journal=None,
-            options=None,
             worker_id="test",
             paper_raw_dir=tmp_path,
             papers_dir=tmp_path,
@@ -302,7 +300,7 @@ class TestFreezeIdempotent:
     """Runtime.freeze() can be called multiple times safely."""
 
     def test_freeze_is_idempotent(self, tmp_path: Path):
-        from src.discovery.page_journal import PageJournalStore
+        from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
         from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles
 
         journal = PageJournalStore(tmp_path / "pages")
@@ -332,7 +330,7 @@ class TestNormalCompletionDoesNotCancel:
     """Normal batch completion must not set cancellation_token."""
 
     def test_normal_close_no_cancellation(self, tmp_path: Path):
-        from src.discovery.page_journal import PageJournalStore
+        from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
         from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles
 
         journal = PageJournalStore(tmp_path / "pages")

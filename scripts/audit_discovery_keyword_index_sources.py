@@ -1,10 +1,12 @@
 #!/usr/bin/env python
-"""Read-only audit for the active discovery notebook v3 closure.
+"""Read-only strict v4 audit of the active discovery workspace closure.
 
-The audit is deliberately stricter than the runtime loaders.  It validates
-notebooks, provider generations, durable page journals, provenance records,
-and the Catalog registry as one identity graph.  It never repairs, rewrites,
-or moves a source file.
+Sources are resolved through the active v4 workspace
+(``data/discovery/active_generation.json`` → ``generations/<id>/``), never
+the retired legacy flat directories.  The audit is deliberately stricter
+than the runtime loaders.  It validates notebooks, provider generations,
+durable page journals, provenance records, and the Catalog registry as one
+identity graph.  It never repairs, rewrites, or moves a source file.
 """
 from __future__ import annotations
 
@@ -25,11 +27,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.settings import (  # noqa: E402
     CATALOG_FOLDER_ROOT,
     CATALOG_STATE_ROOT,
-    DISCOVERY_DIR,
-    DISCOVERY_EXPORTS_DIR,
-    DISCOVERY_KEYWORD_NOTEBOOK_DIR,
-    DISCOVERY_LOCKS_DIR,
-    DISCOVERY_PENDING_PAGES_DIR,
 )
 from src.catalog_folders.registry_schema import validate_registry_schema  # noqa: E402
 from src.discovery.backfill_state import (  # noqa: E402
@@ -50,7 +47,7 @@ from src.discovery.backfill_state import (  # noqa: E402
     is_strictly_pristine_unbound_backfill,
 )
 from src.discovery.constants import INITIAL_CURSOR  # noqa: E402
-from src.discovery.keyword_notebook import (  # noqa: E402
+from src.discovery.contracts.notebook import (  # noqa: E402
     PROVIDERS,
     SCHEMA_VERSION,
     detect_query_language,
@@ -60,7 +57,12 @@ from src.discovery.keyword_notebook import (  # noqa: E402
     validate_discovery_readiness,
     validate_notebook,
 )
-from src.discovery.page_journal import validate_page  # noqa: E402
+from src.discovery.contracts.page_journal import validate_page  # noqa: E402
+from src.discovery.runtime_context import (  # noqa: E402
+    DiscoveryRuntimeContext,
+    DiscoveryRuntimeUnavailableError,
+    resolve_active_runtime,
+)
 
 
 PROVENANCE_FIELDS = frozenset({"keyword_id", "query_id", "provider", "lane"})
@@ -138,10 +140,10 @@ def _notebook_row(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return raw, None
 
 
-def scan_pending_pages(pending_dir: Path) -> list[dict[str, Any]]:
-    """Read pending page journals from the strict v3 path layout."""
+def scan_page_journals(pages_dir: Path) -> list[dict[str, Any]]:
+    """Read durable page journals from the strict v4 identity layout."""
     result: list[dict[str, Any]] = []
-    root = Path(pending_dir)
+    root = Path(pages_dir)
     for path in _json_files(root):
         data, read_error = _safe_read_json(path)
         row: dict[str, Any] = {"__path__": str(path)}
@@ -160,7 +162,7 @@ def scan_pending_pages(pending_dir: Path) -> list[dict[str, Any]]:
 
 
 def scan_locks(locks_dir: Path) -> dict[str, list[str]]:
-    """List transient discovery locks using the v3 identity path."""
+    """List transient discovery locks under the v4 workspace locks root."""
     root = Path(locks_dir)
     result: dict[str, list[str]] = {
         "state_locks": [],
@@ -714,15 +716,16 @@ def _active_categories(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def run_audit() -> dict[str, Any]:
-    """Run a complete strict-v3 audit without mutating any path."""
+def run_audit(ctx: DiscoveryRuntimeContext) -> dict[str, Any]:
+    """Run a complete strict audit of one v4 workspace without mutating any path."""
+    workspace = ctx.workspace
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     notebook_rows: dict[str, dict[str, Any]] = {}
     disabled_drafts = 0
     ready_notebooks = 0
     enabled_notebooks = 0
-    notebook_files = _json_files(DISCOVERY_KEYWORD_NOTEBOOK_DIR, recursive=False)
+    notebook_files = _json_files(ctx.notebook_root, recursive=False)
     for path in notebook_files:
         data, error = _notebook_row(path)
         if error:
@@ -749,8 +752,8 @@ def run_audit() -> dict[str, Any]:
             disabled_drafts += 1
             _warning(warnings, "disabled_draft", path, "disabled notebook is allowed to be not ready", keyword_id=kid)
 
-    page_rows = scan_pending_pages(DISCOVERY_PENDING_PAGES_DIR)
-    _check_page_identity(page_rows, notebook_rows, pending_root=DISCOVERY_PENDING_PAGES_DIR, errors=errors)
+    page_rows = scan_page_journals(ctx.page_journal_root)
+    _check_page_identity(page_rows, notebook_rows, pending_root=ctx.page_journal_root, errors=errors)
     generation_stats = _check_backfill_states(
         notebook_rows, page_rows, errors=errors, warnings=warnings,
     )
@@ -786,7 +789,7 @@ def run_audit() -> dict[str, Any]:
         if category.get("directory_name") not in category_dirs:
             _warning(warnings, "catalog_category", CATALOG_FOLDER_ROOT, "active category directory is missing", keyword_id=category.get("category_id"))
 
-    locks = scan_locks(DISCOVERY_LOCKS_DIR)
+    locks = scan_locks(ctx.locks_root)
     for lock in locks["state_locks"]:
         parts = Path(lock).parts
         if len(parts) == 3:
@@ -798,7 +801,7 @@ def run_audit() -> dict[str, Any]:
     for lock in locks["unknown"]:
         _warning(warnings, "lock", lock, "unrecognized transient lock path")
 
-    provenance_roots = [DISCOVERY_EXPORTS_DIR, DISCOVERY_DIR / "doi_candidates"]
+    provenance_roots = [workspace.exports_dir]
     provenance_count = _scan_provenance_files(provenance_roots, notebooks=notebook_rows, errors=errors)
 
     schema_errors = sum(row["kind"] == "notebook_schema" for row in errors)
@@ -838,7 +841,7 @@ def run_audit() -> dict[str, Any]:
         "errors": errors,
         "warnings": warnings,
         "summary": {
-            "v3_notebooks_scanned": len(notebook_files),
+            "notebooks_scanned": len(notebook_files),
             "ready_notebooks": ready_notebooks,
             "enabled_notebooks": enabled_notebooks,
             "disabled_drafts": disabled_drafts,
@@ -854,11 +857,12 @@ def run_audit() -> dict[str, Any]:
         },
         "identities": identities,
         "sources_scanned": {
-            "notebooks": _relative(DISCOVERY_KEYWORD_NOTEBOOK_DIR),
-            "pending_pages": _relative(DISCOVERY_PENDING_PAGES_DIR),
-            "locks": _relative(DISCOVERY_LOCKS_DIR),
-            "exports": _relative(DISCOVERY_EXPORTS_DIR),
-            "doi_candidates": _relative(DISCOVERY_DIR / "doi_candidates"),
+            "workspace_generation_id": workspace.generation_id,
+            "workspace_root": _relative(workspace.root),
+            "notebooks": _relative(ctx.notebook_root),
+            "page_journals": _relative(ctx.page_journal_root),
+            "locks": _relative(ctx.locks_root),
+            "exports": _relative(workspace.exports_dir),
             "registry": _relative(registry_path),
             "catalog_root": _relative(CATALOG_FOLDER_ROOT),
         },
@@ -869,7 +873,7 @@ def generate_markdown_report(report: dict[str, Any]) -> str:
     """Render an audit report without reading or writing repository state."""
     summary = report.get("summary", {})
     lines = [
-        "# Discovery Keyword Notebook v3 Audit",
+        "# Discovery Keyword Notebook Audit",
         "",
         f"Audit timestamp: `{report.get('audit_timestamp', '')}`",
         "",
@@ -883,7 +887,7 @@ def generate_markdown_report(report: dict[str, Any]) -> str:
         lines.append(f"| `{field}` | `{bool(report.get(field))}` |")
     lines.extend([
         "",
-        f"- v3 notebooks scanned: {summary.get('v3_notebooks_scanned', 0)}",
+        f"- notebooks scanned: {summary.get('notebooks_scanned', 0)}",
         f"- ready notebooks: {summary.get('ready_notebooks', 0)}",
         f"- disabled drafts: {summary.get('disabled_drafts', 0)}",
         f"- schema errors: {summary.get('schema_errors', 0)}",
@@ -909,18 +913,27 @@ def generate_markdown_report(report: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Read-only strict v3 discovery audit.")
+    parser = argparse.ArgumentParser(description="Read-only strict v4 discovery workspace audit.")
     parser.add_argument("--json", action="store_true", help="Emit JSON to stdout.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Explicitly write a report pair here.")
+    parser.add_argument(
+        "--workspace-root", type=Path, default=None,
+        help="Override the active discovery workspace root (for tests/staging).",
+    )
     args = parser.parse_args(argv)
-    report = run_audit()
+    try:
+        ctx = resolve_active_runtime(workspace_root=args.workspace_root)
+    except DiscoveryRuntimeUnavailableError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 2
+    report = run_audit(ctx)
     if args.output_dir is not None:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        (args.output_dir / f"discovery_keyword_v3_audit_{stamp}.json").write_text(
+        (args.output_dir / f"discovery_keyword_audit_{stamp}.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8",
         )
-        (args.output_dir / f"discovery_keyword_v3_audit_{stamp}.md").write_text(
+        (args.output_dir / f"discovery_keyword_audit_{stamp}.md").write_text(
             generate_markdown_report(report), encoding="utf-8",
         )
     if args.json or args.output_dir is None:

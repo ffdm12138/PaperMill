@@ -12,6 +12,648 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import scripts.verify_discovery_final_architecture as verifier
+
+
+# ── Phase D migration-hardening gates: positive + negative coverage ──────
+
+
+_HEALTHY_MIGRATE = '''
+smoke_args = [
+    "--paper-raw-dir", str(smoke_paper_raw_dir),
+    "--papers-dir", str(smoke_papers_dir),
+    "--ledger-path", str(smoke_ledger_path),
+]
+allowed_cutover_states = {MigrationState.SMOKE_PASSED}
+group.add_argument("--post-cutover-validate")
+group.add_argument("--rollback")
+group.add_argument("--clean-legacy")
+group.add_argument("--finalize")
+def _step_smoke(journal, staging_ws, args):
+    with TemporaryDirectory() as tmp:
+        smoke_ws = _clone_workspace_for_smoke(staging_ws, tmp)
+        hash_before = hash_tree(staging_ws.root)
+        smoke_args = [
+            "--paper-raw-dir", str(smoke_paper_raw_dir),
+            "--papers-dir", str(smoke_papers_dir),
+            "--ledger-path", str(smoke_ledger_path),
+            "--workspace-root", str(smoke_ws.root),
+        ]
+        run(smoke_args)
+        hash_after = hash_tree(staging_ws.root)
+        if hash_after != hash_before:
+            raise RuntimeError("staging drift")
+'''
+
+_HEALTHY_WORKSPACE = '''
+from filelock import FileLock
+MIGRATION_LOCK_PATH = DISCOVERY_MIGRATIONS_DIR / ".migration.lock"
+previous_pointer_snapshot_path = None
+raise CutoverReconciliationError("x")
+if verify_tree:
+    computed_tree = hash_workspace_tree(gen_root, exclude={"workspace.json"})
+    if computed_tree != manifest.workspace_tree_sha256:
+        raise WorkspaceManifestMismatchError("x")
+'''
+
+
+def _build_healthy_tree(root: Path) -> dict[str, Path]:
+    """Minimal src/scripts tree satisfying every migration-hardening gate."""
+    src_root = root / "src"
+    src = src_root / "discovery"
+    scripts = root / "scripts"
+    files = {
+        (scripts / "migrate_discovery_v4.py"): _HEALTHY_MIGRATE,
+        (src / "workspace.py"): _HEALTHY_WORKSPACE,
+        (src / "contracts" / "manifest.py"): "previous_generation_id = None\n",
+        (src_root / "migrations" / "discovery_v4" / "archive_builder.py"): (
+            "def _verify_archive_copies():\n"
+            "    raise ArchiveVerificationError('x')\n"
+        ),
+        (src / "pending_queue.py"): (
+            "from x import PendingCandidateStoreV4\n"
+            "def _drain_pending_store_candidates():\n"
+            "    pass\n"
+        ),
+        (src / "coordinator.py"): (
+            "drain = CandidateDrainCoordinator(pending_store=deps.bundle.pending)\n"
+        ),
+    }
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return {"SRC_ROOT": src_root, "SRC": src, "SCRIPTS": scripts}
+
+
+@pytest.fixture
+def healthy_tree(tmp_path, monkeypatch):
+    dirs = _build_healthy_tree(tmp_path)
+    monkeypatch.setattr(verifier, "SRC_ROOT", dirs["SRC_ROOT"])
+    monkeypatch.setattr(verifier, "SRC", dirs["SRC"])
+    monkeypatch.setattr(verifier, "SCRIPTS", dirs["SCRIPTS"])
+    return dirs
+
+
+def _gate_errors(dirs) -> list:
+    report = verifier.VerifierReport()
+    verifier._check_migration_hardening_rules(report)
+    return report.errors
+
+
+class TestMigrationHardeningGates:
+    """Each Phase D gate must catch its violation (and pass on a clean tree)."""
+
+    def test_healthy_tree_passes(self, healthy_tree):
+        assert _gate_errors(healthy_tree) == []
+
+    def test_gate1_old_module_path_import_caught(self, healthy_tree):
+        evil = healthy_tree["SRC"] / "evil.py"
+        evil.write_text(
+            "from src.discovery.page_journal import PageJournal\n", encoding="utf-8"
+        )
+        errors = _gate_errors(healthy_tree)
+        assert any("src.discovery.page_journal" in e.message for e in errors)
+
+    def test_gate2_missing_isolated_smoke_arg_caught(self, healthy_tree):
+        mig = healthy_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_MIGRATE.replace('"--ledger-path", ', ""), encoding="utf-8"
+        )
+        errors = _gate_errors(healthy_tree)
+        assert any("--ledger-path" in e.message for e in errors)
+
+    def test_gate3_missing_cutover_lock_caught(self, healthy_tree):
+        ws = healthy_tree["SRC"] / "workspace.py"
+        ws.write_text(_HEALTHY_WORKSPACE.replace('".migration.lock"', '"other"'),
+                      encoding="utf-8")
+        errors = _gate_errors(healthy_tree)
+        assert any(".migration.lock" in e.message for e in errors)
+
+    def test_gate3_missing_previous_generation_id_caught(self, healthy_tree):
+        manifest = healthy_tree["SRC"] / "contracts" / "manifest.py"
+        manifest.write_text("generation_id = ''\n", encoding="utf-8")
+        errors = _gate_errors(healthy_tree)
+        assert any("previous_generation_id" in e.message for e in errors)
+
+    def test_gate4_missing_tree_verification_caught(self, healthy_tree):
+        ws = healthy_tree["SRC"] / "workspace.py"
+        ws.write_text(
+            _HEALTHY_WORKSPACE.replace("manifest.workspace_tree_sha256", "expected"),
+            encoding="utf-8",
+        )
+        errors = _gate_errors(healthy_tree)
+        assert any("workspace_tree_sha256" in e.message for e in errors)
+
+    def test_gate5_preflight_cutover_branch_caught(self, healthy_tree):
+        mig = healthy_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_MIGRATE.replace(
+                "{MigrationState.SMOKE_PASSED}",
+                "{MigrationState.SMOKE_PASSED, MigrationState.PREFLIGHT_VALIDATED}",
+            ),
+            encoding="utf-8",
+        )
+        errors = _gate_errors(healthy_tree)
+        assert any("allowed_cutover_states" in e.message for e in errors)
+
+    def test_gate6_legacy_candidate_seeds_caught(self, healthy_tree):
+        evil = healthy_tree["SCRIPTS"] / "evil.py"
+        evil.write_text("x = 'legacy_candidate_seeds'\n", encoding="utf-8")
+        errors = _gate_errors(healthy_tree)
+        assert any("legacy_candidate_seeds" in e.message for e in errors)
+
+    def test_gate7_missing_archive_rehash_caught(self, healthy_tree):
+        ab = (
+            healthy_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
+            / "archive_builder.py"
+        )
+        ab.write_text("def archive_pending_pages():\n    pass\n", encoding="utf-8")
+        errors = _gate_errors(healthy_tree)
+        assert any("_verify_archive_copies" in e.message for e in errors)
+
+    def test_gate8_missing_pending_store_drain_caught(self, healthy_tree):
+        pq = healthy_tree["SRC"] / "pending_queue.py"
+        pq.write_text("def drain():\n    pass\n", encoding="utf-8")
+        errors = _gate_errors(healthy_tree)
+        assert any("_drain_pending_store_candidates" in e.message for e in errors)
+
+    def test_gate8_missing_coordinator_injection_caught(self, healthy_tree):
+        coord = healthy_tree["SRC"] / "coordinator.py"
+        coord.write_text("drain = CandidateDrainCoordinator()\n", encoding="utf-8")
+        errors = _gate_errors(healthy_tree)
+        assert any("bundle.pending" in e.message for e in errors)
+
+    def test_gate9_missing_cli_flag_caught(self, healthy_tree):
+        mig = healthy_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_MIGRATE.replace('group.add_argument("--finalize")\n', ""),
+            encoding="utf-8",
+        )
+        errors = _gate_errors(healthy_tree)
+        assert any("--finalize" in e.message for e in errors)
+
+
+# ── Phase 7a migration-final gates (11-16): positive + negative coverage ──
+
+
+_HEALTHY_FINAL_MIGRATE = '''
+def _step_extract_candidates(journal, staging_ws, args):
+    report = extract()
+    _quarantine_record(record)
+    assert_conservation(report)
+    return report
+
+def _quarantine_path(migration_id):
+    return MIGRATIONS_DIR / f"{migration_id}.candidate_quarantine.jsonl"
+
+def _step_preflight(journal, staging_ws, nb_results, args):
+    stats = journal.metadata.get("candidate_stats")
+    if stats.get("quarantined"):
+        raise MigrationStepError("quarantined")
+    return None
+
+def cmd_post_cutover_validate(args):
+    report = MIGRATIONS_DIR / f"{mid}.post_cutover_reconciliation.json"
+    receipts = MIGRATIONS_DIR / f"{mid}.receipts"
+    return 0
+
+def cmd_apply(args):
+    with MigrationMaintenanceLock("apply"):
+        return 0
+
+def cmd_resume(args):
+    with MigrationMaintenanceLock("resume"):
+        return 0
+
+def cmd_cutover(args):
+    with MigrationMaintenanceLock("cutover"):
+        return 0
+
+def cmd_rollback(args):
+    with MigrationMaintenanceLock("rollback"):
+        return 0
+
+def cmd_abort(args):
+    with MigrationMaintenanceLock("abort"):
+        return 0
+
+def cmd_clean_legacy(args):
+    with MigrationMaintenanceLock("clean-legacy"):
+        return 0
+
+def cmd_finalize(args):
+    with MigrationMaintenanceLock("finalize"):
+        return 0
+
+def _step_smoke(journal, staging_ws, args):
+    smoke_args = ["--report-dir", str(rep), "--output-dir", str(out)]
+    return 0
+'''
+
+_HEALTHY_NOTEBOOK_MIGRATION = '''
+from src.migrations.discovery_v4.legacy_contracts.notebook_v3 import (
+    LegacyNotebookV3,
+    convert_notebook_v3_to_v4,
+)
+
+def migrate_all_notebooks(notebook_dir, output_dir):
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    legacy = LegacyNotebookV3.from_dict_strict(raw)
+    v4 = convert_notebook_v3_to_v4(legacy)
+    return [v4]
+'''
+
+_HEALTHY_FINAL_COORDINATOR = '''
+def run_batch():
+    try:
+        work()
+    except Exception as exc:
+        logger.error("lane failed: %s", exc)
+        raise
+'''
+
+# Current-version constants of their own artifact families — Gate 16 must
+# not flag these (only legacy "3.0" acceptance is forbidden).
+_HEALTHY_VERSION_CONSTANTS = '''
+PAGINATION_SCHEMA_VERSION = "2.0"
+RECEIPT_SCHEMA_VERSION = "1.0"
+RELEVANCE_PROFILE_SCHEMA_VERSION = "1.0"
+'''
+
+_HEALTHY_REJECTION_BRANCH = '''
+def validate_notebook(data):
+    version = str(data.get("schema_version") or "")
+    if version in ("1.0", "2.0", "3.0"):
+        raise UnsupportedNotebookSchemaError(
+            f"notebook schema {version} must be migrated to v4"
+        )
+    if version != "4.0":
+        raise UnsupportedNotebookSchemaError("unsupported")
+    return data
+'''
+
+
+def _build_healthy_final_tree(root: Path) -> dict[str, Path]:
+    """Minimal tree satisfying every Phase 7a migration-final gate."""
+    src_root = root / "src"
+    src = src_root / "discovery"
+    scripts = root / "scripts"
+    mig_layer = src_root / "migrations" / "discovery_v4"
+    files = {
+        (scripts / "migrate_discovery_v4.py"): _HEALTHY_FINAL_MIGRATE,
+        (scripts / "discover_papers.py"): (
+            "assert_discovery_write_allowed()\n"
+        ),
+        (scripts / "discover_papers_concurrent.py"): (
+            "assert_discovery_write_allowed()\n"
+        ),
+        (mig_layer / "notebook_migration.py"): _HEALTHY_NOTEBOOK_MIGRATION,
+        (mig_layer / "candidate_extraction.py"): (
+            "def assert_conservation(report):\n"
+            "    raise CandidateConservationError('x')\n"
+        ),
+        (src / "stores" / "pending_candidate_store.py"): (
+            "class CandidateIdentityCollisionError(RuntimeError):\n"
+            "    pass\n"
+            "class PendingCandidateCorruptError(RuntimeError):\n"
+            "    pass\n"
+            "def write(candidate):\n"
+            "    os.link(str(tmp), str(path))\n"
+        ),
+        (src / "pending_queue.py"): (
+            "def drain(receipt_store=None):\n"
+            "    write_migration_receipt(cid, 'imported', pn)\n"
+        ),
+        (src / "stores" / "bundle.py"): (
+            "def from_workspace(cls, workspace, *, migration_receipts_dir=None):\n"
+            "    pass\n"
+        ),
+        (scripts / "reconcile_discovery_v4_migration.py"): (
+            "def main():\n    return 0\n"
+        ),
+        (src / "coordinator.py"): _HEALTHY_FINAL_COORDINATOR,
+        (src / "maintenance_gate.py"): (
+            "def assert_discovery_write_allowed(lock_path=None):\n"
+            "    return None\n"
+        ),
+        (src / "runtime" / "batch_runtime.py"): "class DiscoveryBatchRuntime:\n    pass\n",
+        (src / "contracts" / "notebook.py"): _HEALTHY_REJECTION_BRANCH,
+        (src / "contracts" / "page_journal.py"): _HEALTHY_VERSION_CONSTANTS,
+    }
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return {"SRC_ROOT": src_root, "SRC": src, "SCRIPTS": scripts}
+
+
+@pytest.fixture
+def healthy_final_tree(tmp_path, monkeypatch):
+    dirs = _build_healthy_final_tree(tmp_path)
+    monkeypatch.setattr(verifier, "SRC_ROOT", dirs["SRC_ROOT"])
+    monkeypatch.setattr(verifier, "SRC", dirs["SRC"])
+    monkeypatch.setattr(verifier, "SCRIPTS", dirs["SCRIPTS"])
+    return dirs
+
+
+def _final_gate_errors(dirs) -> list:
+    report = verifier.VerifierReport()
+    verifier._check_v4_migration_final_rules(report)
+    return report.errors
+
+
+class TestMigrationFinalGates:
+    """Each Phase 7a gate (11-16) must catch its violation on a clean tree."""
+
+    def test_healthy_tree_passes(self, healthy_final_tree):
+        assert _final_gate_errors(healthy_final_tree) == []
+
+    # ── Gate 11 ──
+
+    def test_gate11_validate_notebook_call_caught(self, healthy_final_tree):
+        nm = (
+            healthy_final_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
+            / "notebook_migration.py"
+        )
+        nm.write_text(
+            _HEALTHY_NOTEBOOK_MIGRATION
+            + "\ndef evil(raw):\n    return validate_notebook(raw)\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("validate_notebook" in e.message for e in errors)
+
+    def test_gate11_missing_from_dict_strict_caught(self, healthy_final_tree):
+        nm = (
+            healthy_final_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
+            / "notebook_migration.py"
+        )
+        nm.write_text("def migrate_all_notebooks(a, b):\n    return []\n",
+                      encoding="utf-8")
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("from_dict_strict" in e.message for e in errors)
+
+    # ── Gate 12 ──
+
+    def test_gate12_legacy_symbol_caught(self, healthy_final_tree):
+        evil = healthy_final_tree["SRC"] / "evil.py"
+        evil.write_text("x = is_legacy_unbound_profile(p)\n", encoding="utf-8")
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("is_legacy_unbound_profile" in e.message for e in errors)
+
+    def test_gate12_bare_except_exception_caught(self, healthy_final_tree):
+        coord = healthy_final_tree["SRC"] / "coordinator.py"
+        coord.write_text(
+            "def run():\n"
+            "    try:\n"
+            "        work()\n"
+            "    except Exception:\n"
+            "        pass\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("except Exception" in e.message for e in errors)
+
+    def test_gate12_coordinator_schema3_whitelist_caught(self, healthy_final_tree):
+        coord = healthy_final_tree["SRC"] / "coordinator.py"
+        coord.write_text(
+            _HEALTHY_FINAL_COORDINATOR
+            + '\nSCHEMAS = ("3.0", "4.0")\n',
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("schema '3.0'" in e.message for e in errors)
+
+    def test_gate12_batch_runtime_compat_alias_caught(self, healthy_final_tree):
+        br = healthy_final_tree["SRC"] / "runtime" / "batch_runtime.py"
+        br.write_text(
+            "# backward compat re-export\n"
+            "from x import PageJournalStoreV4 as PageJournalStore\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("PageJournalStore" in e.message for e in errors)
+
+    # ── Gate 13 ──
+
+    def test_gate13_skip_flag_caught(self, healthy_final_tree):
+        retired_flag = "--skip-" + "candidate-extraction"
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE
+            + '\ngroup.add_argument("' + retired_flag + '")\n',
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        needle = "skip-" + "candidate-extraction"
+        assert any(needle in e.message for e in errors)
+
+    # ── Gate 14 ──
+
+    def test_gate14_missing_assert_conservation_def_caught(self, healthy_final_tree):
+        ce = (
+            healthy_final_tree["SRC_ROOT"] / "migrations" / "discovery_v4"
+            / "candidate_extraction.py"
+        )
+        ce.write_text("def extract():\n    pass\n", encoding="utf-8")
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("assert_conservation" in e.message for e in errors)
+
+    def test_gate14_step_not_calling_conservation_caught(self, healthy_final_tree):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace("    assert_conservation(report)\n", ""),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("assert_conservation" in e.message for e in errors)
+
+    def test_gate14_missing_quarantine_write_caught(self, healthy_final_tree):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace(
+                "    _quarantine_record(record)\n", ""
+            ).replace(
+                '''def _quarantine_path(migration_id):
+    return MIGRATIONS_DIR / f"{migration_id}.candidate_quarantine.jsonl"
+''', ""
+            ),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("quarantine" in e.message for e in errors)
+
+    def test_gate14_accumulating_containers_caught(self, healthy_final_tree):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace(
+                "    report = extract()\n",
+                "    seeds: list[LegacyCandidateSeedV4] = []\n"
+                "    report = extract()\n",
+            ),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("streaming" in e.message for e in errors)
+
+    def test_gate14_preflight_without_quarantine_gate_caught(
+        self, healthy_final_tree
+    ):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace(
+                '''def _step_preflight(journal, staging_ws, nb_results, args):
+    stats = journal.metadata.get("candidate_stats")
+    if stats.get("quarantined"):
+        raise MigrationStepError("quarantined")
+    return None
+''',
+                "def _step_preflight(journal, staging_ws, nb_results, args):\n"
+                "    return None\n",
+            ),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("_step_preflight" in e.message for e in errors)
+
+    def test_gate14_validate_without_receipts_caught(self, healthy_final_tree):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace(
+                '''def cmd_post_cutover_validate(args):
+    report = MIGRATIONS_DIR / f"{mid}.post_cutover_reconciliation.json"
+    receipts = MIGRATIONS_DIR / f"{mid}.receipts"
+    return 0
+''',
+                "def cmd_post_cutover_validate(args):\n    return 0\n",
+            ),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("receipts" in e.message for e in errors)
+
+    def test_gate14_store_silent_overwrite_caught(self, healthy_final_tree):
+        pcs = healthy_final_tree["SRC"] / "stores" / "pending_candidate_store.py"
+        pcs.write_text(
+            "def write(candidate):\n"
+            "    os.replace(str(tmp), str(path))\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("create-if-absent" in e.message for e in errors)
+
+    # ── Gate 15 ──
+
+    def test_gate15_unlocked_command_caught(self, healthy_final_tree):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace(
+                'with MigrationMaintenanceLock("rollback"):', "with nullcontext():"
+            ),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("cmd_rollback" in e.message for e in errors)
+
+    def test_gate15_writer_without_block_check_caught(self, healthy_final_tree):
+        writer = healthy_final_tree["SCRIPTS"] / "discover_papers_concurrent.py"
+        writer.write_text("def main():\n    return 0\n", encoding="utf-8")
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("discover_papers_concurrent.py" in e.file
+                   and "assert_discovery_write_allowed" in e.message
+                   for e in errors)
+
+    def test_gate15_workspace_root_bypass_caught(self, healthy_final_tree):
+        writer = healthy_final_tree["SCRIPTS"] / "discover_papers.py"
+        writer.write_text(
+            "if not args.workspace_root:\n"
+            "    assert_discovery_write_allowed()\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("discover_papers.py" in e.file
+                   and "--workspace-root" in e.message
+                   for e in errors)
+
+    def test_gate15_unlocked_abort_caught(self, healthy_final_tree):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace(
+                'with MigrationMaintenanceLock("abort"):', "with nullcontext():"
+            ),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("cmd_abort" in e.message for e in errors)
+
+    def test_gate15_production_importing_migrations_caught(self, healthy_final_tree):
+        evil = healthy_final_tree["SRC"] / "evil_import.py"
+        evil.write_text(
+            "from src.migrations.discovery_v4.maintenance_lock import x\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("evil_import.py" in e.file
+                   and "migration package" in e.message for e in errors)
+
+    def test_gate15_production_tool_flat_constant_caught(self, healthy_final_tree):
+        tool = healthy_final_tree["SCRIPTS"] / "manage_discovery_keywords.py"
+        tool.write_text(
+            "from config.settings import DISCOVERY_KEYWORD_NOTEBOOK_DIR\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("manage_discovery_keywords.py" in e.file
+                   and "DISCOVERY_KEYWORD_NOTEBOOK_DIR" in e.message
+                   for e in errors)
+
+    def test_gate15_smoke_without_report_isolation_caught(self, healthy_final_tree):
+        mig = healthy_final_tree["SCRIPTS"] / "migrate_discovery_v4.py"
+        mig.write_text(
+            _HEALTHY_FINAL_MIGRATE.replace(
+                '''def _step_smoke(journal, staging_ws, args):
+    smoke_args = ["--report-dir", str(rep), "--output-dir", str(out)]
+    return 0
+''',
+                "def _step_smoke(journal, staging_ws, args):\n    return 0\n",
+            ),
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("_step_smoke" in e.message for e in errors)
+
+    # ── Gate 16 ──
+
+    def test_gate16_accept_branch_caught(self, healthy_final_tree):
+        evil = healthy_final_tree["SRC"] / "evil_load.py"
+        evil.write_text(
+            "def load(data):\n"
+            '    if data.get("schema_version") == "3.0":\n'
+            "        return parse_v3(data)\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("schema '3.0'" in e.message for e in errors)
+
+    def test_gate16_wider_tuple_accept_caught(self, healthy_final_tree):
+        evil = healthy_final_tree["SRC"] / "evil_wide.py"
+        evil.write_text(
+            'if version not in ("1.0", "2.0", "3.0", "4.0"):\n'
+            "    raise ValueError('bad')\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("schema '3.0'" in e.message for e in errors)
+
+    def test_gate16_rejection_tuple_without_raise_caught(self, healthy_final_tree):
+        nb = healthy_final_tree["SRC"] / "contracts" / "notebook.py"
+        nb.write_text(
+            'if version in ("1.0", "2.0", "3.0"):\n'
+            "    data = migrate_inline(data)\n",
+            encoding="utf-8",
+        )
+        errors = _final_gate_errors(healthy_final_tree)
+        assert any("rejected, never parsed" in e.message for e in errors)
+
 
 def test_discovery_final_architecture_passes() -> None:
     """The AST-based architecture verifier must report zero errors."""
@@ -30,9 +672,14 @@ def test_discovery_final_architecture_passes() -> None:
 
     # Report must have scanned at least the core discovery files
     scanned = set(report.files_scanned)
-    required = {"src/discovery/coordinator.py", "src/discovery/lane_executor.py",
-                "src/discovery/provider_client.py", "src/discovery/backfill_transaction.py",
-                "src/discovery/keyword_notebook.py", "src/discovery/report_builder.py"}
+    required = {
+        "src/discovery/coordinator.py",
+        "src/discovery/execution/lane_executor.py",
+        "src/discovery/providers/provider_client.py",
+        "src/discovery/backfill_transaction.py",
+        "src/discovery/contracts/notebook.py",
+        "src/discovery/reporting/report_builder.py",
+    }
     missing = required - scanned
     assert not missing, f"Verifier did not scan required files: {missing}"
 
@@ -44,18 +691,41 @@ def test_official_entrypoint_dispatches_typed_lanes_and_builds_once(
 
     The public coordinator must schedule every physical lane through the typed
     executors and hand all outcomes to one final ``ReportBuilder.build`` call;
-    no compatibility callback or per-lane report builder is allowed.
+    no compatibility callback or per-lane report builder is allowed.  This test
+    exercises the v4 single-stack composition root with an explicit
+    ``DiscoveryWorkspace`` + ``DiscoveryStoreBundleV4``.
     """
     import src.discovery.coordinator as coordinator
-    from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-    from src.discovery.keyword_notebook import KeywordNotebookStore
+    from src.discovery.coordinator import (
+        DiscoveryOptions,
+        DiscoveryRuntimeDependencies,
+        run_discovery_batch_with_dependencies,
+    )
     from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
     from src.discovery.reporting.report_builder import ReportBuilder as RealReportBuilder
+    from src.discovery.staging_gateway import MetadataStagingGateway
+    from src.discovery.stores.bundle import DiscoveryStoreBundleV4
+    from src.discovery.stores.notebook_store import NotebookStoreV4
+    from src.discovery.workspace import DiscoveryWorkspace
     from tests.helpers.fake_provider import discovery_page
     from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
-    notebooks = tmp_path / "notebooks"
-    store = KeywordNotebookStore(notebooks)
+    workspace = DiscoveryWorkspace(
+        generation_id="hygiene-test",
+        root=tmp_path / "workspace",
+        keyword_notebook_dir=tmp_path / "workspace" / "keyword_notebooks",
+        lane_states_dir=tmp_path / "workspace" / "lane_states",
+        page_journals_dir=tmp_path / "workspace" / "page_journals",
+        pending_candidates_dir=tmp_path / "workspace" / "pending_candidates",
+        indexes_dir=tmp_path / "workspace" / "indexes",
+        exports_dir=tmp_path / "workspace" / "exports",
+        reports_dir=tmp_path / "workspace" / "reports",
+        locks_dir=tmp_path / "workspace" / "locks",
+    )
+    workspace.ensure_dirs()
+
+    bundle = DiscoveryStoreBundleV4.from_workspace(workspace)
+    store = NotebookStoreV4(workspace)
     store.ensure_notebook("风吹雪")
     store.sync_search_queries("风吹雪", add=[
         {"query": "风吹雪", "language": "zh"},
@@ -107,22 +777,31 @@ def test_official_entrypoint_dispatches_typed_lanes_and_builds_once(
     monkeypatch.setattr(coordinator, "execute_backfill_lane", spy_backfill)
     monkeypatch.setattr(coordinator, "ReportBuilder", SpyReportBuilder)
 
+    deps = DiscoveryRuntimeDependencies(
+        bundle=bundle,
+        paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "ledger.json",
+        locks_dir=workspace.locks_dir,
+        exports_dir=workspace.exports_dir,
+        output_dir=tmp_path / "output",
+        relevance_cache_dir=tmp_path / "relevance_cache",
+        title_resolution_cache_dir=tmp_path / "title_cache",
+        metadata_gateway=MetadataStagingGateway(
+            paper_raw_dir=tmp_path / "paper_raw",
+            papers_dir=tmp_path / "papers",
+            ledger_path=tmp_path / "ledger.json",
+        ),
+    )
     options = DiscoveryOptions(
         mode="hybrid",
         refresh_pages=1,
         backfill_pages=1,
         max_candidates=8,
-        notebook_dir=notebooks,
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
-        output_dir=tmp_path / "output",
-        paper_raw_dir=tmp_path / "paper_raw",
-        papers_dir=tmp_path / "papers",
-        ledger_path=tmp_path / "ledger.json",
     )
-    report = run_discovery_batch(
+    report = run_discovery_batch_with_dependencies(
         ["风吹雪"],
+        deps=deps,
         options=options,
         max_workers=1,
         page_fetcher=CallbackProviderPageFetcher(fetch),
@@ -134,3 +813,103 @@ def test_official_entrypoint_dispatches_typed_lanes_and_builds_once(
     assert len({spec.key.stable_id() for spec in [*refresh_specs, *backfill_specs]}) == 8
     assert len(dispatched) == 8
     assert len(builds) == 1
+
+
+# ── Unified-HTTP + retired flat-path gates: positive + negative coverage ─
+
+
+def _build_http_gate_tree(root: Path) -> dict[str, Path]:
+    """Minimal tree satisfying the unified-HTTP / flat-path gates."""
+    src_root = root / "src"
+    src = src_root / "discovery"
+    scripts = root / "scripts"
+    files = {
+        (src / "providers" / "provider_client.py"): (
+            "import requests  # the single allowed requests call-site\n"
+        ),
+        (src / "clean_module.py"): (
+            "from urllib.parse import urlparse\n"
+            "def useful():\n"
+            "    return urlparse('https://example.org')\n"
+        ),
+        (scripts / "audit_discovery_keyword_index_sources.py"): (
+            "from src.discovery.runtime_context import resolve_active_runtime\n"
+        ),
+    }
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return {"SRC_ROOT": src_root, "SRC": src, "SCRIPTS": scripts}
+
+
+@pytest.fixture
+def http_gate_tree(tmp_path, monkeypatch):
+    dirs = _build_http_gate_tree(tmp_path)
+    monkeypatch.setattr(verifier, "SRC_ROOT", dirs["SRC_ROOT"])
+    monkeypatch.setattr(verifier, "SRC", dirs["SRC"])
+    monkeypatch.setattr(verifier, "SCRIPTS", dirs["SCRIPTS"])
+    return dirs
+
+
+def _http_gate_errors(dirs) -> list:
+    report = verifier.VerifierReport()
+    verifier._check_http_and_flat_path_rules(report)
+    return report.errors
+
+
+class TestHttpAndFlatPathGates:
+    """Gate H1/H2 must catch violations and pass on a clean tree."""
+
+    def test_healthy_tree_passes(self, http_gate_tree):
+        assert _http_gate_errors(http_gate_tree) == []
+
+    def test_gate_h1_requests_import_caught(self, http_gate_tree):
+        bad = http_gate_tree["SRC"] / "sneaky.py"
+        bad.write_text("import requests\n", encoding="utf-8")
+        errors = _http_gate_errors(http_gate_tree)
+        assert any("direct HTTP import" in e.message and "sneaky" in e.file for e in errors)
+
+    def test_gate_h1_httpx_from_import_caught(self, http_gate_tree):
+        bad = http_gate_tree["SRC"] / "sneaky.py"
+        bad.write_text("from httpx import get\n", encoding="utf-8")
+        errors = _http_gate_errors(http_gate_tree)
+        assert any("direct HTTP import" in e.message for e in errors)
+
+    def test_gate_h1_urllib_request_caught(self, http_gate_tree):
+        bad = http_gate_tree["SRC"] / "sneaky.py"
+        bad.write_text("from urllib.request import urlopen\n", encoding="utf-8")
+        errors = _http_gate_errors(http_gate_tree)
+        assert any("direct HTTP import" in e.message for e in errors)
+
+    def test_gate_h1_urllib_alias_form_caught(self, http_gate_tree):
+        bad = http_gate_tree["SRC"] / "sneaky.py"
+        bad.write_text("from urllib import request\n", encoding="utf-8")
+        errors = _http_gate_errors(http_gate_tree)
+        assert any("direct HTTP import" in e.message for e in errors)
+
+    def test_gate_h1_urllib_parse_is_allowed(self, http_gate_tree):
+        ok = http_gate_tree["SRC"] / "parser.py"
+        ok.write_text("from urllib.parse import quote\n", encoding="utf-8")
+        assert _http_gate_errors(http_gate_tree) == []
+
+    def test_gate_h1_provider_client_is_exempt(self, http_gate_tree):
+        # provider_client.py already imports requests in the healthy tree.
+        assert _http_gate_errors(http_gate_tree) == []
+
+    def test_gate_h2_flat_constant_in_discovery_caught(self, http_gate_tree):
+        bad = http_gate_tree["SRC"] / "flat_user.py"
+        bad.write_text(
+            "from config.settings import DISCOVERY_KEYWORD_NOTEBOOK_DIR\n",
+            encoding="utf-8",
+        )
+        errors = _http_gate_errors(http_gate_tree)
+        assert any("retired flat discovery path constant" in e.message for e in errors)
+
+    def test_gate_h2_flat_constant_in_audit_script_caught(self, http_gate_tree):
+        script = http_gate_tree["SCRIPTS"] / "audit_discovery_keyword_index_sources.py"
+        script.write_text(
+            "from config.settings import DISCOVERY_PENDING_PAGES_DIR\n",
+            encoding="utf-8",
+        )
+        errors = _http_gate_errors(http_gate_tree)
+        assert any("retired flat discovery path constant" in e.message for e in errors)

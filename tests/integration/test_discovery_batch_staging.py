@@ -5,10 +5,12 @@ import pytest
 
 import src.discovery.pending_queue as pending_queue_module
 from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
-from src.discovery.keyword_notebook import keyword_id, query_identity
+from src.discovery.contracts.notebook import keyword_id, query_identity
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.pending_queue import drain_pending_candidates
+from src.discovery.staging_gateway import MetadataStagingGateway
 from src.discovery.staging_context import DiscoveryStagingContext
 from src.discovery.staging_metrics import CollectingStagingMetricsObserver
 from src.services.network_metadata_staging import stage_network_metadata_records
@@ -114,11 +116,16 @@ def test_pending_drain_stages_one_claim_batch_in_one_transaction_and_page_commit
     ledger_saves_before = metrics.ledger_saves
 
     stage_batch_sizes: list[int] = []
-    real_stage = pending_queue_module.stage_network_metadata_records
+    gateway = MetadataStagingGateway(
+        paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "ledger.json",
+    )
+    real_stage = gateway.stage_batch
 
-    def stage_spy(records, **kwargs):
+    def stage_spy(records, *, apply, skip_duplicates, transaction):
         stage_batch_sizes.append(len(records))
-        return real_stage(records, **kwargs)
+        return real_stage(records, apply=apply, skip_duplicates=skip_duplicates, transaction=transaction)
 
     commit_batches: list[tuple[Path, int]] = []
     real_commit_results = journal.commit_candidate_results
@@ -131,7 +138,7 @@ def test_pending_drain_stages_one_claim_batch_in_one_transaction_and_page_commit
     def reject_single_commit(*args, **kwargs):
         pytest.fail("authoritative staging drain must use page-level batch commit")
 
-    monkeypatch.setattr(pending_queue_module, "stage_network_metadata_records", stage_spy)
+    monkeypatch.setattr(gateway, "stage_batch", stage_spy)
     monkeypatch.setattr(journal, "commit_candidate_results", commit_results_spy)
     monkeypatch.setattr(journal, "commit_candidate", reject_single_commit)
 
@@ -148,6 +155,7 @@ def test_pending_drain_stages_one_claim_batch_in_one_transaction_and_page_commit
         exports_dir=tmp_path / "exports",
         worker_id="worker",
         runtime=runtime,
+        gateway=gateway,
     )
 
     assert report.errors == []
@@ -203,11 +211,16 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
     runtime.journal_index._state.processing_by_doi[doi] = "stale-owner"
 
     stage_batch_sizes: list[int] = []
-    real_stage = pending_queue_module.stage_network_metadata_records
+    gateway = MetadataStagingGateway(
+        paper_raw_dir=tmp_path / "paper_raw",
+        papers_dir=tmp_path / "papers",
+        ledger_path=tmp_path / "ledger.json",
+    )
+    real_stage = gateway.stage_batch
 
-    def stage_spy(records, **kwargs):
+    def stage_spy(records, *, apply, skip_duplicates, transaction):
         stage_batch_sizes.append(len(records))
-        return real_stage(records, **kwargs)
+        return real_stage(records, apply=apply, skip_duplicates=skip_duplicates, transaction=transaction)
 
     commit_batch_sizes: list[int] = []
     real_commit_results = journal.commit_candidate_results
@@ -217,7 +230,7 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
         commit_batch_sizes.append(len(materialized))
         return real_commit_results(path, materialized, worker_id=worker_id)
 
-    monkeypatch.setattr(pending_queue_module, "stage_network_metadata_records", stage_spy)
+    monkeypatch.setattr(gateway, "stage_batch", stage_spy)
     monkeypatch.setattr(journal, "commit_candidate_results", commit_results_spy)
 
     report = drain_pending_candidates(
@@ -233,6 +246,7 @@ def test_pending_drain_deduplicates_same_batch_doi_before_authoritative_stage(
         exports_dir=tmp_path / "exports",
         worker_id="worker",
         runtime=runtime,
+        gateway=gateway,
     )
 
     assert report.errors == []

@@ -7,9 +7,12 @@ from pathlib import Path
 import pytest
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
-from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id, query_identity
+from src.discovery.contracts.notebook import keyword_id, query_identity
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+from src.discovery.contracts.page_journal import _compute_checksum
 from scripts.recover_discovery_keyword_notebooks import (
     RecoveryApplyUnavailable,
     recover_notebooks,
@@ -17,6 +20,12 @@ from scripts.recover_discovery_keyword_notebooks import (
 
 
 pytestmark = pytest.mark.unit
+
+
+def _write_page_dict(path: Path, page: dict) -> None:
+    """Write a page dict with a fresh checksum so PageJournalStore can read it."""
+    page["checksum"] = _compute_checksum(page)
+    path.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
 
 
 def _setup(tmp_path: Path, *, generation: int = 1, signature: dict | None = None,
@@ -34,7 +43,7 @@ def _setup(tmp_path: Path, *, generation: int = 1, signature: dict | None = None
         {"query": "风吹雪", "language": "zh"},
         {"query": "blowing snow", "language": "en"},
     ], pag_sig=sig["hash"])
-    notebook = store.require_v3("风吹雪")
+    notebook = store.require_v4("风吹雪")
     qid = query_identity("en", "blowing snow")
     journal = PageJournalStore(pages)
     page = journal.make_synthetic_page(
@@ -58,7 +67,7 @@ def _setup(tmp_path: Path, *, generation: int = 1, signature: dict | None = None
         provider="openalex", lane="backfill", page_id="page-1",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(path, page)
     return notebooks, pages, notebook, page
 
 
@@ -150,7 +159,7 @@ def _setup_multiple_generations(
             provider="openalex", lane="backfill", page_id=page_id,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
+        _write_page_dict(path, page)
     return notebooks, pages, notebook, sig1, sig2
 
 
@@ -210,7 +219,7 @@ def test_generation_or_signature_mismatch_blocks(tmp_path: Path, case: str):
         signature = request_signature(page_size=11)
         payload["request_signature"] = signature
         payload["lane_key"]["request_signature"] = signature["hash"]
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(path, payload)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["plan"]["operations"] == []
     assert report["errors"]
@@ -227,7 +236,7 @@ def test_cursor_divergence_fails_closed(tmp_path: Path):
         keyword_id=notebook["keyword_id"], query_id=page["query_id"],
         provider="openalex", lane="backfill", page_id="page-2",
     )
-    second_path.write_text(json.dumps(second, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(second_path, second)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["plan"]["operations"] == []
     assert any(item["kind"] == "cursor_divergence" for item in report["errors"])
@@ -243,7 +252,7 @@ def test_orphan_page_is_reported_without_touching_notebook(tmp_path: Path):
     orphan["lane_key"]["keyword_id"] = orphan["keyword_id"]
     orphan_path = pages / orphan["keyword_id"] / page["query_id"] / "openalex" / "backfill" / "orphan.json"
     orphan_path.parent.mkdir(parents=True, exist_ok=True)
-    orphan_path.write_text(json.dumps(orphan, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(orphan_path, orphan)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert any(item["kind"] == "orphan_page" for item in report["errors"])
 
@@ -295,7 +304,7 @@ def test_recovery_blocks_current_generation_branch(tmp_path: Path):
         provider="openalex", lane="backfill", page_id="current-branch",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(branch, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(path, branch)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["plan"]["operations"] == []
     assert any(item["kind"] == "cursor_divergence" and item.get("generation") == 2 for item in report["errors"])
@@ -319,7 +328,7 @@ def test_recovery_blocks_signature_mismatch(tmp_path: Path):
         provider="openalex", lane="backfill", page_id="bad-signature",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(path, bad)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["plan"]["operations"] == []
     assert any(item["kind"] == "signature" and item.get("generation") == 2 for item in report["errors"])
@@ -349,13 +358,13 @@ def test_recovery_rejects_items_returned_without_signature(tmp_path: Path):
     bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
     # Corrupt notebook: set items_returned_total without signature
-    from src.discovery.keyword_notebook import notebook_filename, query_identity
+    from src.discovery.contracts.notebook import notebook_filename, query_identity
     qid = query_identity("en", "blowing snow")
     path = notebooks / notebook_filename("风吹雪")
     payload = json.loads(path.read_text(encoding="utf-8"))
     bf = payload["search_queries"][qid]["providers"]["openalex"]["backfill"]
     bf["items_returned_total"] = 1
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(path, payload)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["errors"], "Recovery should report errors for non-pristine unbound"
     assert report["plan"]["operations"] == []
@@ -377,12 +386,12 @@ def test_recovery_rejects_invalid_generation(tmp_path: Path):
     ])
     bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
-    from src.discovery.keyword_notebook import notebook_filename, query_identity
+    from src.discovery.contracts.notebook import notebook_filename, query_identity
     qid = query_identity("en", "blowing snow")
     path = notebooks / notebook_filename("风吹雪")
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["search_queries"][qid]["providers"]["openalex"]["backfill"]["generation"] = 0
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(path, payload)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["errors"], "Recovery should reject generation=0"
 
@@ -403,11 +412,11 @@ def test_recovery_rejects_unknown_backfill_field(tmp_path: Path):
     ])
     bind_test_relevance_profile(store, "风吹雪")
     store.set_enabled("风吹雪", True)
-    from src.discovery.keyword_notebook import notebook_filename, query_identity
+    from src.discovery.contracts.notebook import notebook_filename, query_identity
     qid = query_identity("en", "blowing snow")
     path = notebooks / notebook_filename("风吹雪")
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["search_queries"][qid]["providers"]["openalex"]["backfill"]["some_unknown_field"] = True
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    _write_page_dict(path, payload)
     report = _recover(notebooks, pages, tmp_path=tmp_path)
     assert report["errors"], "Recovery should reject unknown backfill fields"

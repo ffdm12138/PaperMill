@@ -17,6 +17,7 @@ RUNTIME_DATA_PREFIXES = (
     "data/discovery/reports/", "data/discovery/logs/",
     "data/discovery/relevance_raw_work_cache/",
     "data/discovery/generations/", "data/discovery/legacy_archive/",
+    "data/discovery/legacy_retained/",
     "data/discovery/migrations/", "data/discovery/title_resolution_cache/",
     "data/discovery/active_generation.json",
     "data/catalog/",

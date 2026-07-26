@@ -19,24 +19,29 @@ from typing import Any, Mapping
 
 from filelock import FileLock, Timeout
 
+from src.discovery.contracts.candidate import PendingCandidateV4
 from src.discovery.discovery_receipt import (
     build_receipt_payload,
     receipt_path_for,
     write_or_validate_discovery_receipt,
 )
 from src.discovery.models import PaperCandidate, normalize_doi
-from src.discovery.page_journal import (
-    JournalDrainIndex,
-    PageJournalStore,
+from src.discovery.contracts.page_journal import (
     stable_hash,
     title_resolution_key,
 )
+from src.discovery.stores.journal_drain_index import JournalDrainIndex
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
+from src.discovery.stores.pending_candidate_store import (
+    PendingCandidateCorruptError,
+    PendingCandidateStoreV4,
+)
+from src.discovery.providers.provider_errors import ProviderRequestBudgetExhausted
 from src.discovery.runtime.batch_runtime import ActiveRelevanceProfiles, DiscoveryBatchRuntime
 from src.discovery.runtime.budgets import BatchDoiResolutionBudget
-from src.discovery.providers.provider_errors import ProviderRequestBudgetExhausted
+from src.discovery.staging_gateway import MetadataStagingGateway
 from src.discovery.title_resolution import DurableTitleCache, TitleResolutionService
 from src.services.metadata_quality import is_valid_normalized_doi
-from src.services.network_metadata_staging import stage_network_metadata_records
 
 
 DISCOVERY_LEASE_SECONDS = 300
@@ -91,20 +96,6 @@ class DrainReport:
         if self.errors or self.retryable_failures or self.terminal_failures:
             return "partial_success" if self.processed else "failed"
         return "success"
-
-    @classmethod
-    def failed(cls, exc: Exception, *, phase: str) -> "DrainReport":
-        """Legacy generic failure — maps to retryable.
-
-        v98: prefer typed constructors (retryable_failed, permanent_failed,
-        repair_required, interrupted). This method exists only for backward
-        compatibility during migration.
-        """
-        return cls(
-            retryable_failures=1,
-            errors=[f"{phase}_drain_failed:{type(exc).__name__}:{str(exc)[:400]}"],
-            outcome=DrainOutcome.RETRYABLE_FAILED,
-        )
 
     @classmethod
     def retryable_failed(cls, exc: Exception, *, phase: str) -> "DrainReport":
@@ -466,6 +457,261 @@ def _resolve_missing_doi_with_service(
     return candidate, False
 
 
+def _paper_candidate_from_pending(pending: PendingCandidateV4) -> PaperCandidate:
+    """Project a strict ``PendingCandidateV4`` onto the staging record model."""
+    raw = dict(pending.raw_provider_data or {})
+    return PaperCandidate(
+        title=pending.title or "",
+        year=pending.year,
+        authors=list(pending.authors or []),
+        doi=normalize_doi(pending.normalized_doi or pending.doi or ""),
+        venue=pending.venue or "",
+        source=str(raw.get("provider") or ""),
+        raw=raw,
+    )
+
+
+def _drain_pending_store_candidates(
+    *,
+    pending_store: PendingCandidateStoreV4,
+    runtime: DiscoveryBatchRuntime,
+    report: DrainReport,
+    keyword_ids: list[str] | None,
+    candidate_budget: int,
+    apply: bool,
+    locks_dir: Path,
+    worker_id: str,
+    skip_duplicates: bool,
+    gateway: MetadataStagingGateway,
+    receipt_store: Any = None,
+) -> None:
+    """Drain ``PendingCandidateStoreV4`` files through the staging gateway.
+
+    The candidate file is the claim: it is deleted only after the gateway
+    reaches a durable result (staged, reused, or existing duplicate).  The
+    DOI/identity duplicate guard inside the staging transaction makes a
+    crash between stage and delete converge to reused/duplicate on the next
+    drain, so consumption is idempotent.  The store has no status field, so
+    kept files are counted as retryable — with one exception: a corrupt
+    candidate file (typed :class:`PendingCandidateCorruptError` from the
+    store) is reported as a terminal, operator-visible failure.  It is
+    never deleted and never retried as transient; it stays on disk until
+    an operator repairs or removes it, and the store count keeps it
+    visible to post-cutover validation.
+    Runs in the same DOI-lock epochs of at most 16 as the journal drain.
+    """
+    staging_context = runtime.staging_context
+    if staging_context is None or candidate_budget <= 0:
+        return
+    title_service = runtime.title_resolution_service
+    if keyword_ids:
+        paths = [
+            path
+            for keyword_id in sorted(set(keyword_ids))
+            for path in pending_store.list_by_keyword(keyword_id)
+        ]
+    else:
+        paths = pending_store.list_all()
+    if not paths:
+        return
+    report.before += len(paths)
+
+    drained = 0
+    offset = 0
+    while drained < candidate_budget and offset < len(paths):
+        epoch_paths = paths[offset:offset + min(16, candidate_budget - drained)]
+        offset += len(epoch_paths)
+        drained += len(epoch_paths)
+
+        entries: dict[str, tuple[str, PaperCandidate, str, Any]] = {}
+        primary_by_doi: dict[str, str] = {}
+        followers_by_primary: dict[str, list[str]] = {}
+        durable: set[str] = set()
+        counted: set[str] = set()
+        paper_number_by_primary: dict[str, str] = {}
+
+        def keep(candidate_id: str, reason: str = "", *, counter: str = "retryable_failures") -> None:
+            if candidate_id in counted:
+                return
+            counted.add(candidate_id)
+            setattr(report, counter, getattr(report, counter) + 1)
+            report.processed += 1
+            if reason:
+                report.errors.append(f"{reason}:{candidate_id}")
+
+        def write_migration_receipt(
+            candidate_id: str,
+            status: str,
+            paper_number: str,
+        ) -> None:
+            """Durably record a consumed legacy seed (migration drains only).
+
+            Normal production batches pass ``receipt_store=None`` and skip
+            this entirely; only candidates with
+            ``origin == "legacy_candidate_seed"`` ever produce a receipt.
+            """
+            if receipt_store is None:
+                return
+            entry = entries.get(candidate_id)
+            if entry is None:
+                return
+            keyword_id, _candidate, doi, pending = entry
+            if getattr(pending, "origin", None) != "legacy_candidate_seed":
+                return
+            raw = getattr(pending, "raw_provider_data", None) or {}
+            seed_id = str(raw.get("seed_id") or candidate_id)
+            receipt_store.write_receipt(seed_id, status, metadata={
+                "candidate_id": candidate_id,
+                "keyword_id": keyword_id,
+                "normalized_doi": doi,
+                "paper_number": paper_number,
+            })
+
+        for path in epoch_paths:
+            keyword_id = path.parent.name
+            candidate_id = path.stem
+            try:
+                pending = pending_store.read(keyword_id, candidate_id)
+            except PendingCandidateCorruptError as exc:
+                # Corruption is a terminal, operator-visible failure: the
+                # file is kept on disk (never deleted, never retried as
+                # transient) and the drain report surfaces it.
+                keep(
+                    candidate_id,
+                    f"pending_candidate_corrupt:{exc}",
+                    counter="terminal_failures",
+                )
+                continue
+            if pending is None:
+                keep(candidate_id, "pending_candidate_unreadable")
+                continue
+            candidate = _paper_candidate_from_pending(pending)
+            try:
+                if not candidate.doi:
+                    assert title_service is not None
+                    with _lock(_resolution_lock_path(locks_dir, candidate)):
+                        candidate, _resolved = _resolve_missing_doi_with_service(
+                            candidate, title_service,
+                        )
+                doi = normalize_doi(candidate.doi)
+            except ProviderRequestBudgetExhausted:
+                raise
+            except Exception as exc:
+                keep(candidate_id, f"pending_candidate_doi_resolution_failed:{type(exc).__name__}")
+                continue
+            if not doi or not is_valid_normalized_doi(doi):
+                keep(candidate_id)
+                continue
+            candidate.doi = doi
+            entries[candidate_id] = (keyword_id, candidate, doi, pending)
+            if doi in primary_by_doi:
+                followers_by_primary.setdefault(primary_by_doi[doi], []).append(candidate_id)
+            else:
+                primary_by_doi[doi] = candidate_id
+
+        primary_ids = list(primary_by_doi.values())
+        locks = sorted({
+            _doi_lock_path(locks_dir, entries[candidate_id][2])
+            for candidate_id in primary_ids
+        }, key=str)
+        try:
+            with ExitStack() as lock_stack:
+                for lock_path in locks:
+                    lock_stack.enter_context(_lock(lock_path))
+
+                stage_primary_ids: list[str] = []
+                stage_records: list[dict[str, Any]] = []
+                for primary_id in primary_ids:
+                    keyword_id, candidate, doi, _pending = entries[primary_id]
+                    stage_primary_ids.append(primary_id)
+                    stage_records.append({
+                        **candidate.to_dict(),
+                        "doi_resolution": candidate.doi_resolution,
+                        "discovery_context": {
+                            "candidate_id": primary_id,
+                            "page_id": "",
+                            "keyword_id": keyword_id,
+                            "provider": candidate.source,
+                            "normalized_doi": doi,
+                        },
+                    })
+
+                if stage_records:
+                    stage_result = gateway.stage_batch(
+                        stage_records,
+                        apply=apply,
+                        skip_duplicates=skip_duplicates,
+                        transaction=staging_context.transaction,
+                    )
+                    stage_items = list(stage_result.items)
+                    if len(stage_items) != len(stage_primary_ids):
+                        raise RuntimeError("staging batch result count mismatch")
+                    for primary_id, item in zip(stage_primary_ids, stage_items, strict=True):
+                        keyword_id, _candidate, _doi, _pending = entries[primary_id]
+                        status = str(item.get("status") or "")
+                        if status == "staged":
+                            pending_store.delete(keyword_id, primary_id)
+                            write_migration_receipt(
+                                primary_id, "imported",
+                                str(item.get("paper_number") or ""),
+                            )
+                            paper_number_by_primary[primary_id] = str(
+                                item.get("paper_number") or ""
+                            )
+                            durable.add(primary_id)
+                            counted.add(primary_id)
+                            report.processed += 1
+                            if bool(item.get("actual_allocated")):
+                                report.staged += 1
+                            else:
+                                report.reused_existing += 1
+                        elif status == "duplicate":
+                            pending_store.delete(keyword_id, primary_id)
+                            write_migration_receipt(
+                                primary_id, "already_existing",
+                                str(item.get("paper_number") or ""),
+                            )
+                            paper_number_by_primary[primary_id] = str(
+                                item.get("paper_number") or ""
+                            )
+                            durable.add(primary_id)
+                            counted.add(primary_id)
+                            report.existing_duplicate += 1
+                            report.processed += 1
+                        elif status == "planned":
+                            keep(primary_id, counter="planned")
+                        elif status in {"failed_retryable", "repair_required"}:
+                            keep(primary_id)
+                        else:
+                            keep(primary_id)
+        except ProviderRequestBudgetExhausted:
+            raise
+        except Exception as exc:
+            report.errors.append(f"{type(exc).__name__}:{exc}")
+            for primary_id in primary_ids:
+                keep(primary_id)
+
+        # Followers share the primary's DOI: a durable primary makes them
+        # consumed duplicate observations; otherwise they stay pending.
+        for primary_id, follower_ids in followers_by_primary.items():
+            for follower_id in follower_ids:
+                keyword_id, _candidate, _doi, _pending = entries[follower_id]
+                if primary_id in durable:
+                    pending_store.delete(keyword_id, follower_id)
+                    write_migration_receipt(
+                        follower_id, "duplicate_seed",
+                        paper_number_by_primary.get(primary_id, ""),
+                    )
+                    counted.add(follower_id)
+                    report.duplicate_observation += 1
+                    report.processed += 1
+                else:
+                    keep(follower_id)
+
+        for candidate_id in entries:
+            keep(candidate_id)
+
+
 def _drain_staging_candidate_batches(
     *,
     journal: PageJournalStore,
@@ -484,6 +730,9 @@ def _drain_staging_candidate_batches(
     doi_resolution_budget: int,
     lease_seconds: int,
     skip_duplicates: bool,
+    gateway: MetadataStagingGateway,
+    pending_store: PendingCandidateStoreV4 | None = None,
+    receipt_store: Any = None,
 ) -> DrainReport:
     """Drain authoritative staging work in lock epochs of at most 16 claims.
 
@@ -702,17 +951,13 @@ def _drain_staging_candidate_batches(
                     })
 
                 if stage_records:
-                    stage_report = stage_network_metadata_records(
+                    stage_result = gateway.stage_batch(
                         stage_records,
-                        paper_raw_dir=paper_raw_dir,
-                        papers_dir=papers_dir,
-                        ledger_path=ledger_path,
                         apply=apply,
-                        dry_run=not apply,
                         skip_duplicates=skip_duplicates,
                         transaction=staging_context.transaction,
                     )
-                    stage_items = list(stage_report.get("items") or [])
+                    stage_items = list(stage_result.items)
                     if len(stage_items) != len(stage_primary_ids):
                         raise RuntimeError("staging batch result count mismatch")
                     for primary_id, item in zip(stage_primary_ids, stage_items, strict=True):
@@ -875,6 +1120,21 @@ def _drain_staging_candidate_batches(
                     setattr(report, counter, getattr(report, counter) + 1)
                 report.processed += 1
 
+    if pending_store is not None:
+        _drain_pending_store_candidates(
+            pending_store=pending_store,
+            runtime=runtime,
+            report=report,
+            keyword_ids=keyword_ids,
+            candidate_budget=max(0, candidate_budget - claimed_total),
+            apply=apply,
+            locks_dir=locks_dir,
+            worker_id=worker_id,
+            skip_duplicates=skip_duplicates,
+            gateway=gateway,
+            receipt_store=receipt_store,
+        )
+
     terminal = (
         report.staged + report.reused_existing + report.existing_duplicate + report.duplicate_observation
         + report.invalid + report.unresolved + report.terminal_failures
@@ -903,6 +1163,9 @@ def drain_pending_candidates(
     hide_existing: bool = False,
     runtime: DiscoveryBatchRuntime | None = None,
     active_profile_hashes: Mapping[str, str] | None = None,
+    gateway: MetadataStagingGateway | None = None,
+    pending_store: PendingCandidateStoreV4 | None = None,
+    receipt_store: Any = None,
 ) -> DrainReport:
     if runtime is None:
         if active_profile_hashes is None:
@@ -976,6 +1239,7 @@ def drain_pending_candidates(
                 doi_resolution_budget=doi_resolution_budget,
                 lease_seconds=lease_seconds, skip_duplicates=skip_duplicates,
                 hide_existing=hide_existing, runtime=runtime,
+                gateway=gateway,
             )
             for field_name in (
                 "processed", "staged", "reused_existing", "emitted", "existing_duplicate",
@@ -999,6 +1263,12 @@ def drain_pending_candidates(
     # write lock inside the allocator before each authoritative check, so
     # concurrent writers cannot slip a duplicate DOI past it.
     staging_context = runtime.staging_context
+    if gateway is None:
+        gateway = MetadataStagingGateway(
+            paper_raw_dir=paper_raw_dir,
+            papers_dir=papers_dir,
+            ledger_path=ledger_path,
+        )
     if stage_to_paper_raw:
         return _drain_staging_candidate_batches(
             journal=journal,
@@ -1017,6 +1287,9 @@ def drain_pending_candidates(
             doi_resolution_budget=doi_resolution_budget,
             lease_seconds=lease_seconds,
             skip_duplicates=skip_duplicates,
+            gateway=gateway,
+            pending_store=pending_store,
+            receipt_store=receipt_store,
         )
     drain_generation = f"drain-{worker_id}-{datetime.now(timezone.utc).timestamp():.6f}"
     deferred_candidate_ids: set[str] = set()
@@ -1220,8 +1493,10 @@ def drain_pending_candidates(
                     new_status="failed_retryable",
                     updates={"last_error": str(exc)},
                 )
-            except Exception:
-                pass
+            except Exception as commit_exc:
+                report.errors.append(
+                    f"failed_retryable_commit_failed:{type(commit_exc).__name__}:{commit_exc}"
+                )
         except Exception as exc:
             report.retryable_failures += 1
             report.errors.append(str(exc))
@@ -1233,8 +1508,10 @@ def drain_pending_candidates(
                     new_status="failed_retryable",
                     updates={"last_error": str(exc)},
                 )
-            except Exception:
-                pass
+            except Exception as commit_exc:
+                report.errors.append(
+                    f"failed_retryable_commit_failed:{type(commit_exc).__name__}:{commit_exc}"
+                )
     terminal = (report.staged + report.reused_existing + report.emitted + report.existing_duplicate
                 + report.duplicate_observation + report.invalid + report.unresolved
                 + report.terminal_failures)

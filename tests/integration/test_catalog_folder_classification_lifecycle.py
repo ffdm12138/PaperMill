@@ -23,7 +23,8 @@ from src.catalog_folders.formal_registry import FormalPaper, FormalPaperRegistry
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
 from src.catalog_folders.reader import CatalogFolderReader
 from src.catalog_folders.reconcile import reconcile_catalog_folders, reconcile_paper_membership
-from src.discovery.keyword_notebook import KeywordNotebookStore, keyword_id as derive_keyword_id
+from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.catalog_folders.registry import (
     category_from_notebook,
     definition_hash,
@@ -40,7 +41,7 @@ from tests.helpers.relevance_profiles import bind_test_relevance_profile
 # ── helpers ──────────────────────────────────────────────────────────
 
 def _write_notebook(notebook_dir: Path, keyword: str, is_chinese: bool = True, *, keyword_id: str | None = None) -> Path:
-    """Write a complete bilingual schema-v3 notebook."""
+    """Write a complete bilingual schema-v4 notebook."""
     if keyword_id is None:
         keyword_id = derive_keyword_id(keyword)
     if not is_chinese or keyword_id != derive_keyword_id(keyword):

@@ -41,6 +41,8 @@ class ActiveGenerationPointerV4:
 
     ALL fields must be non-empty and type-exact.  An empty field means the
     pointer is corrupt or was produced by the v103 pseudo-v4 migration.
+    ``previous_generation_id`` is the only optional field: it records the
+    generation this pointer superseded at cutover (absent on first install).
     """
 
     schema_version: Literal["4.0"] = "4.0"
@@ -48,6 +50,7 @@ class ActiveGenerationPointerV4:
     workspace_manifest_sha256: str = ""
     activated_at: str = ""
     migration_id: str = ""
+    previous_generation_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != "4.0":
@@ -55,14 +58,10 @@ class ActiveGenerationPointerV4:
                 f"schema_version must be '4.0', got {self.schema_version!r}"
             )
 
-        _check_non_blank(self.generation_id, "generation_id")
-        if not _GEN_ID_RE.match(self.generation_id):
-            raise ValueError(
-                f"generation_id contains forbidden characters: {self.generation_id!r}"
-            )
-        if "/" in self.generation_id or "\\" in self.generation_id:
-            raise ValueError(
-                f"generation_id contains path traversal: {self.generation_id!r}"
+        self._check_generation_id(self.generation_id, "generation_id")
+        if self.previous_generation_id is not None:
+            self._check_generation_id(
+                self.previous_generation_id, "previous_generation_id"
             )
 
         _check_non_blank(self.workspace_manifest_sha256, "workspace_manifest_sha256")
@@ -84,6 +83,18 @@ class ActiveGenerationPointerV4:
 
         _check_non_blank(self.migration_id, "migration_id")
 
+    @staticmethod
+    def _check_generation_id(value: str, field_name: str) -> None:
+        _check_non_blank(value, field_name)
+        if not _GEN_ID_RE.match(value):
+            raise ValueError(
+                f"{field_name} contains forbidden characters: {value!r}"
+            )
+        if "/" in value or "\\" in value:
+            raise ValueError(
+                f"{field_name} contains path traversal: {value!r}"
+            )
+
     @property
     def is_valid(self) -> bool:
         """True if all fields are non-empty (not a v103 pseudo-v4 marker)."""
@@ -103,6 +114,7 @@ class ActiveGenerationPointerV4:
         allowed = {
             "schema_version", "generation_id",
             "workspace_manifest_sha256", "activated_at", "migration_id",
+            "previous_generation_id",
         }
         extra = set(data) - allowed
         if extra:
@@ -110,22 +122,27 @@ class ActiveGenerationPointerV4:
                 f"ActiveGenerationPointerV4 unknown fields: {sorted(extra)}"
             )
 
+        previous = data.get("previous_generation_id")
         return cls(
             schema_version="4.0",
             generation_id=str(data.get("generation_id", "")),
             workspace_manifest_sha256=str(data.get("workspace_manifest_sha256", "")),
             activated_at=str(data.get("activated_at", "")),
             migration_id=str(data.get("migration_id", "")),
+            previous_generation_id=str(previous) if previous is not None else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "generation_id": self.generation_id,
             "workspace_manifest_sha256": self.workspace_manifest_sha256,
             "activated_at": self.activated_at,
             "migration_id": self.migration_id,
         }
+        if self.previous_generation_id is not None:
+            payload["previous_generation_id"] = self.previous_generation_id
+        return payload
 
 
 # ── Workspace manifest ───────────────────────────────────────────────────

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,8 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SRC = PROJECT_ROOT / "src" / "discovery"
+SRC_ROOT = PROJECT_ROOT / "src"
+SRC = SRC_ROOT / "discovery"
 SCRIPTS = PROJECT_ROOT / "scripts"
 
 
@@ -67,11 +69,16 @@ class VerifierReport:
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-def _scan_file(path: Path) -> ast.AST | None:
-    """Parse a Python file, returning None on syntax error."""
+def _scan_file(path: Path, report: VerifierReport, filepath: str) -> ast.AST | None:
+    """Parse a Python file; syntax errors are recorded as fatal findings."""
     try:
         return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except SyntaxError:
+    except SyntaxError as exc:
+        report.findings.append(Finding(
+            level="error", category="forbidden",
+            file=filepath, line=getattr(exc, "lineno", 0),
+            message=f"syntax error: {exc.msg}",
+        ))
         return None
 
 
@@ -112,6 +119,18 @@ class _ForbiddenVisitor(ast.NodeVisitor):
         for alias in node.names:
             name = alias.asname or alias.name
             self._imported_names[name] = f"{module}.{alias.name}"
+
+            # ── v4 single-stack: the retired top-level alias shells
+            # (keyword_notebook.py / page_journal.py) are deleted; any import
+            # from those module paths is a hard failure.  The post-scan rule
+            # in _check_single_stack_rules additionally asserts the files do
+            # not exist at all.
+            if module in {"src.discovery.keyword_notebook", "src.discovery.page_journal"}:
+                self._error(
+                    "forbidden", node.lineno,
+                    f"import from retired alias shell {module} — "
+                    "use src.discovery.contracts.* / src.discovery.stores.*",
+                )
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -483,10 +502,10 @@ class _RequiredCallsVisitor(ast.NodeVisitor):
             if "DurableProviderPage.from_journal" not in self._found_required:
                 self._error(0, "backfill_transaction must use DurableProviderPage.from_journal for recovery")
 
-        # keyword_notebook must use GenerationHistoryEntry.from_dict_strict
-        if "keyword_notebook" in fp:
+        # contracts/notebook must use GenerationHistoryEntry.from_dict_strict
+        if "contracts/notebook" in fp:
             if "GenerationHistoryEntry.from_dict_strict" not in self._found_required:
-                self._error(0, "keyword_notebook must use GenerationHistoryEntry.from_dict_strict for strict validation")
+                self._error(0, "contracts/notebook must use GenerationHistoryEntry.from_dict_strict for strict validation")
 
         # report_builder should define and use build_batch_report
         if "report_builder" in fp:
@@ -573,11 +592,11 @@ def verify_file(path: Path, report: VerifierReport) -> None:
     if path.name.startswith("__"):
         return
 
-    tree = _scan_file(path)
+    filepath = str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
+    tree = _scan_file(path, report, filepath)
     if tree is None:
         return
 
-    filepath = str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
     report.files_scanned.append(filepath)
 
     # 1. Forbidden patterns
@@ -775,9 +794,826 @@ def _check_phase7_rules(report: VerifierReport) -> None:
         if "durable_progress: bool" not in rb_text:
             report.findings.append(Finding(
                 level="error", category="missing_required",
-                file="src/discovery/report_builder.py", line=0,
+                file="src/discovery/reporting/report_builder.py", line=0,
                 message="KeywordDiscoveryReport must have durable_progress: bool field",
             ))
+
+
+def _check_single_stack_rules(report: VerifierReport) -> None:
+    """Post-scan checks for the v4 single-stack migration invariants."""
+
+    # 1. coordinator.py must import DiscoveryStoreBundleV4 from the canonical
+    #    store bundle module.
+    coord_path = SRC / "coordinator.py"
+    if coord_path.exists():
+        coord_text = coord_path.read_text(encoding="utf-8")
+        if "DiscoveryStoreBundleV4" not in coord_text:
+            report.findings.append(Finding(
+                level="error", category="missing_required",
+                file="src/discovery/coordinator.py", line=0,
+                message="coordinator must import DiscoveryStoreBundleV4",
+            ))
+        if "from src.discovery.stores.bundle" not in coord_text:
+            report.findings.append(Finding(
+                level="error", category="missing_required",
+                file="src/discovery/coordinator.py", line=0,
+                message="coordinator must import DiscoveryStoreBundleV4 from src.discovery.stores.bundle",
+            ))
+
+    # 2. CandidateDrainCoordinator must not accept DiscoveryOptions.
+    cd_path = SRC / "runtime" / "candidate_drain.py"
+    if cd_path.exists():
+        cd_text = cd_path.read_text(encoding="utf-8")
+        if "DiscoveryOptions" in cd_text:
+            report.findings.append(Finding(
+                level="error", category="forbidden",
+                file="src/discovery/runtime/candidate_drain.py", line=0,
+                message="CandidateDrainCoordinator must not accept DiscoveryOptions",
+            ))
+
+    # 3. No retired v3 protocol symbols in production source.
+    for pyfile in sorted(SRC.rglob("*.py")):
+        if pyfile.name.startswith("__"):
+            continue
+        fp = str(pyfile.relative_to(PROJECT_ROOT)).replace("\\", "/")
+        text = pyfile.read_text(encoding="utf-8")
+        if "require_v3" in text:
+            report.findings.append(Finding(
+                level="error", category="forbidden",
+                file=fp, line=0,
+                message="retired symbol 'require_v3' found in production source",
+            ))
+        if "PAGE_V3_FIELDS" in text:
+            report.findings.append(Finding(
+                level="error", category="forbidden",
+                file=fp, line=0,
+                message="retired symbol 'PAGE_V3_FIELDS' found in production source",
+            ))
+        if 'schema_version = "3.0"' in text or "schema_version = '3.0'" in text:
+            report.findings.append(Finding(
+                level="error", category="forbidden",
+                file=fp, line=0,
+                message="retired schema_version '3.0' literal found in production source",
+            ))
+
+    # 4. report_builder must emit v4 schema version.
+    rb_path = SRC / "reporting" / "report_builder.py"
+    if rb_path.exists():
+        rb_text = rb_path.read_text(encoding="utf-8")
+        if 'REPORT_SCHEMA_VERSION = "4.0"' not in rb_text:
+            report.findings.append(Finding(
+                level="error", category="missing_required",
+                file="src/discovery/reporting/report_builder.py", line=0,
+                message="report_builder must emit schema_version '4.0' (REPORT_SCHEMA_VERSION = \"4.0\")",
+            ))
+
+    # 5. Migration CLI must support --cutover and --abort, and cutover must not
+    #    allow transitions from SMOKE_FAILED.
+    mig_path = SCRIPTS / "migrate_discovery_v4.py"
+    if mig_path.exists():
+        mig_text = mig_path.read_text(encoding="utf-8")
+        if 'add_argument("--cutover"' not in mig_text:
+            report.findings.append(Finding(
+                level="error", category="missing_required",
+                file="scripts/migrate_discovery_v4.py", line=0,
+                message="migration CLI must expose --cutover",
+            ))
+        if 'add_argument("--abort"' not in mig_text:
+            report.findings.append(Finding(
+                level="error", category="missing_required",
+                file="scripts/migrate_discovery_v4.py", line=0,
+                message="migration CLI must expose --abort",
+            ))
+        if "allowed_cutover_states = {" in mig_text:
+            block = mig_text.split("allowed_cutover_states = {")[1].split("}")[0]
+            if "MigrationState.SMOKE_FAILED" in block:
+                report.findings.append(Finding(
+                    level="error", category="forbidden",
+                    file="scripts/migrate_discovery_v4.py", line=0,
+                    message="cutover must not be allowed from SMOKE_FAILED",
+                ))
+
+    # 6. No duplicate legacy module copies or retired alias shells left at the
+    #    top level.
+    for dead_path in [
+        SRC / "batch_runtime.py",
+        SRC / "provider_models.py",
+        SRC / "keyword_notebook.py",
+        SRC / "page_journal.py",
+    ]:
+        if dead_path.exists():
+            report.findings.append(Finding(
+                level="error", category="forbidden",
+                file=str(dead_path.relative_to(PROJECT_ROOT)).replace("\\", "/"), line=0,
+                message=f"duplicate legacy module {dead_path.name} must be removed",
+            ))
+
+
+def _require(
+    report: VerifierReport,
+    file_label: str,
+    ok: bool,
+    message: str,
+    *,
+    category: str = "missing_required",
+) -> None:
+    """Append a fail-closed finding when a structural gate is violated."""
+    if not ok:
+        report.findings.append(Finding(
+            level="error", category=category, file=file_label, line=0,
+            message=message,
+        ))
+
+
+def _file_label(pyfile: Path) -> str:
+    """Repo-relative POSIX label; falls back to the raw path outside the repo."""
+    try:
+        return str(pyfile.relative_to(PROJECT_ROOT)).replace("\\", "/")
+    except ValueError:
+        return str(pyfile).replace("\\", "/")
+
+
+def _check_migration_hardening_rules(report: VerifierReport) -> None:
+    """Phase D structural gates for the v4 migration / cutover hardening.
+
+    These complement ``_check_single_stack_rules``: they pin the crash-safe
+    cutover contract, the isolated smoke targets, the pending-candidate
+    drain wiring, and the migration CLI surface so regressions fail closed.
+    """
+    mig_path = SCRIPTS / "migrate_discovery_v4.py"
+    mig_rel = "scripts/migrate_discovery_v4.py"
+    mig_text = mig_path.read_text(encoding="utf-8") if mig_path.exists() else ""
+    _require(report, mig_rel, mig_path.exists(),
+             "migration CLI scripts/migrate_discovery_v4.py is missing")
+
+    ws_path = SRC / "workspace.py"
+    ws_rel = "src/discovery/workspace.py"
+    ws_text = ws_path.read_text(encoding="utf-8") if ws_path.exists() else ""
+    _require(report, ws_rel, ws_path.exists(),
+             "src/discovery/workspace.py is missing")
+
+    # ── Gate 1: retired alias shells gone; no old module-path imports
+    #    anywhere under src/ or scripts/.  (File non-existence is already
+    #    enforced by _check_single_stack_rules rule 6; this is the import
+    #    guard across the full src/scripts tree.)
+    verifier_self = (SCRIPTS / "verify_discovery_final_architecture.py").resolve()
+    for base in (SRC_ROOT, SCRIPTS):
+        if not base.is_dir():
+            continue
+        for pyfile in sorted(base.rglob("*.py")):
+            if pyfile.resolve() == verifier_self:
+                continue
+            fp = _file_label(pyfile)
+            text = pyfile.read_text(encoding="utf-8")
+            for retired_module in (
+                "src.discovery.keyword_notebook",
+                "src.discovery.page_journal",
+            ):
+                if retired_module in text:
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=0,
+                        message=f"reference to retired module path {retired_module} — "
+                                "use src.discovery.contracts.* / src.discovery.stores.*",
+                    ))
+
+    # ── Gate 2: smoke run must target the three isolated directories.
+    if mig_text:
+        smoke_ok = False
+        if "smoke_args = [" in mig_text:
+            block = mig_text.split("smoke_args = [", 1)[1].split("]", 1)[0]
+            smoke_ok = all(
+                flag in block
+                for flag in ('"--paper-raw-dir"', '"--papers-dir"', '"--ledger-path"')
+            )
+        _require(report, mig_rel, smoke_ok,
+                 "_step_smoke smoke_args must pass --paper-raw-dir, --papers-dir, "
+                 "and --ledger-path (staging-isolated smoke targets)")
+
+    # ── Gate 3: cutover is lock-guarded, snapshots the previous pointer,
+    #    and reconciles crashed attempts; the pointer records the previous
+    #    generation.
+    _require(report, ws_rel,
+             "FileLock" in ws_text and ".migration.lock" in ws_text,
+             "commit_workspace must acquire the .migration.lock FileLock")
+    _require(report, ws_rel,
+             "previous_pointer_snapshot" in ws_text,
+             "commit_workspace must snapshot the superseded previous pointer")
+    _require(report, ws_rel,
+             "CutoverReconciliationError" in ws_text,
+             "commit_workspace must reconcile crashed prior attempts "
+             "(CutoverReconciliationError branches)")
+    manifest_path = SRC / "contracts" / "manifest.py"
+    manifest_text = (
+        manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
+    )
+    _require(report, "src/discovery/contracts/manifest.py",
+             "previous_generation_id" in manifest_text,
+             "ActiveGenerationPointerV4 must define previous_generation_id")
+
+    # ── Gate 4: resolve_active(verify_tree=True) performs a real content
+    #    check against the manifest tree hash.
+    _require(report, ws_rel,
+             "if verify_tree:" in ws_text
+             and "hash_workspace_tree" in ws_text
+             and "manifest.workspace_tree_sha256" in ws_text,
+             "resolve_active(verify_tree=True) must recompute hash_workspace_tree "
+             "and compare it with manifest.workspace_tree_sha256")
+
+    # ── Gate 5: cutover is only ever allowed from SMOKE_PASSED.
+    if mig_text and "allowed_cutover_states = {" in mig_text:
+        block = mig_text.split("allowed_cutover_states = {", 1)[1].split("}", 1)[0]
+        members = set(re.findall(r"MigrationState\.(\w+)", block))
+        _require(report, mig_rel, members == {"SMOKE_PASSED"},
+                 "allowed_cutover_states must be exactly {SMOKE_PASSED} "
+                 f"(no PREFLIGHT_VALIDATED branch), got {sorted(members)}",
+                 category="forbidden")
+    elif mig_text:
+        _require(report, mig_rel, False,
+                 "cmd_cutover must define allowed_cutover_states")
+
+    # ── Gate 6: no legacy_candidate_seeds references in src/scripts.
+    for base in (SRC_ROOT, SCRIPTS):
+        if not base.is_dir():
+            continue
+        for pyfile in sorted(base.rglob("*.py")):
+            if pyfile.resolve() == verifier_self:
+                continue
+            fp = _file_label(pyfile)
+            if "legacy_candidate_seeds" in pyfile.read_text(encoding="utf-8"):
+                report.findings.append(Finding(
+                    level="error", category="forbidden",
+                    file=fp, line=0,
+                    message="retired 'legacy_candidate_seeds' reference — legacy "
+                            "candidates live in PendingCandidateStoreV4",
+                ))
+
+    # ── Gate 7: archive copies are re-hashed at the destination.
+    ab_path = SRC_ROOT / "migrations" / "discovery_v4" / "archive_builder.py"
+    ab_text = ab_path.read_text(encoding="utf-8") if ab_path.exists() else ""
+    _require(report, "src/migrations/discovery_v4/archive_builder.py",
+             "def _verify_archive_copies" in ab_text
+             and "ArchiveVerificationError" in ab_text,
+             "archive_builder must re-hash destination copies "
+             "(_verify_archive_copies raising ArchiveVerificationError)")
+
+    # ── Gate 8: production drains PendingCandidateStoreV4 and the
+    #    coordinator injects the bundle's pending store.
+    pq_path = SRC / "pending_queue.py"
+    pq_text = pq_path.read_text(encoding="utf-8") if pq_path.exists() else ""
+    _require(report, "src/discovery/pending_queue.py",
+             "PendingCandidateStoreV4" in pq_text
+             and "_drain_pending_store_candidates" in pq_text,
+             "pending_queue must consume PendingCandidateStoreV4 via "
+             "_drain_pending_store_candidates")
+    coord_path = SRC / "coordinator.py"
+    coord_text = coord_path.read_text(encoding="utf-8") if coord_path.exists() else ""
+    _require(report, "src/discovery/coordinator.py",
+             "pending_store=" in coord_text and "bundle.pending" in coord_text,
+             "coordinator must inject pending_store=deps.bundle.pending into "
+             "the drain coordinator")
+
+    # ── Gate 9: migration CLI exposes the post-cutover chain.
+    if mig_text:
+        for flag in ("--post-cutover-validate", "--rollback",
+                     "--clean-legacy", "--finalize"):
+            _require(report, mig_rel,
+                     f'add_argument("{flag}"' in mig_text,
+                     f"migration CLI must expose {flag}")
+
+    # ── Gate 10: smoke runs against an ephemeral clone of the staging
+    #    workspace and proves zero side effects via tree-hash equality.
+    if mig_text and "def _step_smoke" in mig_text:
+        smoke_block = mig_text.split("def _step_smoke", 1)[1]
+        if "def _run_apply_from_state" in smoke_block:
+            smoke_block = smoke_block.split("def _run_apply_from_state", 1)[0]
+        smoke_args_region = ""
+        if "smoke_args = [" in smoke_block:
+            smoke_args_region = smoke_block.split("smoke_args = [", 1)[1].split("]", 1)[0]
+        _require(report, mig_rel,
+                 "TemporaryDirectory" in smoke_block
+                 and "_clone_workspace_for_smoke" in mig_text,
+                 "_step_smoke must run against an ephemeral clone of the staging "
+                 "workspace (TemporaryDirectory + _clone_workspace_for_smoke)")
+        _require(report, mig_rel,
+                 '"--workspace-root"' in smoke_args_region
+                 and "smoke_ws.root" in smoke_args_region
+                 and "staging_ws.root" not in smoke_args_region,
+                 "smoke --workspace-root must point at the ephemeral clone "
+                 "(smoke_ws.root), never the real staging workspace")
+        _require(report, mig_rel,
+                 "hash_before" in smoke_block
+                 and "hash_after" in smoke_block
+                 and "hash_after != hash_before" in smoke_block,
+                 "_step_smoke must hash the staging workspace before/after the "
+                 "smoke run and fail on drift (hash_after != hash_before)")
+    elif mig_text:
+        _require(report, mig_rel, False,
+                 "migration CLI must define _step_smoke")
+
+
+def _function_region(text: str, func_name: str) -> str:
+    """Return the source region of one top-level ``def func_name(...)``.
+
+    The region runs from the ``def`` line to the next top-level ``def`` /
+    ``class`` (or EOF); nested definitions are indented and never terminate
+    the region.  Returns "" when the function is absent.
+    """
+    marker = f"def {func_name}("
+    idx = text.find(marker)
+    if idx == -1:
+        return ""
+    rest = text[idx:]
+    match = re.search(r"\n(def |class )", rest)
+    return rest[: match.start()] if match else rest
+
+
+class _MigrationLayerVisitor(ast.NodeVisitor):
+    """Gate 11 AST visitor for notebook_migration.py.
+
+    The migration layer parses legacy input exclusively through the strict
+    ``LegacyNotebookV3`` contract; the production ``validate_notebook`` /
+    ``validate_discovery_readiness`` validators may only run on the
+    converted v4 *product* inside ``legacy_contracts/notebook_v3.py``.
+    """
+
+    FORBIDDEN_CALLS = {"validate_notebook", "validate_discovery_readiness"}
+
+    def __init__(self, filepath: str, report: VerifierReport):
+        self.filepath = filepath
+        self.report = report
+        self.calls_from_dict_strict = False
+
+    def _error(self, line: int, message: str) -> None:
+        self.report.findings.append(Finding(
+            level="error", category="forbidden",
+            file=self.filepath, line=line, message=message,
+        ))
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in self.FORBIDDEN_CALLS:
+            self._error(
+                node.lineno,
+                f"migration layer must not call {func.id} on legacy input — "
+                "only legacy_contracts/notebook_v3.py validates the v4 product",
+            )
+        if isinstance(func, ast.Attribute) and func.attr in self.FORBIDDEN_CALLS:
+            self._error(
+                node.lineno,
+                f"migration layer must not call {func.attr} on legacy input — "
+                "only legacy_contracts/notebook_v3.py validates the v4 product",
+            )
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "from_dict_strict"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "LegacyNotebookV3"
+        ):
+            self.calls_from_dict_strict = True
+        self.generic_visit(node)
+
+
+class _ProductionLegacyVisitor(ast.NodeVisitor):
+    """Gate 12/16 AST visitor for src/discovery/** production files."""
+
+    def __init__(self, filepath: str, report: VerifierReport):
+        self.filepath = filepath
+        self.report = report
+        self.is_coordinator = filepath.endswith("src/discovery/coordinator.py")
+
+    def _error(self, category: str, line: int, message: str) -> None:
+        self.report.findings.append(Finding(
+            level="error", category=category,
+            file=self.filepath, line=line, message=message,
+        ))
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        # A bare `except Exception:` (no `as` binding) swallows failures
+        # without any record; `except Exception as exc:` with logging is the
+        # only permitted form in the coordinator.
+        if (
+            self.is_coordinator
+            and isinstance(node.type, ast.Name)
+            and node.type.id == "Exception"
+            and node.name is None
+        ):
+            self._error(
+                "forbidden", node.lineno,
+                "coordinator must not swallow `except Exception:` without a "
+                "binding — use `except Exception as exc:` and record it",
+            )
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        # Journal/notebook attribution in the coordinator must never carry a
+        # schema "3.0" whitelist; v4 is the only accepted production schema.
+        if (
+            self.is_coordinator
+            and isinstance(node.value, str)
+            and node.value == "3.0"
+        ):
+            self._error(
+                "forbidden", node.lineno,
+                "coordinator must not reference schema '3.0' — no legacy "
+                "schema whitelist in production attribution",
+            )
+        self.generic_visit(node)
+
+
+def _check_v4_migration_final_rules(report: VerifierReport) -> None:
+    """Phase 7a gates (11-16) for the Discovery v4 migration final state.
+
+    These pin the post-migration invariants: the migration layer never runs
+    production validators on legacy input, production carries zero legacy
+    symbols/parsers, the retired skip flag stays deleted, candidate
+    conservation + quarantine stay hard gates, and every mutating migration
+    command runs under the maintenance lock while production writers check it.
+    """
+    mig_path = SCRIPTS / "migrate_discovery_v4.py"
+    mig_rel = "scripts/migrate_discovery_v4.py"
+    mig_text = mig_path.read_text(encoding="utf-8") if mig_path.exists() else ""
+    _require(report, mig_rel, mig_path.exists(),
+             "migration CLI scripts/migrate_discovery_v4.py is missing")
+
+    mig_layer_dir = SRC_ROOT / "migrations" / "discovery_v4"
+
+    # ── Gate 11: the migration layer never validates legacy input with the
+    #    production validators; it must parse through
+    #    LegacyNotebookV3.from_dict_strict.
+    nm_path = mig_layer_dir / "notebook_migration.py"
+    nm_rel = "src/migrations/discovery_v4/notebook_migration.py"
+    _require(report, nm_rel, nm_path.exists(),
+             "src/migrations/discovery_v4/notebook_migration.py is missing")
+    if nm_path.exists():
+        tree = _scan_file(nm_path, report, nm_rel)
+        if tree is not None:
+            visitor = _MigrationLayerVisitor(nm_rel, report)
+            visitor.visit(tree)
+            _require(report, nm_rel, visitor.calls_from_dict_strict,
+                     "notebook_migration must parse legacy input through "
+                     "LegacyNotebookV3.from_dict_strict")
+
+    # ── Gate 12: production carries zero legacy symbols / compat shells.
+    legacy_tokens = (
+        "legacy_unbound_profile",
+        "is_legacy_unbound_profile",
+        "LEGACY_UNBOUND",
+    )
+    coord_path = SRC / "coordinator.py"
+    batch_runtime_path = SRC / "runtime" / "batch_runtime.py"
+    if SRC.is_dir():
+        for pyfile in sorted(SRC.rglob("*.py")):
+            if pyfile.name.startswith("__"):
+                continue
+            fp = _file_label(pyfile)
+            text = pyfile.read_text(encoding="utf-8")
+            for token in legacy_tokens:
+                if token in text:
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=0,
+                        message=f"retired legacy symbol {token!r} in production "
+                                "source — legacy unbound-profile compat is deleted",
+                    ))
+            if pyfile == batch_runtime_path:
+                if "backward compat" in text:
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=0,
+                        message="batch_runtime must not carry 'backward compat' "
+                                "comments — v4 single stack has no compat layer",
+                    ))
+                if "PageJournalStoreV4 as PageJournalStore" in text:
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=0,
+                        message="batch_runtime must not re-export "
+                                "PageJournalStoreV4 as PageJournalStore",
+                    ))
+            tree = _scan_file(pyfile, report, fp)
+            if tree is not None:
+                _ProductionLegacyVisitor(fp, report).visit(tree)
+    else:
+        _require(report, "src/discovery", False,
+                 "src/discovery is missing")
+
+    # ── Gate 13: the retired skip-extraction operator flag stays deleted.
+    #    (Needles are built at runtime so the zero-hit hygiene invariant in
+    #    tests/unit/test_discovery_v4_candidate_extraction.py keeps passing.)
+    if mig_text:
+        retired_dash = "skip-" + "candidate-extraction"
+        retired_snake = "skip_" + "candidate_extraction"
+        for token in (retired_dash, retired_snake):
+            _require(report, mig_rel, token not in mig_text,
+                     f"retired flag {token!r} must not reappear in the "
+                     "migration CLI — candidate extraction is mandatory",
+                     category="forbidden")
+
+    # ── Gate 14: candidate conservation + quarantine are hard gates, and
+    #    extraction is truly streaming (no candidate list accumulation).
+    ce_path = mig_layer_dir / "candidate_extraction.py"
+    ce_rel = "src/migrations/discovery_v4/candidate_extraction.py"
+    ce_text = ce_path.read_text(encoding="utf-8") if ce_path.exists() else ""
+    _require(report, ce_rel,
+             ce_path.exists() and "def assert_conservation" in ce_text,
+             "candidate_extraction.py must define assert_conservation")
+    if mig_text:
+        extract_region = _function_region(mig_text, "_step_extract_candidates")
+        _require(report, mig_rel,
+                 bool(extract_region),
+                 "migration CLI must define _step_extract_candidates")
+        if extract_region:
+            _require(report, mig_rel,
+                     "assert_conservation(" in extract_region,
+                     "_step_extract_candidates must call assert_conservation "
+                     "before advancing the journal")
+            _require(report, mig_rel,
+                     "_quarantine_record(" in extract_region,
+                     "_step_extract_candidates must stream quarantine "
+                     "evidence via _quarantine_record")
+            for token in (
+                "seeds: list[", "candidates: list[", "unresolved_records",
+            ):
+                _require(report, mig_rel,
+                         token not in extract_region,
+                         f"_step_extract_candidates must stay streaming; "
+                         f"found accumulating container {token!r}")
+        _require(report, mig_rel,
+                 "def _quarantine_path" in mig_text
+                 and "candidate_quarantine" in mig_text,
+                 "migration CLI must define _quarantine_path for the "
+                 "<mid>.candidate_quarantine.jsonl evidence file")
+
+    # ── Gate 14b: preflight rejects quarantine/unresolved/conservation
+    #    breaches and pending-store drift.
+    if mig_text:
+        preflight_region = _function_region(mig_text, "_step_preflight")
+        _require(report, mig_rel,
+                 bool(preflight_region)
+                 and "quarantined" in preflight_region
+                 and "candidate_stats" in preflight_region,
+                 "_step_preflight must fail closed on quarantined/unresolved "
+                 "candidates and conservation drift")
+
+    # ── Gate 14c: post-cutover validation verifies per-seed receipts, not
+    #    just an empty pending store.
+    if mig_text:
+        validate_region = _function_region(mig_text, "cmd_post_cutover_validate")
+        _require(report, mig_rel,
+                 bool(validate_region)
+                 and "post_cutover_reconciliation" in validate_region
+                 and "receipts" in validate_region,
+                 "cmd_post_cutover_validate must verify migration seed "
+                 "receipts via the closed reconciliation report")
+
+    # ── Gate 14d: PendingCandidateStore never silently overwrites, and the
+    #    migration receipt store has a production call graph.
+    pcs_path = SRC / "stores" / "pending_candidate_store.py"
+    pcs_rel = "src/discovery/stores/pending_candidate_store.py"
+    pcs_text = pcs_path.read_text(encoding="utf-8") if pcs_path.exists() else ""
+    _require(report, pcs_rel,
+             pcs_path.exists()
+             and "CandidateIdentityCollisionError" in pcs_text
+             and "os.link(" in pcs_text,
+             "PendingCandidateStoreV4.write must be create-if-absent with a "
+             "typed collision error (no silent overwrite)")
+    _require(report, pcs_rel,
+             "PendingCandidateCorruptError" in pcs_text,
+             "PendingCandidateStoreV4.read must raise typed corruption errors")
+    drain_path = SRC / "pending_queue.py"
+    drain_rel = "src/discovery/pending_queue.py"
+    drain_text = (
+        drain_path.read_text(encoding="utf-8") if drain_path.exists() else ""
+    )
+    _require(report, drain_rel,
+             drain_path.exists() and "receipt_store" in drain_text
+             and "write_migration_receipt" in drain_text,
+             "the pending-store drain must support migration receipt "
+             "injection for legacy_candidate_seed candidates")
+    bundle_path = SRC / "stores" / "bundle.py"
+    bundle_rel = "src/discovery/stores/bundle.py"
+    bundle_text = (
+        bundle_path.read_text(encoding="utf-8") if bundle_path.exists() else ""
+    )
+    _require(report, bundle_rel,
+             bundle_path.exists() and "migration_receipts_dir" in bundle_text,
+             "DiscoveryStoreBundleV4.from_workspace must accept an explicit "
+             "migration_receipts_dir (receipt store production wiring)")
+    reconcile_script = SCRIPTS / "reconcile_discovery_v4_migration.py"
+    _require(report, "scripts/reconcile_discovery_v4_migration.py",
+             reconcile_script.exists(),
+             "the post-cutover reconciliation CLI must exist")
+
+    # ── Gate 15: every mutating migration command holds the maintenance
+    #    lock, and both production discovery writers check the maintenance
+    #    gate unconditionally at startup (no --workspace-root bypass).
+    if mig_text:
+        for cmd in (
+            "cmd_apply", "cmd_resume", "cmd_cutover", "cmd_rollback",
+            "cmd_abort", "cmd_clean_legacy", "cmd_finalize",
+        ):
+            region = _function_region(mig_text, cmd)
+            _require(report, mig_rel,
+                     bool(region) and "MigrationMaintenanceLock(" in region,
+                     f"{cmd} must run under MigrationMaintenanceLock")
+    for writer in ("discover_papers.py", "discover_papers_concurrent.py"):
+        writer_path = SCRIPTS / writer
+        writer_text = (
+            writer_path.read_text(encoding="utf-8") if writer_path.exists() else ""
+        )
+        _require(report, f"scripts/{writer}",
+                 writer_path.exists()
+                 and "assert_discovery_write_allowed(" in writer_text,
+                 f"{writer} must refuse to start while the migration "
+                 "maintenance lock is held (assert_discovery_write_allowed)")
+        _require(report, f"scripts/{writer}",
+                 "if not args.workspace_root" not in writer_text,
+                 f"{writer} must not exempt --workspace-root from the "
+                 "maintenance gate")
+
+    # ── Gate 15b: production never imports the one-time migration package;
+    #    the maintenance gate lives in shared discovery infrastructure.
+    maintenance_gate = SRC / "maintenance_gate.py"
+    _require(report, "src/discovery/maintenance_gate.py",
+             maintenance_gate.exists()
+             and "assert_discovery_write_allowed" in maintenance_gate.read_text(
+                 encoding="utf-8"),
+             "src/discovery/maintenance_gate.py must host the shared "
+             "maintenance gate")
+    import re as _re
+    _migration_import = _re.compile(
+        r"^\s*(?:from|import)\s+src\.migrations", _re.MULTILINE
+    )
+    for py in sorted(SRC.rglob("*.py")):
+        rel = f"src/discovery/{py.relative_to(SRC).as_posix()}"
+        text = py.read_text(encoding="utf-8")
+        _require(report, rel,
+                 not _migration_import.search(text),
+                 f"{rel} must not import the one-time migration package")
+    for writer in ("discover_papers.py", "discover_papers_concurrent.py"):
+        writer_path = SCRIPTS / writer
+        writer_text = (
+            writer_path.read_text(encoding="utf-8") if writer_path.exists() else ""
+        )
+        _require(report, f"scripts/{writer}",
+                 not _migration_import.search(writer_text),
+                 f"{writer} must not import the one-time migration package")
+
+    # ── Gate 15c: production notebook tools resolve the active workspace;
+    #    legacy flat path constants are migration/audit-only.
+    flat_tokens = (
+        "DISCOVERY_KEYWORD_NOTEBOOK_DIR",
+        "DISCOVERY_PENDING_PAGES_DIR",
+    )
+    production_tools = (
+        "manage_discovery_keywords.py",
+        "configure_relevance_profiles.py",
+        "sync_catalog_categories.py",
+        "doctor_catalog_folders.py",
+        "validate_v2_library.py",
+    )
+    for tool in production_tools:
+        tool_path = SCRIPTS / tool
+        if not tool_path.exists():
+            continue
+        tool_text = tool_path.read_text(encoding="utf-8")
+        for token in flat_tokens:
+            _require(report, f"scripts/{tool}",
+                     token not in tool_text,
+                     f"scripts/{tool} must resolve the active v4 workspace, "
+                     f"not the retired flat constant {token}")
+    catalog_reader = SRC_ROOT / "catalog_folders" / "reader.py"
+    if catalog_reader.exists():
+        reader_text = catalog_reader.read_text(encoding="utf-8")
+        for token in flat_tokens:
+            _require(report, "src/catalog_folders/reader.py",
+                     token not in reader_text,
+                     "create_safe_catalog_reader must use the active v4 "
+                     f"workspace, not the retired flat constant {token}")
+
+    # ── Gate 15d: the migration smoke isolates reports and exports too.
+    if mig_text:
+        smoke_region = _function_region(mig_text, "_step_smoke")
+        _require(report, mig_rel,
+                 bool(smoke_region)
+                 and '"--report-dir"' in smoke_region
+                 and '"--output-dir"' in smoke_region,
+                 "_step_smoke must pass --report-dir/--output-dir into the "
+                 "ephemeral clone (no global report/export writes)")
+
+    # ── Gate 16: production has no parser that ACCEPTS schema 1.0/2.0/3.0.
+    #
+    # Judgement logic: the only legitimate mention of a legacy schema string
+    # in src/discovery is the fail-closed rejection branch in
+    # contracts/notebook.py: ``if version in ("1.0", "2.0", "3.0"): raise
+    # UnsupportedNotebookSchemaError``.  Current-version constants (page
+    # journal pagination "2.0", receipt "1.0", relevance profile "1.0") are
+    # the *active* versions of their own artifact families and are not
+    # legacy acceptance, so this gate keys on "3.0" only:
+    #   - any "3.0" string occurrence outside the exact rejection tuple is
+    #     a violation (this catches `== "3.0"` accept branches, wider tuples
+    #     such as ("1.0", "2.0", "3.0", "4.0"), and whitelist literals);
+    #   - the rejection tuple itself is only valid when the enclosing branch
+    #     immediately raises UnsupportedNotebookSchemaError.
+    rejection_re = re.compile(
+        r"""in\s*\(\s*["']1\.0["']\s*,\s*["']2\.0["']\s*,\s*["']3\.0["']\s*\)"""
+    )
+    if SRC.is_dir():
+        for pyfile in sorted(SRC.rglob("*.py")):
+            if pyfile.name.startswith("__"):
+                continue
+            fp = _file_label(pyfile)
+            lines = pyfile.read_text(encoding="utf-8").splitlines()
+            for lineno, line in enumerate(lines, start=1):
+                if "3.0" not in line:
+                    continue
+                if rejection_re.search(line):
+                    window = "\n".join(lines[lineno - 1: lineno + 4])
+                    if "raise UnsupportedNotebookSchemaError" not in window:
+                        report.findings.append(Finding(
+                            level="error", category="forbidden",
+                            file=fp, line=lineno,
+                            message="legacy schema tuple without an immediate "
+                                    "raise UnsupportedNotebookSchemaError — "
+                                    "old schemas must be rejected, never parsed",
+                        ))
+                    continue
+                if re.search(r"""["']3\.0["']""", line):
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=lineno,
+                        message="production must not reference schema '3.0' "
+                                "outside the fail-closed rejection branch in "
+                                "contracts/notebook.py",
+                    ))
+
+
+def _check_http_and_flat_path_rules(report: VerifierReport) -> None:
+    """Unified-HTTP and retired-flat-path gates.
+
+    Gate H1: no module under ``src/discovery/`` may import ``requests``,
+    ``httpx``, or ``urllib.request`` — all provider HTTP goes through
+    ``providers/provider_client.py`` (the single allowed call-site).
+
+    Gate H2: the retired flat discovery directory constants
+    (``DISCOVERY_KEYWORD_NOTEBOOK_DIR`` / ``DISCOVERY_PENDING_PAGES_DIR``)
+    may not be referenced from ``src/discovery/`` or the strict-v4 audit
+    script; only the migration package and the legacy-recovery tool read
+    them.  Production tools resolve directories through the active v4
+    workspace (``resolve_active_runtime``).
+    """
+    allowed_http = (SRC / "providers" / "provider_client.py").resolve()
+    for pyfile in sorted(SRC.rglob("*.py")):
+        if pyfile.resolve() == allowed_http:
+            continue
+        fp = _file_label(pyfile)
+        try:
+            tree = ast.parse(pyfile.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue  # syntax failures are reported by the main scan
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    if top in {"requests", "httpx"} or alias.name == "urllib.request":
+                        report.findings.append(Finding(
+                            level="error", category="forbidden",
+                            file=fp, line=node.lineno,
+                            message=f"direct HTTP import {alias.name!r} — all provider "
+                                    "HTTP goes through providers/provider_client.py",
+                        ))
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                top = module.split(".")[0]
+                from_urllib_request = module == "urllib.request" or (
+                    module == "urllib"
+                    and any(alias.name == "request" for alias in node.names)
+                )
+                if top in {"requests", "httpx"} or from_urllib_request:
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=node.lineno,
+                        message=f"direct HTTP import from {module!r} — all provider "
+                                "HTTP goes through providers/provider_client.py",
+                    ))
+
+    flat_constants = ("DISCOVERY_KEYWORD_NOTEBOOK_DIR", "DISCOVERY_PENDING_PAGES_DIR")
+    audit_script = SCRIPTS / "audit_discovery_keyword_index_sources.py"
+    targets = list(sorted(SRC.rglob("*.py")))
+    if audit_script.exists():
+        targets.append(audit_script)
+    for pyfile in targets:
+        fp = _file_label(pyfile)
+        text = pyfile.read_text(encoding="utf-8")
+        for name in flat_constants:
+            if name in text:
+                report.findings.append(Finding(
+                    level="error", category="forbidden", file=fp, line=0,
+                    message=f"reference to retired flat discovery path constant {name} — "
+                            "resolve directories through the active v4 workspace "
+                            "(resolve_active_runtime)",
+                ))
 
 
 def verify_discovery_final_architecture() -> VerifierReport:
@@ -790,6 +1626,18 @@ def verify_discovery_final_architecture() -> VerifierReport:
 
     # Phase 7 post-scan rules
     _check_phase7_rules(report)
+
+    # v4 single-stack post-scan rules
+    _check_single_stack_rules(report)
+
+    # Phase D migration/cutover hardening gates
+    _check_migration_hardening_rules(report)
+
+    # Phase 7a migration-final gates (11-16)
+    _check_v4_migration_final_rules(report)
+
+    # Unified-HTTP + retired flat-path gates
+    _check_http_and_flat_path_rules(report)
 
     return report
 

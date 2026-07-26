@@ -282,12 +282,18 @@ def create_safe_catalog_reader() -> CatalogFolderReader:
     so that ``assert_writer_safe()`` and ``status()`` can run the complete
     doctor diagnostic.  All production callers MUST use this factory instead
     of constructing ``CatalogFolderReader`` directly.
+
+    The notebook directory resolves from the active v4 discovery workspace;
+    resolution is fail-closed and raises
+    :class:`~src.discovery.runtime_context.DiscoveryRuntimeUnavailableError`
+    when no active workspace exists.
     """
     from config.settings import (
-        CATALOG_FOLDER_ROOT, DISCOVERY_KEYWORD_NOTEBOOK_DIR,
+        CATALOG_FOLDER_ROOT,
         PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH, TRANSACTION_ROOT,
     )
     from src.catalog_folders.formal_registry import FormalPaperRegistry
+    from src.discovery.runtime_context import resolve_active_runtime
     from src.library.paper_number_ledger import PaperNumberLedger
 
     return CatalogFolderReader(
@@ -297,6 +303,6 @@ def create_safe_catalog_reader() -> CatalogFolderReader:
             papers_dir=PAPERS_DIR,
             ledger=PaperNumberLedger(PAPER_NUMBER_LEDGER_PATH),
         ),
-        notebook_dir=DISCOVERY_KEYWORD_NOTEBOOK_DIR,
+        notebook_dir=resolve_active_runtime().notebook_root,
         transaction_root=TRANSACTION_ROOT,
     )

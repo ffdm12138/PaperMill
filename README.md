@@ -61,7 +61,7 @@ Markdown, a directory name, or `paper_name`.
 ## Catalog folders and classification
 
 Catalog folders are the browsing index over formal papers. Chinese keyword
-categories are sourced from enabled schema-v3 DOI keyword notebooks. The
+categories are sourced from enabled schema-v4 DOI keyword notebooks. The
 currently configured registry contains:
 
 ```text
@@ -98,11 +98,11 @@ data/catalog/
 - Classification lifecycle: `sync_catalog_categories.py` → claim tasks →
   classify (via skill) → import results → doctor verifies.
 
-`audit_discovery_keyword_index_sources.py` is strict-v3 and read-only.
+`audit_discovery_keyword_index_sources.py` is strict-v4 and read-only.
 `recover_discovery_keyword_notebooks.py --inspect` is also read-only and emits
-an identity-bound recovery plan; v3 recovery apply is intentionally unavailable.
+an identity-bound recovery plan; legacy v3 recovery apply is intentionally unavailable.
 
-The current production set contains five enabled Chinese schema-v3 notebooks.
+The current production set contains five enabled Chinese schema-v4 notebooks.
 Their migration was inventory-checked and applied from a fixed reviewed plan;
 the confirmed source mapping remains operator state under
 `.local/discovery_keyword_v3/`, while the fixed plan and committed journal

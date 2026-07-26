@@ -12,10 +12,11 @@ import threading
 import pytest
 
 from src.discovery.coordinator import DiscoveryOptions, run_discovery_batch
-from src.discovery.keyword_notebook import KeywordNotebookStore
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from src.services.rate_limit import default_config
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import (
     AlwaysVerifiedScopeVerifier, bind_test_relevance_profile, relevance_candidate,
 )
@@ -50,10 +51,13 @@ def _page(spec, cursor: str, candidates=None, **kwargs):
 def _options(tmp_path: Path, **overrides) -> DiscoveryOptions:
     base = dict(
         mode="backfill", refresh_pages=1, backfill_pages=2, max_candidates=50,
-        notebook_dir=tmp_path / "notebooks",
-        pending_pages_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
+        workspace=make_test_workspace(
+            tmp_path,
+            notebook_dir=tmp_path / "notebooks",
+            page_journals_dir=tmp_path / "pages",
+            locks_dir=tmp_path / "locks",
+            exports_dir=tmp_path / "exports",
+        ),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -147,12 +151,12 @@ def test_concurrent_batch_telemetry_and_budget_isolation(tmp_path: Path, monkeyp
 
 def test_generation_history_rejects_bad_types(tmp_path: Path):
     """Generation history entries with wrong field types must be rejected."""
-    from src.discovery.keyword_notebook import KeywordNotebookStore
-    from src.discovery.page_journal import request_signature
+    from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+    from src.discovery.contracts.page_journal import request_signature
 
     store = KeywordNotebookStore(tmp_path / "notebooks")
     _seed_ready_notebook(store, "风吹雪")
-    nb = store.require_v3("风吹雪")
+    nb = store.require_v4("风吹雪")
     query_id = next(iter(nb["search_queries"]))
     provider = "openalex"
 
@@ -167,7 +171,7 @@ def test_generation_history_rejects_bad_types(tmp_path: Path):
     assert state["generation"] == 2
 
     # Now manually inject a bad history entry.
-    nb = store.require_v3("风吹雪")
+    nb = store.require_v4("风吹雪")
     bf = nb["search_queries"][query_id]["providers"][provider]["backfill"]
     bad_history = list(bf["generation_history"])
     bad_history.append({
@@ -190,9 +194,9 @@ def test_generation_history_rejects_bad_types(tmp_path: Path):
     nb_path.write_text(json.dumps(nb, ensure_ascii=False), encoding="utf-8")
 
     # Re-load - must raise or flag repair_required
-    from src.discovery.keyword_notebook import NotebookCorruptError
+    from src.discovery.contracts.notebook import NotebookCorruptError
     with pytest.raises(NotebookCorruptError, match="generation.*int"):
-        store.require_v3("风吹雪")
+        store.require_v4("风吹雪")
 
 
 # ── 3.7 Unsafe advance_backfill with exhausted=True must not exist ──
@@ -244,7 +248,7 @@ def test_no_unsafe_exhaustion_api_in_production():
 def test_generation_history_strict_type_rejection(tmp_path: Path, field, bad_value, expected_error):
     """Generation history entries with wrong Python types must be rejected."""
     from src.discovery.execution.lane_models import GenerationHistoryEntry
-    from src.discovery.keyword_notebook import NotebookCorruptError
+    from src.discovery.contracts.notebook import NotebookCorruptError
 
     entry = GenerationHistoryEntry(
         generation=1,
@@ -266,15 +270,16 @@ def test_generation_history_strict_type_rejection(tmp_path: Path, field, bad_val
 
 # ── 3.4 Generation strict schema via notebook validator ──
 
-def test_generation_history_via_notebook_require_v3_rejects_bad_types(tmp_path: Path):
-    """GenerationHistoryEntry validation must be called by notebook.require_v3()."""
-    from src.discovery.keyword_notebook import KeywordNotebookStore, NotebookCorruptError
-    from src.discovery.page_journal import request_signature
+def test_generation_history_via_notebook_require_v4_rejects_bad_types(tmp_path: Path):
+    """GenerationHistoryEntry validation must be called by notebook.require_v4()."""
+    from src.discovery.contracts.notebook import NotebookCorruptError
+    from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+    from src.discovery.contracts.page_journal import request_signature
     import json
 
     store = KeywordNotebookStore(tmp_path / "notebooks")
     _seed_ready_notebook(store, "风吹雪")
-    nb = store.require_v3("风吹雪")
+    nb = store.require_v4("风吹雪")
     query_id = next(iter(nb["search_queries"]))
     provider = "openalex"
 
@@ -283,7 +288,7 @@ def test_generation_history_via_notebook_require_v3_rejects_bad_types(tmp_path: 
     store.ensure_backfill_generation("风吹雪", query_id, provider, request_signature_hash=sig_a["hash"])
     store.ensure_backfill_generation("风吹雪", query_id, provider, request_signature_hash=sig_b["hash"])
 
-    nb = store.require_v3("风吹雪")
+    nb = store.require_v4("风吹雪")
     bf = nb["search_queries"][query_id]["providers"][provider]["backfill"]
     bad_history = list(bf["generation_history"])
     bad_history[-1] = dict(bad_history[-1])
@@ -294,7 +299,7 @@ def test_generation_history_via_notebook_require_v3_rejects_bad_types(tmp_path: 
     nb_path.write_text(json.dumps(nb, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(NotebookCorruptError, match="generation.*int"):
-        store.require_v3("风吹雪")
+        store.require_v4("风吹雪")
 
 
 # ── 3.5 Model production access static test ──
@@ -302,7 +307,7 @@ def test_generation_history_via_notebook_require_v3_rejects_bad_types(tmp_path: 
 def test_lane_models_module_is_importable():
     """The ``lane_models`` module must be importable and provide the core
     model types."""
-    from src.discovery import lane_models as lm
+    from src.discovery.execution import lane_models as lm
     assert hasattr(lm, "DiscoveryLaneKey")
     assert hasattr(lm, "LaneState")
     assert hasattr(lm, "StopReason")

@@ -33,7 +33,8 @@ actions, never discovery staging.
 | `claim_catalog_classification_tasks.py` | list next unapplied tasks for a worker | no |
 | `reconcile_catalog_folders.py` | rebuild folder links from authoritative state | `--apply` |
 | `doctor_catalog_folders.py` | audit writer safety and folder integrity | no |
-| `recover_discovery_keyword_notebooks.py` | inspect strict-v3 recovery candidates and emit an identity-bound plan | inspect-only; no v3 apply entry point |
+| `recover_discovery_keyword_notebooks.py` | inspect legacy v3-to-v4 recovery candidates and emit an identity-bound plan | inspect-only; no v3 apply entry point |
+| `reconcile_discovery_v4_migration.py` | per-seed post-cutover reconciliation of a finalized v4 migration against paper_raw; writes strict seed receipts under `data/discovery/migrations/<id>.receipts/` | dry-run by default; receipts with `--apply` |
 | `show_catalog_classification_progress.py` | report classification completion status | no |
 | `rollback_formal_papers_to_paper_raw.py` | recoverable formal-to-numeric-raw rollback | `--apply` |
 | `revise_frozen_metadata.py` | admin-only raw Metadata revision | dry-run by default |
@@ -52,6 +53,14 @@ Operator mapping and transaction plans belong under local/runtime state and are
 not source snapshot artifacts. The migration inventory, strict audit, and
 `recover_discovery_keyword_notebooks.py --inspect` commands are read-only.
 
+## Platform notes
+
+On Windows, any PowerShell commands shown in this repository should be run
+with **PowerShell 7** (`pwsh`) rather than Windows PowerShell 5.1.  PowerShell 7
+provides consistent cross-platform behavior and avoids legacy 5.1 parsing
+issues.  If only `powershell.exe` is available, prefer the equivalent `cmd` or
+`bash` commands instead.
+
 ## Discovery / Metadata discovery
 
 `discover_papers.py`, `discover_papers_concurrent.py`,
@@ -63,8 +72,13 @@ incomplete. The concurrent wrapper executes every active query in both
 providers while Catalog classification reads only `keyword_zh`. The strict
 audit is read-only. `migrate_discovery_v4.py` handles one-time migration from
 v2/v3 discovery state to v4; it supports `--plan`, `--apply`, `--resume`,
-`--inspect`, `--cutover`, and `--abort`. Only v4 schema notebooks are accepted
-in production; v1/v2/v3 notebooks must be migrated first.
+`--inspect`, `--dry-run`, `--cutover`, and `--abort`, plus the post-cutover
+chain `--post-cutover-validate`, `--rollback`, `--clean-legacy`, and
+`--finalize`. Cutover holds the global `.migration.lock`, snapshots the
+superseded pointer, self-heals from crash windows on rerun, and is allowed
+only from `smoke_passed`; the smoke run targets isolated paper_raw/papers/
+ledger directories inside the staging workspace. Only v4 schema notebooks are
+accepted in production; v1/v2/v3 notebooks must be migrated first.
 
 Each enabled notebook also carries its own strict relevance profile. Resolve
 the complete OpenAlex subfield taxonomy and create a plan before applying it:

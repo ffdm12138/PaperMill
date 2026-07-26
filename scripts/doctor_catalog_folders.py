@@ -6,11 +6,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from config.settings import (
     CATALOG_FOLDER_ROOT, TRANSACTION_ROOT,
-    DISCOVERY_KEYWORD_NOTEBOOK_DIR,
     PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH,
 )
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.validation import doctor
+from src.discovery.runtime_context import (
+    DiscoveryRuntimeUnavailableError,
+    resolve_active_runtime,
+)
 from src.library.paper_number_ledger import PaperNumberLedger
 
 def main(argv=None):
@@ -21,12 +24,19 @@ def main(argv=None):
     p.add_argument("--catalog-root",type=Path,default=CATALOG_FOLDER_ROOT)
     p.add_argument("--papers-dir",type=Path,default=PAPERS_DIR)
     p.add_argument("--ledger-path",type=Path,default=PAPER_NUMBER_LEDGER_PATH)
-    p.add_argument("--notebook-dir",type=Path,default=DISCOVERY_KEYWORD_NOTEBOOK_DIR)
+    p.add_argument("--workspace-root",type=Path,default=None,
+                   help="Override the active discovery workspace root (for tests/staging).")
     p.add_argument("--transaction-root",type=Path,default=TRANSACTION_ROOT)
     p.add_argument("--json",action="store_true",help="Machine-readable JSON output")
     p.add_argument("--allow-empty-categories",action="store_true",
                    help="Suppress empty-category error (init/testing only)")
     a=p.parse_args(argv)
+
+    try:
+        ctx = resolve_active_runtime(workspace_root=a.workspace_root)
+    except DiscoveryRuntimeUnavailableError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
 
     report=doctor(
         root=a.catalog_root,
@@ -34,7 +44,7 @@ def main(argv=None):
             papers_dir=a.papers_dir,
             ledger=PaperNumberLedger(a.ledger_path),
         ),
-        notebook_dir=a.notebook_dir,
+        notebook_dir=ctx.notebook_root,
         transaction_root=a.transaction_root,
         allow_empty_categories=a.allow_empty_categories,
     )

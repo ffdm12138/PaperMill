@@ -7,17 +7,17 @@ from typing import Any
 import pytest
 
 from src.discovery.models import PaperCandidate
-from src.discovery.keyword_notebook import keyword_id, query_identity
-from src.discovery.page_journal import (
+from src.discovery.contracts.notebook import keyword_id, query_identity
+from src.discovery.contracts.page_journal import (
     INITIAL_CURSOR,
     JournalCorruptError,
     InvalidStateTransition,
-    PageJournalStore,
     backfill_page_id,
     candidate_id,
     refresh_page_id,
     request_signature,
 )
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 
 
 pytestmark = pytest.mark.unit

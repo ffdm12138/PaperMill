@@ -15,7 +15,7 @@ from src.catalog_folders.exceptions import (
     NotebookSchemaError,
 )
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
-from src.discovery.keyword_notebook import keyword_id as derive_keyword_id
+from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
 from src.utils.atomic_io import atomic_write_json
 
 
@@ -124,7 +124,7 @@ def category_from_notebook(path: Path) -> Category:
     """
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        from src.discovery.keyword_notebook import validate_notebook
+        from src.discovery.contracts.notebook import validate_notebook
 
         data = validate_notebook(raw)
     except (json.JSONDecodeError, OSError, ValueError, RuntimeError) as exc:

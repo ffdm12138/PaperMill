@@ -13,14 +13,16 @@ from typing import Any, Callable, Literal, Mapping
 
 from filelock import FileLock, Timeout
 
-from src.discovery.keyword_notebook import CursorConflictError, KeywordNotebookStore
+from src.discovery.contracts.notebook import CursorConflictError
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.execution.lane_models import (
     DurableProviderPage,
     ExhaustionEvidence,
     LaneExecutionSpec,
     ProviderResponseMetadata,
 )
-from src.discovery.page_journal import JournalCorruptError, PageJournalStore, backfill_page_id
+from src.discovery.contracts.page_journal import JournalCorruptError, backfill_page_id
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_client import ProviderClient
 from src.discovery.providers.provider_errors import ProviderRequestBudgetExhausted
 from src.discovery.providers.provider_page_fetcher import ProviderPageFetcher

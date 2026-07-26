@@ -14,20 +14,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.discovery.keyword_notebook import (
+from src.discovery.contracts.notebook import (
     INITIAL_CURSOR,
-    KeywordNotebookStore,
     query_identity,
 )
+from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.coordinator import (
     DiscoveryOptions, _profile_filters, _profile_order, _profile_sort,
     run_discovery_batch,
 )
 from src.discovery.models import PaperCandidate
-from src.discovery.page_journal import PageJournalStore, request_signature
+from src.discovery.contracts.page_journal import request_signature
+from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
 from src.discovery.providers.provider_page_fetcher import CallbackProviderPageFetcher
 from src.metadata.schema import empty_metadata
 from tests.helpers.fake_provider import discovery_page
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import bind_test_relevance_profile, relevance_candidate
 
 
@@ -55,11 +57,11 @@ def _seed_ready(
     )
     bind_test_relevance_profile(store, keyword_zh)
     store.set_enabled(keyword_zh, True)
-    notebook = store.require_v3(keyword_zh)
+    notebook = store.require_v4(keyword_zh)
     for entry in notebook["search_queries"].values():
         for provider in ("openalex", "crossref"):
             sort = _profile_sort(notebook, provider, "backfill")
-            order = _profile_order(notebook, provider, "backfill")
+            order = _profile_order(notebook, "backfill")
             signature = request_signature(
                 sort=sort,
                 filters=_profile_filters(notebook, provider, "backfill", sort, order),
@@ -133,6 +135,11 @@ def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
                    hide_existing: bool = False,
                    page_fetcher) -> tuple[SimpleNamespace, dict]:
     runtime_base = notebook_dir / ".discovery_runtime"
+    workspace = make_test_workspace(
+        runtime_base,
+        notebook_dir=notebook_dir,
+        page_journals_dir=runtime_base / "pending_pages",
+    )
     options = DiscoveryOptions(
         mode="hybrid",
         refresh_pages=1,
@@ -140,10 +147,7 @@ def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
         page_size=10,
         max_candidates=50,
         hide_existing=hide_existing,
-        notebook_dir=notebook_dir,
-        pending_pages_dir=runtime_base / "pending_pages",
-        locks_dir=runtime_base / "locks",
-        exports_dir=runtime_base / "exports",
+        workspace=workspace,
         output_dir=runtime_base / "output",
         paper_raw_dir=paper_raw_dir or (runtime_base / "paper_raw"),
         papers_dir=papers_dir or (runtime_base / "papers"),
@@ -154,7 +158,7 @@ def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
     )
     report_obj = batch_report.keywords[0]
     candidates = []
-    journal = PageJournalStore(options.pending_pages_dir)
+    journal = PageJournalStore(workspace.page_journals_dir)
     for ref in journal.list_pages([report_obj.keyword_id]):
         data = journal.read(ref.path)
         for item in data.get("candidates", []):

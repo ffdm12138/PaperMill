@@ -79,7 +79,7 @@ def test_report_builder_serializes_schema_v31_and_conserves_physical_lanes():
     )
 
     data = report.to_dict()
-    assert data["schema_version"] == "3.1"
+    assert data["schema_version"] == "4.0"
     assert data["aggregate"]["candidates"]["emitted"] == 1
     assert data["keywords"][0]["refresh"]["pages_requested"] == 1
     assert data["keywords"][0]["physical_lanes"]
