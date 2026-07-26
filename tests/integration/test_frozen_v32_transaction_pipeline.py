@@ -11,7 +11,7 @@ from src.ingest.commit import commit_paper_raw
 from src.ingest.commit_recovery import reconcile_commits
 from src.ingest.formalization import write_formalization_plan
 from src.ingest.workspace import PaperRawWorkspace
-from src.catalog_folders.reader import read_category_members
+from src.catalog_folders.listing import read_category_members
 from src.metadata.freeze import assert_metadata_frozen,freeze_metadata
 from src.metadata.pdf_identity import extract_pdf_identity_evidence
 from src.metadata.pdf_match import build_match_receipt,write_match_receipt

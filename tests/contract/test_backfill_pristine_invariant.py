@@ -171,7 +171,7 @@ def test_unknown_field_fail_closed(tmp_path):
 def test_audit_strict_pristine_is_summary_only(tmp_path):
     """Audit passes pristine notebooks with only summary counts."""
     from scripts.audit_discovery_keyword_index_sources import run_audit
-    from src.catalog_folders.registry import definition_hash
+    from src.catalog_folders.identity import definition_hash
     import scripts.audit_discovery_keyword_index_sources as audit_module
     from src.discovery.runtime_context import runtime_context_from_workspace
     from tests.helpers.discovery_workspace import make_test_workspace
@@ -205,7 +205,7 @@ def test_audit_page_journal_without_sig_state_only(tmp_path):
     from src.discovery.models import PaperCandidate
     from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from scripts.audit_discovery_keyword_index_sources import run_audit
-    from src.catalog_folders.registry import definition_hash
+    from src.catalog_folders.identity import definition_hash
     import scripts.audit_discovery_keyword_index_sources as audit_module
     from src.discovery.runtime_context import runtime_context_from_workspace
     from tests.helpers.discovery_workspace import make_test_workspace

@@ -4,7 +4,10 @@ All dataclasses are frozen with ``__post_init__`` type/value checks and
 ``from_dict_strict()`` that rejects unknown/missing fields.
 
 Dependency rule: contracts never import from stores, providers, runtime,
-execution, reporting, coordinator, or migration modules.
+execution, reporting, or coordinator modules at import time.  Single
+sanctioned exception: ``page_journal``'s strict validator lazily imports
+two frozen value types (``DiscoveryLaneKey``/``RequestSignature``) from
+``execution.lane_models``; the reverse edge does not exist, so no cycle.
 """
 
 from src.discovery.contracts.enums import (

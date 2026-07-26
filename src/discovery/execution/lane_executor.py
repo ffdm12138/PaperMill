@@ -21,14 +21,16 @@ from src.discovery.contracts.notebook import CursorConflictError
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 from src.discovery.execution.lane_models import (
     DiscoveryLaneKey,
-    ExhaustionEvidence,
     LaneCounters,
     LaneError,
     LaneExecutionSpec,
     LaneOutcome,
     LaneState,
-    ProviderResponseMetadata,
     StopReason,
+)
+from src.discovery.contracts.lane_history import (
+    ExhaustionEvidence,
+    ProviderResponseMetadata,
 )
 from src.discovery.execution.lane_services import RefreshStateService
 from src.discovery.execution.lane_state_machine import LaneEvent, LaneMachine

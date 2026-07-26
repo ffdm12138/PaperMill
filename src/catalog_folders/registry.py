@@ -14,103 +14,18 @@ from src.catalog_folders.exceptions import (
     InvalidKeywordId,
     NotebookSchemaError,
 )
+from src.catalog_folders.identity import definition_hash, validate_catalog_keyword
+from src.catalog_folders.registry_schema import (
+    load_registry_for_sync,
+    load_strict_registry,
+)
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
 from src.discovery.contracts.notebook import keyword_id as derive_keyword_id
 from src.utils.atomic_io import atomic_write_json
 from src.utils.timestamps import utc_now_iso_z as now_iso
 
 
-_UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
-_RESERVED = {"all", "_pending", ".state", ".", ".."}
-_RESERVED_CASEFOLD = {"all", "_pending", ".state"}
-_HAS_CJK = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
-_WIN_RESERVED = {
-    "CON", "PRN", "AUX", "NUL",
-    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-}
 
-
-
-def validate_catalog_keyword(keyword: str) -> str:
-    """Validate a Chinese keyword is safe for use as a category directory name.
-
-    Returns the NFC-normalized keyword.  Raises an appropriate exception if
-    the keyword is invalid.  The original input is checked first against
-    strict formatting rules before any normalization is applied.
-    """
-    original = str(keyword)
-
-    # ── strict pre-normalization checks on original input ──────────────
-    if original != original.strip():
-        raise InvalidChineseKeyword(
-            f"category keyword has leading/trailing whitespace: {original!r}"
-        )
-    if original != original.rstrip("."):
-        raise InvalidChineseKeyword(
-            f"category keyword has trailing dots: {original!r}"
-        )
-    if "/" in original or "\\" in original:
-        raise FilesystemNameCollision(
-            f"category keyword contains path separators: {original!r}"
-        )
-    if any(ord(c) < 0x20 for c in original):
-        raise InvalidChineseKeyword(
-            f"category keyword contains control characters: {original!r}"
-        )
-    if original.upper() in _WIN_RESERVED:
-        raise FilesystemNameCollision(
-            f"category keyword is a Windows reserved name: {original!r}"
-        )
-    if unicodedata.normalize("NFC", original) != original:
-        raise InvalidChineseKeyword(
-            f"category keyword must be NFC-normalized Unicode: {original!r}"
-        )
-    if original.casefold() in _RESERVED_CASEFOLD:
-        raise FilesystemNameCollision(
-            f"category keyword collides with reserved name: {original!r}"
-        )
-
-    # ── normalize and validate content ─────────────────────────────────
-    text = original.strip()
-    if not text:
-        raise InvalidChineseKeyword("category keyword must not be empty")
-    if not _HAS_CJK.search(text):
-        raise InvalidChineseKeyword(
-            f"category keyword must contain at least one Chinese character: {keyword!r}"
-        )
-    if _UNSAFE.search(text):
-        raise FilesystemNameCollision(
-            f"category keyword contains unsafe filesystem characters: {keyword!r}"
-        )
-    if text.casefold() in _RESERVED:
-        raise FilesystemNameCollision(
-            f"category keyword is a reserved name: {keyword!r}"
-        )
-    if len(text) > 64:
-        raise InvalidChineseKeyword(
-            f"category keyword too long (max 64): {len(text)}"
-        )
-    return text
-
-
-def _is_empty(val: object) -> bool:
-    """Return True for None, empty string, empty list, or empty tuple."""
-    return val is None or val in ("", [], ())
-
-
-def definition_hash(value: dict) -> str:
-    """Hash only Chinese-relevant definition fields plus the classifier
-    contract version.
-
-    Chinese and English search queries, provider cursors, and file paths are
-    explicitly excluded — changing them must not invalidate decisions.
-    """
-    keys = ("category_id", "keyword_zh", "guidance_zh", "aliases_zh", "exclusions_zh")
-    payload = {key: value.get(key) for key in keys if not _is_empty(value.get(key))}
-    payload["classifier_skill_version"] = CLASSIFIER_SKILL_VERSION
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def category_from_notebook(path: Path) -> Category:
@@ -170,7 +85,6 @@ def category_from_notebook(path: Path) -> Category:
 
 
 def load_registry(path: Path) -> dict:
-    from src.catalog_folders.registry_schema import load_strict_registry
 
     return load_strict_registry(Path(path))
 
@@ -208,7 +122,6 @@ def sync_registry(*, notebook_dir: Path, registry_path: Path, apply: bool) -> di
             # definition hashes stale.  Rebuild current values from the
             # authoritative notebooks, while still validating every other
             # registry identity and path field before using history metadata.
-            from src.catalog_folders.registry_schema import load_registry_for_sync
 
             try:
                 old_registry = load_registry_for_sync(registry_path)

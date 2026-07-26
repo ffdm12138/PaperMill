@@ -10,9 +10,11 @@ import pytest
 
 from src.discovery.execution.lane_models import (
     DiscoveryLaneKey,
+    RequestSignature,
+)
+from src.discovery.contracts.lane_history import (
     ExhaustionEvidence,
     ProviderResponseMetadata,
-    RequestSignature,
 )
 
 pytestmark = pytest.mark.unit

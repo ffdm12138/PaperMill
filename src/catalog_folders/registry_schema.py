@@ -14,7 +14,7 @@ from pathlib import Path
 from src.catalog_folders.exceptions import (
     FilesystemNameCollision,
 )
-from src.catalog_folders.registry import definition_hash, validate_catalog_keyword
+from src.catalog_folders.identity import definition_hash, validate_catalog_keyword
 from src.discovery.contracts.notebook import keyword_id, normalize_keyword
 
 

@@ -58,6 +58,6 @@ def test_catalog_registry_never_reads_search_queries_for_categories():
 
 
 def test_definition_hash_documents_query_exclusion():
-    text = _source("src/catalog_folders/registry.py")
+    text = _source("src/catalog_folders/identity.py")
     assert "Chinese and English search queries" in text
     assert 'keys = ("category_id", "keyword_zh", "guidance_zh", "aliases_zh", "exclusions_zh")' in text

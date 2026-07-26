@@ -28,8 +28,8 @@ from src.mineru_runtime import (
     runtime_config_from_env,
     snapshot_mineru_api,
     snapshot_nvidia_smi,
-    verify_gpu_runtime,
 )
+from src.mineru_service_manager import verify_gpu_runtime
 from src.mineru_lock import read_mineru_lock_status, clear_stale_mineru_lock, LOCK_PATH
 
 

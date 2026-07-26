@@ -19,6 +19,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.discovery.contracts.lane_history import (
+    ExhaustionEvidence,
+    GenerationHistoryEntry,
+)
+from src.discovery.contracts.errors import (
+    CursorConflictError,
+    DiscoveryNotReadyError,
+    NotebookContractError,
+    NotebookCorruptError,
+    UnsupportedNotebookSchemaError,
+)
 from src.utils.timestamps import utc_now_iso as _now_iso
 from src.discovery.constants import (
     BACKFILL_STATE_ACCEPTED_FIELDS,
@@ -45,10 +56,6 @@ NOTEBOOK_TOP_LEVEL_REQUIRED: frozenset[str] = frozenset({
     "definition_history", "lifetime_statistics", "pending", "backpressure",
     "reset_history", "migration_history",
 })
-
-
-class NotebookContractError(ValueError):
-    """Raised when a notebook dict does not match the v4 contract."""
 
 
 def _check_str(value: Any, name: str) -> None:
@@ -166,22 +173,6 @@ PAGINATION_SCHEMA_VERSION = "2.0"
 # Lane / provider literals (kept as plain strings for JSON readability).
 LANES = ("refresh", "backfill")
 PROVIDERS = ("openalex", "crossref")
-
-
-class NotebookCorruptError(RuntimeError):
-    """Raised when a notebook file cannot be parsed as valid JSON dict."""
-
-
-class UnsupportedNotebookSchemaError(RuntimeError):
-    """Raised when a notebook has an unsupported schema_version (including v1/v2)."""
-
-
-class DiscoveryNotReadyError(RuntimeError):
-    """Raised when a notebook lacks required bilingual queries for discovery."""
-
-
-class CursorConflictError(RuntimeError):
-    """Raised when expected-cursor CAS detects a stale writer."""
 
 
 # ── Keyword normalization & identity ─────────────────────────────────
@@ -765,7 +756,6 @@ def _validate_generation_history(value: Any, path: str) -> None:
     Additional invariants (strictly increasing generations, hex signatures,
     non-blank closed_at/reason) are checked after the typed parse.
     """
-    from src.discovery.execution.lane_models import GenerationHistoryEntry
 
     if not isinstance(value, list):
         raise NotebookCorruptError(f"{path} must be a list")
@@ -798,7 +788,6 @@ def _validate_exhaustion_evidence(value: Any, path: str) -> None:
     acceptable while ``exhausted`` is False.
     """
     evidence = _require_dict(value, path)
-    from src.discovery.execution.lane_models import ExhaustionEvidence
     try:
         ExhaustionEvidence.from_dict_strict(evidence)
     except (TypeError, ValueError) as exc:

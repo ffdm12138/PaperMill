@@ -8,7 +8,7 @@ from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 import scripts.audit_discovery_keyword_index_sources as audit
 from tests.helpers.discovery_workspace import make_test_workspace
-from src.catalog_folders.registry import definition_hash
+from src.catalog_folders.identity import definition_hash
 from src.discovery.contracts.notebook import notebook_filename
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 

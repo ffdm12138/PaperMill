@@ -26,7 +26,7 @@ from src.discovery.contracts.notebook import (
     validate_discovery_readiness,
 )
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
-from src.discovery.execution.lane_models import ExhaustionEvidence, ProviderResponseMetadata
+from src.discovery.contracts.lane_history import ExhaustionEvidence, ProviderResponseMetadata
 from tests.fixtures.legacy.notebook_v2 import (
     RETIRED_QUERY_CONTAINER_FIELD,
     inject_retired_query_container,

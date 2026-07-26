@@ -247,7 +247,7 @@ def test_no_unsafe_exhaustion_api_in_production():
 ])
 def test_generation_history_strict_type_rejection(tmp_path: Path, field, bad_value, expected_error):
     """Generation history entries with wrong Python types must be rejected."""
-    from src.discovery.execution.lane_models import GenerationHistoryEntry
+    from src.discovery.contracts.lane_history import GenerationHistoryEntry
     from src.discovery.contracts.notebook import NotebookCorruptError
 
     entry = GenerationHistoryEntry(

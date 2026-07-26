@@ -50,9 +50,11 @@ from src.discovery.stores.page_journal_ops import (
 )
 from src.discovery.execution.lane_models import (
     DiscoveryLaneKey,
+    RequestSignature,
+)
+from src.discovery.contracts.lane_history import (
     ExhaustionEvidence,
     ProviderResponseMetadata,
-    RequestSignature,
 )
 from src.discovery.models import PaperCandidate
 from src.discovery.relevance import RelevanceReason

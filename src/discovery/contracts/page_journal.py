@@ -588,10 +588,12 @@ def make_candidate_record(
 
 def validate_page(data: Any, path: Path | None = None) -> dict[str, Any]:
     """Strictly validate one active complete schema-v4 provider-page journal."""
-    from src.discovery.execution.lane_models import (
-        DiscoveryLaneKey,
+    from src.discovery.contracts.lane_history import (
         ExhaustionEvidence,
         ProviderResponseMetadata,
+    )
+    from src.discovery.execution.lane_models import (
+        DiscoveryLaneKey,
         RequestSignature,
     )
     if not isinstance(data, dict):

@@ -16,13 +16,15 @@ import pytest
 
 from src.discovery.execution.lane_models import (
     DiscoveryLaneKey,
-    ExhaustionEvidence,
     LaneExecutionSpec,
     LaneCounters,
     LaneOutcome,
     LaneState,
     RequestSignature,
     StopReason,
+)
+from src.discovery.contracts.lane_history import (
+    ExhaustionEvidence,
     ProviderResponseMetadata,
 )
 from src.discovery.execution.lane_state_machine import (
