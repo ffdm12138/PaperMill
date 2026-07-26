@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_RAW_DIR, PROJECT_ROOT
 from src.mineru_runtime import (

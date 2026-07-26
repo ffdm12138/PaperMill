@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PROJECT_ROOT
 from scripts.prepare_write_article_workdir import prepare_workdir

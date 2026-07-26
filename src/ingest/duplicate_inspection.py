@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from loguru import logger
+
 from src.utils.jsonio import read_json_strict
 from src.utils.identifiers import normalize_doi
 from src.file_fingerprint import compute_file_hashes, compute_sha256
@@ -129,8 +131,9 @@ def inspect_ingest_duplicates(
             if len(marker_paths) == 1:
                 try:
                     existing_number = str(_read_json(marker_paths[0]).get("paper_number") or "")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("duplicate-inspection marker unreadable {}: {}",
+                                   marker_paths[0], exc)
             if prefix == paper_name:
                 classification = "same_paper_number_idempotent" if existing_number == workspace.paper_number else "conflict"
                 findings.append({"kind": "paper_name", "classification": classification, "paper_number": existing_number, "paper_name": prefix})

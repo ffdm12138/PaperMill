@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.path_utils import resolve_stored_path

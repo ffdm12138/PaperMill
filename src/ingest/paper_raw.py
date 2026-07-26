@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from filelock import FileLock
+from loguru import logger
+
 from config.settings import (
     MINERU_BACKEND, MINERU_EFFORT, MINERU_LANG, MINERU_METHOD,
     MINERU_OUTPUT_CACHE_DIR, MINERU_OUTPUT_CACHE_ENABLED,
@@ -102,8 +104,8 @@ class PaperRawAllocator:
             return
         try:
             self.ledger.mark_abandoned(paper_number, str(exc), folder=folder)
-        except Exception:
-            pass
+        except Exception as ledger_exc:
+            logger.warning("mark_abandoned failed for {}: {}", paper_number, ledger_exc)
 
     def _mark_stage_failed(self, paper_number: str, folder: Path, exc: Exception) -> None:
         """Record staging failure in .import_status.json only.
@@ -120,8 +122,9 @@ class PaperRawAllocator:
                 errors=[str(exc)],
                 extra={"paper_number": paper_number, "paper_raw_id": paper_number},
             )
-        except Exception:
-            pass
+        except Exception as status_exc:
+            logger.warning("stage-failed status write failed for {}: {}",
+                           paper_number, status_exc)
 
     def allocate_from_pdf(
         self,

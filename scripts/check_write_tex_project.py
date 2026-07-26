@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PROJECT_ROOT
 from src.bib import parse_blocks

@@ -1,4 +1,10 @@
-"""Pure v2 project configuration."""
+"""Pure v2 project configuration.
+
+Importing this module is side-effect free: no directory creation, no
+environment mutation, no import-time raises.  Entry points call
+``ensure_runtime_dirs()`` / ``validate_settings()`` / ``apply_cuda_env()``
+explicitly (scripts do so through ``scripts/_bootstrap``).
+"""
 import os
 import warnings
 from pathlib import Path
@@ -75,8 +81,16 @@ UPLOAD_STAGING_DIR = JOBS_DIR / "upload_staging"
 # CUDA 路径（MinerU lmdeploy 后端需要，默认 Windows 标准路径）
 CUDA_PATH_DEFAULT = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
 CUDA_PATH = _env_str("CUDA_PATH", CUDA_PATH_DEFAULT)
-# 自动注入进程环境变量，确保子进程（MinerU lmdeploy）能继承
-os.environ.setdefault("CUDA_PATH", CUDA_PATH)
+
+
+def apply_cuda_env() -> None:
+    """Inject CUDA_PATH into the process env for MinerU child processes.
+
+    Called by GPU entry points; importing this module never mutates the
+    environment.  ``build_mineru_env`` additionally hard-falls-back to the
+    same default, so omitting this call cannot break child construction.
+    """
+    os.environ.setdefault("CUDA_PATH", CUDA_PATH)
 
 # 代理配置（默认空=直连）
 FETCH_PROXY = _env_str("FETCH_PROXY", "")
@@ -137,12 +151,6 @@ if ALLOW_BACKEND_OVERRIDE:
 VALID_BACKENDS = {"hybrid-engine", "pipeline", "vlm-engine"} if ALLOW_BACKEND_OVERRIDE else {"hybrid-engine"}
 VALID_EFFORTS = {"medium", "high"} if ALLOW_BACKEND_OVERRIDE else {"medium"}
 VALID_METHODS = {"auto", "txt", "ocr"}
-if MINERU_BACKEND not in VALID_BACKENDS:
-    raise ValueError(f"非法 MINERU_BACKEND: {MINERU_BACKEND}，允许: {VALID_BACKENDS}")
-if MINERU_EFFORT not in VALID_EFFORTS:
-    raise ValueError(f"非法 MINERU_EFFORT: {MINERU_EFFORT}，允许: {VALID_EFFORTS}")
-if MINERU_METHOD not in VALID_METHODS:
-    raise ValueError(f"非法 MINERU_METHOD: {MINERU_METHOD}，允许: {VALID_METHODS}")
 
 
 def enforce_backend_effort_override(parser, args) -> None:
@@ -179,27 +187,48 @@ CITATION_STYLE = _env_str("MINERU_CITATION_STYLE", "author-year")
 # 支持的文件格式 (MinerU 3.4)
 SUPPORTED_FORMATS = {".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg"}
 
-# 确保目录存在（导入即创建，有副作用）
-for d in [
+RUNTIME_DIRS = (
     RAW_DIR, PAPER_RAW_DIR, PAPERS_DIR,
     MINERU_TMP_DIR, MINERU_LOG_DIR,
     CATALOG_FOLDER_ROOT, CATALOG_STATE_ROOT, DISCOVERY_DIR,
     DISCOVERY_LOCKS_DIR, DISCOVERY_EXPORTS_DIR,
     JOBS_DIR, UPLOAD_STAGING_DIR,
-]:
-    d.mkdir(parents=True, exist_ok=True)
+)
 
-# 启动时安全检查：若 API_HOST 非 localhost，必须显式配置 API key 或 unsafe override。
-if API_HOST not in ("127.0.0.1", "localhost", "::1"):
-    if not MINERU_API_KEY and not MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API:
-        raise RuntimeError(
-            f"API_HOST={API_HOST} is not localhost. Set MINERU_API_KEY before exposing "
-            "the API, or explicitly set MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true "
-            "for an unsafe local-only override."
-        )
-    if MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API and not MINERU_API_KEY:
-        warnings.warn(
-            f"API_HOST={API_HOST} is not localhost and MINERU_API_KEY is empty. "
-            "MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true is unsafe; use only behind "
-            "trusted network controls.",
-            RuntimeWarning)
+
+def ensure_runtime_dirs() -> None:
+    """Create the runtime data directories.
+
+    Entry points (server startup, scripts via ``scripts/_bootstrap``) call
+    this explicitly; importing this module never touches the filesystem.
+    """
+    for d in RUNTIME_DIRS:
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def validate_settings() -> None:
+    """Fail fast on unsafe/invalid configuration.
+
+    Entry points call this at startup.  Import stays side-effect free so
+    ``pytest --collect-only`` or tooling imports never raise on a bad env.
+    """
+    if MINERU_BACKEND not in VALID_BACKENDS:
+        raise ValueError(f"非法 MINERU_BACKEND: {MINERU_BACKEND}，允许: {VALID_BACKENDS}")
+    if MINERU_EFFORT not in VALID_EFFORTS:
+        raise ValueError(f"非法 MINERU_EFFORT: {MINERU_EFFORT}，允许: {VALID_EFFORTS}")
+    if MINERU_METHOD not in VALID_METHODS:
+        raise ValueError(f"非法 MINERU_METHOD: {MINERU_METHOD}，允许: {VALID_METHODS}")
+    # 安全检查：若 API_HOST 非 localhost，必须显式配置 API key 或 unsafe override。
+    if API_HOST not in ("127.0.0.1", "localhost", "::1"):
+        if not MINERU_API_KEY and not MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API:
+            raise RuntimeError(
+                f"API_HOST={API_HOST} is not localhost. Set MINERU_API_KEY before exposing "
+                "the API, or explicitly set MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true "
+                "for an unsafe local-only override."
+            )
+        if MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API and not MINERU_API_KEY:
+            warnings.warn(
+                f"API_HOST={API_HOST} is not localhost and MINERU_API_KEY is empty. "
+                "MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API=true is unsafe; use only behind "
+                "trusted network controls.",
+                RuntimeWarning)

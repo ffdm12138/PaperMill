@@ -1,3 +1,8 @@
+---
+name: literature_library_manager
+description: Manage the paper_raw literature library end to end — convert, resolve metadata, curate, formalize, commit, rollback, and validate the formal library.
+---
+
 # Literature Library Manager Skill
 
 Use this skill for pure v2 `paper_raw` literature library work.

@@ -2,6 +2,7 @@
 
 | Script | Role | Mutates state |
 |---|---|---|
+| `_bootstrap.py` | (library) entry-point runtime init imported by operational scripts: validate settings, create runtime dirs, configure logging | creates runtime dirs |
 | `audit_discovery_workspace_registry.py` | read-only raw/formal Registry, conflict, generation, and repair-backlog audit | no |
 | `verify_discovery_final_architecture.py` | strict static and dynamic verification of the single-path Discovery execution architecture | no |
 | `repair_discovery_workspaces.py` | explicit reserved-workspace repair planning/promotion | `--apply` |
@@ -170,6 +171,7 @@ The remaining root entry points are documented here by risk class so the index
 cannot silently omit an executable:
 
 ```text
+_bootstrap.py
 agent_acceptance.py
 attach_pdf_to_paper_raw.py
 audit_discovery_keyword_index_sources.py

@@ -5,11 +5,10 @@ ingest pipeline (stage / convert / resolve / curate / formalize / commit)
 and provides a single ``write_import_status`` writer so every stage records
 the same field shape.
 
-This module deliberately depends only on ``src.utils.atomic_io`` (and a
-local ``now_iso``) to avoid importing ``v2_library`` (which would create a
-cycle, since v2_library imports these constants). The status *strings* are
-duplicated here by value; keep them in sync with the literal writers in
-v2_library / metadata_resolver until those are migrated.
+Numeric marker-bearing workspaces route through the nested status-v2 engine
+in ``src.ingest.status`` via the translation table below; the flat shape is
+written only for non-numeric folders. This facade plus that engine are the
+only ``.import_status.json`` writers.
 """
 from __future__ import annotations
 

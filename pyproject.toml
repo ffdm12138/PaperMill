@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mineru-paper-library"
+version = "1.0.0"
+description = "Academic paper collection, MinerU conversion, and formal library pipeline (metadata-first and PDF-first ingest)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "mineru[all]>=3.4.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-multipart>=0.0.9",
+    "requests>=2.28.0",
+    "loguru>=0.7.0",
+    "pydantic>=2.0.0",
+    "PyMuPDF>=1.24.0",
+    "filelock>=3.12.0",
+    "orjson>=3.10.0",
+    "jsonschema>=4.0.0",
+    "psutil>=7.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-xdist>=3.8",
+]
+
+[tool.setuptools]
+# The repository is executed from its checkout root (scripts add the root to
+# sys.path); packaging metadata exists for dependency management and future
+# `pip install -e .` use. Runtime data under data/ is never packaged.
+packages = { find = { include = ["src*", "config*"] } }

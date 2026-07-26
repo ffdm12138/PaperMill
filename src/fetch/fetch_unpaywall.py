@@ -28,7 +28,15 @@ def _location_pdf(location: dict) -> tuple[str, bool]:
 
 
 def resolve_unpaywall(doi: str) -> FetchResult:
-    email = os.environ.get("UNPAYWALL_EMAIL", "").strip()
+    email = (
+        os.environ.get("UNPAYWALL_EMAIL", "").strip()
+        or os.environ.get("MINERU_METADATA_CONTACT_EMAIL", "").strip()
+    )
+    if not email:
+        logger.warning(
+            "UNPAYWALL_EMAIL/MINERU_METADATA_CONTACT_EMAIL not set; using an "
+            "anonymous placeholder degrades Unpaywall service quality"
+        )
     params = {"email": email or "anonymous@example.com"}
     try:
         response = requests.get(f"{UNPAYWALL_URL}/{quote(doi, safe='')}", params=params, timeout=20, proxies=get_fetch_proxies())

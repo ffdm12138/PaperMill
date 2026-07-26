@@ -11,6 +11,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.reconcile import reconcile_catalog_folders

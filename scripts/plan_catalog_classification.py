@@ -5,6 +5,7 @@ from config.settings import CATALOG_FOLDER_ROOT, PAPERS_DIR, PAPER_NUMBER_LEDGER
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.task_planner import plan_tasks
 from src.library.paper_number_ledger import PaperNumberLedger
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 def main(argv=None):
     p=argparse.ArgumentParser(); p.add_argument("--catalog-root",type=Path,default=CATALOG_FOLDER_ROOT); p.add_argument("--papers-dir",type=Path,default=PAPERS_DIR); p.add_argument("--ledger-path",type=Path,default=PAPER_NUMBER_LEDGER_PATH); p.add_argument("--paper-number"); p.add_argument("--category-id"); p.add_argument("--all",action="store_true"); p.add_argument("--apply",action="store_true"); a=p.parse_args(argv)

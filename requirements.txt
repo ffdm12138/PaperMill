@@ -19,12 +19,12 @@ PyMuPDF>=1.24.0
 filelock>=3.12.0
 orjson>=3.10.0
 
-# 测试
-pytest>=8.0.0
-pytest-xdist>=3.8       # 并行验收(agent_acceptance --jobs);带 execnet
+# 运行时校验
 jsonschema>=4.0.0
 
 # 运行支撑(agent_acceptance 进程树清理已直接使用,显式声明)
 psutil>=7.0
+
+# 测试依赖见 requirements-dev.txt（pytest / pytest-xdist）
 
 # 注：重构后已移除 chromadb / sentence-transformers（不再做向量检索）

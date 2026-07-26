@@ -6,6 +6,8 @@ selected entries into job-local ``tex/references.bib``.
 """
 import re
 
+from loguru import logger
+
 from src.metadata.citation_readiness import citation_key_from_metadata, validate_citation_ready
 from src.metadata.citation import bibtex_from_metadata
 from src.naming import sanitize_paper_name
@@ -67,8 +69,9 @@ def _resolve_metadata(entry: dict) -> dict:
                     m = lib.load_metadata(idx.get("paper_number") or "")
             if m:
                 return m
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("bib metadata lookup failed for {}: {}",
+                           number or pid, exc)
     return {}
 
 

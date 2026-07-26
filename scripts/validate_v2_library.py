@@ -10,6 +10,7 @@ from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.validation import doctor
 from src.discovery.runtime_context import resolve_active_runtime
 from src.library.paper_number_ledger import PaperNumberLedger
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 def validate_v2_library(*, papers_dir: Path = PAPERS_DIR, ledger_path: Path = PAPER_NUMBER_LEDGER_PATH, catalog_root: Path = CATALOG_FOLDER_ROOT, notebook_dir: Path | None = None) -> dict:
     if notebook_dir is None: notebook_dir = resolve_active_runtime().notebook_root

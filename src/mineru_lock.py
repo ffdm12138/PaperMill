@@ -204,8 +204,8 @@ class MinerULock:
                 existing = read_mineru_lock_status(stuck_warn_seconds=self._stuck_warn_seconds)
                 if existing.get("owner_pid") == os.getpid():
                     LOCK_PATH.unlink()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("mineru lock release cleanup raced: {}", exc)
         finally:
             self._acquired = False
 

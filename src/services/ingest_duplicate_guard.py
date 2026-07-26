@@ -1,7 +1,7 @@
 """Shared duplicate gates for ingest entrypoints.
 
-The guard is intentionally independent from v2_library so allocator methods can
-use it without circular imports.
+The guard stays free of allocator/ledger imports so allocator methods can
+use it without circular dependencies.
 """
 from __future__ import annotations
 

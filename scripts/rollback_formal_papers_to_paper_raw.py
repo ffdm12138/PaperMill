@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import CATALOG_FOLDER_ROOT, PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
 from src.ingest.rollback import resolve_paper_number_by_paper_name, rollback_formal_papers

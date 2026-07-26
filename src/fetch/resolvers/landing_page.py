@@ -315,8 +315,8 @@ def resolve_landing_page_to_pdf(
             html_text = ""
             try:
                 html_text = response.text
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("landing page body decode failed: {}", exc)
 
             if html_text:
                 candidates = extract_landing_candidates(

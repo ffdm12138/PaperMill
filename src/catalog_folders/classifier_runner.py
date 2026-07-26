@@ -16,6 +16,8 @@ import uuid
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from loguru import logger
+
 from src.catalog_folders.assignment import load_assignment, valid_decisions
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.models import CLASSIFIER_SKILL_VERSION, Category
@@ -63,8 +65,8 @@ def _is_real_catalog_root(root: Path) -> bool:
             )
             if active > 0:
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("catalog root ledger unreadable ({}); treating as non-production", exc)
     return False
 
 

@@ -79,11 +79,6 @@ _test_batch/
 !data/discovery/locks/.gitkeep
 !data/discovery/exports/.gitkeep
 # v4 workspace directories (runtime state, never commit)
-data/discovery/generations/**
-data/discovery/migrations/**
-data/discovery/legacy_archive/**
-data/discovery/active_generation.json
-data/discovery/legacy_inventory_report.json
 
 # ===== 写作任务产物（可重新生成，不入库）=====
 write/jobs/**
@@ -132,3 +127,5 @@ mineru_snapshot*.zip
 *.swp
 data/discovery/relevance_profile_plan.json
 data/discovery/relevance_raw_work_cache/
+# 个人 agent CLI 配置（含机器绝对路径，不入库）
+reasonix.toml

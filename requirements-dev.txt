@@ -1,0 +1,4 @@
+# 开发/测试依赖（运行时依赖见 requirements.txt）
+-r requirements.txt
+pytest>=8.0.0
+pytest-xdist>=3.8       # 并行验收(agent_acceptance --jobs);带 execnet

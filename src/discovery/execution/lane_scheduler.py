@@ -11,6 +11,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futu
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from loguru import logger
+
 from src.discovery.execution.lane_models import (
     LaneCounters,
     LaneExecutionSpec,
@@ -132,8 +134,8 @@ def schedule_lanes(
                 for future, spec in list(in_flight.items()):
                     try:
                         future.cancel()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("lane future cancel raced: {}", exc)
                     outcomes.append(_interrupted_outcome(spec))
                     total_interrupted += 1
                 for spec in pending_specs:
@@ -154,8 +156,8 @@ def schedule_lanes(
                 for future in list(in_flight):
                     try:
                         future.cancel()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("lane future cancel raced: {}", exc)
                 break
 
             for future in done:

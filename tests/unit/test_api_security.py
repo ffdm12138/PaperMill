@@ -71,19 +71,22 @@ def _reload_settings(monkeypatch, *, host: str, key: str = "", unsafe: str = "")
 
 
 def test_public_host_without_key_fails(monkeypatch):
+    loaded = _reload_settings(monkeypatch, host="0.0.0.0")
     with pytest.raises(RuntimeError):
-        _reload_settings(monkeypatch, host="0.0.0.0")
+        loaded.validate_settings()
 
 
 def test_public_host_with_key_allowed(monkeypatch):
     loaded = _reload_settings(monkeypatch, host="0.0.0.0", key="test-key")
+    loaded.validate_settings()
 
     assert loaded.API_HOST == "0.0.0.0"
     assert loaded.MINERU_API_KEY == "test-key"
 
 
 def test_public_host_unsafe_override_warns(monkeypatch):
+    loaded = _reload_settings(monkeypatch, host="0.0.0.0", unsafe="true")
     with pytest.warns(RuntimeWarning):
-        loaded = _reload_settings(monkeypatch, host="0.0.0.0", unsafe="true")
+        loaded.validate_settings()
 
     assert loaded.MINERU_ALLOW_UNAUTHENTICATED_PUBLIC_API is True

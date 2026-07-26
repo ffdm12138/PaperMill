@@ -485,4 +485,10 @@ async def status_runtime():
 
 
 if __name__ == "__main__":
+    from config.settings import ensure_runtime_dirs, validate_settings
+    from src.logging_setup import configure_logging
+
+    validate_settings()
+    ensure_runtime_dirs()
+    configure_logging()
     uvicorn.run("src.server:app", host=API_HOST, port=API_PORT, reload=False, log_level="info")

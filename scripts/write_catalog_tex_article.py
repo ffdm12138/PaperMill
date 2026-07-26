@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PROJECT_ROOT
 from src.bib import bib_key_for_entry, bibtex_for_entry, parse_blocks

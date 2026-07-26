@@ -6,6 +6,7 @@ from config.settings import CATALOG_FOLDER_ROOT, PAPER_RAW_DIR, PAPERS_DIR, PAPE
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.validation import doctor
 from src.library.paper_number_ledger import PaperNumberLedger
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 def check_directory_hygiene(*, project_root: Path = PROJECT_ROOT, paper_raw_dir: Path = PAPER_RAW_DIR, papers_dir: Path = PAPERS_DIR, catalog_root: Path = CATALOG_FOLDER_ROOT, ledger_path: Path = PAPER_NUMBER_LEDGER_PATH) -> dict:
     del paper_raw_dir

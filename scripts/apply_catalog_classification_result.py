@@ -6,6 +6,7 @@ from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.result_validator import apply_result
 from src.catalog_folders.reconcile import reconcile_catalog_folders
 from src.library.paper_number_ledger import PaperNumberLedger
+from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 def main(argv=None):
     p=argparse.ArgumentParser(
