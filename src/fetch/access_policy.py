@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from src.metadata.quality import is_valid_normalized_doi
+from src.metadata.source_records import FETCH_RESULT_FILENAME
 from src.utils.identifiers import normalize_doi, validate_paper_raw_id
 from src.utils.jsonio import read_json
 
@@ -134,6 +136,108 @@ class FetchCandidateStatus:
             "doi": self.doi,
             "import_status": self.import_status,
         }
+
+
+@dataclass(frozen=True)
+class FetchSelection:
+    """Which eligible workspaces a batch run should actually attempt.
+
+    Eligibility (``classify_pdf_fetch_candidate``) answers "can this
+    workspace be fetched at all"; selection answers "should this run spend
+    time on it now".  They are separate because the backlog is far larger
+    than one run: 2182 of 2332 workspaces were eligible while only 514 had
+    ever been attempted, so a run needs to be able to reach fresh work
+    without first replaying every known-hard failure.
+
+    ``doi_prefixes`` is matched case-insensitively against the registrant
+    prefix (the part before the first ``/``).
+    """
+
+    skip_attempted: bool = False
+    retry_after_days: float | None = None
+    doi_prefixes: tuple[str, ...] = ()
+    limit: int | None = None
+
+    @property
+    def is_noop(self) -> bool:
+        return not (
+            self.skip_attempted
+            or self.retry_after_days is not None
+            or self.doi_prefixes
+            or self.limit is not None
+        )
+
+
+def last_fetch_attempt_at(folder: Path) -> datetime | None:
+    """Return when this workspace was last attempted, or ``None``.
+
+    Reads the ``fetch_result`` sidecar's own timestamp and falls back to the
+    file's modification time, so a sidecar written before the timestamp field
+    existed still counts as an attempt.
+    """
+    path = folder / "source_records" / FETCH_RESULT_FILENAME
+    if not path.is_file():
+        return None
+    record = read_json(path, {})
+    payload = record.get("fetch_result") if isinstance(record, dict) else None
+    stamp = ""
+    if isinstance(payload, dict):
+        stamp = str(payload.get("fetched_at") or payload.get("downloaded_at") or "").strip()
+    if stamp:
+        try:
+            parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+
+
+def select_fetch_candidates(
+    candidates: list[FetchCandidateStatus],
+    selection: FetchSelection,
+    *,
+    now: datetime | None = None,
+) -> list[FetchCandidateStatus]:
+    """Return *candidates* with deselected ones marked ``skipped`` in place.
+
+    Only workspaces that are already eligible are considered; anything else
+    keeps the status ``classify_pdf_fetch_candidate`` gave it.  The returned
+    list preserves input order so the caller's report stays aligned.
+    """
+    moment = now or datetime.now(timezone.utc)
+    prefixes = tuple(prefix.strip().lower().rstrip("/") for prefix in selection.doi_prefixes if prefix.strip())
+    taken = 0
+    for candidate in candidates:
+        if not candidate.eligible:
+            continue
+        if prefixes and candidate.doi.split("/", 1)[0].lower() not in prefixes:
+            candidate.status = "skipped"
+            candidate.reason = "DOI prefix not selected"
+            continue
+        attempted_at = (
+            last_fetch_attempt_at(candidate.folder)
+            if (selection.skip_attempted or selection.retry_after_days is not None)
+            else None
+        )
+        if attempted_at is not None and selection.skip_attempted:
+            candidate.status = "skipped"
+            candidate.reason = "already attempted"
+            continue
+        if attempted_at is not None and selection.retry_after_days is not None:
+            age_days = (moment - attempted_at).total_seconds() / 86400.0
+            if age_days < selection.retry_after_days:
+                candidate.status = "skipped"
+                candidate.reason = f"attempted {age_days:.1f}d ago (< {selection.retry_after_days}d)"
+                continue
+        if selection.limit is not None and taken >= selection.limit:
+            candidate.status = "skipped"
+            candidate.reason = "beyond --limit for this batch"
+            continue
+        taken += 1
+    return candidates
 
 
 def classify_pdf_fetch_candidate(

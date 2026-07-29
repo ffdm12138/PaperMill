@@ -15,6 +15,7 @@ forbidden — source records are always loaded by the caller and passed via
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 from src.fetch.models import FetchResult
 from src.fetch.pdf_transport import fetch_url_direct_then_proxy
@@ -36,6 +37,18 @@ FIXED_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
 )
+
+#: Hosts that identify a *record* rather than host the article.  Historical
+#: metadata stored the OpenAlex entity URI (``https://openalex.org/W…``) in
+#: ``links.url``; scraping it returns the OpenAlex single-page-app shell,
+#: which never contains a PDF.  Skipping these costs nothing and removes two
+#: guaranteed-useless HTTP requests per paper.
+_NON_ARTICLE_HOSTS = ("openalex.org", "api.openalex.org", "api.crossref.org")
+
+
+def _is_non_article_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    return any(host == known or host.endswith(f".{known}") for known in _NON_ARTICLE_HOSTS)
 
 
 def _extract_urls_from_source_record(record: dict) -> list[str]:
@@ -146,6 +159,11 @@ class OriginalLinkResolver(PdfResolver):
                 else:
                     landing_candidates.append(url)
 
+        # Record URIs identify a record, not an article; they can never yield
+        # a PDF, so drop them before spending a request.
+        direct_candidates = [url for url in direct_candidates if not _is_non_article_url(url)]
+        landing_candidates = [url for url in landing_candidates if not _is_non_article_url(url)]
+
         if not direct_candidates and not landing_candidates:
             return FetchResult(
                 doi=context.doi,
@@ -154,8 +172,12 @@ class OriginalLinkResolver(PdfResolver):
                 error="no usable original PDF link in metadata",
             )
 
-        # Try direct PDF candidates first.
-        last_error = ""
+        # Try direct PDF candidates first.  Their failures are kept separate
+        # from landing-page failures: a landing page that yields nothing is
+        # the expected outcome, whereas "the publisher's own PDF link
+        # returned 403" is the diagnosis worth reporting.
+        direct_error = ""
+        landing_error = ""
         transport_attempts: list[dict[str, Any]] = []
         for url in direct_candidates:
             result = self._try_direct_pdf(context.doi, url)
@@ -164,8 +186,8 @@ class OriginalLinkResolver(PdfResolver):
             if result.success:
                 result.transport_attempts = list(transport_attempts)
                 return result
-            if result.error:
-                last_error = result.error
+            if result.error and not direct_error:
+                direct_error = result.error
 
         # Try landing pages.
         for url in landing_candidates:
@@ -175,14 +197,14 @@ class OriginalLinkResolver(PdfResolver):
             if result.success:
                 result.transport_attempts = list(transport_attempts)
                 return result
-            if result.error:
-                last_error = result.error
+            if result.error and not landing_error:
+                landing_error = result.error
 
         return FetchResult(
             doi=context.doi,
             source=self.name,
             resolver=self.name,
-            error=last_error or "original links did not yield a valid PDF",
+            error=direct_error or landing_error or "original links did not yield a valid PDF",
             transport_attempts=list(transport_attempts),
         )
 
@@ -247,39 +269,6 @@ class OriginalLinkResolver(PdfResolver):
                                  candidate_url=url, status_code=status_code,
                                  content_type=content_type,
                                  transport_attempts=transport_attempts)
-
-        # redirect 后必须检查最终 URL：allow_redirects=True 可能跳到 unsafe host
-        final_url = response.url or url
-        if is_unsafe_url(final_url):
-            return FetchResult(doi=doi, source=self.name, resolver=self.name,
-                               candidate_url=url, final_url=final_url,
-                               error=f"unsafe final URL blocked: {final_url}")
-
-        if not is_pdf_response(response):
-            return FetchResult(doi=doi, source=self.name, resolver=self.name,
-                               candidate_url=url, final_url=final_url,
-                               status_code=response.status_code if response.status_code else None,
-                               content_type=response.headers.get("content-type", ""),
-                               error=f"direct link is not a PDF: {response.headers.get('content-type', '')}")
-
-        try:
-            content = limit_content(response)
-        except ValueError as exc:
-            return FetchResult(doi=doi, source=self.name, resolver=self.name,
-                               candidate_url=url, final_url=final_url,
-                               error=str(exc))
-
-        error = validate_pdf_bytes(content)
-        if error:
-            return FetchResult(doi=doi, source=self.name, resolver=self.name,
-                               candidate_url=url, final_url=final_url,
-                               status_code=response.status_code,
-                               content_type=response.headers.get("content-type", ""),
-                               error=error)
-
-        return self._success(doi, content, final_url, final_url, direct=True,
-                               candidate_url=url, status_code=response.status_code,
-                               content_type=response.headers.get("content-type", ""))
 
     def _try_landing_page(self, doi: str, url: str) -> FetchResult:
         if is_unsafe_url(url):

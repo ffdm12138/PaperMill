@@ -4,6 +4,7 @@ import requests
 import pytest
 
 from src.fetch.pdf_transport import (
+    PROXY_SKIP_BOT_BLOCKED,
     PdfTransportConfig,
     fetch_url_direct_then_proxy,
     load_pdf_transport_config,
@@ -289,3 +290,58 @@ def test_config_empty_env_does_not_read_process_env(monkeypatch):
     monkeypatch.setenv("MINERU_PDF_PROXY_URL", "http://real-env-proxy")
     config = load_pdf_transport_config(env={})
     assert config.proxy_url == "http://127.0.0.1:7890"
+
+
+# ── proxy retry is skipped when it provably cannot help ────────────────
+#
+# A 403 from a host that scores requests by originating network is a verdict
+# on the egress, not the request. Measured: 551 direct 403s produced 548
+# proxy 403s and zero successes.
+
+def test_403_from_bot_blocked_host_skips_the_proxy_retry(monkeypatch):
+    direct_resp = _Resp(403, url="https://www.mdpi.com/2071-1050/18/3/1645/pdf",
+                        content_type="text/html", content=b"<HTML>Access Denied")
+    _install(monkeypatch, direct_resp)
+
+    with fetch_url_direct_then_proxy(
+        "https://www.mdpi.com/2071-1050/18/3/1645/pdf", expected_content="pdf"
+    ) as transport:
+        assert transport.response is None
+        assert [a.mode for a in transport.attempts] == ["direct"]
+        assert transport.error == PROXY_SKIP_BOT_BLOCKED
+
+    assert len(_Session.calls) == 1, "no second request may be issued"
+
+
+def test_403_from_an_ordinary_host_still_retries_through_the_proxy(monkeypatch):
+    direct_resp = _Resp(403, url="https://acp.copernicus.org/articles/1/1.pdf")
+    proxy_resp = _Resp(200, url="https://acp.copernicus.org/articles/1/1.pdf")
+    _install(monkeypatch, direct_resp, proxy_resp)
+
+    with fetch_url_direct_then_proxy(
+        "https://acp.copernicus.org/articles/1/1.pdf", expected_content="pdf"
+    ) as transport:
+        assert transport.response is proxy_resp
+        assert [a.mode for a in transport.attempts] == ["direct", "proxy"]
+
+
+def test_blocked_host_still_retries_on_connection_error(monkeypatch):
+    """Only the 403 verdict is futile. Transport-level failures are not: the
+    proxy does convert those into successes, so the fallback must stay."""
+    proxy_resp = _Resp(200, url="https://www.mdpi.com/x/pdf")
+    _install(monkeypatch, requests.exceptions.ConnectTimeout("timeout"), proxy_resp)
+
+    with fetch_url_direct_then_proxy("https://www.mdpi.com/x/pdf", expected_content="pdf") as transport:
+        assert transport.response is proxy_resp
+        assert [a.mode for a in transport.attempts] == ["direct", "proxy"]
+
+
+def test_403_redirected_to_a_blocked_host_is_recognized(monkeypatch):
+    """doi.org itself is never blocked; the publisher it redirects to is."""
+    direct_resp = _Resp(403, url="https://www.mdpi.com/2071-1050/18/3/1645/pdf",
+                        content_type="text/html", content=b"<HTML>")
+    _install(monkeypatch, direct_resp)
+
+    with fetch_url_direct_then_proxy("https://doi.org/10.3390/su18031645", expected_content="pdf") as transport:
+        assert transport.response is None
+        assert transport.error == PROXY_SKIP_BOT_BLOCKED

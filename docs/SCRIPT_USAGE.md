@@ -6,6 +6,7 @@
 | `audit_discovery_workspace_registry.py` | read-only raw/formal Registry, conflict, generation, and repair-backlog audit | no |
 | `verify_discovery_final_architecture.py` | strict static and dynamic verification of the single-path Discovery execution architecture | no |
 | `repair_discovery_workspaces.py` | explicit reserved-workspace repair planning/promotion | `--apply` |
+| `reseal_discovery_manifest.py` | one-time re-seal of the active generation `workspace.json` + pointer under the strict final-freeze manifest contract (dry run by default) | `--apply` |
 | `repair_formal_publications.py` | audit or identity-only repair of legacy active formal sidecars; unsafe closures emit rollback/recommit plans | `--apply` |
 | `benchmark_discovery_pipeline.py` | synthetic raw+formal+candidate batch I/O benchmark | no real runtime state |
 | `audit_discovery_reset_state.py` | read-only full discovery reset-state audit (paper_raw, ledger, formal, journals, cursors, locks) | no |
@@ -17,7 +18,7 @@ the report; `registry_usable_for_repair=true` authorizes only the explicit repai
 actions, never discovery staging.
 | `stage_raw_pdfs_to_paper_raw.py` | allocate numeric raw workspace and attach local PDF | `--apply` |
 | `stage_network_metadata_to_paper_raw.py` | stage DOI-backed citation Metadata | `--apply` |
-| `fetch_pdf_for_paper_raw.py` | duplicate-guarded PDF attach | `--apply` |
+| `fetch_pdf_for_paper_raw.py` | duplicate-guarded PDF attach; batch selection below | `--apply` |
 | `convert_paper_raw_gpu.py` | MinerU conversion; Metadata freeze not required | `--apply` |
 | `resolve_paper_raw_metadata.py` | deterministic Metadata candidate resolution | `--apply` |
 | `freeze_paper_raw_metadata.py` | strict match replay and Metadata freeze | `--apply` |
@@ -59,21 +60,24 @@ issues.  If only `powershell.exe` is available, prefer the equivalent `cmd` or
 ## Discovery / Metadata discovery
 
 `discover_papers.py`, `discover_papers_concurrent.py`,
-`manage_discovery_keywords.py`, and `migrate_discovery_v4.py` manage the
+`manage_discovery_keywords.py`, and `init_discovery_workspace.py` manage the
 schema-v4 concurrent Refresh/Backfill discovery queue. Each notebook has one
 Chinese `keyword_zh` identity and curated Chinese/English `search_queries`.
 An enabled notebook must be bilingual-ready; a disabled draft may be
 incomplete. The concurrent wrapper executes every active query in both
 providers while Catalog classification reads only `keyword_zh`. The strict
-audit is read-only. `migrate_discovery_v4.py` handles one-time migration from
-v2/v3 discovery state to v4; it supports `--plan`, `--apply`, `--resume`,
-`--inspect`, `--dry-run`, `--cutover`, and `--abort`, plus the post-cutover
-chain `--post-cutover-validate`, `--rollback`, `--clean-legacy`, and
-`--finalize`. Cutover holds the global `.migration.lock`, snapshots the
-superseded pointer, self-heals from crash windows on rerun, and is allowed
-only from `smoke_passed`; the smoke run targets isolated paper_raw/papers/
-ledger directories inside the staging workspace. Only v4 schema notebooks are
-accepted in production; v1/v2/v3 notebooks must be migrated first.
+audit is read-only. A fresh runtime-zero install has no active discovery
+generation; create the first one once with
+`python scripts/init_discovery_workspace.py` (idempotent, imports no legacy
+data, enables no keywords), then add notebooks with
+`manage_discovery_keywords.py`. Bootstrap, keyword notebook mutations,
+relevance-profile apply/resume/abort, and workspace repair all run under the
+global discovery maintenance lock (`.maintenance.lock`; renamed from its
+migration-era name on 2026-07-27, see the historical ADRs); both discovery writers
+refuse to start while the lock is held, and the one-time v3→v4 migration
+toolchain is removed (see `docs/ADR_DISCOVERY_V4_MIGRATION_FINAL.md`). Only
+v4 schema notebooks are accepted in production; v1/v2/v3 notebooks are
+unsupported inputs and must be regenerated outside the active pipeline.
 
 Each enabled notebook also carries its own strict relevance profile. Resolve
 the complete OpenAlex subfield taxonomy and create a plan before applying it:
@@ -164,6 +168,44 @@ Use `manage_discovery_keywords.py --add-query-zh --query-zh ...` or
 `--add-query-en --query-en ...` for one-language query edits. The removed
 `--add-queries` and ambiguous discovery topic option are not accepted.
 
+## PDF fetch: batch selection and unreachable publishers
+
+The eligible backlog is far larger than a single run, so `fetch_pdf_for_paper_raw.py`
+separates *eligibility* (can this workspace be fetched at all) from *selection*
+(should this run spend time on it now):
+
+| Flag | Effect |
+| --- | --- |
+| `--skip-attempted` | skip workspaces that already have `source_records/fetch_result.json`, so a run reaches never-attempted work instead of replaying known-hard failures |
+| `--retry-after-days N` | retry a previously attempted workspace only when its last attempt is older than N days; never-attempted workspaces are always selected |
+| `--doi-prefix 10.5194` | restrict to a registrant prefix; repeatable, so high-yield publishers can run first |
+| `--limit N` | attempt at most N workspaces after all other filters |
+| `--report-blocked FILE.csv` | write the operator worklist described below |
+
+`--report` is flushed after every completed item, so an interrupted run keeps
+the results it already has. Selection is echoed back in the report under
+`selection`.
+
+Recommended order for working through a backlog: highest-yield prefixes first
+with `--skip-attempted`, then the remainder.
+
+```bash
+python scripts/fetch_pdf_for_paper_raw.py --all --doi-prefix 10.5194 --skip-attempted --limit 50 --apply --report reports/fetch_copernicus.json
+```
+
+Some publishers run bot management that scores requests by originating network.
+From a datacenter egress they answer `403`/`202` to every request regardless of
+User-Agent, TLS fingerprint, cookies, referer, or proxy. `src/fetch/host_policy.py`
+holds the empirically derived host set and is used three ways: it demotes such
+URLs during OA candidate ranking, it skips the proxy retry after a `403` from
+one of them (which cannot succeed), and it marks the failure `blocked_publisher`
+in the report and `--report-blocked` worklist. Those papers need institutional
+access or a different network, not another run.
+
+Because a paper's reachable repository copy is only known after the OA lookups
+run, blocked publishers are classified *after* the fetch, never pre-filtered —
+pre-filtering would discard exactly the papers the repository lookups rescue.
+
 ## Complete root script inventory
 
 The remaining root entry points are documented here by risk class so the index
@@ -194,7 +236,7 @@ create_write_job.py
 curate_paper_raw.py
 discover_papers.py
 discover_papers_concurrent.py
-migrate_discovery_v4.py
+init_discovery_workspace.py
 configure_relevance_profiles.py
 compare_discovery_relevance.py
 doctor_ingest_pipeline.py

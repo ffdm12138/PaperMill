@@ -24,6 +24,9 @@ from src.discovery.contracts.notebook import (  # noqa: E402
     pagination_signature,
     validate_discovery_readiness,
 )
+from src.discovery.maintenance_gate import (  # noqa: E402
+    DiscoveryMaintenanceLock,
+)
 from src.discovery.runtime_context import (  # noqa: E402
     DiscoveryRuntimeUnavailableError,
     resolve_active_runtime,
@@ -129,13 +132,24 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Mutations (every one requires --apply) run inside the global discovery
+    # maintenance window: production discovery writers refuse to start while
+    # the lock is held, and a live holder fails this command closed.  The
+    # lock is acquired BEFORE the active runtime is resolved (ordering rule:
+    # never resolve-before-lock).  Read-only actions (--list/--show/
+    # --check-ready) resolve without the lock.
+    lock: DiscoveryMaintenanceLock | None = None
     try:
-        ctx = resolve_active_runtime(workspace_root=args.workspace_root)
-    except DiscoveryRuntimeUnavailableError as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr)
-        return 2
-    store = KeywordNotebookStore(ctx.notebook_root)
-    try:
+        if args.apply:
+            lock = DiscoveryMaintenanceLock(
+                purpose="manage-discovery-keywords"
+            ).acquire()
+        try:
+            ctx = resolve_active_runtime(workspace_root=args.workspace_root)
+        except DiscoveryRuntimeUnavailableError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 2
+        store = KeywordNotebookStore(ctx.notebook_root)
         if args.list:
             items = store.list_keywords()
             if not items:
@@ -267,6 +281,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (FileNotFoundError, NotebookCorruptError, RuntimeError, ValueError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 2
+    finally:
+        if lock is not None:
+            lock.release()
     return 0
 
 

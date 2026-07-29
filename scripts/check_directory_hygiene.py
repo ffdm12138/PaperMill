@@ -1,7 +1,12 @@
 """Repository and Catalog-folder hygiene checks."""
 from __future__ import annotations
-import argparse, json
+import argparse, json, sys
 from pathlib import Path
+
+PROJECT_ROOT_BOOTSTRAP = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT_BOOTSTRAP) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT_BOOTSTRAP))
+
 from config.settings import CATALOG_FOLDER_ROOT, PAPER_RAW_DIR, PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH, PROJECT_ROOT
 from src.catalog_folders.formal_registry import FormalPaperRegistry
 from src.catalog_folders.validation import doctor

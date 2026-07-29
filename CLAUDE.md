@@ -218,9 +218,13 @@ simulation of unbounded runs is forbidden. Reaching either valve is a clean
 `budget_reached` stop (resumable from the same cursor), never a provider
 failure or `exhausted`. All OpenAlex/Crossref HTTP -- discovery pages, title
 resolution, metadata resolution, DOI scope verification, and taxonomy fetch --
-goes through the unified `ProviderClient` (shared per-provider limiter,
-retry/backoff/Retry-After, circuit breaker, batch-wide request budget,
-telemetry); no business module may call `requests.get`/`httpx.get` directly.
+plus the Unpaywall and Semantic Scholar OA-location lookups issued by the
+fetch layer, goes through the unified `ProviderClient` (shared per-provider
+limiter, retry/backoff/Retry-After, circuit breaker, batch-wide request
+budget, telemetry); no business module may call `requests.get`/`httpx.get`
+directly. Scholarly APIs that require a contact address read it only through
+`src/utils/contact_email.py`; a placeholder or reserved-domain address is
+never sent, because Unpaywall rejects those with HTTP 422.
 Lane stop reasons use the frozen `STOP_REASONS` vocabulary; `exhausted=True`
 requires `exhaustion_evidence` and is never written on transient failure,
 timeout, 429, 5xx, SSL, budget, or interrupt. The batch report carries

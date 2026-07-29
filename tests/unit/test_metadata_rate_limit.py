@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
+from src.utils.contact_email import CONTACT_EMAIL_ENV_VARS
 from src.utils.rate_limit import (
     ProviderRateLimiter,
     default_config,
@@ -380,7 +381,11 @@ def test_provider_enabled_disabled():
     rl = ProviderRateLimiter(default_config())
     assert rl.is_provider_enabled("crossref") is True
     assert rl.is_provider_enabled("openalex") is True
-    assert rl.is_provider_enabled("semantic_scholar") is False  # disabled in default config
+    # The OA-location providers are enabled precisely so their requests are
+    # paced: unpaced Semantic Scholar calls get HTTP 429 on every request.
+    assert rl.is_provider_enabled("semantic_scholar") is True
+    assert rl.is_provider_enabled("unpaywall") is True
+    assert rl.provider_config("semantic_scholar")["min_interval_seconds"] >= 3.0
 
 
 # ── 14. stats accumulate ───────────────────────────────────────────────
@@ -424,10 +429,21 @@ def test_pace_paper_skips_provider_min_interval():
     assert rl.stats.total_requests == 3
 
 
-# ── 15. MINERU_METADATA_CONTACT_EMAIL env var override ────────────────
+# ── 15. contact-email env var override ────────────────────────────────
+
+def _clear_contact_email_env(monkeypatch) -> None:
+    """Clear every variable the contact-email resolver consults.
+
+    These tests assert on the *absence* of a mailto, so they must not inherit
+    a developer's real address from the ambient environment.
+    """
+    for name in CONTACT_EMAIL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
 
 def test_provider_headers_mailto_from_env(monkeypatch):
-    """When MINERU_METADATA_CONTACT_EMAIL is set, headers must use it."""
+    """When a contact email is set, headers must use it."""
+    _clear_contact_email_env(monkeypatch)
     monkeypatch.setenv("MINERU_METADATA_CONTACT_EMAIL", "researcher@uni.edu")
     rl = ProviderRateLimiter(default_config())
     # crossref
@@ -441,8 +457,8 @@ def test_provider_headers_mailto_from_env(monkeypatch):
 
 
 def test_provider_headers_fallback(monkeypatch):
-    """Without MINERU_METADATA_CONTACT_EMAIL, use config defaults."""
-    monkeypatch.delenv("MINERU_METADATA_CONTACT_EMAIL", raising=False)
+    """Without any contact email configured, use config defaults."""
+    _clear_contact_email_env(monkeypatch)
     rl = ProviderRateLimiter(default_config())
     h = rl.provider_headers("crossref")
     # default config has empty mailto → no mailto in headers
@@ -452,13 +468,37 @@ def test_provider_headers_fallback(monkeypatch):
     assert "X-Email" not in h2
 
 
+def test_provider_headers_do_not_double_append_mailto(monkeypatch):
+    """The override folds mailto into user_agent; headers must not add it twice."""
+    _clear_contact_email_env(monkeypatch)
+    monkeypatch.setenv("MINERU_CONTACT_EMAIL", "bot@lab.uni.edu")
+    rl = ProviderRateLimiter(default_config())
+    user_agent = rl.provider_headers("crossref")["User-Agent"]
+    assert user_agent.count("mailto:") == 1
+    assert user_agent == "MinerU/1.0 (mailto:bot@lab.uni.edu)"
+
+
+def test_placeholder_contact_email_is_never_sent(monkeypatch):
+    """A reserved-domain placeholder must not reach a provider's mailto.
+
+    Unpaywall answers HTTP 422 for such addresses, so treating one as
+    configured is strictly worse than sending none.
+    """
+    _clear_contact_email_env(monkeypatch)
+    monkeypatch.setenv("MINERU_CONTACT_EMAIL", "anonymous@example.com")
+    rl = ProviderRateLimiter(default_config())
+    assert rl.provider_mailto("crossref") == ""
+    assert "mailto:" not in rl.provider_headers("crossref").get("User-Agent", "")
+
+
 def test_apply_env_mailto_override_updates_providers(monkeypatch):
     """_apply_env_mailto_override touches every provider config."""
-    monkeypatch.setenv("MINERU_METADATA_CONTACT_EMAIL", "bot@example.org")
+    _clear_contact_email_env(monkeypatch)
+    monkeypatch.setenv("MINERU_METADATA_CONTACT_EMAIL", "bot@lab.uni.edu")
     rl = ProviderRateLimiter(default_config())
-    for p in ("crossref", "openalex", "semantic_scholar"):
+    for p in ("crossref", "openalex", "semantic_scholar", "unpaywall"):
         pcfg = rl.provider_config(p)
         if not pcfg:
             continue
-        assert pcfg.get("mailto") == "bot@example.org"
-        assert "bot@example.org" in pcfg.get("user_agent", "")
+        assert pcfg.get("mailto") == "bot@lab.uni.edu"
+        assert "bot@lab.uni.edu" in pcfg.get("user_agent", "")

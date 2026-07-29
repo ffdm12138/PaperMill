@@ -45,9 +45,7 @@ def _make_bundle(tmp_path: Path, keyword_zh: str) -> tuple[DiscoveryWorkspace, D
         generation_id="test",
         root=root,
         keyword_notebook_dir=root / "keyword_notebooks",
-        lane_states_dir=root / "lane_states",
         page_journals_dir=root / "page_journals",
-        indexes_dir=root / "indexes",
         exports_dir=root / "exports",
         reports_dir=root / "reports",
         locks_dir=root / "locks",
@@ -59,14 +57,9 @@ def _make_bundle(tmp_path: Path, keyword_zh: str) -> tuple[DiscoveryWorkspace, D
 
 
 def _ws(tmp_path: Path, nb_dir: Path) -> DiscoveryWorkspace:
-    """Explicit v4 workspace over this test's flat directory layout."""
-    return make_test_workspace(
-        tmp_path,
-        notebook_dir=nb_dir,
-        page_journals_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
-    )
+    """Explicit v4 workspace; *nb_dir* must be its ``keyword_notebooks`` dir."""
+    assert nb_dir == tmp_path / "keyword_notebooks", nb_dir
+    return make_test_workspace(tmp_path)
 
 
 def _page(
@@ -163,7 +156,7 @@ def test_hybrid_refresh_does_not_consume_backfill_page_budget(tmp_path: Path):
             exhausted=False,
         )
 
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
 
     options = DiscoveryOptions(
@@ -194,7 +187,7 @@ def test_hybrid_refresh_does_not_consume_backfill_page_budget(tmp_path: Path):
 
 def test_refresh_windows_are_durably_closed_with_signature_and_page_ids(tmp_path: Path):
     """Each refresh physical lane records its real window closure in v3 state."""
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
     options = DiscoveryOptions(
@@ -232,14 +225,14 @@ def test_refresh_windows_are_durably_closed_with_signature_and_page_ids(tmp_path
 
 def test_v2_provider_page_journal_repairs_without_provider_or_cursor_advance(tmp_path: Path):
     """Old/hash-only page records are untrusted input, never auto-migrated."""
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
     notebook = store.require_v4("风吹雪")
     keyword_id = notebook["keyword_id"]
     query_id = next(iter(notebook["search_queries"]))
     legacy = (
-        tmp_path / "pages" / keyword_id / query_id / "openalex" / "backfill" / "legacy.json"
+        tmp_path / "page_journals" / keyword_id / query_id / "openalex" / "backfill" / "legacy.json"
     )
     legacy.parent.mkdir(parents=True)
     legacy.write_text(json.dumps({
@@ -275,7 +268,7 @@ def test_v3_page_journal_attributes_repair_to_owning_keyword_only(tmp_path: Path
     from per-keyword attribution: the owning keyword receives
     repair_required while unrelated keywords stay unaffected.
     """
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
     _seed_ready_notebook(store, "风沙物理学")
@@ -283,7 +276,7 @@ def test_v3_page_journal_attributes_repair_to_owning_keyword_only(tmp_path: Path
     keyword_id = notebook["keyword_id"]
     query_id = next(iter(notebook["search_queries"]))
     legacy = (
-        tmp_path / "pages" / keyword_id / query_id / "openalex" / "backfill" / "legacy.json"
+        tmp_path / "page_journals" / keyword_id / query_id / "openalex" / "backfill" / "legacy.json"
     )
     legacy.parent.mkdir(parents=True)
     legacy.write_text(json.dumps({
@@ -326,7 +319,7 @@ def test_drain_exception_is_typed_and_staging_consumer_is_joined(
         raise RuntimeError("synthetic drain failure")
 
     monkeypatch.setattr(coordinator, "drain_pending_candidates", explode)
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
@@ -362,7 +355,7 @@ def test_refresh_lifecycle_write_failure_is_repair_required(
         raise OSError("synthetic refresh-state write failure")
 
     monkeypatch.setattr(KeywordNotebookStore, "complete_refresh", fail_complete)
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
@@ -410,7 +403,7 @@ def test_scope_request_budget_is_reported_as_lane_budget_stop(
     monkeypatch.setattr(ProviderRuntime, "_instance", ProviderRuntime(
         config=cfg, transport=Transport(), sleeper=FakeSleeper(FakeClock()), clock=FakeClock(),
     ))
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
@@ -462,7 +455,7 @@ def test_title_resolution_request_budget_is_a_typed_drain_stop(
     monkeypatch.setattr(ProviderRuntime, "_instance", ProviderRuntime(
         config=cfg, transport=Transport(), sleeper=FakeSleeper(FakeClock()), clock=FakeClock(),
     ))
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=8,
@@ -537,7 +530,7 @@ def test_report_surfaces_provider_request_telemetry(tmp_path: Path, monkeypatch)
     )
     monkeypatch.setattr(ProviderRuntime, "_instance", fake_runtime)
 
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="refresh", refresh_pages=1, max_candidates=50,
@@ -607,7 +600,7 @@ def test_until_exhausted_with_request_budget_valve_only(tmp_path: Path, monkeypa
     )
     monkeypatch.setattr(ProviderRuntime, "_instance", fake_runtime)
 
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     options = DiscoveryOptions(
         mode="backfill", until_exhausted=True,
@@ -635,7 +628,7 @@ def test_until_exhausted_with_request_budget_valve_only(tmp_path: Path, monkeypa
 
 
 def test_report_aggregation_uses_in_memory_objects(tmp_path: Path):
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     for kw in ("主题甲", "主题乙"):
         _seed_ready_notebook(store, kw)
@@ -657,7 +650,7 @@ def test_report_aggregation_uses_in_memory_objects(tmp_path: Path):
     )
     assert report.to_dict()["schema_version"] == "4.0"
     assert report.aggregate["keywords"]["total"] == 2
-    assert len(list((tmp_path / "pages").glob("**/*.json"))) >= 2
+    assert len(list((tmp_path / "page_journals").glob("**/*.json"))) >= 2
     assert report.pipeline_metrics["journal_full_scans"] == 1
     assert report.pipeline_metrics["journal_pages_written"] >= 2
     assert report.pipeline_metrics["staging_context_builds"] == 0
@@ -666,7 +659,7 @@ def test_report_aggregation_uses_in_memory_objects(tmp_path: Path):
 
 @pytest.mark.parametrize("state", ["missing", "not_ready", "corrupt", "legacy"])
 def test_invalid_or_unready_notebook_fails_closed_without_provider_calls(tmp_path: Path, state: str):
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     if state in {"not_ready", "corrupt", "legacy"}:
         store.ensure_notebook("风吹雪")
@@ -708,7 +701,7 @@ def test_invalid_or_unready_notebook_fails_closed_without_provider_calls(tmp_pat
 
 
 def test_disabled_notebook_is_the_only_zero_exit_skip(tmp_path: Path):
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     store.ensure_notebook("风吹雪")
     store.set_enabled("风吹雪", False)
@@ -732,7 +725,7 @@ def test_disabled_notebook_is_the_only_zero_exit_skip(tmp_path: Path):
 
 
 def test_durable_applying_profile_journal_blocks_before_provider_io(tmp_path: Path):
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     store.ensure_notebook("风吹雪")
     store.set_enabled("风吹雪", False)
@@ -744,7 +737,7 @@ def test_durable_applying_profile_journal_blocks_before_provider_io(tmp_path: Pa
     }), encoding="utf-8")
     runtime_paths = RelevanceRuntimePaths.resolve(
         notebook_root=nb_dir,
-        journal_root=tmp_path / "pages",
+        journal_root=tmp_path / "page_journals",
         transaction_root=transaction_root,
     )
     calls = []
@@ -769,7 +762,7 @@ def test_durable_applying_profile_journal_blocks_before_provider_io(tmp_path: Pa
 
 
 def test_two_chinese_and_two_english_queries_schedule_both_providers(tmp_path: Path):
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     store.ensure_notebook("大气边界层")
     store.sync_search_queries("大气边界层", add=[
@@ -849,7 +842,7 @@ def test_consumer_exception_is_reported_without_queue_join_deadlock(
 ):
     import src.discovery.coordinator as coordinator
 
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
     original = coordinator.drain_pending_candidates
     calls = 0

@@ -1,42 +1,56 @@
 """Explicit v4 discovery workspace helper for tests.
 
-Tests that previously relied on the removed ``DiscoveryOptions`` flat-path
-fallback (``notebook_dir`` / ``pending_pages_dir`` / ``locks_dir`` /
-``exports_dir``) now build an isolated ``DiscoveryWorkspace`` under
-``tmp_path`` and pass it as ``options.workspace``.
+Tests build an isolated ``DiscoveryWorkspace`` under ``tmp_path`` and pass
+it as ``options.workspace``.  All stores live under the workspace root;
+there are no flat-path overrides.
+
+Every workspace built here is a complete, resolvable v4 workspace: its
+``generation_id`` equals the root directory name and the strict
+``workspace.json`` manifest is bound to the same id, so
+``WorkspaceResolver.resolve_explicit_workspace`` accepts it.  The helper
+asserts that resolution itself, so a violating fixture fails at
+construction.  Test fixtures meet the production contract; the contract
+is never loosened for tests.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from src.discovery.workspace import DiscoveryWorkspace
+from src.discovery.workspace import (
+    DiscoveryWorkspace,
+    WorkspaceResolver,
+    build_workspace_manifest,
+    write_workspace_manifest,
+)
 
 
-def make_test_workspace(
-    root: Path,
-    *,
-    notebook_dir: Path | None = None,
-    page_journals_dir: Path | None = None,
-    locks_dir: Path | None = None,
-    exports_dir: Path | None = None,
-) -> DiscoveryWorkspace:
+def make_test_workspace(root: Path) -> DiscoveryWorkspace:
     """Build (and create) an isolated v4 workspace rooted at *root*.
 
-    The four directory arguments map the retired flat-path knobs onto the
-    workspace; every other v4 sub-directory defaults to a standard child of
-    *root*.
+    Every store lives under *root* (``keyword_notebooks``,
+    ``page_journals``, ``exports``, ``reports``, ``locks``) and
+    ``generation_id == root.name``.  A strict ``workspace.json`` bound to
+    the same generation id is written, and the result is verified against
+    ``WorkspaceResolver.resolve_explicit_workspace`` before returning.
     """
     root = Path(root)
     workspace = DiscoveryWorkspace(
-        generation_id=f"test-{root.name}",
+        generation_id=root.name,
         root=root,
-        keyword_notebook_dir=Path(notebook_dir) if notebook_dir is not None else root / "keyword_notebooks",
-        lane_states_dir=root / "lane_states",
-        page_journals_dir=Path(page_journals_dir) if page_journals_dir is not None else root / "page_journals",
-        indexes_dir=root / "indexes",
-        exports_dir=Path(exports_dir) if exports_dir is not None else root / "exports",
+        keyword_notebook_dir=root / "keyword_notebooks",
+        page_journals_dir=root / "page_journals",
+        exports_dir=root / "exports",
         reports_dir=root / "reports",
-        locks_dir=Path(locks_dir) if locks_dir is not None else root / "locks",
+        locks_dir=root / "locks",
     )
     workspace.ensure_dirs()
+    manifest = build_workspace_manifest(
+        root.name, root, migration_id="test-bootstrap"
+    )
+    write_workspace_manifest(root, manifest)
+    resolved = WorkspaceResolver.resolve_explicit_workspace(root)
+    assert resolved.generation_id == root.name, (
+        f"test workspace {root} failed explicit resolution: "
+        f"generation_id {resolved.generation_id!r} != {root.name!r}"
+    )
     return workspace

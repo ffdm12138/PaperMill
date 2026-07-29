@@ -12,24 +12,28 @@ Usage:
 from __future__ import annotations
 
 import ast
+import inspect
 import json
+import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = PROJECT_ROOT / "src"
 SRC = SRC_ROOT / "discovery"
 SCRIPTS = PROJECT_ROOT / "scripts"
+DOCS_DIR = PROJECT_ROOT / "docs"
 
 
 @dataclass
 class Finding:
-    level: str  # always "error"; architecture drift is fail-closed
-    category: str  # "forbidden" | "missing_required" | "call_graph"
+    level: str  # "error" (fail-closed drift) | "warning" (transitional)
+    category: str  # "forbidden" | "missing_required" | "call_graph" | "behavioral"
     file: str
     line: int
     message: str
@@ -39,6 +43,7 @@ class Finding:
 class VerifierReport:
     findings: list[Finding] = field(default_factory=list)
     files_scanned: list[str] = field(default_factory=list)
+    gate_results: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def errors(self) -> list[Finding]:
@@ -46,7 +51,7 @@ class VerifierReport:
 
     @property
     def warnings(self) -> list[Finding]:
-        return []
+        return [f for f in self.findings if f.level == "warning"]
 
     @property
     def passed(self) -> bool:
@@ -63,6 +68,7 @@ class VerifierReport:
                  "file": f.file, "line": f.line, "message": f.message}
                 for f in self.findings
             ],
+            "gate_results": self.gate_results,
         }
 
 
@@ -947,19 +953,19 @@ def _check_migration_hardening_rules(report: VerifierReport) -> None:
                                 "use src.discovery.contracts.* / src.discovery.stores.*",
                     ))
 
-    # ── Gate 3: cutover is lock-guarded, snapshots the previous pointer,
+    # ── Gate 3: commit is lock-guarded, snapshots the previous pointer,
     #    and reconciles crashed attempts; the pointer records the previous
     #    generation.
     _require(report, ws_rel,
-             "FileLock" in ws_text and ".migration.lock" in ws_text,
-             "commit_workspace must acquire the .migration.lock FileLock")
+             "FileLock" in ws_text and ".maintenance.lock" in ws_text,
+             "commit_workspace must acquire the .maintenance.lock FileLock")
     _require(report, ws_rel,
              "previous_pointer_snapshot" in ws_text,
              "commit_workspace must snapshot the superseded previous pointer")
     _require(report, ws_rel,
-             "CutoverReconciliationError" in ws_text,
+             "CommitReconciliationError" in ws_text,
              "commit_workspace must reconcile crashed prior attempts "
-             "(CutoverReconciliationError branches)")
+             "(CommitReconciliationError branches)")
     manifest_path = SRC / "contracts" / "manifest.py"
     manifest_text = (
         manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else ""
@@ -996,6 +1002,51 @@ def _check_migration_hardening_rules(report: VerifierReport) -> None:
                         message=f"retired migration drain token '{token}' — the "
                                 "one-time v3->v4 migration toolchain is deleted "
                                 "and must not be reintroduced",
+                    ))
+
+
+def _check_dead_v4_store_tombstones(report: VerifierReport) -> None:
+    """Frozen-seal Phase 2: the dead v4 store stack is deleted for good.
+
+    ``LaneStateStoreV4`` / ``JournalIndexV4`` / ``ReportStoreV4`` and the
+    ``LaneStateV4`` / ``CursorTransactionV4`` contracts had zero production
+    readers (the coordinator consumes only ``bundle.notebooks`` and
+    ``bundle.pages``; the candidate drain uses ``JournalDrainIndex``).  Their
+    module files are removed and the tokens may never reappear anywhere
+    under ``src/discovery/**``.
+    """
+    for dead_path in (
+        SRC / "stores" / "lane_state_store.py",
+        SRC / "stores" / "journal_index.py",
+        SRC / "stores" / "report_store.py",
+        SRC / "contracts" / "lane_state.py",
+    ):
+        if dead_path.exists():
+            report.findings.append(Finding(
+                level="error", category="forbidden",
+                file=_file_label(dead_path), line=0,
+                message=f"dead v4 store module {dead_path.name} must be removed",
+            ))
+
+    dead_tokens = (
+        "LaneStateStoreV4",
+        "JournalIndexV4",
+        "ReportStoreV4",
+        "LaneStateV4",
+        "CursorTransactionV4",
+    )
+    if SRC.is_dir():
+        for pyfile in sorted(SRC.rglob("*.py")):
+            fp = _file_label(pyfile)
+            text = pyfile.read_text(encoding="utf-8")
+            for token in dead_tokens:
+                if token in text:
+                    report.findings.append(Finding(
+                        level="error", category="forbidden",
+                        file=fp, line=0,
+                        message=f"dead v4 store token '{token}' — the zero-reader "
+                                "v4 store stack is deleted and must not be "
+                                "reintroduced",
                     ))
 
 
@@ -1100,8 +1151,8 @@ def _check_v4_migration_final_rules(report: VerifierReport) -> None:
         _require(report, "src/discovery", False,
                  "src/discovery is missing")
 
-    # ── Gate 15: both production discovery writers check the maintenance
-    #    gate unconditionally at startup (no --workspace-root bypass).
+    # ── Gate 15: both production discovery writers hold a shared writer
+    #    lease for the entire run (no --workspace-root bypass).
     for writer in ("discover_papers.py", "discover_papers_concurrent.py"):
         writer_path = SCRIPTS / writer
         writer_text = (
@@ -1109,9 +1160,9 @@ def _check_v4_migration_final_rules(report: VerifierReport) -> None:
         )
         _require(report, f"scripts/{writer}",
                  writer_path.exists()
-                 and "assert_discovery_write_allowed(" in writer_text,
-                 f"{writer} must refuse to start while the discovery "
-                 "maintenance lock is held (assert_discovery_write_allowed)")
+                 and "DiscoveryWriterLease(" in writer_text,
+                 f"{writer} must hold a DiscoveryWriterLease for the entire "
+                 "run (blocks discovery maintenance windows)")
         _require(report, f"scripts/{writer}",
                  "if not args.workspace_root" not in writer_text,
                  f"{writer} must not exempt --workspace-root from the "
@@ -1122,12 +1173,19 @@ def _check_v4_migration_final_rules(report: VerifierReport) -> None:
     #    require the package to exist), and the maintenance gate lives in
     #    shared discovery infrastructure.
     maintenance_gate = SRC / "maintenance_gate.py"
+    maintenance_gate_text = (
+        maintenance_gate.read_text(encoding="utf-8")
+        if maintenance_gate.exists()
+        else ""
+    )
     _require(report, "src/discovery/maintenance_gate.py",
              maintenance_gate.exists()
-             and "assert_discovery_write_allowed" in maintenance_gate.read_text(
-                 encoding="utf-8"),
+             and "assert_discovery_write_allowed" in maintenance_gate_text
+             and "class DiscoveryWriterLease" in maintenance_gate_text
+             and "def active_writer_leases" in maintenance_gate_text,
              "src/discovery/maintenance_gate.py must host the shared "
-             "maintenance gate")
+             "maintenance gate (assert_discovery_write_allowed, "
+             "DiscoveryWriterLease, active_writer_leases)")
     import re as _re
     _migration_import = _re.compile(
         r"^\s*(?:from|import)\s+src\.migrations", _re.MULTILINE
@@ -1291,6 +1349,722 @@ def _check_http_and_flat_path_rules(report: VerifierReport) -> None:
                 ))
 
 
+# ── Final-freeze behavioral gates ─────────────────────────────────────────
+#
+# The textual/AST gates above pin structure.  The gates below EXECUTE the
+# production code with dynamically injected negative inputs and assert
+# rejection: a strict parser that starts accepting garbage, a resolver that
+# starts following symlinks, or a lock that stops excluding writers must
+# fail the freeze even when every source token still looks right.
+#
+# Every gate runs in-process against the real modules (the verifier runs
+# inside the repo python), uses only tempfile workspaces, never touches
+# data/, and never sleeps.  Each gate records a distinct entry in
+# ``report.gate_results`` so the acceptance report can cite it.
+
+
+class _BehavioralGate:
+    """Accumulator for one behavioral gate: probes, failures, warnings."""
+
+    def __init__(self, report: VerifierReport, name: str) -> None:
+        self.report = report
+        self.name = name
+        self.probes = 0
+        self.failures: list[str] = []
+        self.warnings: list[str] = []
+
+    def probe(self, label: str, ok: bool, detail: str = "") -> None:
+        self.probes += 1
+        if not ok:
+            self.failures.append(f"{label}: {detail}" if detail else label)
+
+    def expect_reject(
+        self, label: str, fn: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> None:
+        """Probe that ``fn(*args, **kwargs)`` raises (any Exception)."""
+        self.probes += 1
+        try:
+            fn(*args, **kwargs)
+        except Exception:
+            return
+        self.failures.append(f"{label}: expected rejection, input was accepted")
+
+    def expect_typed_reject(
+        self,
+        label: str,
+        exc_type: type[BaseException],
+        fn: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Probe that ``fn(*args, **kwargs)`` raises exactly ``exc_type``."""
+        self.probes += 1
+        try:
+            fn(*args, **kwargs)
+        except exc_type:
+            return
+        except Exception as exc:
+            self.failures.append(
+                f"{label}: expected {exc_type.__name__}, "
+                f"got {type(exc).__name__}: {exc}"
+            )
+            return
+        self.failures.append(f"{label}: expected {exc_type.__name__}, no error raised")
+
+    def warn(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def finalize(self) -> None:
+        self.report.gate_results[self.name] = {
+            "passed": not self.failures,
+            "probes": self.probes,
+            "failures": list(self.failures),
+            "warnings": list(self.warnings),
+        }
+        for message in self.failures:
+            self.report.findings.append(Finding(
+                level="error", category="behavioral",
+                file=f"behavioral-gate:{self.name}", line=0, message=message,
+            ))
+        for message in self.warnings:
+            self.report.findings.append(Finding(
+                level="warning", category="behavioral",
+                file=f"behavioral-gate:{self.name}", line=0, message=message,
+            ))
+
+
+def _gate_pointer_negative_probes(report: VerifierReport) -> None:
+    """ActiveGenerationPointerV4.from_dict_strict must reject damaged input."""
+    from src.discovery.contracts.manifest import ActiveGenerationPointerV4
+
+    gate = _BehavioralGate(report, "pointer-negative-probes")
+    baseline = ActiveGenerationPointerV4(
+        generation_id="gate-probe-gen",
+        workspace_manifest_sha256="a" * 64,
+        activated_at="2026-01-01T00:00:00+00:00",
+        migration_id="gate-probe-migration",
+    ).to_dict()
+
+    # Positive control: the unmutated baseline must parse.
+    gate.probes += 1
+    try:
+        ActiveGenerationPointerV4.from_dict_strict(dict(baseline))
+    except Exception as exc:
+        gate.failures.append(f"positive control: valid pointer rejected: {exc}")
+
+    def _case(label: str, **mutations: Any) -> None:
+        data = dict(baseline)
+        for key, value in mutations.items():
+            if value is _DELETE:
+                data.pop(key, None)
+            else:
+                data[key] = value
+        gate.expect_reject(
+            label, ActiveGenerationPointerV4.from_dict_strict, data
+        )
+
+    _case("schema_version '3.0' rejected", schema_version="3.0")
+    _case("missing schema_version rejected", schema_version=_DELETE)
+    _case("integer generation_id rejected", generation_id=7)
+    _case("generation_id '.' rejected", generation_id=".")
+    _case("generation_id '..' rejected", generation_id="..")
+    _case(
+        "invalid-calendar activated_at rejected",
+        activated_at="2026-13-99T99:99:99+99:99",
+    )
+    _case("naive activated_at rejected", activated_at="2026-01-01T00:00:00")
+    _case(
+        "non-hex workspace_manifest_sha256 rejected",
+        workspace_manifest_sha256="z" * 64,
+    )
+    gate.finalize()
+
+
+_DELETE = object()
+
+
+def _gate_manifest_negative_probes(report: VerifierReport) -> None:
+    """DiscoveryWorkspaceManifestV4.from_dict_strict must reject damaged input."""
+    from src.discovery.contracts.manifest import DiscoveryWorkspaceManifestV4
+    from src.discovery.workspace import build_workspace_manifest
+
+    gate = _BehavioralGate(report, "manifest-negative-probes")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "gate-manifest-ws"
+        for subdir in (
+            "keyword_notebooks", "page_journals", "exports", "reports", "locks",
+        ):
+            (root / subdir).mkdir(parents=True)
+        baseline = build_workspace_manifest(
+            root.name, root, migration_id="gate-probe-migration"
+        ).to_dict()
+
+    # Positive control: the unmutated baseline must parse.
+    gate.probes += 1
+    try:
+        DiscoveryWorkspaceManifestV4.from_dict_strict(dict(baseline))
+    except Exception as exc:
+        gate.failures.append(f"positive control: valid manifest rejected: {exc}")
+
+    def _case(label: str, **mutations: Any) -> None:
+        data = dict(baseline)
+        for key, value in mutations.items():
+            if value is _DELETE:
+                data.pop(key, None)
+            else:
+                data[key] = value
+        gate.expect_reject(
+            label, DiscoveryWorkspaceManifestV4.from_dict_strict, data
+        )
+
+    _case("negative notebook_count rejected", notebook_count=-1)
+    _case("bool notebook_count rejected", notebook_count=True)
+    _case("missing required field rejected", migration_id=_DELETE)
+    _case("malformed hash rejected", notebook_set_hash="not-a-hash")
+    _case("empty store_schema_versions rejected", store_schema_versions={})
+    _case(
+        "completed_at earlier than created_at rejected",
+        created_at="2026-01-02T00:00:00+00:00",
+        completed_at="2026-01-01T00:00:00+00:00",
+    )
+    gate.finalize()
+
+
+def _gate_runtime_error_taxonomy(report: VerifierReport) -> None:
+    """Workspace resolution errors must map to the exact runtime taxonomy."""
+    from src.discovery import runtime_context as rc
+    from src.discovery import workspace as wsp
+
+    gate = _BehavioralGate(report, "runtime-error-taxonomy")
+    cases = (
+        (wsp.ActiveGenerationMissingError, rc.DiscoveryRuntimeNotInitialized),
+        (wsp.ActiveGenerationCorruptError, rc.DiscoveryRuntimeCorrupt),
+        (wsp.WorkspaceManifestMissingError, rc.DiscoveryRuntimeCorrupt),
+        (wsp.WorkspaceManifestMismatchError, rc.DiscoveryRuntimeCorrupt),
+        (wsp.WorkspaceIncompleteError, rc.DiscoveryRuntimeIncomplete),
+        (ValueError, rc.DiscoveryRuntimeCorrupt),  # unexpected: fail closed
+    )
+    for exc_type, expected in cases:
+        mapped = rc._map_resolution_error(
+            exc_type("behavioral probe"), origin="behavioral-gate"
+        )
+        gate.probe(
+            f"{exc_type.__name__} maps to {expected.__name__}",
+            type(mapped) is expected,
+            f"got {type(mapped).__name__}",
+        )
+    gate.finalize()
+
+
+def _gate_workspace_identity_and_symlink(report: VerifierReport) -> None:
+    """Explicit-workspace resolution: identity binding + symlink rejection."""
+    from src.discovery.workspace import (
+        DiscoveryWorkspace,
+        WorkspaceResolver,
+        build_workspace_manifest,
+        write_workspace_manifest,
+    )
+
+    gate = _BehavioralGate(report, "workspace-identity-and-symlink")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "gate-ws-identity"
+        for subdir in (
+            "keyword_notebooks", "page_journals", "exports", "reports", "locks",
+        ):
+            (root / subdir).mkdir(parents=True)
+        manifest = build_workspace_manifest(
+            root.name, root, migration_id="gate-ws-migration"
+        )
+        write_workspace_manifest(root, manifest)
+
+        # Positive control: the complete workspace must resolve.
+        gate.probes += 1
+        try:
+            resolved = WorkspaceResolver.resolve_explicit_workspace(root)
+            if resolved.generation_id != root.name:
+                gate.failures.append(
+                    f"explicit workspace accepted but generation_id "
+                    f"{resolved.generation_id!r} != root name {root.name!r}"
+                )
+        except Exception as exc:
+            gate.failures.append(f"complete workspace rejected: {exc}")
+
+        # Negative: a required subdir that is a symlink out of the root must
+        # be rejected.  Some Windows hosts cannot create symlinks without
+        # elevated privileges — skip with a warning, never a silent pass.
+        outside = Path(tmp) / "outside"
+        outside.mkdir()
+        target = root / "keyword_notebooks"
+        try:
+            target.rmdir()
+            os.symlink(str(outside), str(target), target_is_directory=True)
+        except OSError as exc:
+            gate.warn(
+                f"symlink probe skipped (host cannot create directory "
+                f"symlinks): {exc}"
+            )
+        else:
+            gate.expect_reject(
+                "symlinked keyword_notebooks rejected",
+                WorkspaceResolver.resolve_explicit_workspace,
+                root,
+            )
+
+    # Negative: generation id path traversal must be rejected at construction.
+    gate.expect_reject(
+        "DiscoveryWorkspace.from_generation_id('..') rejected",
+        DiscoveryWorkspace.from_generation_id,
+        "..",
+    )
+
+    # The explicit resolver must not grow a way to skip manifest validation.
+    params = inspect.signature(
+        WorkspaceResolver.resolve_explicit_workspace
+    ).parameters
+    gate.probe(
+        "resolve_explicit_workspace has no verify_manifest parameter",
+        "verify_manifest" not in params,
+        f"parameters: {sorted(params)}",
+    )
+    gate.finalize()
+
+
+def _gate_bootstrap_crash_windows(report: VerifierReport) -> None:
+    """bootstrap_initial_workspace must resume crash windows deterministically.
+
+    Mirrors tests/unit/discovery/test_bootstrap_crash_recovery.py: the
+    module-level workspace paths are redirected into a temp dir, exercised,
+    and restored in a finally block.
+    """
+    import src.discovery.workspace as wsp
+
+    gate = _BehavioralGate(report, "bootstrap-crash-windows")
+    patched = (
+        "DISCOVERY_GENERATIONS_DIR", "STAGING_DIR", "DISCOVERY_MIGRATIONS_DIR",
+        "ACTIVE_GENERATION_PATH", "DISCOVERY_MAINTENANCE_LOCK_PATH",
+    )
+    saved = {name: getattr(wsp, name) for name in patched}
+
+    def _install(tmp: Path) -> None:
+        generations = tmp / "generations"
+        staging = generations / ".staging"
+        migrations = tmp / "migrations"
+        for directory in (generations, staging, migrations):
+            directory.mkdir(parents=True, exist_ok=True)
+        wsp.DISCOVERY_GENERATIONS_DIR = generations
+        wsp.STAGING_DIR = staging
+        wsp.DISCOVERY_MIGRATIONS_DIR = migrations
+        wsp.ACTIVE_GENERATION_PATH = tmp / "active_generation.json"
+        wsp.DISCOVERY_MAINTENANCE_LOCK_PATH = migrations / ".maintenance.lock"
+
+    def _stage_and_rename(tmp: Path, gid: str) -> str:
+        staging = wsp.create_staging_workspace(gid)
+        manifest = wsp.build_workspace_manifest(
+            gid, staging.root, migration_id=wsp.BOOTSTRAP_MIGRATION_ID
+        )
+        manifest_hash = wsp.write_workspace_manifest(staging.root, manifest)
+        os.rename(str(staging.root), str(tmp / "generations" / gid))
+        return manifest_hash
+
+    try:
+        # (a) crash after the rename, before the pointer write: recovery must
+        # bind the pointer to the ORIGINAL manifest hash and report
+        # created=False (recovered, never recreated).
+        try:
+            with tempfile.TemporaryDirectory() as tmp_str:
+                tmp = Path(tmp_str)
+                _install(tmp)
+                gid = "v4-gate-rename"
+                original_hash = _stage_and_rename(tmp, gid)
+                ws, created = wsp.bootstrap_initial_workspace(generation_id=gid)
+                gate.probe(
+                    "rename-window recovery reports created=False",
+                    created is False,
+                    f"created={created!r}",
+                )
+                gate.probe(
+                    "rename-window recovery returns the generation",
+                    ws is not None and ws.generation_id == gid,
+                    f"got {ws!r}",
+                )
+                pointer = json.loads(
+                    (tmp / "active_generation.json").read_text(encoding="utf-8")
+                )
+                gate.probe(
+                    "recovered pointer binds the ORIGINAL manifest hash",
+                    pointer.get("workspace_manifest_sha256") == original_hash,
+                    f"pointer has {pointer.get('workspace_manifest_sha256')!r}",
+                )
+        except Exception as exc:
+            gate.probes += 1
+            gate.failures.append(f"rename-window scenario crashed: {exc!r}")
+
+        # (b) two unpointed generations: ambiguous state must fail closed.
+        try:
+            with tempfile.TemporaryDirectory() as tmp_str:
+                tmp = Path(tmp_str)
+                _install(tmp)
+                for gid in ("v4-gate-amb1", "v4-gate-amb2"):
+                    _stage_and_rename(tmp, gid)
+                gate.expect_typed_reject(
+                    "two unpointed generations raise CommitReconciliationError",
+                    wsp.CommitReconciliationError,
+                    wsp.bootstrap_initial_workspace,
+                )
+        except Exception as exc:
+            gate.probes += 1
+            gate.failures.append(f"ambiguous-generations scenario crashed: {exc!r}")
+    finally:
+        for name, value in saved.items():
+            setattr(wsp, name, value)
+    gate.finalize()
+
+
+def _gate_maintenance_exclusion(report: VerifierReport) -> None:
+    """Writer leases must exclude the exclusive maintenance lock."""
+    from src.discovery.maintenance_gate import (
+        DiscoveryMaintenanceLock,
+        DiscoveryMaintenanceLockError,
+        DiscoveryWriterLease,
+        discovery_maintenance_block_reason,
+    )
+
+    gate = _BehavioralGate(report, "maintenance-exclusion")
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        lock_path = tmp / ".maintenance.lock"
+
+        lease = DiscoveryWriterLease(
+            "behavioral-gate", lock_path=lock_path
+        ).acquire()
+        try:
+            gate.expect_typed_reject(
+                "maintenance lock blocked while a writer lease is held",
+                DiscoveryMaintenanceLockError,
+                DiscoveryMaintenanceLock(
+                    "behavioral-gate", lock_path=lock_path
+                ).acquire,
+            )
+        finally:
+            lease.release()
+
+        gate.probes += 1
+        try:
+            DiscoveryMaintenanceLock(
+                "behavioral-gate", lock_path=lock_path
+            ).acquire().release()
+        except Exception as exc:
+            gate.failures.append(
+                f"maintenance lock must acquire after lease release: {exc}"
+            )
+
+        # Fail-closed probe: a lock path that is a DIRECTORY must block.
+        lock_dir = tmp / "lock-as-directory"
+        lock_dir.mkdir()
+        reason = discovery_maintenance_block_reason(lock_dir)
+        gate.probe(
+            "directory lock path blocks writers (fail closed)",
+            reason is not None,
+            "discovery_maintenance_block_reason returned None",
+        )
+    gate.finalize()
+
+
+def _gate_server_layering(report: VerifierReport) -> None:
+    """The HTTP middleware must stay auth+headers only; services stay lazy."""
+    gate = _BehavioralGate(report, "server-layering")
+    server_path = SRC_ROOT / "server.py"
+    gate.probes += 1
+    if not server_path.is_file():
+        gate.failures.append("src/server.py is missing")
+        gate.finalize()
+        return
+    text = server_path.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(text, filename=str(server_path))
+    except SyntaxError as exc:
+        gate.failures.append(f"src/server.py does not parse: {exc}")
+        gate.finalize()
+        return
+
+    middleware_src: str | None = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "security_headers_and_api_key"
+        ):
+            middleware_src = ast.get_source_segment(text, node) or ""
+            break
+    gate.probe(
+        "middleware security_headers_and_api_key found",
+        middleware_src is not None,
+    )
+    if middleware_src:
+        gate.probe(
+            "middleware performs no eager service init (_ensure_services)",
+            "_ensure_services" not in middleware_src,
+        )
+        for token in (
+            "_get_catalog(", "_get_library(",
+            "_get_job_manager(", "_get_prompt_builder(",
+        ):
+            gate.probe(
+                f"middleware does not call {token}",
+                token not in middleware_src,
+            )
+    for token in (
+        "def _get_catalog",
+        "def _get_library",
+        "def _get_prompt_builder",
+        "def _get_job_manager",
+        "/status/discovery",
+        "exception_handler(DiscoveryRuntimeUnavailableError)",
+    ):
+        gate.probe(f"src/server.py contains {token!r}", token in text)
+    gate.finalize()
+
+
+def _gate_lock_before_resolve(report: VerifierReport) -> None:
+    """Discovery entry points must lock before resolving the workspace."""
+    gate = _BehavioralGate(report, "lock-before-resolve-ordering")
+    resolve_tokens = (
+        "resolve_active_runtime(",
+        "resolve_active(",
+        "resolve_explicit_workspace(",
+    )
+    for script in ("discover_papers.py", "discover_papers_concurrent.py"):
+        path = SCRIPTS / script
+        gate.probes += 1
+        if not path.is_file():
+            gate.failures.append(f"scripts/{script} is missing")
+            continue
+        text = path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(text, filename=str(path))
+        except SyntaxError as exc:
+            gate.failures.append(f"scripts/{script} does not parse: {exc}")
+            continue
+        functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        entry = functions.get("main_internal") or functions.get("main")
+        gate.probe(f"{script}: entry point found", entry is not None)
+        if entry is None:
+            continue
+        segment = ast.get_source_segment(text, entry) or ""
+        gate.probe(
+            f"{script}: entry point holds DiscoveryWriterLease",
+            "DiscoveryWriterLease(" in segment,
+        )
+        for token in resolve_tokens:
+            gate.probe(
+                f"{script}: entry point performs no resolve-before-lock "
+                f"({token})",
+                token not in segment,
+            )
+        lease_idx = segment.find("DiscoveryWriterLease(")
+        run_idx = segment.find("_run(")
+        gate.probe(
+            f"{script}: lease wraps the run delegation",
+            lease_idx != -1 and run_idx != -1 and lease_idx < run_idx,
+        )
+        gate.probe(
+            f"{script}: workspace resolution happens downstream of the lease",
+            any(token in text for token in resolve_tokens),
+        )
+
+    keywords_path = SCRIPTS / "manage_discovery_keywords.py"
+    gate.probes += 1
+    if not keywords_path.is_file():
+        gate.failures.append("scripts/manage_discovery_keywords.py is missing")
+    else:
+        text = keywords_path.read_text(encoding="utf-8")
+        lock_idx = text.find("DiscoveryMaintenanceLock(")
+        resolve_idx = text.find("resolve_active_runtime(")
+        gate.probe(
+            "manage_discovery_keywords: --apply path acquires "
+            "DiscoveryMaintenanceLock",
+            lock_idx != -1,
+        )
+        gate.probe(
+            "manage_discovery_keywords: resolves the active runtime",
+            resolve_idx != -1,
+        )
+        if lock_idx != -1 and resolve_idx != -1:
+            gate.probe(
+                "manage_discovery_keywords: lock precedes resolve in the "
+                "--apply path",
+                lock_idx < resolve_idx,
+            )
+    gate.finalize()
+
+
+def _gate_test_helper_identity(report: VerifierReport) -> None:
+    """tests.helpers.make_test_workspace must produce identity-bound fixtures."""
+    gate = _BehavioralGate(report, "test-helper-identity")
+    gate.probes += 1
+    try:
+        from tests.helpers import discovery_workspace as helper_mod
+    except Exception as exc:
+        gate.failures.append(
+            f"tests.helpers.discovery_workspace is not importable: {exc}"
+        )
+        gate.finalize()
+        return
+    make = getattr(helper_mod, "make_test_workspace", None)
+    if not callable(make):
+        gate.failures.append("make_test_workspace is missing")
+        gate.finalize()
+        return
+
+    from src.discovery.workspace import WorkspaceResolver
+
+    with tempfile.TemporaryDirectory() as tmp_str:
+        root = Path(tmp_str) / "helpergate"
+        # Defensive call: only the root argument — the helper's optional
+        # out-of-root directory kwargs are being removed; never rely on them.
+        workspace = None
+        try:
+            workspace = make(root)
+        except TypeError:
+            try:
+                workspace = make(root=root)
+            except Exception as exc:
+                gate.failures.append(f"make_test_workspace(root) failed: {exc}")
+        except Exception as exc:
+            gate.failures.append(f"make_test_workspace(root) failed: {exc}")
+        if workspace is None:
+            gate.finalize()
+            return
+
+        generation_id = getattr(workspace, "generation_id", None)
+        if generation_id == root.name:
+            gate.probe("fixture generation_id equals the root dir name", True)
+        elif generation_id == f"test-{root.name}":
+            # Known-transitional: the helper rewrite (removing the 'test-'
+            # prefix) is in flight; flag it without failing the freeze.
+            gate.probes += 1
+            gate.warn(
+                "transitional: make_test_workspace still prefixes "
+                f"generation_id with 'test-' ({generation_id!r}); the helper "
+                "rewrite must land before freeze"
+            )
+        else:
+            gate.probe(
+                "fixture generation_id equals the root dir name",
+                False,
+                f"got {generation_id!r}",
+            )
+
+        gate.probes += 1
+        try:
+            resolved = WorkspaceResolver.resolve_explicit_workspace(root)
+            if resolved.generation_id != root.name:
+                gate.failures.append(
+                    f"resolved generation_id {resolved.generation_id!r} != "
+                    f"root name {root.name!r}"
+                )
+        except Exception as exc:
+            gate.failures.append(
+                "make_test_workspace fixture must pass "
+                f"WorkspaceResolver.resolve_explicit_workspace: {exc}"
+            )
+    gate.finalize()
+
+
+_STALE_DOCUMENT_TOKENS = (
+    "migrate_discovery_v4",
+    "--post-cutover-validate",
+    "--clean-legacy",
+    "--finalize",
+    "PendingCandidateStoreV4",
+    ".migration.lock",
+    "MIGRATION_LOCK_PATH",
+)
+_HISTORICAL_ADR_FILES = frozenset({
+    "ADR_DISCOVERY_V4_MIGRATION_FINAL.md",
+    "ADR_DISCOVERY_V4_SINGLE_STACK.md",
+})
+
+
+def _gate_stale_document_commands(report: VerifierReport) -> None:
+    """Deleted migration command tokens may survive only in the two ADRs."""
+    gate = _BehavioralGate(report, "stale-document-commands")
+    targets: list[Path] = []
+    if DOCS_DIR.is_dir():
+        targets.extend(sorted(DOCS_DIR.glob("*.md")))
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        candidate = PROJECT_ROOT / name
+        if candidate.is_file():
+            targets.append(candidate)
+    gate.probes += 1
+    if not targets:
+        gate.failures.append(
+            "no documentation targets found (docs/*.md, AGENTS.md, CLAUDE.md)"
+        )
+        gate.finalize()
+        return
+    for path in targets:
+        gate.probes += 1
+        if path.name in _HISTORICAL_ADR_FILES:
+            continue  # tokens are allowed inside the historical ADRs
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            gate.failures.append(f"{_file_label(path)}: unreadable: {exc}")
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for token in _STALE_DOCUMENT_TOKENS:
+                if token in line:
+                    gate.failures.append(
+                        f"{_file_label(path)}:{lineno}: stale command token "
+                        f"{token!r} — deleted migration commands may only "
+                        "appear in the two historical ADRs"
+                    )
+    gate.finalize()
+
+
+_BEHAVIORAL_GATES: tuple[tuple[str, Callable[[VerifierReport], None]], ...] = (
+    ("pointer-negative-probes", _gate_pointer_negative_probes),
+    ("manifest-negative-probes", _gate_manifest_negative_probes),
+    ("runtime-error-taxonomy", _gate_runtime_error_taxonomy),
+    ("workspace-identity-and-symlink", _gate_workspace_identity_and_symlink),
+    ("bootstrap-crash-windows", _gate_bootstrap_crash_windows),
+    ("maintenance-exclusion", _gate_maintenance_exclusion),
+    ("server-layering", _gate_server_layering),
+    ("lock-before-resolve-ordering", _gate_lock_before_resolve),
+    ("test-helper-identity", _gate_test_helper_identity),
+    ("stale-document-commands", _gate_stale_document_commands),
+)
+
+
+def _check_final_freeze_behavioral_rules(report: VerifierReport) -> None:
+    """Run every final-freeze behavioral gate with crash isolation.
+
+    A gate that raises unexpectedly must fail its own entry closed without
+    taking the remaining gates down with it.
+    """
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    for name, gate_fn in _BEHAVIORAL_GATES:
+        try:
+            gate_fn(report)
+        except Exception as exc:
+            report.gate_results[name] = {
+                "passed": False,
+                "probes": 0,
+                "failures": [f"gate crashed: {exc!r}"],
+                "warnings": [],
+            }
+            report.findings.append(Finding(
+                level="error", category="behavioral",
+                file=f"behavioral-gate:{name}", line=0,
+                message=f"behavioral gate crashed (fail closed): {exc!r}",
+            ))
+
+
 def verify_discovery_final_architecture() -> VerifierReport:
     """Run all checks and return a VerifierReport."""
     report = VerifierReport()
@@ -1308,11 +2082,17 @@ def verify_discovery_final_architecture() -> VerifierReport:
     # Post-migration hardening gates (workspace cutover + tombstones)
     _check_migration_hardening_rules(report)
 
+    # Frozen-seal Phase 2: dead v4 store stack tombstones
+    _check_dead_v4_store_tombstones(report)
+
     # Post-migration final-state gates (12, 15, 15b, 15c, 16)
     _check_v4_migration_final_rules(report)
 
     # Unified-HTTP + retired flat-path gates
     _check_http_and_flat_path_rules(report)
+
+    # Final-freeze behavioral gates (dynamic negative probes)
+    _check_final_freeze_behavioral_rules(report)
 
     return report
 

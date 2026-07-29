@@ -12,21 +12,25 @@
     "crossref": {
       "enabled": true,
       "min_interval_seconds": 3.0,
-      "mailto": "CHANGE_ME@example.com",
-      "user_agent": "MinerU/1.0 (mailto:CHANGE_ME@example.com)",
+      "mailto": "",
+      "user_agent": "MinerU/1.0",
       "adaptive_from_headers": true
     },
     "openalex": {
       "enabled": true,
       "min_interval_seconds": 2.0,
-      "mailto": "CHANGE_ME@example.com",
-      "user_agent": "MinerU/1.0 (mailto:CHANGE_ME@example.com)",
+      "mailto": "",
+      "user_agent": "MinerU/1.0",
       "adaptive_from_headers": true
     },
     "semantic_scholar": {
-      "enabled": false,
-      "min_interval_seconds": 1.2,
+      "enabled": true,
+      "min_interval_seconds": 3.0,
       "api_key_env": "SEMANTIC_SCHOLAR_API_KEY"
+    },
+    "unpaywall": {
+      "enabled": true,
+      "min_interval_seconds": 1.0
     }
   },
   "backoff": {

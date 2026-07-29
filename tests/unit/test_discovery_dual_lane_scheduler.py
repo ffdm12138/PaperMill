@@ -132,11 +132,7 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
                    notebook_dir: Path, paper_raw_dir: Path | None = None,
                    papers_dir: Path | None = None, hide_existing=False):
     runtime_base = notebook_dir / ".discovery_runtime"
-    workspace = make_test_workspace(
-        runtime_base,
-        notebook_dir=notebook_dir,
-        page_journals_dir=runtime_base / "pending_pages",
-    )
+    workspace = make_test_workspace(notebook_dir)
     options = DiscoveryOptions(
         mode=mode,
         refresh_pages=refresh_pages,
@@ -165,7 +161,7 @@ def _run_discovery(keyword: str, *, mode="hybrid", refresh_pages=2,
 
 class TestDualLaneScheduling:
     def test_hybrid_runs_both_refresh_and_backfill(self, monkeypatch, tmp_path: Path):
-        store = _seed_ready(tmp_path, page_size=10)
+        store = _seed_ready(tmp_path / "keyword_notebooks", page_size=10)
         calls = _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -192,7 +188,7 @@ class TestDualLaneScheduling:
         assert report["backfill"]["pages_committed"] >= 1
 
     def test_refresh_always_starts_from_star(self, monkeypatch, tmp_path: Path):
-        store = _seed_ready(tmp_path, page_size=10)
+        store = _seed_ready(tmp_path / "keyword_notebooks", page_size=10)
         # Advance backfill cursor so refresh could (incorrectly) pick it up.
         store.commit_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex", expected_cursor="*", next_cursor="DEEP", committed_page_id="test-page", items_this_page=5, exhausted=False)
         calls = _install_fake_fetch(
@@ -211,7 +207,7 @@ class TestDualLaneScheduling:
         assert all(c["cursor"] == INITIAL_CURSOR for c in refresh_calls)
 
     def test_backfill_resumes_from_saved_cursor(self, monkeypatch, tmp_path: Path):
-        store = _seed_ready(tmp_path, page_size=10)
+        store = _seed_ready(tmp_path / "keyword_notebooks", page_size=10)
         # First run creates the durable v3 page and cursor receipt.  A raw
         # notebook cursor without its committed durable page is intentionally
         # repair-required and must not be used as a resume fixture.
@@ -245,7 +241,7 @@ class TestDualLaneScheduling:
         assert store.get_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex") == "RESUME2"
 
     def test_refresh_failure_does_not_reset_backfill_cursor(self, monkeypatch, tmp_path: Path):
-        store = _seed_ready(tmp_path, page_size=10)
+        store = _seed_ready(tmp_path / "keyword_notebooks", page_size=10)
         store.commit_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex", expected_cursor="*", next_cursor="KEEPME", committed_page_id="test-page", items_this_page=5, exhausted=False)
         _install_fake_fetch(
             monkeypatch,
@@ -262,7 +258,7 @@ class TestDualLaneScheduling:
         assert store.get_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex") == "KEEPME"
 
     def test_backfill_failure_does_not_advance_cursor(self, monkeypatch, tmp_path: Path):
-        store = _seed_ready(tmp_path, page_size=10)
+        store = _seed_ready(tmp_path / "keyword_notebooks", page_size=10)
         store.commit_backfill_cursor(KEYWORD_ZH, ZH_QUERY_ID, "openalex", expected_cursor="*", next_cursor="BEFORE_FAIL", committed_page_id="test-page", items_this_page=5, exhausted=False)
         _install_fake_fetch(
             monkeypatch,
@@ -296,7 +292,7 @@ class TestDualLaneScheduling:
             },
             crossref_pages={},
         )
-        _seed_ready(tmp_path, page_size=200)
+        _seed_ready(tmp_path / "keyword_notebooks", page_size=200)
         batch, report = _run_discovery(
             KEYWORD_ZH, mode="hybrid", refresh_pages=1, backfill_pages=1,
             page_size=200, max_candidates=100, notebook_dir=tmp_path,
@@ -307,7 +303,7 @@ class TestDualLaneScheduling:
         assert report["candidates"]["existing_duplicates"] == 50
 
     def test_provider_failure_reported_as_partial_success(self, monkeypatch, tmp_path: Path):
-        _seed_ready(tmp_path, page_size=10)
+        _seed_ready(tmp_path / "keyword_notebooks", page_size=10)
         _install_fake_fetch(
             monkeypatch,
             openalex_pages={
@@ -324,7 +320,7 @@ class TestDualLaneScheduling:
         assert report["backfill"]["provider_failures"] >= 1
 
     def test_skipped_when_keyword_disabled(self, monkeypatch, tmp_path: Path):
-        store = _seed_ready(tmp_path, page_size=10)
+        store = _seed_ready(tmp_path / "keyword_notebooks", page_size=10)
         store.set_enabled(KEYWORD_ZH, False)
         calls = _install_fake_fetch(monkeypatch, {}, {})
         batch, report = _run_discovery(

@@ -15,6 +15,10 @@ if str(ROOT) not in sys.path:
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import PAPER_NUMBER_LEDGER_PATH, PAPER_RAW_DIR, PAPERS_DIR
+from src.discovery.maintenance_gate import (
+    DiscoveryMaintenanceLock,
+    DiscoveryMaintenanceLockError,
+)
 from src.discovery.workspace_registry import WorkspaceRegistrySnapshot, build_workspace_registry
 from src.workspace.evidence import inspect_workspace_evidence
 from src.workspace.readiness import evaluate_metadata_staged
@@ -214,8 +218,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.limit < 1:
         parser.error("--limit must be positive")
-    report = run(paper_raw=args.paper_raw, papers=args.papers, ledger_path=args.ledger,
-                 apply=args.apply, limit=args.limit, paper_number=args.paper_number)
+    # --apply mutates ledger and workspace state: run it inside the global
+    # discovery maintenance window so production discovery writers refuse to
+    # start concurrently (and a live maintenance holder fails this run).
+    try:
+        if args.apply:
+            with DiscoveryMaintenanceLock(purpose="repair-discovery-workspaces"):
+                report = run(paper_raw=args.paper_raw, papers=args.papers,
+                             ledger_path=args.ledger, apply=True, limit=args.limit,
+                             paper_number=args.paper_number)
+        else:
+            report = run(paper_raw=args.paper_raw, papers=args.papers,
+                         ledger_path=args.ledger, apply=False, limit=args.limit,
+                         paper_number=args.paper_number)
+    except DiscoveryMaintenanceLockError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)
         args.json_report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

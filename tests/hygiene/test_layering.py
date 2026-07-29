@@ -92,7 +92,14 @@ SANCTIONED: set[tuple[str, str]] = {
     ("src.metadata.pdf_match", "src.discovery.models"),
     # CLAUDE.md mandates ALL OpenAlex/Crossref HTTP goes through the unified
     # ProviderClient, which lives in discovery.providers — fetch obeys it.
+    # The same rule now covers the Unpaywall and Semantic Scholar OA-location
+    # lookups: the unauthenticated Semantic Scholar pool is shared and unpaced
+    # callers exhaust it outright (324/324 recorded attempts returned HTTP
+    # 429), so pacing them through the shared limiter is a correctness
+    # requirement, not politeness.
     ("src.fetch.fetch_openalex", "src.discovery.providers.provider_client"),
+    ("src.fetch.fetch_unpaywall", "src.discovery.providers.provider_client"),
+    ("src.fetch.fetch_semantic_scholar", "src.discovery.providers.provider_client"),
     ("src.fetch.fetch_publisher", "src.discovery.resolve_crossref"),
     # The staging gateway is discovery's composition boundary into the app
     # staging service (single call site; the service stages INTO paper_raw).

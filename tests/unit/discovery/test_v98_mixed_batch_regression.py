@@ -51,17 +51,11 @@ def _seed_ready_notebook(store: KeywordNotebookStore, keyword_zh: str) -> None:
     store.set_enabled(keyword_zh, True)
 
 
-def _options(nb_dir: Path, work_dir: Path, **overrides) -> DiscoveryOptions:
+def _options(work_dir: Path, **overrides) -> DiscoveryOptions:
     kw = dict(
         mode="backfill",
         max_candidates=10,
-        workspace=make_test_workspace(
-            work_dir,
-            notebook_dir=nb_dir,
-            page_journals_dir=work_dir / "pages",
-            locks_dir=work_dir / "locks",
-            exports_dir=work_dir / "exports",
-        ),
+        workspace=make_test_workspace(work_dir),
         output_dir=work_dir / "out",
         paper_raw_dir=work_dir / "paper_raw",
         papers_dir=work_dir / "papers",
@@ -74,11 +68,11 @@ def _options(nb_dir: Path, work_dir: Path, **overrides) -> DiscoveryOptions:
 
 
 def _make_options_with_profiles(tmp_path: Path, keyword_names: list[str]) -> DiscoveryOptions:
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     for name in keyword_names:
         _seed_ready_notebook(store, name)
-    return _options(nb_dir, tmp_path)
+    return _options(tmp_path)
 
 
 # ── mixed batch: success + different failure modes ────────────────────
@@ -267,19 +261,13 @@ def _seed(nb_dir, keyword_zh):
     store.set_enabled(keyword_zh, True)
 
 work = Path(r"{work_dir}")
-nb_dir = work / "notebooks"
+nb_dir = work / "keyword_notebooks"
 _seed(nb_dir, "风吹雪")
 _seed(nb_dir, "扬沙")
 
 opts = DiscoveryOptions(
     mode="backfill", max_candidates=10,
-    workspace=make_test_workspace(
-        work,
-        notebook_dir=nb_dir,
-        page_journals_dir=work / "pages",
-        locks_dir=work / "locks",
-        exports_dir=work / "exports",
-    ),
+    workspace=make_test_workspace(work),
     output_dir=work / "out",
     paper_raw_dir=work / "paper_raw",
     papers_dir=work / "papers",

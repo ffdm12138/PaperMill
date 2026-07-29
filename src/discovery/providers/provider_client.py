@@ -53,8 +53,15 @@ from src.utils.rate_limit import ProviderRateLimiter, default_config, load_confi
 
 RequestPurpose = Literal["discovery_page", "title_resolution", "metadata_resolution"]
 
-#: Providers known to the discovery runtime.
-KNOWN_PROVIDERS = ("openalex", "crossref")
+#: Providers known to the runtime.
+#:
+#: ``unpaywall`` and ``semantic_scholar`` are OA-location lookups issued by the
+#: fetch layer.  They are here rather than on bare ``requests`` because the
+#: unauthenticated Semantic Scholar pool is shared and unpaced callers exhaust
+#: it immediately — every one of 324 recorded attempts returned HTTP 429 while
+#: a single paced request succeeds.  Routing them through this runtime gives
+#: them the shared limiter, ``Retry-After`` handling, and circuit breaker.
+KNOWN_PROVIDERS = ("openalex", "crossref", "unpaywall", "semantic_scholar")
 
 #: Retry policy defaults (safe for long-unattended runs).
 DEFAULT_MAX_RETRIES = 5

@@ -17,6 +17,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
+from src.fetch.host_policy import is_bot_blocked_host
+
 
 ExpectedContent = Literal["pdf", "html", "any"]
 TransportMode = Literal["direct", "proxy"]
@@ -26,6 +28,9 @@ TRANSPORT_POLICY = "direct_then_proxy"
 DEFAULT_PDF_PROXY_URL = "http://127.0.0.1:7890"
 DEFAULT_DIRECT_TIMEOUT = 30.0
 DEFAULT_PROXY_TIMEOUT = 45.0
+
+#: Reason recorded when the proxy retry is skipped as provably futile.
+PROXY_SKIP_BOT_BLOCKED = "proxy_skipped_bot_blocked_host"
 
 _SENSITIVE_QUERY_KEYS = {
     "auth",
@@ -221,6 +226,8 @@ def fetch_url_direct_then_proxy(
             direct.session.close()
         return TransportResult(response=None, attempts=attempts, error=direct.attempt.error_message)
 
+    status_code = direct.attempt.status_code
+    final_url = direct.attempt.final_url or url
     if direct.response is not None:
         _close_response(direct.response)
     if direct.session is not None:
@@ -228,6 +235,19 @@ def fetch_url_direct_then_proxy(
 
     if not cfg.proxy_fallback_enabled or not cfg.proxy_url:
         return TransportResult(response=None, attempts=attempts, error=direct.attempt.error_message)
+
+    # A 403 from a host that runs ASN-scoped bot management is a verdict on
+    # the request's network identity, not on the request itself. Replaying it
+    # through a proxy only produces the same 403 at double the wall-clock
+    # cost -- measured: 551 direct 403s produced 548 proxy 403s and zero
+    # successes. Connection-level failures are NOT skipped, because there the
+    # proxy does convert failures into successes.
+    if status_code == 403 and is_bot_blocked_host(final_url):
+        return TransportResult(
+            response=None,
+            attempts=attempts,
+            error=PROXY_SKIP_BOT_BLOCKED,
+        )
 
     proxy = _request_once(
         url,

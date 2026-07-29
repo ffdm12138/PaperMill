@@ -22,10 +22,8 @@ pytestmark = pytest.mark.unit
 
 
 def _workspace_root(tmp_path: Path) -> Path:
-    root = tmp_path / "gen-test"
-    (root / "keyword_notebooks").mkdir(parents=True)
-    (root / "page_journals").mkdir(parents=True)
-    return root
+    """A complete, resolvable v4 workspace root (strict contract)."""
+    return make_test_workspace(tmp_path / "gen-test").root
 
 
 def test_resolve_active_runtime_with_explicit_workspace_root(tmp_path: Path):
@@ -39,7 +37,10 @@ def test_resolve_active_runtime_with_explicit_workspace_root(tmp_path: Path):
 
 
 def test_resolve_active_runtime_rejects_root_without_keyword_notebooks(tmp_path: Path):
-    with pytest.raises(DiscoveryRuntimeUnavailableError, match="keyword_notebooks"):
+    with pytest.raises(
+        DiscoveryRuntimeUnavailableError,
+        match="not a complete v4 workspace",
+    ):
         resolve_active_runtime(workspace_root=tmp_path)
 
 

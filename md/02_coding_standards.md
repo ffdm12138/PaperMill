@@ -62,6 +62,21 @@ checksum、lane 请求签名等）使用与 `canonical_json` **不同**的字节
 ## 网络访问
 
 OpenAlex/Crossref 的一切 HTTP（发现分页、标题解析、metadata 解析、DOI 验证、
-taxonomy 拉取）必须经统一 `ProviderClient`（限速/重试/熔断/预算/遥测）；
+taxonomy 拉取），以及 fetch 层的 Unpaywall / Semantic Scholar OA 位置查询，
+必须经统一 `ProviderClient`（限速/重试/熔断/预算/遥测）；
 业务模块禁止直接调用 `requests.*`/`httpx.*`。PDF 传输走 `src/fetch/pdf_transport`
 的 direct-first + 代理回退语义。
+
+需要联系邮箱的学术 API 一律只从 `src/utils/contact_email.py` 取值（单一权威层），
+读取顺序 `MINERU_CONTACT_EMAIL` → `MINERU_METADATA_CONTACT_EMAIL`。
+占位邮箱与 RFC 2606 保留域（`example.com` 等）一律判为"未配置"：Unpaywall 对这类
+地址返回 HTTP 422，发出去必然失败还白耗预算，因此宁可跳过该 lane 也不发占位符。
+provider 凭证变量名不在此列——那属于各自的凭证模块（约定见
+`docs/DEPENDENCIES_AND_EXTERNAL_TOOLS.md` §9）；fetch 层若要复用 provider 的
+联系地址，由调用点自行组合两次查询，不把变量名复制进 `utils`。
+
+出版商可达性知识集中在 `src/fetch/host_policy.py`：按 ASN 拦截的主机集合来自实测
+（大量尝试、零成功），只用于候选排序降权、跳过必然徒劳的代理重试、以及给报告打
+`blocked_publisher` 判定；它是有时效的启发式（换出口即可能失效），不得当作硬禁止。
+OA 位置排序在 `src/fetch/oa_locations.py`：仓储副本优先于出版商副本，因为 provider
+自带的 "best" 恒为出版商副本，而那恰好是被拦的那一个。

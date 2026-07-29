@@ -20,9 +20,9 @@ import scripts.verify_discovery_final_architecture as verifier
 
 _HEALTHY_WORKSPACE = '''
 from filelock import FileLock
-MIGRATION_LOCK_PATH = DISCOVERY_MIGRATIONS_DIR / ".migration.lock"
+DISCOVERY_MAINTENANCE_LOCK_PATH = DISCOVERY_MIGRATIONS_DIR / ".maintenance.lock"
 previous_pointer_snapshot_path = None
-raise CutoverReconciliationError("x")
+raise CommitReconciliationError("x")
 if verify_tree:
     computed_tree = hash_workspace_tree(gen_root, exclude={"workspace.json"})
     if computed_tree != manifest.workspace_tree_sha256:
@@ -75,12 +75,12 @@ class TestMigrationHardeningGates:
         errors = _gate_errors(healthy_tree)
         assert any("src.discovery.page_journal" in e.message for e in errors)
 
-    def test_gate3_missing_cutover_lock_caught(self, healthy_tree):
+    def test_gate3_missing_maintenance_lock_caught(self, healthy_tree):
         ws = healthy_tree["SRC"] / "workspace.py"
-        ws.write_text(_HEALTHY_WORKSPACE.replace('".migration.lock"', '"other"'),
+        ws.write_text(_HEALTHY_WORKSPACE.replace('".maintenance.lock"', '"other"'),
                       encoding="utf-8")
         errors = _gate_errors(healthy_tree)
-        assert any(".migration.lock" in e.message for e in errors)
+        assert any(".maintenance.lock" in e.message for e in errors)
 
     def test_gate3_missing_previous_generation_id_caught(self, healthy_tree):
         manifest = healthy_tree["SRC"] / "contracts" / "manifest.py"
@@ -110,6 +110,55 @@ class TestMigrationHardeningGates:
         )
         errors = _gate_errors(healthy_tree)
         assert any("PendingCandidateStoreV4" in e.message for e in errors)
+
+
+# ── Frozen-seal Phase 2: dead v4 store stack tombstones ──────────────────
+
+
+def _tombstone_gate_errors(dirs) -> list:
+    report = verifier.VerifierReport()
+    verifier._check_dead_v4_store_tombstones(report)
+    return report.errors
+
+
+class TestDeadV4StoreTombstones:
+    """The deleted zero-reader v4 store stack must never reappear."""
+
+    def test_healthy_tree_passes(self, healthy_tree):
+        assert _tombstone_gate_errors(healthy_tree) == []
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "stores/lane_state_store.py",
+            "stores/journal_index.py",
+            "stores/report_store.py",
+            "contracts/lane_state.py",
+        ],
+    )
+    def test_dead_module_file_caught(self, healthy_tree, rel: str):
+        dead = healthy_tree["SRC"] / rel
+        dead.parent.mkdir(parents=True, exist_ok=True)
+        dead.write_text("# resurrected dead store\n", encoding="utf-8")
+        errors = _tombstone_gate_errors(healthy_tree)
+        assert any(dead.name in e.file and "must be removed" in e.message
+                   for e in errors)
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "LaneStateStoreV4",
+            "JournalIndexV4",
+            "ReportStoreV4",
+            "LaneStateV4",
+            "CursorTransactionV4",
+        ],
+    )
+    def test_dead_token_reintroduction_caught(self, healthy_tree, token: str):
+        evil = healthy_tree["SRC"] / "evil.py"
+        evil.write_text(f"from y import {token}\n", encoding="utf-8")
+        errors = _tombstone_gate_errors(healthy_tree)
+        assert any(token in e.message for e in errors)
 
 
 # ── Post-migration final-state gates (12, 15, 16): coverage ──────────────
@@ -152,13 +201,19 @@ def _build_healthy_final_tree(root: Path) -> dict[str, Path]:
     scripts = root / "scripts"
     files = {
         (scripts / "discover_papers.py"): (
-            "assert_discovery_write_allowed()\n"
+            'with DiscoveryWriterLease("discover-papers"):\n'
+            "    run()\n"
         ),
         (scripts / "discover_papers_concurrent.py"): (
-            "assert_discovery_write_allowed()\n"
+            'with DiscoveryWriterLease("discover-papers-concurrent"):\n'
+            "    run()\n"
         ),
         (src / "coordinator.py"): _HEALTHY_FINAL_COORDINATOR,
         (src / "maintenance_gate.py"): (
+            "class DiscoveryWriterLease:\n"
+            "    pass\n"
+            "def active_writer_leases(lock_path=None):\n"
+            "    return []\n"
             "def assert_discovery_write_allowed(lock_path=None):\n"
             "    return None\n"
         ),
@@ -236,19 +291,19 @@ class TestMigrationFinalGates:
 
     # ── Gate 15 ──
 
-    def test_gate15_writer_without_block_check_caught(self, healthy_final_tree):
+    def test_gate15_writer_without_writer_lease_caught(self, healthy_final_tree):
         writer = healthy_final_tree["SCRIPTS"] / "discover_papers_concurrent.py"
         writer.write_text("def main():\n    return 0\n", encoding="utf-8")
         errors = _final_gate_errors(healthy_final_tree)
         assert any("discover_papers_concurrent.py" in e.file
-                   and "assert_discovery_write_allowed" in e.message
+                   and "DiscoveryWriterLease" in e.message
                    for e in errors)
 
     def test_gate15_workspace_root_bypass_caught(self, healthy_final_tree):
         writer = healthy_final_tree["SCRIPTS"] / "discover_papers.py"
         writer.write_text(
             "if not args.workspace_root:\n"
-            "    assert_discovery_write_allowed()\n",
+            '    DiscoveryWriterLease("discover-papers")\n',
             encoding="utf-8",
         )
         errors = _final_gate_errors(healthy_final_tree)
@@ -370,9 +425,7 @@ def test_official_entrypoint_dispatches_typed_lanes_and_builds_once(
         generation_id="hygiene-test",
         root=tmp_path / "workspace",
         keyword_notebook_dir=tmp_path / "workspace" / "keyword_notebooks",
-        lane_states_dir=tmp_path / "workspace" / "lane_states",
         page_journals_dir=tmp_path / "workspace" / "page_journals",
-        indexes_dir=tmp_path / "workspace" / "indexes",
         exports_dir=tmp_path / "workspace" / "exports",
         reports_dir=tmp_path / "workspace" / "reports",
         locks_dir=tmp_path / "workspace" / "locks",
@@ -568,3 +621,279 @@ class TestHttpAndFlatPathGates:
         )
         errors = _http_gate_errors(http_gate_tree)
         assert any("retired flat discovery path constant" in e.message for e in errors)
+
+
+# ── Final-freeze behavioral gates: positive + negative coverage ──────────
+
+_BEHAVIORAL_GATE_NAMES = {
+    "pointer-negative-probes",
+    "manifest-negative-probes",
+    "runtime-error-taxonomy",
+    "workspace-identity-and-symlink",
+    "bootstrap-crash-windows",
+    "maintenance-exclusion",
+    "server-layering",
+    "lock-before-resolve-ordering",
+    "test-helper-identity",
+    "stale-document-commands",
+}
+
+
+def _behavioral_errors(*gate_fns) -> list:
+    report = verifier.VerifierReport()
+    for fn in gate_fns:
+        fn(report)
+    return report.errors
+
+
+class TestFinalFreezeBehavioralGates:
+    """The behavioral gates execute the production code with injected
+    negative inputs; each must catch its violation and pass on the real
+    repo."""
+
+    def test_real_repo_passes_all_behavioral_gates(self):
+        report = verifier.VerifierReport()
+        verifier._check_final_freeze_behavioral_rules(report)
+        errors = report.errors
+        if errors:
+            lines = [f"{len(errors)} behavioral gate violation(s):"]
+            for f in errors:
+                lines.append(f"  {f.file}: {f.message}")
+            pytest.fail("\n".join(lines))
+
+    def test_gate_results_cover_all_ten_gates(self):
+        report = verifier.VerifierReport()
+        verifier._check_final_freeze_behavioral_rules(report)
+        assert _BEHAVIORAL_GATE_NAMES <= set(report.gate_results)
+        for name in _BEHAVIORAL_GATE_NAMES:
+            entry = report.gate_results[name]
+            assert entry["probes"] > 0, f"{name} ran zero probes"
+
+    def test_pointer_gate_catches_lenient_parser(self, monkeypatch):
+        from src.discovery.contracts import manifest as manifest_mod
+
+        monkeypatch.setattr(
+            manifest_mod.ActiveGenerationPointerV4,
+            "from_dict_strict",
+            classmethod(lambda cls, data: data),
+        )
+        errors = _behavioral_errors(verifier._gate_pointer_negative_probes)
+        assert any("pointer-negative-probes" in f.file for f in errors)
+
+    def test_manifest_gate_catches_lenient_parser(self, monkeypatch):
+        from src.discovery.contracts import manifest as manifest_mod
+
+        monkeypatch.setattr(
+            manifest_mod.DiscoveryWorkspaceManifestV4,
+            "from_dict_strict",
+            classmethod(lambda cls, data: data),
+        )
+        errors = _behavioral_errors(verifier._gate_manifest_negative_probes)
+        assert any("manifest-negative-probes" in f.file for f in errors)
+
+    def test_taxonomy_gate_catches_wrong_mapping(self, monkeypatch):
+        from src.discovery import runtime_context as rc
+
+        monkeypatch.setattr(
+            rc,
+            "_map_resolution_error",
+            lambda exc, *, origin: rc.DiscoveryRuntimeNotInitialized(str(exc)),
+        )
+        errors = _behavioral_errors(verifier._gate_runtime_error_taxonomy)
+        assert any("runtime-error-taxonomy" in f.file for f in errors)
+
+    def test_workspace_gate_catches_lenient_resolver(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from src.discovery import workspace as wsp
+
+        monkeypatch.setattr(
+            wsp.WorkspaceResolver,
+            "resolve_explicit_workspace",
+            staticmethod(lambda root, **kwargs: SimpleNamespace(
+                generation_id="wrong-id"
+            )),
+        )
+        errors = _behavioral_errors(
+            verifier._gate_workspace_identity_and_symlink
+        )
+        assert any("workspace-identity-and-symlink" in f.file for f in errors)
+
+    def test_bootstrap_gate_catches_missing_recovery(self, monkeypatch):
+        import src.discovery.workspace as wsp
+
+        monkeypatch.setattr(
+            wsp,
+            "bootstrap_initial_workspace",
+            lambda generation_id=None: (None, True),
+        )
+        errors = _behavioral_errors(verifier._gate_bootstrap_crash_windows)
+        assert any("bootstrap-crash-windows" in f.file for f in errors)
+
+    def test_maintenance_gate_catches_missing_exclusion(self, monkeypatch):
+        from src.discovery import maintenance_gate as mg
+
+        monkeypatch.setattr(
+            mg.DiscoveryMaintenanceLock, "acquire", lambda self: self
+        )
+        errors = _behavioral_errors(verifier._gate_maintenance_exclusion)
+        assert any("maintenance-exclusion" in f.file for f in errors)
+
+    def test_server_gate_catches_service_init_in_middleware(
+        self, tmp_path, monkeypatch
+    ):
+        src_root = tmp_path / "src"
+        src_root.mkdir()
+        (src_root / "server.py").write_text(
+            "async def security_headers_and_api_key(request, call_next):\n"
+            "    _get_catalog()\n"
+            "    return await call_next(request)\n"
+            "def _get_catalog():\n    pass\n"
+            "def _get_library():\n    pass\n"
+            "def _get_prompt_builder():\n    pass\n"
+            "def _get_job_manager():\n    pass\n"
+            'X = "/status/discovery"\n'
+            "Y = 'exception_handler(DiscoveryRuntimeUnavailableError)'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(verifier, "SRC_ROOT", src_root)
+        errors = _behavioral_errors(verifier._gate_server_layering)
+        assert any("server-layering" in f.file for f in errors)
+
+    def test_lock_order_gate_catches_resolve_before_lease(
+        self, tmp_path, monkeypatch
+    ):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "discover_papers.py").write_text(
+            "def main():\n"
+            "    ws = resolve_active()\n"
+            '    with DiscoveryWriterLease("x"):\n'
+            "        return _run(args)\n",
+            encoding="utf-8",
+        )
+        (scripts / "discover_papers_concurrent.py").write_text(
+            "def main_internal(argv):\n"
+            '    with DiscoveryWriterLease("x"):\n'
+            "        return _run(args)\n"
+            "def _run(args):\n"
+            "    ws = resolve_active()\n",
+            encoding="utf-8",
+        )
+        (scripts / "manage_discovery_keywords.py").write_text(
+            "lock = DiscoveryMaintenanceLock(purpose)\n"
+            "ctx = resolve_active_runtime(workspace_root=None)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(verifier, "SCRIPTS", scripts)
+        errors = _behavioral_errors(verifier._gate_lock_before_resolve)
+        assert any("lock-before-resolve-ordering" in f.file for f in errors)
+        assert any("discover_papers.py" in f.message for f in errors)
+
+    def test_lock_order_gate_catches_manage_resolve_before_lock(
+        self, tmp_path, monkeypatch
+    ):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        healthy = (
+            "def main(argv):\n"
+            '    with DiscoveryWriterLease("x"):\n'
+            "        return _run(args)\n"
+            "def _run(args):\n"
+            "    ws = resolve_active()\n"
+        )
+        (scripts / "discover_papers.py").write_text(healthy, encoding="utf-8")
+        (scripts / "discover_papers_concurrent.py").write_text(
+            healthy.replace("def main(", "def main_internal("),
+            encoding="utf-8",
+        )
+        (scripts / "manage_discovery_keywords.py").write_text(
+            "ctx = resolve_active_runtime(workspace_root=None)\n"
+            "lock = DiscoveryMaintenanceLock(purpose)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(verifier, "SCRIPTS", scripts)
+        errors = _behavioral_errors(verifier._gate_lock_before_resolve)
+        assert any("manage_discovery_keywords" in f.message for f in errors)
+
+    def test_stale_docs_gate_catches_token_outside_adr(
+        self, tmp_path, monkeypatch
+    ):
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "GUIDE.md").write_text(
+            "run scripts/migrate_discovery_v4.py --finalize\n", encoding="utf-8"
+        )
+        (docs / "ADR_DISCOVERY_V4_MIGRATION_FINAL.md").write_text(
+            "historical: PendingCandidateStoreV4 removed\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(verifier, "DOCS_DIR", docs)
+        monkeypatch.setattr(verifier, "PROJECT_ROOT", tmp_path)
+        errors = _behavioral_errors(verifier._gate_stale_document_commands)
+        assert any("migrate_discovery_v4" in f.message for f in errors)
+        assert not any("ADR_DISCOVERY_V4_MIGRATION_FINAL" in f.message
+                       for f in errors)
+
+    def test_stale_docs_gate_passes_with_adr_only_tokens(
+        self, tmp_path, monkeypatch
+    ):
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "ADR_DISCOVERY_V4_SINGLE_STACK.md").write_text(
+            "historical: migrate_discovery_v4 --clean-legacy\n", encoding="utf-8"
+        )
+        (docs / "CLEAN.md").write_text("no stale tokens here\n",
+                                       encoding="utf-8")
+        monkeypatch.setattr(verifier, "DOCS_DIR", docs)
+        monkeypatch.setattr(verifier, "PROJECT_ROOT", tmp_path)
+        assert _behavioral_errors(verifier._gate_stale_document_commands) == []
+
+    def test_helper_gate_catches_unresolvable_fixture(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from tests.helpers import discovery_workspace as helper_mod
+
+        def bad_make(root):
+            root = Path(root)
+            root.mkdir(parents=True, exist_ok=True)
+            return SimpleNamespace(generation_id=root.name, root=root)
+
+        monkeypatch.setattr(helper_mod, "make_test_workspace", bad_make)
+        errors = _behavioral_errors(verifier._gate_test_helper_identity)
+        assert any("test-helper-identity" in f.file for f in errors)
+
+    def test_helper_gate_catches_wrong_generation_identity(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from tests.helpers import discovery_workspace as helper_mod
+
+        real_make = helper_mod.make_test_workspace
+
+        def wrong_id_make(root):
+            real_make(root)  # build a fully resolvable fixture
+            return SimpleNamespace(generation_id="other-id", root=Path(root))
+
+        monkeypatch.setattr(helper_mod, "make_test_workspace", wrong_id_make)
+        errors = _behavioral_errors(verifier._gate_test_helper_identity)
+        assert any("test-helper-identity" in f.file for f in errors)
+
+    def test_helper_gate_marks_legacy_prefix_transitional(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from tests.helpers import discovery_workspace as helper_mod
+
+        real_make = helper_mod.make_test_workspace
+
+        def legacy_make(root):
+            real_make(root)  # resolvable fixture, old identity convention
+            return SimpleNamespace(
+                generation_id=f"test-{Path(root).name}", root=Path(root)
+            )
+
+        monkeypatch.setattr(helper_mod, "make_test_workspace", legacy_make)
+        report = verifier.VerifierReport()
+        verifier._gate_test_helper_identity(report)
+        assert report.errors == []
+        entry = report.gate_results["test-helper-identity"]
+        assert entry["passed"] is True
+        assert any("transitional" in w for w in entry["warnings"])

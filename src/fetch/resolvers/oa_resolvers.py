@@ -2,7 +2,7 @@
 
 不删除旧模块 (fetch_unpaywall.py etc.)，保持向后兼容。
 """
-from src.fetch.fetch_arxiv import resolve_arxiv_pdf
+from src.fetch.fetch_arxiv import ARXIV_DOI_PREFIX, arxiv_id_from_metadata, resolve_arxiv_pdf
 from src.fetch.fetch_openalex import resolve_openalex_pdf
 from src.fetch.fetch_publisher import resolve_publisher_pdf
 from src.fetch.fetch_semantic_scholar import resolve_semantic_scholar_pdf
@@ -53,6 +53,13 @@ class SemanticScholarResolver(PdfResolver):
 class ArxivResolver(PdfResolver):
     name = "arxiv"
     access_modes = ("oa_only", "institutional")
+
+    def applies_to(self, context: ResolveContext) -> bool:
+        # The resolver only ever builds a URL from an arXiv id already present
+        # in metadata; without one it can never succeed. Deciding that here
+        # keeps 'no arXiv id' out of the attempt log for every non-preprint.
+        return bool(arxiv_id_from_metadata(context.metadata or {})) or \
+            str(context.doi or "").lower().startswith(ARXIV_DOI_PREFIX)
 
     def resolve(self, context: ResolveContext) -> dict:
         meta = context.metadata or {}

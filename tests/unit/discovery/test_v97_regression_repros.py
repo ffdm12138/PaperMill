@@ -205,7 +205,7 @@ def test_backpressure_does_not_blank_completed_lanes_via_coordinator(
     """
     import src.discovery.coordinator as coordinator
 
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     _seed_ready_notebook(KeywordNotebookStore(nb_dir), "风吹雪")
 
     # Make the queue tiny so even 1 candidate triggers backpressure
@@ -245,13 +245,7 @@ def test_backpressure_does_not_blank_completed_lanes_via_coordinator(
     options = DiscoveryOptions(
         mode="hybrid", refresh_pages=1, backfill_pages=1,
         max_candidates=3, max_pending_candidates=5, resume_pending_candidates=2,
-        workspace=make_test_workspace(
-            tmp_path,
-            notebook_dir=nb_dir,
-            page_journals_dir=tmp_path / "pages",
-            locks_dir=tmp_path / "locks",
-            exports_dir=tmp_path / "exports",
-        ),
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out", paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers", ledger_path=tmp_path / "ledger.json",
         crossref_scope_verifier=AlwaysVerifiedScopeVerifier(),

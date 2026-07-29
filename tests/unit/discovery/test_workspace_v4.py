@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from filelock import FileLock
 
 from src.discovery.contracts.manifest import (
+    STORE_SCHEMA_VERSIONS_V4,
     ActiveGenerationPointerV4,
     DiscoveryWorkspaceManifestV4,
 )
@@ -53,8 +54,8 @@ class TestDiscoveryWorkspaceConstruction:
         # KNOWN_SUBDIRS uses directory-style names (e.g., "keyword_notebooks")
         # class attributes use singular (e.g., "keyword_notebook_dir")
         attr_names = [
-            "keyword_notebook_dir", "lane_states_dir", "page_journals_dir",
-            "indexes_dir", "exports_dir", "reports_dir", "locks_dir",
+            "keyword_notebook_dir", "page_journals_dir",
+            "exports_dir", "reports_dir", "locks_dir",
         ]
         for attr in attr_names:
             d = getattr(ws, attr)
@@ -101,17 +102,15 @@ class TestDiscoveryWorkspaceEnsureDirs:
                 generation_id="test-g1",
                 root=root,
                 keyword_notebook_dir=root / "keyword_notebooks",
-                lane_states_dir=root / "lane_states",
                 page_journals_dir=root / "page_journals",
-                indexes_dir=root / "indexes",
                 exports_dir=root / "exports",
                 reports_dir=root / "reports",
                 locks_dir=root / "locks",
             )
             ws.ensure_dirs()
             dir_attrs = [
-                ws.keyword_notebook_dir, ws.lane_states_dir,
-                ws.page_journals_dir, ws.indexes_dir,
+                ws.keyword_notebook_dir,
+                ws.page_journals_dir,
                 ws.exports_dir, ws.reports_dir, ws.locks_dir,
             ]
             for d in dir_attrs:
@@ -127,9 +126,7 @@ class TestDiscoveryWorkspaceEnsureDirs:
                 generation_id="test-g2",
                 root=root,
                 keyword_notebook_dir=root / "keyword_notebooks",
-                lane_states_dir=root / "lane_states",
                 page_journals_dir=root / "page_journals",
-                indexes_dir=root / "indexes",
                 exports_dir=root / "exports",
                 reports_dir=root / "reports",
                 locks_dir=root / "locks",
@@ -141,8 +138,9 @@ class TestDiscoveryWorkspaceEnsureDirs:
 
     def test_verify_dirs_ignores_leftover_pending_candidates(self):
         """A retired generation may still carry the finalized migration's
-        pending_candidates directory on disk; it is not part of the layout
-        and must not affect verification."""
+        pending_candidates directory and the deleted dead-stack lane_states /
+        indexes directories on disk; none are part of the layout and must not
+        affect verification."""
         tmp = Path(tempfile.mkdtemp())
         try:
             root = tmp / "test-g3"
@@ -150,15 +148,15 @@ class TestDiscoveryWorkspaceEnsureDirs:
                 generation_id="test-g3",
                 root=root,
                 keyword_notebook_dir=root / "keyword_notebooks",
-                lane_states_dir=root / "lane_states",
                 page_journals_dir=root / "page_journals",
-                indexes_dir=root / "indexes",
                 exports_dir=root / "exports",
                 reports_dir=root / "reports",
                 locks_dir=root / "locks",
             )
             ws.ensure_dirs()
             (root / "pending_candidates").mkdir()
+            (root / "lane_states").mkdir()
+            (root / "indexes").mkdir()
             assert ws.verify_dirs() == []
             # Required directories are still enforced.
             shutil.rmtree(ws.reports_dir)
@@ -239,6 +237,7 @@ class TestResolveActiveTreeVerification:
             migration_id="mig-tree",
             created_at=_ACTIVATED_AT,
             completed_at=_ACTIVATED_AT,
+            store_schema_versions=dict(STORE_SCHEMA_VERSIONS_V4),
             workspace_tree_sha256=wsp.hash_workspace_tree(
                 gen_root, exclude={"workspace.json"}
             ),
@@ -281,13 +280,10 @@ class TestResolveActiveTreeVerification:
         import src.discovery.workspace as wsp
 
         ns = self._make_active(tmp_path, monkeypatch)
-        # Simulate one normal discovery run: notebooks mutated in place, lane
-        # states / page journals committed, reports / locks created.
+        # Simulate one normal discovery run: notebooks mutated in place,
+        # page journals committed, reports / locks created.
         nb = ns.gen_root / "keyword_notebooks" / "nb__abcd1234.json"
         nb.write_text('{"updated_at": "later"}', encoding="utf-8")
-        (ns.gen_root / "lane_states" / "lane.json").write_text(
-            "{}", encoding="utf-8"
-        )
         (ns.gen_root / "page_journals" / "p1.json").write_text(
             "{}", encoding="utf-8"
         )
@@ -350,7 +346,9 @@ class TestCommitWorkspace:
         monkeypatch.setattr(wsp, "STAGING_DIR", staging)
         monkeypatch.setattr(wsp, "DISCOVERY_MIGRATIONS_DIR", migrations)
         monkeypatch.setattr(wsp, "ACTIVE_GENERATION_PATH", tmp_path / "active_generation.json")
-        monkeypatch.setattr(wsp, "MIGRATION_LOCK_PATH", migrations / ".migration.lock")
+        monkeypatch.setattr(
+            wsp, "DISCOVERY_MAINTENANCE_LOCK_PATH", migrations / ".maintenance.lock"
+        )
         return SimpleNamespace(
             wsp=wsp,
             tmp_path=tmp_path,
@@ -445,7 +443,7 @@ class TestCommitWorkspace:
         os.rename(str(ws.root), str(ns.generations / "gen-crash3"))
         # Pointer expects different content than the promoted workspace.json.
         bad_pointer = _pointer("gen-crash3", b"different")
-        with pytest.raises(ns.wsp.CutoverReconciliationError):
+        with pytest.raises(ns.wsp.CommitReconciliationError):
             ns.wsp.commit_workspace(ws, bad_pointer)
         assert not ns.active_path.exists()
 
@@ -455,23 +453,21 @@ class TestCommitWorkspace:
             generation_id="gen-ghost",
             root=ns.staging / "gen-ghost",
             keyword_notebook_dir=ns.staging / "gen-ghost" / "keyword_notebooks",
-            lane_states_dir=ns.staging / "gen-ghost" / "lane_states",
             page_journals_dir=ns.staging / "gen-ghost" / "page_journals",
-            indexes_dir=ns.staging / "gen-ghost" / "indexes",
             exports_dir=ns.staging / "gen-ghost" / "exports",
             reports_dir=ns.staging / "gen-ghost" / "reports",
             locks_dir=ns.staging / "gen-ghost" / "locks",
         )
-        with pytest.raises(ns.wsp.CutoverReconciliationError):
+        with pytest.raises(ns.wsp.CommitReconciliationError):
             ns.wsp.commit_workspace(ws, _pointer("gen-ghost", b"{}"))
 
     def test_lock_contention_fails_fast(self, iso_ws):
         ns = iso_ws
         ws = self._make_staging(ns, "gen-locked")
         manifest_bytes = (ws.root / "workspace.json").read_bytes()
-        lock = FileLock(str(ns.migrations / ".migration.lock"), timeout=0)
+        lock = FileLock(str(ns.migrations / ".maintenance.lock"), timeout=0)
         with lock:
-            with pytest.raises(ns.wsp.CutoverLockError):
+            with pytest.raises(ns.wsp.CommitLockError):
                 ns.wsp.commit_workspace(ws, _pointer("gen-locked", manifest_bytes))
         # After the lock is released the commit succeeds.
         ns.wsp.commit_workspace(ws, _pointer("gen-locked", manifest_bytes))

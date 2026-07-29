@@ -186,19 +186,28 @@ class TestPathPreservationInSubprocess:
             )
             assert result.returncode == 0, result.stderr
             output = result.stdout
-            # Check that paths contain drive colon (not flattened)
-            assert ":\\" in output or ":/" in output, (
-                f"Paths lack drive colon — may be flattened:\n{output}"
-            )
-            # Check that paths DON'T contain the flattened pattern
-            # (e.g., "UsersAdmin" without backslash before it)
-            lines = output.strip().splitlines()
-            for line in lines:
-                if "PYCACHE:" in line:
-                    path_part = line.split("PYCACHE:", 1)[1].strip()
-                    # Should NOT look like "C:UsersAdmin..." (colon followed by letter, no backslash)
-                    import re
-                    assert not re.search(r"[A-Z]:[A-Z]", path_part), (
-                        f"Path appears flattened: {path_part!r}"
-                    )
+            if os.name == "nt":
+                # Check that paths contain drive colon (not flattened)
+                assert ":\\" in output or ":/" in output, (
+                    f"Paths lack drive colon — may be flattened:\n{output}"
+                )
+                # Check that paths DON'T contain the flattened pattern
+                # (e.g., "UsersAdmin" without backslash before it)
+                lines = output.strip().splitlines()
+                for line in lines:
+                    if "PYCACHE:" in line:
+                        path_part = line.split("PYCACHE:", 1)[1].strip()
+                        # Should NOT look like "C:UsersAdmin..." (colon followed by letter, no backslash)
+                        import re
+                        assert not re.search(r"[A-Z]:[A-Z]", path_part), (
+                            f"Path appears flattened: {path_part!r}"
+                        )
+            else:
+                # POSIX: workspace paths must pass through unchanged
+                assert f"PYCACHE: {ws.cache_dir}" in output, (
+                    f"PYTHONPYCACHEPREFIX altered in subprocess:\n{output}"
+                )
+                assert f"TMP: {ws.temp_dir}" in output, (
+                    f"TMP altered in subprocess:\n{output}"
+                )
 

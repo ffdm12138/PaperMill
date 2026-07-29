@@ -34,11 +34,7 @@ DiscoveryWorkspace + workspace.json manifest
         ▼
 DiscoveryStoreBundleV4
   ├── notebooks        → NotebookStoreV4
-  ├── lane_states      → LaneStateStoreV4
-  ├── pages            → PageJournalStoreV4
-  ├── candidates       → PendingCandidateStoreV4
-  ├── indexes          → JournalIndexV4
-  └── reports          → ReportStoreV4
+  └── pages            → PageJournalStoreV4
         │
         ▼
 DiscoveryRuntimeDependencies (injected, never constructed inside the coordinator)
@@ -57,6 +53,15 @@ MetadataStagingGateway
 DiscoveryStageTransaction → metadata v2.0 → paper_raw
 ```
 
+> **Removed:** the original diagram also listed `lane_states →
+> LaneStateStoreV4`, `candidates → PendingCandidateStoreV4`,
+> `indexes → JournalIndexV4`, and `reports → ReportStoreV4`.  The dead
+> stores (`LaneStateStoreV4` / `JournalIndexV4` / `ReportStoreV4`) and the
+> transitional pending store were deleted (finalized 2026-07-26); the
+> candidate drain now runs on `JournalDrainIndex` over the page journals,
+> and reports are plain files under `reports/`.  Historical note only —
+> these store names must not be reintroduced.
+
 Metadata v2.0 and Catalog v3.2 are **out of scope** for this migration: they remain the formal citation and content layers and are not modified by discovery work.
 
 ## 3. Frozen v4 protocol
@@ -70,6 +75,12 @@ Metadata v2.0 and Catalog v3.2 are **out of scope** for this migration: they rem
 - The active production contract is `NotebookStoreV4` / `KeywordNotebookV4`.  v1/v2/v3 notebooks are rejected with `UnsupportedNotebookSchemaError`; any v2/v3 reader must live only in the migration package.
 
 ### 3.2 Lane
+
+> **Removed:** `LaneStateV4` and the `lane_states` store named below were
+> part of the dead store stack deleted on 2026-07-26.  Durable cursor
+> state now lives inside the v4 notebook itself
+> (`NotebookStoreV4.ensure_backfill_generation` and friends), and the
+> generation/ledger interplay is unchanged.  Historical record only.
 
 - A lane is `(keyword_id, query_id, provider, mode)` where `provider ∈ {openalex, crossref}` and `mode ∈ {refresh, backfill}`.
 - `LaneStateV4` is the only durable cursor state.
@@ -120,6 +131,11 @@ PAGE_V4_FIELDS = frozenset({
 
 ### 3.7 Migration journal
 
+> **Removed:** `MigrationJournalV4`, its state machine, and every
+> subcommand named below (`--rollback`, `--skip-real-smoke`, …) were
+> deleted with the one-time migration toolchain on 2026-07-26.  This
+> section is historical record only — do not run these commands.
+
 - `MigrationJournalV4` records the state machine for legacy discovery data migration.
 - Allowed states are adjacent: `planned → inventory_complete → archive_prepared → workspace_built → notebooks_staged → candidates_extracted → preflight_validated → smoke_passed → cutover_committed → legacy_cleaned → finalized`.  `smoke_failed` is a recoverable side state that retries the smoke step; `aborted` is terminal and reachable from any pre-cutover state, and from `cutover_committed` via `--rollback` (the only post-cutover escape).
 - Cross-state jumps are forbidden.
@@ -136,7 +152,7 @@ PAGE_V4_FIELDS = frozenset({
 - Path traversal is rejected for all identifiers.
 - Stores exchange typed objects, not raw dicts, except where the v4 contract intentionally provides a `to_dict()`/`from_dict_strict()` pair.
 
-The old `KeywordNotebookStore`, `PageJournalStore`, and old flat-directory stores are removed from the production namespace; if the migration tool still needs them, they are renamed to `Legacy…Reader` and live only under `src/migrations/discovery_v4/`.
+The old `KeywordNotebookStore`, `PageJournalStore`, and old flat-directory stores are removed from the production namespace; the `Legacy…Reader` shells that briefly lived under `src/migrations/discovery_v4/` were **removed** with the migration toolchain on 2026-07-26.
 
 ## 5. Composition root and coordinator boundary
 
@@ -154,8 +170,16 @@ The old `KeywordNotebookStore`, `PageJournalStore`, and old flat-directory store
 
 ## 7. Migration state machine
 
+> **Removed:** `scripts/migrate_discovery_v4.py` and every subcommand
+> listed below (`--plan`, `--apply`, `--resume`, `--inspect`, `--cutover`,
+> `--post-cutover-validate`, `--rollback`, `--clean-legacy`, `--finalize`,
+> `--abort`, `--dry-run`) were deleted on 2026-07-26 after the migration
+> finalized.  This section is historical record only — none of these
+> commands exist in the working tree; git history preserves them.
+
 The migration CLI must support exactly these subcommands:
 
+<!-- historical: do not execute -->
 ```bash
 python scripts/migrate_discovery_v4.py --plan
 python scripts/migrate_discovery_v4.py --apply
@@ -169,6 +193,7 @@ python scripts/migrate_discovery_v4.py --finalize <migration_id>
 python scripts/migrate_discovery_v4.py --abort <migration_id>
 python scripts/migrate_discovery_v4.py --dry-run
 ```
+<!-- /historical -->
 
 Rules:
 
@@ -177,7 +202,7 @@ Rules:
 - `--abort` is safe only before cutover; after cutover only `--rollback` is allowed.
 - Smoke must be executed against the **staging** workspace, not the active pointer, and its paper_raw/papers/ledger targets are isolated directories inside the staging workspace (`--paper-raw-dir` / `--papers-dir` / `--ledger-path`).
 - Smoke failure blocks cutover.
-- `--cutover` holds the global `.migration.lock`, snapshots the superseded pointer, records `previous_generation_id`, and self-heals from every crash window (rename / pointer write / journal save) on rerun.
+- `--cutover` holds the global `.migration.lock` (renamed to `.maintenance.lock` on 2026-07-27), snapshots the superseded pointer, records `previous_generation_id`, and self-heals from every crash window (rename / pointer write / journal save) on rerun.
 - The post-cutover chain is `--post-cutover-validate` (read-only; gates on a fully drained pending store and, when no legacy candidates were imported, verifies the activation-time tree hash) → `--clean-legacy` (re-verifies archive hashes, removes the drained transitional `pending_candidates/` directory, then deletes the legacy archive) → `--finalize`.  `--rollback` restores the previous pointer and moves the promoted generation back to staging.  The pending-store lifecycle and the exact tree-hash conditions are frozen in `docs/ADR_DISCOVERY_V4_MIGRATION_FINAL.md`.
 
 ## 8. Deletion of old runtime compatibility
@@ -217,7 +242,7 @@ Additional gate conditions:
 - CLI fails closed when the active pointer is missing.
 - Production code does not import `src.migrations.discovery_v4`.
 - Metadata v2.0 and Catalog v3.2 are unchanged.
-- `scripts/verify_discovery_final_architecture.py` also enforces the migration-hardening structural gates: the retired alias shells stay deleted with no `src.discovery.keyword_notebook` / `src.discovery.page_journal` references anywhere under `src/` or `scripts/`; the smoke run passes the three isolated targets; `commit_workspace` is lock-guarded with previous-pointer snapshot and crash reconciliation; `resolve_active(verify_tree=True)` performs a real tree-hash content check; `allowed_cutover_states` is exactly `{SMOKE_PASSED}`; no `legacy_candidate_seeds` references remain; archive copies are destination-rehashed; `pending_queue` drains `PendingCandidateStoreV4` with the coordinator injecting `bundle.pending`; and the CLI exposes `--post-cutover-validate` / `--rollback` / `--clean-legacy` / `--finalize`.
+- `scripts/verify_discovery_final_architecture.py` also enforces the post-migration structural gates that outlive the deleted toolchain: the retired alias shells stay deleted with no `src.discovery.keyword_notebook` / `src.discovery.page_journal` references anywhere under `src/` or `scripts/`; `commit_workspace` is lock-guarded under `.maintenance.lock` with previous-pointer snapshot and crash reconciliation (`CommitReconciliationError`); the active pointer carries `previous_generation_id`; `resolve_active(verify_tree=True)` performs a real tree-hash content check against `manifest.workspace_tree_sha256`; and the retired migration drain tokens (`legacy_candidate_seeds`, `PendingCandidateStoreV4`) plus the dead v4 store tokens (`LaneStateStoreV4`, `JournalIndexV4`, `ReportStoreV4`, `LaneStateV4`, `CursorTransactionV4`) may never reappear under `src/` or `scripts/`.
 
 ## 10. Execution environment note
 
@@ -232,6 +257,7 @@ On Windows, migration scripts and CLI commands that require PowerShell must be r
 
 ## 12. Related documents
 
+- `docs/ADR_DISCOVERY_V4_RUNTIME.md` (current runtime contract)
 - `docs/ADR_DISCOVERY_STAGING_BOUNDARIES.md`
 - `docs/ADR_DISCOVERY_V4_MIGRATION_FINAL.md`
 - `docs/PROJECT_CONTRACT.md`

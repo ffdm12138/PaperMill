@@ -11,12 +11,15 @@ from tests.helpers.relevance_profiles import bind_test_relevance_profile
 import scripts.discover_papers_concurrent as mod
 from src.discovery.contracts.notebook import keyword_id
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from tests.helpers.discovery_workspace import make_test_workspace
 
 
 pytestmark = pytest.mark.unit
 
 
 def _seed_ready(root: Path, keyword_zh: str) -> None:
+    if not (root / "workspace.json").is_file():
+        make_test_workspace(root)
     notebooks = root / "keyword_notebooks"
     store = KeywordNotebookStore(notebooks)
     store.ensure_notebook(keyword_zh)

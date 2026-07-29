@@ -18,6 +18,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts import _bootstrap  # noqa: F401  (runtime init: dirs/validate/logging)
 
 from config.settings import DATA_DIR  # noqa: E402
+from src.discovery.maintenance_gate import (  # noqa: E402
+    DiscoveryMaintenanceLock,
+    DiscoveryMaintenanceLockError,
+)
 from src.discovery.relevance_profiles import (  # noqa: E402
     RelevanceProfilePlanError,
     RelevanceProfileTransactionError,
@@ -111,13 +115,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.resume is not None:
             plan = _plan_from_transaction(args.resume)
             _assert_runtime_write_authorized(_plan_write_roots(plan), args)
-            result = resume_relevance_profile_transaction(args.resume)
+            with DiscoveryMaintenanceLock(purpose="relevance-profile-resume"):
+                result = resume_relevance_profile_transaction(args.resume)
             print(f"[COMMITTED] transaction_id={result['transaction_id']}")
             return 0
         if args.abort is not None:
             plan = _plan_from_transaction(args.abort)
             _assert_runtime_write_authorized(_plan_write_roots(plan), args)
-            result = abort_relevance_profile_transaction(args.abort)
+            with DiscoveryMaintenanceLock(purpose="relevance-profile-abort"):
+                result = abort_relevance_profile_transaction(args.abort)
             print(f"[ABORTED] transaction_id={result['transaction_id']}")
             return 0
         plan_mode = args.plan == "__PLAN_MODE__" or (args.plan is not None and not args.apply)
@@ -190,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(plan, dict):
             raise RelevanceProfileTransactionError("plan JSON must be an object")
         _assert_runtime_write_authorized(_plan_write_roots(plan), args)
-        result = apply_relevance_profile_plan(plan, expected_plan_hash=args.expected_plan_hash)
+        with DiscoveryMaintenanceLock(purpose="relevance-profile-apply"):
+            result = apply_relevance_profile_plan(plan, expected_plan_hash=args.expected_plan_hash)
         print(f"[COMMITTED] transaction_id={result['transaction_id']}")
         return 0
     except RelevanceProfilePlanError as exc:
@@ -202,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[ERROR] relevance profile plan failed: {exc}", file=sys.stderr)
         return 1
     except (OSError, ValueError, RelevanceProfileTransactionError,
-            DiscoveryRuntimeUnavailableError) as exc:
+            DiscoveryRuntimeUnavailableError,
+            DiscoveryMaintenanceLockError) as exc:
         print(f"[ERROR] relevance profile configuration failed: {exc}", file=sys.stderr)
         return 1
 

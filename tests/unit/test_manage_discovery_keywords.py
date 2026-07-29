@@ -4,20 +4,31 @@ import json
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
 
 import scripts.manage_discovery_keywords as manage
+import src.discovery.workspace as workspace_mod
 from src.discovery.contracts.notebook import notebook_filename
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from tests.helpers.discovery_workspace import make_test_workspace
 
 
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _isolated_maintenance_lock(tmp_path: Path, monkeypatch):
+    """Mutations acquire the global maintenance lock; keep it off real data."""
+    monkeypatch.setattr(
+        workspace_mod,
+        "DISCOVERY_MAINTENANCE_LOCK_PATH",
+        tmp_path / "migrations" / ".maintenance.lock",
+    )
+
+
 def _workspace(tmp_path: Path) -> Path:
-    """Build an isolated v4 workspace root containing keyword_notebooks/."""
-    root = tmp_path / "workspace"
-    (root / "keyword_notebooks").mkdir(parents=True)
-    return root
+    """Build a complete, resolvable v4 workspace root."""
+    return make_test_workspace(tmp_path / "workspace").root
 
 
 def test_create_disabled_writes_and_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -107,4 +118,31 @@ def test_add_query_actions_are_language_specific(tmp_path: Path, capsys: pytest.
 def test_workspace_root_without_keyword_notebooks_fails_closed(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     rc = manage.main(["--list", "--workspace-root", str(tmp_path)])
     assert rc == 2
-    assert "keyword_notebooks" in capsys.readouterr().err
+    assert "not a complete v4 workspace" in capsys.readouterr().err
+
+
+def test_mutation_blocked_while_maintenance_lock_held(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A live maintenance window fails keyword mutations closed."""
+    workspace = _workspace(tmp_path)
+    held = FileLock(str(workspace_mod.DISCOVERY_MAINTENANCE_LOCK_PATH), timeout=0)
+    import threading
+
+    results: dict[str, int] = {}
+    with held:
+        worker = threading.Thread(
+            target=lambda: results.setdefault(
+                "rc",
+                manage.main([
+                    "--create", "--create-disabled", "--apply",
+                    "--workspace-root", str(workspace), "--keyword-zh", "风吹雪",
+                ]),
+            )
+        )
+        worker.start()
+        worker.join(timeout=60)
+    assert not worker.is_alive()
+    assert results["rc"] == 2
+    assert "held by another" in capsys.readouterr().err
+    assert not list((workspace / "keyword_notebooks").glob("*.json"))

@@ -61,7 +61,7 @@ class LaneRunResult:
 class NotebookStoreV4:
     """File-backed store with per-keyword locking and field-level merge.
 
-    Accepts ONLY v4 notebooks.  v1/v2/v4 notebooks raise
+    Accepts ONLY v4 notebooks.  v1/v2/v3 notebooks raise
     ``UnsupportedNotebookSchemaError`` on load and must be migrated.
     """
 
@@ -95,7 +95,7 @@ class NotebookStoreV4:
     def load(self, keyword: str) -> dict[str, Any] | None:
         """Load a v4 notebook or return None if absent.
 
-        Rejects v1/v2/v4 notebooks with ``UnsupportedNotebookSchemaError``.
+        Rejects v1/v2/v3 notebooks with ``UnsupportedNotebookSchemaError``.
         Corrupt JSON raises ``NotebookCorruptError``.
         """
         path = self._path_for(keyword)

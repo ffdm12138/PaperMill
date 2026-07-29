@@ -129,17 +129,13 @@ def _provider_fetch(openalex, crossref):
     return CallbackProviderPageFetcher(_fetch)
 
 
-def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
+def _run_discovery(keyword_zh: str, *, workspace_root: Path,
                    paper_raw_dir: Path | None = None,
                    papers_dir: Path | None = None,
                    hide_existing: bool = False,
                    page_fetcher) -> tuple[SimpleNamespace, dict]:
-    runtime_base = notebook_dir / ".discovery_runtime"
-    workspace = make_test_workspace(
-        runtime_base,
-        notebook_dir=notebook_dir,
-        page_journals_dir=runtime_base / "pending_pages",
-    )
+    runtime_base = workspace_root / ".discovery_runtime"
+    workspace = make_test_workspace(workspace_root)
     options = DiscoveryOptions(
         mode="hybrid",
         refresh_pages=1,
@@ -169,11 +165,11 @@ def _run_discovery(keyword_zh: str, *, notebook_dir: Path,
 
 class TestKeywordDiscoveryResume:
     def test_second_run_resumes_backfill_and_refreshes_from_start(self, tmp_path: Path):
-        notebook_dir = tmp_path / "notebooks"
+        workspace_root = tmp_path / "ws"
         paper_raw = tmp_path / "paper_raw"
         papers = tmp_path / "papers"
         keyword_zh = "边界层"
-        store = KeywordNotebookStore(notebook_dir)
+        store = KeywordNotebookStore(workspace_root / "keyword_notebooks")
         _seed_ready(store, keyword_zh, "boundary layer")
 
         # First run.
@@ -183,7 +179,7 @@ class TestKeywordDiscoveryResume:
         }
         fake = _ScriptedOpenAlex(scripts_run1)
         batch1, report1 = _run_discovery(
-            keyword_zh, notebook_dir=notebook_dir, paper_raw_dir=paper_raw,
+            keyword_zh, workspace_root=workspace_root, paper_raw_dir=paper_raw,
             papers_dir=papers, page_fetcher=_provider_fetch(fake, _crossref_noop),
         )
         assert report1["status"] == "success"
@@ -205,7 +201,7 @@ class TestKeywordDiscoveryResume:
         }
         fake2 = _ScriptedOpenAlex(scripts_run2)
         batch2, report2 = _run_discovery(
-            keyword_zh, notebook_dir=notebook_dir, paper_raw_dir=paper_raw,
+            keyword_zh, workspace_root=workspace_root, paper_raw_dir=paper_raw,
             papers_dir=papers, page_fetcher=_provider_fetch(fake2, _crossref_noop),
         )
         refresh_cursors = [c for (lane, c) in fake2.calls if lane == "refresh"]
@@ -223,11 +219,11 @@ class TestKeywordDiscoveryResume:
 
     def test_existing_doi_not_re_staged(self, tmp_path: Path):
         """A DOI already in paper_raw must not be staged again."""
-        notebook_dir = tmp_path / "notebooks"
+        workspace_root = tmp_path / "ws"
         paper_raw = tmp_path / "paper_raw"
         papers = tmp_path / "papers"
         keyword_zh = "边界层"
-        _seed_ready(KeywordNotebookStore(notebook_dir), keyword_zh, "boundary layer")
+        _seed_ready(KeywordNotebookStore(workspace_root / "keyword_notebooks"), keyword_zh, "boundary layer")
 
         from tests.factories.paper_raw_factory import create_network_metadata_workspace
         create_network_metadata_workspace(tmp_path, doi="10.1/exists")
@@ -241,7 +237,7 @@ class TestKeywordDiscoveryResume:
         }
         fake = _ScriptedOpenAlex(scripts)
         batch, report = _run_discovery(
-            keyword_zh, notebook_dir=notebook_dir, paper_raw_dir=paper_raw,
+            keyword_zh, workspace_root=workspace_root, paper_raw_dir=paper_raw,
             papers_dir=papers, hide_existing=True,
             page_fetcher=_provider_fetch(fake, _crossref_noop),
         )
@@ -253,8 +249,8 @@ class TestKeywordDiscoveryResume:
 
     def test_multi_keyword_independence(self, tmp_path: Path):
         """Keywords A and B keep independent cursors; new keyword C starts fresh."""
-        notebook_dir = tmp_path / "notebooks"
-        store = KeywordNotebookStore(notebook_dir)
+        workspace_root = tmp_path / "ws"
+        store = KeywordNotebookStore(workspace_root / "keyword_notebooks")
         keyword_a = "关键词甲"
         keyword_b = "关键词乙"
         keyword_c = "关键词丙"
@@ -267,7 +263,7 @@ class TestKeywordDiscoveryResume:
         _seed_ready(store, keyword_c, "keyword C")
         _run_discovery(
             keyword_a,
-            notebook_dir=notebook_dir,
+            workspace_root=workspace_root,
             page_fetcher=_provider_fetch(
                 _ScriptedOpenAlex({
                     ("refresh", INITIAL_CURSOR): ([('10.1/a_seed', 'A seed')], None),
@@ -278,7 +274,7 @@ class TestKeywordDiscoveryResume:
         )
         _run_discovery(
             keyword_b,
-            notebook_dir=notebook_dir,
+            workspace_root=workspace_root,
             page_fetcher=_provider_fetch(
                 _ScriptedOpenAlex({
                     ("refresh", INITIAL_CURSOR): ([('10.1/b_seed', 'B seed')], None),
@@ -318,7 +314,7 @@ class TestKeywordDiscoveryResume:
 
         for kw in (keyword_a, keyword_b, keyword_c):
             _run_discovery(
-                kw, notebook_dir=notebook_dir,
+                kw, workspace_root=workspace_root,
                 page_fetcher=CallbackProviderPageFetcher(_dispatch),
             )
 

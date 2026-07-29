@@ -3,18 +3,16 @@ from __future__ import annotations
 
 import pytest
 
-from src.discovery.constants import INITIAL_CURSOR
 from src.discovery.contracts.page_journal import (
     PAGE_SCHEMA_VERSION_V4,
     PAGE_V4_FIELDS,
     ProviderPageJournalV4,
     UnexpectedNonV4StateError,
 )
-from src.discovery.contracts.lane_state import (
-    CursorTransactionV4,
-    LaneStateV4,
+from src.discovery.contracts.manifest import (
+    STORE_SCHEMA_VERSIONS_V4,
+    DiscoveryWorkspaceManifestV4,
 )
-from src.discovery.contracts.manifest import DiscoveryWorkspaceManifestV4
 
 
 # ── DiscoveryWorkspaceManifestV4 ──────────────────────────────────────────
@@ -22,75 +20,35 @@ from src.discovery.contracts.manifest import DiscoveryWorkspaceManifestV4
 
 class TestWorkspaceManifestV4:
     def test_default_construction(self):
-        m = DiscoveryWorkspaceManifestV4()
-        assert m.schema_version == "4.0"
+        # No construction path yields a partially-valid manifest: the
+        # defaults are placeholders and must fail closed.
+        with pytest.raises(ValueError):
+            DiscoveryWorkspaceManifestV4()
 
     def test_rejects_wrong_schema(self):
         with pytest.raises(ValueError, match="schema_version"):
-            DiscoveryWorkspaceManifestV4(schema_version="3.0")
+            DiscoveryWorkspaceManifestV4(
+                schema_version="3.0",
+                generation_id="v4-test",
+                migration_id="mig-001",
+                created_at="2026-07-23T00:00:00+00:00",
+                completed_at="2026-07-23T00:00:00+00:00",
+                store_schema_versions=dict(STORE_SCHEMA_VERSIONS_V4),
+                workspace_tree_sha256="a" * 64,
+            )
 
     def test_to_dict_roundtrip(self):
         m = DiscoveryWorkspaceManifestV4(
             generation_id="v4-test",
-            created_at="2026-07-23T00:00:00Z",
-            lane_count=20,
+            created_at="2026-07-23T00:00:00+00:00",
+            completed_at="2026-07-23T00:00:00+00:00",
             migration_id="mig-001",
+            store_schema_versions=dict(STORE_SCHEMA_VERSIONS_V4),
+            workspace_tree_sha256="a" * 64,
         )
         d = m.to_dict()
         assert d["generation_id"] == "v4-test"
-        assert d["lane_count"] == 20
-
-
-# ── LaneStateV4 (contracts: flat fields, not lane_key) ───────────────────
-
-
-class TestLaneStateV4:
-    def test_default_construction(self):
-        ls = LaneStateV4(keyword_id="k1", query_id="q1", provider="openalex", mode="backfill")
-        assert ls.cursor == INITIAL_CURSOR
-        assert ls.exhausted is False
-        assert ls.generation == 1
-        assert ls.revision == 0
-        assert ls.exhaustion_evidence_id is None
-
-    def test_exhausted_requires_evidence(self):
-        with pytest.raises(ValueError, match="exhausted.*requires"):
-            LaneStateV4(keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                        exhausted=True, exhaustion_evidence_id=None)
-
-    def test_non_exhausted_rejects_evidence(self):
-        with pytest.raises(ValueError, match="non-exhausted"):
-            LaneStateV4(keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                        exhausted=False, exhaustion_evidence_id="ev-001")
-
-    def test_exhausted_with_evidence_constructs(self):
-        ls = LaneStateV4(keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                         exhausted=True, exhaustion_evidence_id="ev-001")
-        assert ls.exhausted is True
-        assert ls.exhaustion_evidence_id == "ev-001"
-
-    def test_rejects_negative_generation(self):
-        with pytest.raises(ValueError, match="generation"):
-            LaneStateV4(keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                        generation=0)
-
-    def test_to_dict_roundtrip(self):
-        ls = LaneStateV4(keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                         cursor="next-page", exhausted=True,
-                         exhaustion_evidence_id="ev-001", revision=3)
-        d = ls.to_dict()
-        assert d["schema_version"] == "4.0"
-        assert d["cursor"] == "next-page"
-        recovered = LaneStateV4.from_dict_strict(d)
-        assert recovered.cursor == "next-page"
-        assert recovered.exhausted is True
-        assert recovered.revision == 3
-
-    def test_from_dict_strict_rejects_unknown_fields(self):
-        d = LaneStateV4(keyword_id="k1", query_id="q1", provider="openalex", mode="backfill").to_dict()
-        d["extra_field"] = "nope"
-        with pytest.raises(ValueError, match="unknown"):
-            LaneStateV4.from_dict_strict(d)
+        assert DiscoveryWorkspaceManifestV4.from_dict_strict(d) == m
 
 
 # ── ProviderPageJournalV4 ─────────────────────────────────────────────────
@@ -198,44 +156,6 @@ class TestProviderPageJournalV4:
         d["unknown_key"] = "intruder"
         with pytest.raises(ValueError, match="unknown fields"):
             ProviderPageJournalV4.from_dict_strict(d)
-
-
-# ── CursorTransactionV4 (contracts: flat fields, not lane_key) ────────────
-
-
-class TestCursorTransactionV4:
-    def test_valid_transaction(self):
-        tx = CursorTransactionV4(
-            keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-            expected_revision=0, expected_cursor=INITIAL_CURSOR,
-            new_cursor="next-page", new_revision=1,
-        )
-        assert tx.new_revision == 1
-        assert tx.new_cursor == "next-page"
-
-    def test_rejects_new_revision_not_greater(self):
-        with pytest.raises(ValueError, match="new_revision.* must be >"):
-            CursorTransactionV4(
-                keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                expected_revision=1, new_revision=1,
-                expected_cursor="*", new_cursor="next",
-            )
-
-    def test_rejects_negative_expected_revision(self):
-        with pytest.raises(ValueError, match="expected_revision"):
-            CursorTransactionV4(
-                keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                expected_revision=-1, expected_cursor="*",
-                new_cursor="next", new_revision=0,
-            )
-
-    def test_rejects_empty_expected_cursor(self):
-        with pytest.raises(ValueError, match="expected_cursor"):
-            CursorTransactionV4(
-                keyword_id="k1", query_id="q1", provider="openalex", mode="backfill",
-                expected_revision=0, expected_cursor="",
-                new_cursor="next", new_revision=1,
-            )
 
 
 # ── PAGE_V4_FIELDS completeness ───────────────────────────────────────────

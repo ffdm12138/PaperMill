@@ -34,6 +34,14 @@ that future verifiers and audits must check.
 
 ## 2. Decision 1 — Page journal is the sole candidate carrier; the pending store is a transitional migration channel
 
+> **Removed:** `PendingCandidateStoreV4`, its `pending_candidates/`
+> directory, the `_drain_pending_store_candidates` drain loop in
+> `src/discovery/pending_queue.py`, and the migrator subcommands named
+> below (`--post-cutover-validate`, `--clean-legacy`, `--finalize`) were
+> deleted with the one-time migration toolchain on 2026-07-26.  This
+> section is historical record only — none of these commands or stores
+> exist in the working tree.
+
 - The provider page journal (`ProviderPageJournalV4`) is the **only**
   production candidate carrier.  It owns the candidate state machine,
   leases, and claims; candidates flow
@@ -50,11 +58,13 @@ that future verifiers and audits must check.
     discovery never writes to it.
   - **End of life:** after cutover the store must be drained to zero files
     and then removed:
+    <!-- historical: do not execute -->
     - `--post-cutover-validate` fails while any candidate file remains and
       directs the operator to run a normal discovery batch to drain it.
     - `--clean-legacy` refuses to run while the store is non-empty; once
       drained, it deletes the active generation's `pending_candidates/`
       directory as part of the cleanup.
+    <!-- /historical -->
 - Consequently `DiscoveryWorkspace.verify_dirs()` no longer requires
   `pending_candidates`: the active generation must keep resolving (and
   `--finalize` must keep working) after the directory is removed.  Staging
@@ -68,6 +78,13 @@ across the cutover, and its removal is part of the migration's definition
 of done.
 
 ## 3. Decision 2 — `resolve_active(verify_tree=False)` is deliberate; the immutable/runtime split is deferred
+
+> **Removed:** the `lane_states`, `indexes`, and `pending_candidates`
+> directories named below belonged to the deleted store stack
+> (`LaneStateStoreV4` / `JournalIndexV4` / transitional pending store);
+> the active workspace layout is now exactly `keyword_notebooks`,
+> `page_journals`, `exports`, `reports`, `locks` (see
+> `docs/ADR_DISCOVERY_V4_RUNTIME.md`).  Historical record only.
 
 The manifest's `workspace_tree_sha256` binds the **activation-time**
 closure: the exact bytes the migrator staged.  Normal discovery runs
@@ -115,6 +132,12 @@ per-record mechanisms do not already provide.
 
 ## 4. Decision 3 — Legacy contracts live only in the migration package; production fails closed on non-4.0
 
+> **Removed:** `src/migrations/discovery_v4/` (including
+> `legacy_contracts/`) was deleted with the migration toolchain on
+> 2026-07-26.  Legacy schema knowledge no longer exists anywhere in the
+> working tree; the fail-closed production rule below remains in force.
+> Historical record only.
+
 - Legacy schema knowledge (notebook v3, page-journal v2/v3, legacy
   candidate seeds) exists **only** under
   `src/migrations/discovery_v4/legacy_contracts/`
@@ -130,6 +153,13 @@ per-record mechanisms do not already provide.
 
 These invariants held at every point of the repair and must continue to
 hold:
+
+> **Removed:** the migrator subcommands named in invariant 4 (`--apply`,
+> `--resume`, `--cutover`, `--rollback`) no longer exist.  The maintenance
+> lock discipline survives: the lock file is now `.maintenance.lock`
+> (renamed from `.migration.lock` on 2026-07-27) and is held by
+> `DiscoveryMaintenanceLock`; discovery writers still refuse to start
+> while it is held.
 
 1. **No production validators on legacy input.**  The migration layer never
    runs production v4 validators against legacy bytes; validators act only
@@ -172,8 +202,12 @@ hold:
 ## 7. Related documents
 
 - `docs/ADR_DISCOVERY_V4_SINGLE_STACK.md`
+- `docs/ADR_DISCOVERY_V4_RUNTIME.md` (current runtime contract)
 - `docs/ADR_DISCOVERY_STAGING_BOUNDARIES.md`
-- `scripts/migrate_discovery_v4.py`
+- `scripts/migrate_discovery_v4.py` — **Removed** 2026-07-26 with the
+  migration toolchain (git history preserves it).
 - `src/discovery/workspace.py` (`resolve_active`, `verify_dirs`)
-- `src/discovery/pending_queue.py` (`_drain_pending_store_candidates`)
-- `src/migrations/discovery_v4/legacy_contracts/`
+- `src/discovery/pending_queue.py` (`_drain_pending_store_candidates`) —
+  **Removed** 2026-07-26 with the pending-store drain channel.
+- `src/migrations/discovery_v4/legacy_contracts/` — **Removed**
+  2026-07-26 with the migration toolchain.

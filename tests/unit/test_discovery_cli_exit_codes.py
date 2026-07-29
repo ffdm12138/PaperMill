@@ -8,6 +8,7 @@ import scripts.discover_papers as discover_script
 import scripts.discover_papers_concurrent as concurrent_script
 from src.discovery.contracts.notebook import keyword_id
 from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
+from tests.helpers.discovery_workspace import make_test_workspace
 from tests.helpers.relevance_profiles import bind_test_relevance_profile
 
 
@@ -94,6 +95,7 @@ class _Batch:
 
 def test_single_keyword_cli_returns_coordinator_exit_code(tmp_path):
     workspace_root = tmp_path / "ws"
+    make_test_workspace(workspace_root)
     notebooks = workspace_root / "keyword_notebooks"
     _seed_ready(notebooks, "风吹雪")
     with patch.object(
@@ -114,6 +116,7 @@ def test_single_keyword_cli_returns_coordinator_exit_code(tmp_path):
 
 def test_multi_keyword_cli_returns_coordinator_exit_code(tmp_path):
     workspace_root = tmp_path / "ws"
+    make_test_workspace(workspace_root)
     notebooks = workspace_root / "keyword_notebooks"
     keywords = ["风吹雪", "雪粒破碎", "风洞实验"]
     for keyword in keywords:
@@ -138,6 +141,7 @@ def test_multi_keyword_cli_returns_coordinator_exit_code(tmp_path):
 
 def test_disabled_single_notebook_is_only_successful_skip(tmp_path):
     workspace_root = tmp_path / "ws"
+    make_test_workspace(workspace_root)
     notebooks = workspace_root / "keyword_notebooks"
     _seed_ready(notebooks, "风吹雪")
     KeywordNotebookStore(notebooks).set_enabled("风吹雪", False)

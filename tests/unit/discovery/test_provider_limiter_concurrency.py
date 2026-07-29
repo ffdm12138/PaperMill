@@ -15,13 +15,7 @@ pytestmark = pytest.mark.unit
 
 
 def _options(tmp_path):
-    workspace = make_test_workspace(
-        tmp_path,
-        notebook_dir=tmp_path / "notebooks",
-        page_journals_dir=tmp_path / "pages",
-        locks_dir=tmp_path / "locks",
-        exports_dir=tmp_path / "exports",
-    )
+    workspace = make_test_workspace(tmp_path)
     return DiscoveryOptions(
         mode="refresh",
         refresh_pages=1,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import shutil
@@ -21,8 +22,11 @@ from src.fetch.access_policy import (
     AccessPolicy,
     BLOCKED_FETCH_STATUSES,  # noqa: F401  (re-exported script surface)
     FetchCandidateStatus,
+    FetchSelection,
     classify_pdf_fetch_candidate,
+    select_fetch_candidates,
 )
+from src.fetch.host_policy import classify_failure
 import src.fetch.fetch_pipeline as fetch_pipeline
 from src.fetch.pdf_transport import TRANSPORT_POLICY, sanitize_for_persistence, sanitize_url_for_persistence
 from src.ingest.duplicate_guard import DuplicateIngestError
@@ -452,6 +456,75 @@ def _fetch_one(
         shutil.rmtree(fetch_root, ignore_errors=True)
 
 
+def _merge(
+    candidates: list[FetchCandidateStatus],
+    items: list[dict[str, Any]],
+    completed: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Overlay finished results onto the planned items, preserving order."""
+    return [
+        completed.get(candidate.paper_number, item)
+        for candidate, item in zip(candidates, items)
+    ]
+
+
+def _payload(
+    args: argparse.Namespace,
+    policy: AccessPolicy,
+    header_keys: list[str],
+    write: bool,
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "applied": write,
+        "paper_raw_dir": str(args.paper_raw_dir),
+        "resolver": "header_based" if args.resolver == "header-based" else args.resolver,
+        "access_mode": policy.mode.value,
+        "selection": {
+            "skip_attempted": bool(args.skip_attempted),
+            "retry_after_days": args.retry_after_days,
+            "doi_prefixes": list(args.doi_prefix),
+            "limit": args.limit,
+        },
+        "summary": _summary(items),
+        "headers": {
+            "keys": header_keys,
+            "masked": bool(header_keys),
+        },
+        "items": sanitize_for_persistence(items),
+    }
+
+
+def _write_report(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, payload, indent=2)
+
+
+def _write_blocked_worklist(path: Path, items: list[dict[str, Any]]) -> int:
+    """Write failures that hit a publisher refusing this network.
+
+    These papers cannot be rescued by retrying; they need institutional
+    access or a different egress, so they belong on an operator worklist
+    rather than in the next run's queue.
+    """
+    rows = [
+        {
+            "paper_number": item.get("paper_number", ""),
+            "doi": item.get("doi", ""),
+            "doi_url": f"https://doi.org/{item.get('doi', '')}" if item.get("doi") else "",
+            "reason": item.get("final_reason") or item.get("reason") or "",
+        }
+        for item in items
+        if classify_failure(item) == "blocked_publisher"
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["paper_number", "doi", "doi_url", "reason"])
+        writer.writeheader()
+        writer.writerows(rows)
+    return len(rows)
+
+
 def _summary(items: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "scanned": len(items),
@@ -461,6 +534,9 @@ def _summary(items: list[dict[str, Any]]) -> dict[str, int]:
         "skipped": sum(1 for item in items if item["status"] == "skipped"),
         "failed": sum(1 for item in items if item["status"] == "failed"),
         "duplicate": sum(1 for item in items if item["status"] == "duplicate"),
+        # Of the failures, how many are unreachable from this network rather
+        # than merely unlucky -- they need institutional access, not a retry.
+        "blocked_publisher": sum(1 for item in items if classify_failure(item) == "blocked_publisher"),
     }
 
 
@@ -503,6 +579,43 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=None)
+    # Batch controls: the eligible backlog is far larger than one run, so a
+    # run must be able to reach fresh work without replaying every known-hard
+    # failure first, and must survive interruption.
+    parser.add_argument(
+        "--skip-attempted",
+        action="store_true",
+        help="Skip workspaces that already have a fetch_result sidecar, so a run "
+             "spends its time on workspaces never tried before.",
+    )
+    parser.add_argument(
+        "--retry-after-days",
+        type=float,
+        default=None,
+        help="Only retry a previously attempted workspace when its last attempt is "
+             "older than this many days. Ignored for never-attempted workspaces.",
+    )
+    parser.add_argument(
+        "--doi-prefix",
+        action="append",
+        default=[],
+        metavar="10.5194",
+        help="Only fetch DOIs with this registrant prefix. Repeatable; use it to run "
+             "high-yield publishers first.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Attempt at most N workspaces in this run (after all other filters).",
+    )
+    parser.add_argument(
+        "--report-blocked",
+        type=Path,
+        default=None,
+        help="Write a CSV worklist of failures that hit a publisher which refuses this "
+             "network, for institutional-access or manual download.",
+    )
     args = parser.parse_args()
 
     try:
@@ -514,14 +627,22 @@ def main() -> int:
 
     write = args.apply and not args.dry_run
     header_keys = _header_keys(headers, include_user_agent=args.resolver == "header-based")
-    candidates = [
-        classify_pdf_fetch_candidate(
-            args.paper_raw_dir / paper_number,
-            paper_number,
-            force_refetch=args.force_refetch,
-        )
-        for paper_number in paper_numbers
-    ]
+    candidates = select_fetch_candidates(
+        [
+            classify_pdf_fetch_candidate(
+                args.paper_raw_dir / paper_number,
+                paper_number,
+                force_refetch=args.force_refetch,
+            )
+            for paper_number in paper_numbers
+        ],
+        FetchSelection(
+            skip_attempted=args.skip_attempted,
+            retry_after_days=args.retry_after_days,
+            doi_prefixes=tuple(args.doi_prefix),
+            limit=args.limit,
+        ),
+    )
     items = [candidate.to_item() for candidate in candidates]
     for item in items:
         item.setdefault("transport_policy", TRANSPORT_POLICY)
@@ -532,6 +653,7 @@ def main() -> int:
         allocator = PaperRawAllocator(args.paper_raw_dir, papers_dir=args.papers_dir)
         completed: dict[str, dict[str, Any]] = {}
         workers = max(1, int(args.max_workers or 1))
+        logger.info("fetching {} of {} workspaces with {} workers", len(eligible), len(candidates), workers)
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(
@@ -544,33 +666,34 @@ def main() -> int:
                 ): candidate
                 for candidate in eligible
             }
+            done = 0
             for future in as_completed(futures):
                 candidate = futures[future]
                 completed[candidate.paper_number] = future.result()
-        items = [
-            completed.get(candidate.paper_number, item)
-            for candidate, item in zip(candidates, items)
-        ]
+                done += 1
+                # Flush after every result: a long backlog run WILL be
+                # interrupted, and an all-or-nothing report throws away every
+                # completed item when it is.
+                if args.report:
+                    _write_report(
+                        args.report,
+                        _payload(args, policy, header_keys, write,
+                                 _merge(candidates, items, completed)),
+                    )
+                if done % 10 == 0 or done == len(eligible):
+                    logger.info("fetched {}/{}", done, len(eligible))
+        items = _merge(candidates, items, completed)
     elif not write:
         for item in items:
             if item["status"] == "planned":
                 logger.info("DRY-RUN fetch {} for {}", item["doi"], item["paper_number"])
 
-    payload = {
-        "applied": write,
-        "paper_raw_dir": str(args.paper_raw_dir),
-        "resolver": "header_based" if args.resolver == "header-based" else args.resolver,
-        "access_mode": policy.mode.value,
-        "summary": _summary(items),
-        "headers": {
-            "keys": header_keys,
-            "masked": bool(header_keys),
-        },
-        "items": sanitize_for_persistence(items),
-    }
+    payload = _payload(args, policy, header_keys, write, items)
     if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(args.report, payload, indent=2)
+        _write_report(args.report, payload)
+    if args.report_blocked:
+        written = _write_blocked_worklist(args.report_blocked, items)
+        logger.info("blocked-publisher worklist: {} rows -> {}", written, args.report_blocked)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if any(item["status"] in {"failed", "duplicate"} for item in items) else 0
 

@@ -100,3 +100,51 @@
 - [ ] 收紧 13 条已声明但无实际导入的 `ALLOWED` 边（`catalog_folders→catalog`、
   `metadata_resolve→{fetch,library,workspace}`、`writer→{catalog,library}`
   及 root 的 7 条）。属"授权宽于实需"，非违规。
+
+## PDF 获取链路修复（2026-07-27）
+
+起因：`data/paper_raw` 2332 个工作区全部有合法 DOI，但只有 150 个拿到 PDF。
+统计 514 份 `fetch_result.json` + 2891 条 `transport_attempts` 并做只读探针后，
+确认是六个叠加问题，最大的两个都不是"抓取逻辑写错了"。
+
+- [x] **联系邮箱单一权威层**：新增 `src/utils/contact_email.py`（放 utils 是因为
+  `utils/rate_limit.py` 的 mailto override 也要用，放 fetch 会破坏分层）。
+  占位邮箱判为"未配置"——实测 `anonymous@example.com` 让 Unpaywall 恒返回
+  HTTP 422（364/364 全灭），换真实邮箱即 200。顺带修好 `provider_headers`
+  重复拼接 `(mailto:…)` 的潜伏 bug（override 生效时才显形）。
+  验收：`tests/unit/test_contact_email.py`、`test_metadata_rate_limit.py`。
+- [x] **OA 候选排序 + 多候选下载**：新增 `src/fetch/oa_locations.py`，
+  `FetchResult.pdf_candidates` 承载全部位置，`fetch_pipeline` 逐个尝试。
+  根治"N 收敛成 1"缺陷——三个 OA resolver 此前都只取 provider 的 best，
+  而 best 恒为出版商副本，恰好是被拦的那一个。实测封锁存量抽样 45 篇中
+  53% 有仓储副本，且仓储主机从当前出口可直接下到真 `%PDF`。
+  验收：`tests/unit/test_oa_locations.py`、`test_fetch_pipeline.py` 多候选用例。
+- [x] **主机可达性策略**：新增 `src/fetch/host_policy.py`，集合来自实测
+  （大量尝试、零成功），用于排序降权、跳过必然徒劳的代理重试、报告
+  `blocked_publisher` 判定。声明为有时效的启发式，非硬禁止。
+  验收：`tests/unit/test_host_policy.py`。
+- [x] **代理重试收敛**：原计划做出口 IP 自检，实测否决——探针端点本身在直连
+  路径被拦，且数据显示代理把 21 次瞬时失败转成了成功，一刀切关闭会丢真收益。
+  改为只在"被拦主机 + 403"时跳过代理重试（实测 551→548 全部复现 403，零成功），
+  连接级失败照常回退。验收：`tests/unit/test_pdf_transport.py`。
+- [x] **resolver 本地短路**：`PdfResolver.applies_to()` 默认 True，
+  arxiv/biorxiv/pmc_oa/springer/wiley/elsevier 按 DOI 前缀与已有标识本地判定。
+  跳过者不进 `resolver_chain` 也不产生 attempts，只记入 `resolvers_skipped`，
+  让日志显示真失败而非恒定空转（此前每篇浪费 3 次网络往返）。
+- [x] **批量跑存量能力**：`FetchSelection` + `select_fetch_candidates` 落在
+  `access_policy.py`（与候选分类同层），脚本只做 wiring。新增
+  `--skip-attempted` / `--retry-after-days` / `--doi-prefix` / `--limit` /
+  `--report-blocked`，报告逐条 flush。实测 `--skip-attempted` 选出 1818 个
+  从未尝试过的工作区，`--doi-prefix 10.5194 --skip-attempted` 选出 567 个。
+- [x] **元数据源头**：`search_openalex.parse_openalex_work` 的 `url=` 从
+  `work["id"]`（OpenAlex 实体 URI）改为 `primary_location.landing_page_url`，
+  回退 `doi.org`。此前 2256/2332 的 `links.url` 是 `https://openalex.org/W…`，
+  害得 `original_link` 每篇去爬 SPA 空壳。只影响新入库；存量由
+  `original_link` 侧的记录型主机过滤兜底，不改已冻结的 metadata。
+- [x] **死代码**：`original_link_resolver` 中 `with` 块之后的不可达分支、
+  `fetch_pipeline` 的 `except TypeError` 兼容垫片（它托着的其实是过时的测试
+  替身，已改测试而非留垫片）、`landing_page` 恒为 0 的 `depth` 及其死分支、
+  与 `url_safety` 重复的 `_looks_like_pdf`。另修 `landing_page` 的 `visited`
+  未跨递归层共享（同一 URL 会被不同分支重复抓），并给候选广度加上限。
+- [ ] 约 239 篇"OA 但只有出版商副本"与约 160 篇闭源，需换出口或机构访问；
+  `--report-blocked` 已能导出清单，走人工/校园网通道，代码侧无解。

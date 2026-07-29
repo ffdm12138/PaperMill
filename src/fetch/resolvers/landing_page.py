@@ -245,6 +245,12 @@ MAX_LANDING_DEPTH = 3
 LANDING_TIMEOUT = 30
 
 
+#: Upper bound on how many scored links are followed per landing page. A
+#: publisher page can score dozens of "download"-ish links; following all of
+#: them multiplies requests per paper and looks like scraping.
+MAX_LANDING_CANDIDATES = 8
+
+
 def resolve_landing_page_to_pdf(
     url: str,
     *,
@@ -253,6 +259,7 @@ def resolve_landing_page_to_pdf(
     max_depth: int = MAX_LANDING_DEPTH,
     include_known_viewers: bool = True,
     transport_attempts: list[dict[str, Any]] | None = None,
+    _visited: set[str] | None = None,
 ) -> tuple[bytes | None, str, str]:
     """Follow a landing page URL recursively until a PDF is found.
 
@@ -260,105 +267,106 @@ def resolve_landing_page_to_pdf(
     ``(None, "", reason)`` on failure.  *reason* explains why no PDF was
     found (e.g. "no PDF candidates", "max depth exceeded").
 
-    Recursion depth is limited to *max_depth* to prevent infinite crawls.
-    URLs are deduplicated via ``visited`` set to avoid cycles.
+    Recursion depth is limited by *max_depth*, which each level decrements.
+    ``_visited`` is threaded through the recursion so a URL reachable from
+    several branches is fetched once for the whole traversal, not once per
+    branch; it is internal and callers should leave it unset.
     """
     req_headers = dict(headers or {})
-    visited: set[str] = set()
-    current_url = url
-    landing_url = url
-    depth = 0
+    visited = _visited if _visited is not None else set()
+    if max_depth <= 0:
+        return None, "", f"max depth {MAX_LANDING_DEPTH} exceeded without finding PDF"
 
-    while depth < max_depth:
-        if current_url in visited:
-            return None, "", "landing page cycle detected"
-        visited.add(current_url)
+    if url in visited:
+        return None, "", "landing page cycle detected"
+    visited.add(url)
 
-        if is_unsafe_url(current_url):
-            return None, "", f"unsafe URL blocked: {current_url}"
+    if is_unsafe_url(url):
+        return None, "", f"unsafe URL blocked: {url}"
 
-        transport_ctx = fetch_url_direct_then_proxy(
-            current_url,
-            expected_content="any",
-            headers=req_headers,
-            allow_redirects=True,
-            stream=True,
-        )
-        with transport_ctx as transport:
-            if transport_attempts is not None:
-                transport_attempts.extend(transport.safe_attempts)
-            response = transport.response
-            if response is None:
-                return None, "", f"HTTP error at depth {depth}: {transport.error or 'transport failed'}"
-            if response.status_code >= 400:
-                return None, "", f"HTTP error at depth {depth}: HTTP {response.status_code}"
+    transport_ctx = fetch_url_direct_then_proxy(
+        url,
+        expected_content="any",
+        headers=req_headers,
+        allow_redirects=True,
+        stream=True,
+    )
+    with transport_ctx as transport:
+        if transport_attempts is not None:
+            transport_attempts.extend(transport.safe_attempts)
+        response = transport.response
+        if response is None:
+            return None, "", f"HTTP error: {transport.error or 'transport failed'}"
+        if response.status_code >= 400:
+            return None, "", f"HTTP error: HTTP {response.status_code}"
 
-            final_url = response.url or current_url
-            if is_unsafe_url(final_url):
-                return None, "", f"unsafe final URL blocked: {final_url}"
+        landing_url = response.url or url
+        if is_unsafe_url(landing_url):
+            return None, "", f"unsafe final URL blocked: {landing_url}"
 
-            # Remember the first landing URL
-            if depth == 0:
-                landing_url = final_url
-
-            # Direct PDF response
-            if is_pdf_response(response):
-                try:
-                    content = limit_content(response)
-                except ValueError as exc:
-                    return None, "", f"content limit exceeded: {exc}"
-                error = validate_pdf_bytes(content)
-                if error:
-                    return None, "", error
-                return content, final_url, landing_url
-
-            html_text = ""
+        # Direct PDF response
+        if is_pdf_response(response):
             try:
-                html_text = response.text
-            except Exception as exc:
-                logger.debug("landing page body decode failed: {}", exc)
+                content = limit_content(response)
+            except ValueError as exc:
+                return None, "", f"content limit exceeded: {exc}"
+            error = validate_pdf_bytes(content)
+            if error:
+                return None, "", error
+            return content, landing_url, landing_url
 
-            if html_text:
-                candidates = extract_landing_candidates(
-                    html_text,
-                    final_url,
-                    include_known_viewers=include_known_viewers,
-                )
+        html_text = ""
+        try:
+            html_text = response.text
+        except Exception as exc:
+            logger.debug("landing page body decode failed: {}", exc)
 
-                script_urls = extract_urls_from_scripts(html_text)
-                for u in script_urls:
-                    resolved = urljoin(final_url, u)
-                    if resolved not in candidates:
-                        if looks_like_pdf_url(u) or looks_like_known_viewer_url(u):
-                            candidates.append(resolved)
+        if html_text:
+            candidates = extract_landing_candidates(
+                html_text,
+                landing_url,
+                include_known_viewers=include_known_viewers,
+            )
 
-                best_reason = ""
-                for candidate in candidates:
-                    if candidate in visited:
-                        continue
-                    content, pdf_url, reason = resolve_landing_page_to_pdf(
-                        candidate,
-                        timeout_seconds=timeout_seconds,
-                        headers=req_headers,
-                        max_depth=max_depth - depth - 1,
-                        include_known_viewers=include_known_viewers,
-                        transport_attempts=transport_attempts,
+            script_urls = extract_urls_from_scripts(html_text)
+            for u in script_urls:
+                resolved = urljoin(landing_url, u)
+                if resolved not in candidates:
+                    if looks_like_pdf_url(u) or looks_like_known_viewer_url(u):
+                        candidates.append(resolved)
+
+            best_reason = ""
+            followed = 0
+            for candidate in candidates:
+                if candidate in visited:
+                    continue
+                if followed >= MAX_LANDING_CANDIDATES:
+                    best_reason = best_reason or (
+                        f"stopped after {MAX_LANDING_CANDIDATES} candidates "
+                        f"(url: {landing_url})"
                     )
-                    if content is not None:
-                        return content, pdf_url, landing_url
-                    if reason and not best_reason:
-                        best_reason = reason
-                    if reason and ("unsafe" in reason.lower() or "blocked" in reason.lower()):
-                        best_reason = reason
+                    break
+                followed += 1
+                content, pdf_url, reason = resolve_landing_page_to_pdf(
+                    candidate,
+                    timeout_seconds=timeout_seconds,
+                    headers=req_headers,
+                    max_depth=max_depth - 1,
+                    include_known_viewers=include_known_viewers,
+                    transport_attempts=transport_attempts,
+                    _visited=visited,
+                )
+                if content is not None:
+                    return content, pdf_url, landing_url
+                if reason and not best_reason:
+                    best_reason = reason
+                if reason and ("unsafe" in reason.lower() or "blocked" in reason.lower()):
+                    best_reason = reason
 
-                if best_reason:
-                    return None, "", best_reason
+            if best_reason:
+                return None, "", best_reason
 
-            if depth == 0:
-                return None, "", f"landing page did not contain PDF candidates (url: {final_url})"
-            return None, "", f"no PDF at depth {depth}"
-
-    return None, "", f"max depth {max_depth} exceeded without finding PDF"
+        return None, "", f"landing page did not contain PDF candidates (url: {landing_url})"
 
 
 # ── Simple convenience wrappers ────────────────────────────────────────

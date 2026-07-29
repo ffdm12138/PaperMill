@@ -51,13 +51,7 @@ def _page(spec, cursor: str, candidates=None, **kwargs):
 def _options(tmp_path: Path, **overrides) -> DiscoveryOptions:
     base = dict(
         mode="backfill", refresh_pages=1, backfill_pages=2, max_candidates=50,
-        workspace=make_test_workspace(
-            tmp_path,
-            notebook_dir=tmp_path / "notebooks",
-            page_journals_dir=tmp_path / "pages",
-            locks_dir=tmp_path / "locks",
-            exports_dir=tmp_path / "exports",
-        ),
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -75,7 +69,7 @@ def test_durable_progress_on_empty_pages_is_not_failed(tmp_path: Path):
     page (0 items, next_cursor exists) has made durable progress.  Subsequent
     lanes failing while this lane succeeded must produce partial_success, not
     failed."""
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
     calls: list[str] = []
 
     def fetch(spec, cursor, _client):
@@ -123,7 +117,7 @@ def test_concurrent_batch_telemetry_and_budget_isolation(tmp_path: Path, monkeyp
     for p in cfg.get("providers", ()):
         cfg["providers"][p]["min_interval_seconds"] = 0.0
 
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
     opts = _options(tmp_path, mode="refresh", refresh_pages=1)
 
     # Install runtime A, run batch A, capture telemetry.
@@ -154,7 +148,7 @@ def test_generation_history_rejects_bad_types(tmp_path: Path):
     from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
     from src.discovery.contracts.page_journal import request_signature
 
-    store = KeywordNotebookStore(tmp_path / "notebooks")
+    store = KeywordNotebookStore(tmp_path / "keyword_notebooks")
     _seed_ready_notebook(store, "风吹雪")
     nb = store.require_v4("风吹雪")
     query_id = next(iter(nb["search_queries"]))
@@ -190,7 +184,7 @@ def test_generation_history_rejects_bad_types(tmp_path: Path):
     import json
     entry = nb["search_queries"][query_id]
     entry["providers"][provider]["backfill"]["generation_history"] = bad_history
-    nb_path = next((tmp_path / "notebooks").glob("*.json"))
+    nb_path = next((tmp_path / "keyword_notebooks").glob("*.json"))
     nb_path.write_text(json.dumps(nb, ensure_ascii=False), encoding="utf-8")
 
     # Re-load - must raise or flag repair_required
@@ -277,7 +271,7 @@ def test_generation_history_via_notebook_require_v4_rejects_bad_types(tmp_path: 
     from src.discovery.contracts.page_journal import request_signature
     import json
 
-    store = KeywordNotebookStore(tmp_path / "notebooks")
+    store = KeywordNotebookStore(tmp_path / "keyword_notebooks")
     _seed_ready_notebook(store, "风吹雪")
     nb = store.require_v4("风吹雪")
     query_id = next(iter(nb["search_queries"]))
@@ -295,7 +289,7 @@ def test_generation_history_via_notebook_require_v4_rejects_bad_types(tmp_path: 
     bad_history[-1]["generation"] = "three"
     entry = nb["search_queries"][query_id]
     entry["providers"][provider]["backfill"]["generation_history"] = bad_history
-    nb_path = next((tmp_path / "notebooks").glob("*.json"))
+    nb_path = next((tmp_path / "keyword_notebooks").glob("*.json"))
     nb_path.write_text(json.dumps(nb, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(NotebookCorruptError, match="generation.*int"):

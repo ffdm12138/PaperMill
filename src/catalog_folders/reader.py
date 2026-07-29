@@ -19,6 +19,11 @@ class CatalogFolderReader:
                  formal_registry=None, notebook_dir=None, transaction_root=None):
         self.root = Path(root); self.papers_dir = Path(papers_dir)
         self._formal_registry = formal_registry
+        # Notebook taxonomy is injected by the composition root (the
+        # factory), never resolved by the reader itself: the catalog
+        # domain must not own discovery-runtime resolution.  ``None``
+        # means the runtime is not initialized (fresh install) and
+        # notebook-backed doctor diagnostics are skipped.
         self._notebook_dir = notebook_dir
         self._transaction_root = transaction_root
 
@@ -201,18 +206,30 @@ def create_safe_catalog_reader() -> CatalogFolderReader:
     doctor diagnostic.  All production callers MUST use this factory instead
     of constructing ``CatalogFolderReader`` directly.
 
-    The notebook directory resolves from the active v4 discovery workspace;
-    resolution is fail-closed and raises
-    :class:`~src.discovery.runtime_context.DiscoveryRuntimeUnavailableError`
-    when no active workspace exists.
+    The notebook directory resolves from the active v4 discovery workspace.
+    Only the fresh-install state (no active generation pointer,
+    :class:`DiscoveryRuntimeNotInitialized`) degrades: ``notebook_dir`` is
+    left ``None`` and notebook-backed doctor diagnostics are skipped while
+    catalog browsing and the writer API stay available.  A corrupt or
+    incomplete discovery runtime is production damage, not a fresh install,
+    and propagates to the caller unchanged.
     """
     from config.settings import (
         CATALOG_FOLDER_ROOT,
         PAPERS_DIR, PAPER_NUMBER_LEDGER_PATH, TRANSACTION_ROOT,
     )
     from src.catalog_folders.formal_registry import FormalPaperRegistry
-    from src.discovery.runtime_context import resolve_active_runtime
+    from src.discovery.runtime_context import (
+        DiscoveryRuntimeNotInitialized,
+        resolve_active_runtime,
+    )
     from src.library.paper_number_ledger import PaperNumberLedger
+
+    notebook_dir = None
+    try:
+        notebook_dir = resolve_active_runtime().notebook_root
+    except DiscoveryRuntimeNotInitialized:
+        pass
 
     return CatalogFolderReader(
         root=CATALOG_FOLDER_ROOT,
@@ -221,6 +238,6 @@ def create_safe_catalog_reader() -> CatalogFolderReader:
             papers_dir=PAPERS_DIR,
             ledger=PaperNumberLedger(PAPER_NUMBER_LEDGER_PATH),
         ),
-        notebook_dir=resolve_active_runtime().notebook_root,
+        notebook_dir=notebook_dir,
         transaction_root=TRANSACTION_ROOT,
     )

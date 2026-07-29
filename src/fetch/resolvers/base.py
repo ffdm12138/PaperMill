@@ -29,5 +29,20 @@ class PdfResolver:
     def enabled(self, policy) -> bool:
         return self.name in policy.enabled_resolver_names()
 
+    def applies_to(self, context: ResolveContext) -> bool:
+        """Return False when this resolver provably cannot serve *context*.
+
+        This is a purely local decision — DOI prefix, identifiers already in
+        metadata — and MUST NOT perform any I/O.  Its only job is to keep a
+        resolver from spending a network round trip to learn something the
+        DOI already said.  A resolver that cannot decide locally returns True
+        and lets ``resolve`` answer.
+
+        Deciding here rather than inside ``resolve`` keeps the chain honest:
+        a skipped resolver never appears as a failed attempt, so the attempt
+        log shows real failures instead of constant no-ops.
+        """
+        return True
+
     def resolve(self, context: ResolveContext) -> FetchResult:
         raise NotImplementedError

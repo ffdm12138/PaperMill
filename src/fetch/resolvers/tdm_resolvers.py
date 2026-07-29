@@ -96,9 +96,15 @@ class WileyTdmResolver(PdfResolver):
     name = "wiley_tdm"
     access_modes = ("institutional", "custom")
 
+    #: Wiley-issued DOI prefixes (Wiley proper, Wiley-Blackwell, AGU).
+    DOI_PREFIXES = ("10.1002/", "10.1111/", "10.1029/")
+
+    def applies_to(self, context: ResolveContext) -> bool:
+        return str(context.doi or "").startswith(self.DOI_PREFIXES)
+
     def resolve(self, context: ResolveContext) -> FetchResult:
         doi = context.doi
-        if not doi.startswith(("10.1002/", "10.1111/", "10.1029/")):
+        if not doi.startswith(self.DOI_PREFIXES):
             return FetchResult(doi=doi, source=self.name, resolver=self.name, error="not a Wiley DOI prefix")
 
         if not WILEY_TDM_TOKEN:
@@ -142,9 +148,15 @@ class SpringerDirectResolver(PdfResolver):
     name = "springer_direct"
     access_modes = ("oa_only", "institutional")
 
+    #: Springer Nature DOI prefixes (Springer, BMC, Nature, IBM Journals).
+    DOI_PREFIXES = ("10.1007/", "10.1186/", "10.1038/", "10.1147/")
+
+    def applies_to(self, context: ResolveContext) -> bool:
+        return str(context.doi or "").startswith(self.DOI_PREFIXES)
+
     def resolve(self, context: ResolveContext) -> FetchResult:
         doi = context.doi
-        if not doi.startswith(("10.1007/", "10.1186/", "10.1038/", "10.1147/")):
+        if not doi.startswith(self.DOI_PREFIXES):
             return FetchResult(doi=doi, source=self.name, resolver=self.name, error="not a Springer/Nature DOI prefix")
 
         url = f"https://link.springer.com/content/pdf/{doi}.pdf"
@@ -181,9 +193,15 @@ class ElsevierTdmResolver(PdfResolver):
     name = "elsevier_tdm"
     access_modes = ("oa_only", "institutional")
 
+    #: Elsevier-issued DOI prefixes.
+    DOI_PREFIXES = ("10.1016/", "10.1011/")
+
+    def applies_to(self, context: ResolveContext) -> bool:
+        return str(context.doi or "").startswith(self.DOI_PREFIXES)
+
     def resolve(self, context: ResolveContext) -> FetchResult:
         doi = context.doi
-        if not doi.startswith(("10.1016/", "10.1011/")):
+        if not doi.startswith(self.DOI_PREFIXES):
             return FetchResult(doi=doi, source=self.name, resolver=self.name, error="not an Elsevier DOI prefix")
         if not ELSEVIER_API_KEY:
             return FetchResult(doi=doi, source=self.name, resolver=self.name, error="ELSEVIER_API_KEY not configured; skip")

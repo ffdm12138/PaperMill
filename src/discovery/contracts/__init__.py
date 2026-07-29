@@ -18,11 +18,6 @@ from src.discovery.contracts.enums import (
     QueryLanguage,
     ShutdownReason,
 )
-from src.discovery.contracts.lane_state import (
-    LANE_STATE_SCHEMA_VERSION_V4,
-    CursorTransactionV4,
-    LaneStateV4,
-)
 from src.discovery.contracts.manifest import (
     WORKSPACE_MANIFEST_SCHEMA_VERSION_V4,
     ActiveGenerationPointerV4,
@@ -56,10 +51,6 @@ __all__ = [
     "LaneStopReason",
     "QueryLanguage",
     "ShutdownReason",
-    # Lane state
-    "LANE_STATE_SCHEMA_VERSION_V4",
-    "CursorTransactionV4",
-    "LaneStateV4",
     # Manifest
     "WORKSPACE_MANIFEST_SCHEMA_VERSION_V4",
     "ActiveGenerationPointerV4",

@@ -28,6 +28,7 @@ from scripts.test_runtime_workspace import (
 # _flatten_path
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(os.name != "nt", reason="_flatten_path requires a native Windows Path")
 class TestFlattenPath:
     def test_windows_temp_path(self):
         result = _flatten_path(Path(r"C:\Users\Admin\AppData\Local\Temp"))
@@ -207,14 +208,14 @@ class TestChildEnv:
             env = ws.child_env()
             assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
     def test_windows_backslashes_preserved(self):
         """Paths in child_env must use native Windows backslashes."""
         with TestRuntimeWorkspace(group="env_test") as ws:
             env = ws.child_env()
             prefix = env["PYTHONPYCACHEPREFIX"]
             # Must contain backslash path separators on Windows
-            if os.name == "nt":
-                assert "\\" in prefix, f"Backslashes stripped from {prefix!r}"
+            assert "\\" in prefix, f"Backslashes stripped from {prefix!r}"
             # Must NOT be flattened (no colons removed)
             assert ":" in prefix, f"Drive colon stripped from {prefix!r}"
             # Must end with correct subdir

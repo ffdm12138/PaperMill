@@ -44,6 +44,13 @@ class FetchResult:
     has_supplementary: bool | None = None
     # 逐 resolver 尝试记录：每个 dict 含 resolver/status/reason/pdf_url/landing_url
     attempts: list[dict[str, Any]] = field(default_factory=list)
+    # 因 applies_to 本地短路而未运行的 resolver 名（不发任何 HTTP）。
+    # 它们不进 resolver_chain，也不产生 attempts，只在此留痕以便诊断。
+    resolvers_skipped: list[str] = field(default_factory=list)
+    # 该 resolver 找到的全部候选下载位置，已按 src/fetch/oa_locations 排序
+    # （仓储副本优先于出版商副本，已知被拦主机排最后）。pdf_url 是最终实际
+    # 用上的那一个；下载阶段按顺序尝试整个列表，而不是只试 pdf_url。
+    pdf_candidates: list[dict[str, Any]] = field(default_factory=list)
     # Sanitized HTTP transport records. Internal TransportAttempt objects are
     # serialized before they enter FetchResult; resolvers must not persist
     # headers, cookies, proxy URLs, or credentials here.

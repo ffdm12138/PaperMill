@@ -99,7 +99,7 @@ def test_pdf_url_used_when_no_content(monkeypatch, tmp_path):
     monkeypatch.setattr(
         fetch_pipeline,
         "_download_pdf",
-        lambda url, target, *, timeout=60: (target, "sha-pdf-url"),
+        lambda url, target, *, timeout=60, transport_attempts=None: (target, "sha-pdf-url"),
     )
 
     result = FetchResult(
@@ -176,7 +176,7 @@ def test_success_result_has_attempts(monkeypatch, tmp_path):
     monkeypatch.setattr(
         fetch_pipeline,
         "_download_pdf",
-        lambda url, target, *, timeout=60: (target, "sha-pdf-url"),
+        lambda url, target, *, timeout=60, transport_attempts=None: (target, "sha-pdf-url"),
     )
     result = FetchResult(
         doi="10.1000/test",
@@ -802,3 +802,128 @@ def test_fetch_openalex_error_does_not_leak_credentials(monkeypatch, oa_fake_tra
     log_text = "\n".join(log_lines)
     assert "err-leak@test.org" not in log_text, f"Email leaked into log: {log_text}"
     assert "err-leak-key-99999" not in log_text, f"API key leaked into log: {log_text}"
+
+
+# ── multi-candidate download ───────────────────────────────────────────
+#
+# A resolver may know several places the same paper lives.  Stopping at the
+# first one is what made otherwise-available papers look unobtainable: the
+# provider ranks the publisher copy first, the publisher refuses this
+# network, and the reachable repository copy was never tried.
+
+def test_second_candidate_is_tried_when_the_first_is_refused(monkeypatch, tmp_path):
+    blocked = "https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/esp.3310"
+    reachable = "https://repositorio.ufc.br/bitstream/riufc/1/article.pdf"
+    tried: list[str] = []
+
+    def _download(url, target, *, timeout=60, transport_attempts=None):
+        tried.append(url)
+        if url == blocked:
+            raise ValueError("HTTP 403")
+        Path(target).write_bytes(b"%PDF-1.4 ok")
+        return Path(target), "sha-repo"
+
+    monkeypatch.setattr(fetch_pipeline, "_download_pdf", _download)
+    _install_static(monkeypatch, FetchResult(
+        doi="10.1002/esp.3310",
+        success=True,
+        source="static_test",
+        resolver="static_test",
+        pdf_url=blocked,
+        pdf_candidates=[
+            {"url": blocked, "is_direct_pdf": True},
+            {"url": reachable, "is_direct_pdf": True},
+        ],
+        raw={},
+    ))
+
+    out = fetch_pdf("10.1002/esp.3310", output_root=tmp_path)
+
+    assert tried == [blocked, reachable]
+    assert out.success is True
+    assert out.sha256 == "sha-repo"
+    assert out.pdf_url == reachable, "the result must report the URL actually used"
+
+
+def test_all_candidates_failing_reports_the_first_real_reason(monkeypatch, tmp_path):
+    def _download(url, target, *, timeout=60, transport_attempts=None):
+        raise ValueError("HTTP 403")
+
+    monkeypatch.setattr(fetch_pipeline, "_download_pdf", _download)
+    _install_static(monkeypatch, FetchResult(
+        doi="10.1002/esp.3310", success=True, source="static_test", resolver="static_test",
+        pdf_url="https://a.example.org/a.pdf",
+        pdf_candidates=[
+            {"url": "https://a.example.org/a.pdf", "is_direct_pdf": True},
+            {"url": "https://b.example.org/b.pdf", "is_direct_pdf": True},
+        ],
+        raw={},
+    ))
+
+    out = fetch_pdf("10.1002/esp.3310", output_root=tmp_path)
+    assert out.success is False
+    assert "403" in out.error
+
+
+def test_unsafe_candidate_is_skipped_without_download(monkeypatch, tmp_path):
+    tried: list[str] = []
+
+    def _download(url, target, *, timeout=60, transport_attempts=None):
+        tried.append(url)
+        Path(target).write_bytes(b"%PDF-1.4 ok")
+        return Path(target), "sha-ok"
+
+    monkeypatch.setattr(fetch_pipeline, "_download_pdf", _download)
+    _install_static(monkeypatch, FetchResult(
+        doi="10.1000/test", success=True, source="static_test", resolver="static_test",
+        pdf_url="https://sci-hub.example/a.pdf",
+        pdf_candidates=[
+            {"url": "https://sci-hub.example/a.pdf", "is_direct_pdf": True},
+            {"url": "https://repo.example.edu/a.pdf", "is_direct_pdf": True},
+        ],
+        raw={},
+    ))
+
+    out = fetch_pdf("10.1000/test", output_root=tmp_path)
+    assert tried == ["https://repo.example.edu/a.pdf"], "the blocked source must never be requested"
+    assert out.success is True
+
+
+def test_pdf_url_only_resolvers_still_work(monkeypatch, tmp_path):
+    """A resolver that publishes no candidate list keeps its single-URL path."""
+    monkeypatch.setattr(
+        fetch_pipeline, "_download_pdf",
+        lambda url, target, *, timeout=60, transport_attempts=None: (target, "sha-single"),
+    )
+    _install_static(monkeypatch, FetchResult(
+        doi="10.1000/test", success=True, source="static_test", resolver="static_test",
+        pdf_url="http://example.test/paper.pdf", raw={},
+    ))
+    out = fetch_pdf("10.1000/test", output_root=tmp_path)
+    assert out.success is True and out.sha256 == "sha-single"
+
+
+# ── applies_to short-circuit ───────────────────────────────────────────
+
+def test_inapplicable_resolver_is_skipped_without_io(monkeypatch, tmp_path):
+    """A resolver that cannot serve the DOI must not run, and must not appear
+    as a failed attempt -- otherwise the log fills with constant no-ops."""
+
+    class _NeverApplies(PdfResolver):
+        name = "never_applies"
+        access_modes = ("oa_only",)
+
+        def applies_to(self, context: ResolveContext) -> bool:
+            return False
+
+        def resolve(self, context: ResolveContext) -> FetchResult:
+            raise AssertionError("resolve() must not be called for an inapplicable resolver")
+
+    monkeypatch.setattr(fetch_pipeline, "_build_resolvers", lambda policy: [_NeverApplies()])
+
+    out = fetch_pdf("10.5194/acp-1-1-2020", output_root=tmp_path)
+
+    assert out.success is False
+    assert out.resolver_chain == []
+    assert out.attempts == []
+    assert out.resolvers_skipped == ["never_applies"]

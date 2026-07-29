@@ -67,13 +67,7 @@ def _fetcher(callback) -> CallbackProviderPageFetcher:
 def _options(tmp_path: Path, **overrides) -> DiscoveryOptions:
     base = dict(
         mode="backfill", refresh_pages=1, backfill_pages=2, max_candidates=50,
-        workspace=make_test_workspace(
-            tmp_path,
-            notebook_dir=tmp_path / "notebooks",
-            page_journals_dir=tmp_path / "pages",
-            locks_dir=tmp_path / "locks",
-            exports_dir=tmp_path / "exports",
-        ),
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -90,7 +84,7 @@ def test_mode_skipped_refresh_lane_is_skipped_not_success(tmp_path: Path):
     """mode=backfill: the refresh lane is not executed, so its status must be
     "skipped" (with stop_reason="skipped_by_mode").  Marking it "success"
     contaminates batch status (see bug 3)."""
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
     options = _options(tmp_path, mode="backfill")
     report = run_discovery_batch(
         ["风吹雪"], options=options, max_workers=1,
@@ -110,7 +104,7 @@ def test_mode_skipped_refresh_lane_is_skipped_not_success(tmp_path: Path):
 def test_mode_skipped_backfill_lane_is_skipped_not_success(tmp_path: Path):
     """mode=refresh: the backfill lane is not executed, so its status must be
     "skipped" (with stop_reason="skipped_by_mode")."""
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
     options = _options(tmp_path, mode="refresh")
     report = run_discovery_batch(
         ["风吹雪"], options=options, max_workers=1,
@@ -134,7 +128,7 @@ def test_failed_backfill_page_counted_in_pages_requested(tmp_path: Path):
     attempt.  pages_requested must be >= 1 (and the provider failure counted),
     not 0.  Otherwise the report claims the lane did nothing while real HTTP
     was attempted."""
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
 
     def fetch(spec, cursor, _client):
         # Simulate a provider failure on every page.
@@ -162,7 +156,7 @@ def test_all_backfill_failed_returns_failed_exit_1(tmp_path: Path):
     progress: batch status must be "failed" / exit 1.  Currently the
     mode-skipped refresh lane is mis-marked "success", manufacturing
     partial_success."""
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
 
     def fetch(spec, cursor, _client):
         return _page(
@@ -189,7 +183,7 @@ def test_generation_history_three_rollovers_round_trip(tmp_path: Path):
     one typed schema (no hand-written allowed-key drift)."""
     from src.discovery.contracts.page_journal import request_signature
 
-    store = KeywordNotebookStore(tmp_path / "notebooks")
+    store = KeywordNotebookStore(tmp_path / "keyword_notebooks")
     _seed_ready_notebook(store, "风吹雪")
     nb = store.require_v4("风吹雪")
     kid = nb["keyword_id"]
@@ -239,7 +233,7 @@ def test_exhausted_journal_replay_no_unbound_local_error(tmp_path: Path):
     from src.discovery.stores.page_journal_store import PageJournalStoreV4 as PageJournalStore
     from src.discovery.stores.notebook_store import NotebookStoreV4 as KeywordNotebookStore
 
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
     nb = store.require_v4("风吹雪")
@@ -354,7 +348,7 @@ def test_consecutive_batch_telemetry_isolation(tmp_path: Path, monkeypatch):
     # same singleton for every batch.
     monkeypatch.setattr(ProviderRuntime, "_instance", shared_runtime)
 
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
     opts = _options(tmp_path, mode="refresh", refresh_pages=1)
     report_a = run_discovery_batch(["风吹雪"], options=opts, max_workers=1)
     attempted_a = report_a.aggregate["provider_requests"]["attempted"]
@@ -493,7 +487,7 @@ def test_state_lock_timeout_does_not_become_budget_stopped(tmp_path: Path, monke
         fail_with_lock_timeout,
     )
 
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
     options = _options(tmp_path, mode="backfill", backfill_pages=2)
     report = run_discovery_batch(
         ["风吹雪"], options=options, max_workers=1,
@@ -518,7 +512,7 @@ def test_refresh_permanent_error_is_permanent_failed(tmp_path: Path):
     """A refresh page with ``failure_class="terminal"`` (e.g. 404) must
     produce lane status ``permanent_failed`` / stop_reason
     ``permanent_provider_error``, never ``retryable_failed``."""
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
 
     def fetch(spec, cursor, _client):
         return _page(spec, cursor, [], status="failed", failure_class="terminal",
@@ -548,7 +542,7 @@ def test_uncaught_lane_exception_produces_repair_required(tmp_path: Path, monkey
     """
     from src.discovery.backfill_transaction import StateLockTimeout
 
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
 
     # Make the typed fetcher raise a plain RuntimeError (not a typed
     # ProviderError) - this simulates an unexpected bug in the lane worker.
@@ -582,7 +576,7 @@ def test_mixed_backfill_lanes_correct_aggregate(tmp_path: Path):
     """With multiple backfill physical lanes producing different outcomes, the
     keyword backfill summary must aggregate correctly: one exhausted lane must
     NOT mark the whole keyword exhausted."""
-    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "notebooks"), "风吹雪")
+    _seed_ready_notebook(KeywordNotebookStore(tmp_path / "keyword_notebooks"), "风吹雪")
     calls: list[str] = []
 
     def fetch(spec, cursor, _client):

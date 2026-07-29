@@ -45,7 +45,7 @@ def test_runtime_lifecycle_normal_completion(tmp_path: Path, monkeypatch: pytest
     v98 Phase 3: coordinator now uses `with runtime:` context manager,
     so __exit__ is called, closed_event is set, and _frozen is True.
     """
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
 
@@ -63,13 +63,7 @@ def test_runtime_lifecycle_normal_completion(tmp_path: Path, monkeypatch: pytest
 
     opts = DiscoveryOptions(
         mode="backfill", max_candidates=10,
-        workspace=make_test_workspace(
-            tmp_path,
-            notebook_dir=nb_dir,
-            page_journals_dir=tmp_path / "pages",
-            locks_dir=tmp_path / "locks",
-            exports_dir=tmp_path / "exports",
-        ),
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",

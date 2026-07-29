@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from src.utils.contact_email import is_usable_contact_email, load_contact_email
+
 from loguru import logger
 from src.utils.timestamps import now_iso as _now_iso
 
@@ -90,8 +92,14 @@ def default_config() -> dict[str, Any]:
                 "adaptive_from_headers": True,
             },
             "semantic_scholar": {
-                "enabled": False,
-                "min_interval_seconds": 1.2,
+                # The unauthenticated pool is shared and small; unpaced
+                # callers get HTTP 429 on essentially every request.
+                "enabled": True,
+                "min_interval_seconds": 3.0,
+            },
+            "unpaywall": {
+                "enabled": True,
+                "min_interval_seconds": 1.0,
             },
         },
         "backoff": {
@@ -136,9 +144,13 @@ class ProviderRateLimiter:
 
     @staticmethod
     def _resolve_contact_email() -> str:
-        """Return the contact email from env, or "" if not set."""
-        import os
-        return os.environ.get("MINERU_METADATA_CONTACT_EMAIL", "").strip()
+        """Return the contact email from env, or "" if not set.
+
+        Delegates to ``src.utils.contact_email`` so the placeholder rejection
+        rule has a single authority; a placeholder address must never reach a
+        provider's ``mailto``.
+        """
+        return load_contact_email() or ""
 
     def _apply_env_mailto_override(self) -> None:
         """Override all providers' mailto / user_agent from env var."""
@@ -165,16 +177,29 @@ class ProviderRateLimiter:
         ua = str(cfg.get("user_agent") or "").strip()
         if ua:
             headers["User-Agent"] = ua
-        mailto = str(cfg.get("mailto") or "").strip()
+        mailto = self.provider_mailto(provider)
         if mailto:
             if provider == "openalex":
                 headers["X-Email"] = mailto  # OpenAlex prefers mailto param, but header is harmless
+            elif f"mailto:{mailto}" in ua:
+                # ``_apply_env_mailto_override`` already folded the address into
+                # the configured user_agent; appending again would send
+                # "MinerU/1.0 (mailto:x) (mailto:x)".
+                headers["User-Agent"] = ua
             else:
                 headers["User-Agent"] = f"{ua} (mailto:{mailto})" if ua else f"MinerU/1.0 (mailto:{mailto})"
         return headers
 
     def provider_mailto(self, provider: str) -> str:
-        return str(self.provider_config(provider).get("mailto") or "").strip()
+        """Return the provider's contact address, or "" when unusable.
+
+        A shipped config may still carry its ``CHANGE_ME@example.com``
+        placeholder. Announcing one is worse than announcing nothing: it
+        claims a contact that cannot be reached, and providers reject or
+        demote such callers.
+        """
+        mailto = str(self.provider_config(provider).get("mailto") or "").strip()
+        return mailto if is_usable_contact_email(mailto) else ""
 
     # ── State accessors ──────────────────────────────────────────────────
 

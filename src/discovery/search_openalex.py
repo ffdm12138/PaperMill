@@ -81,6 +81,25 @@ def _abstract_from_inverted_index(work: dict) -> str:
     return " ".join(token for _, token in sorted(words))
 
 
+def _landing_url(work: dict) -> str:
+    """Return the article's landing page, never the OpenAlex entity URI.
+
+    ``work["id"]`` is ``https://openalex.org/W…`` — an identifier for the
+    record, not a page that hosts the article.  Publishing it as the paper's
+    URL sends every downstream consumer (citation ``URL`` field, the
+    ``original_link`` PDF resolver) to an OpenAlex SPA shell that can never
+    contain a PDF.  Prefer the real landing page, then the DOI resolver.
+    """
+    for key in ("primary_location", "best_oa_location"):
+        location = work.get(key) or {}
+        if isinstance(location, dict):
+            landing = str(location.get("landing_page_url") or "").strip()
+            if landing:
+                return landing
+    doi = normalize_doi(work.get("doi"))
+    return f"https://doi.org/{doi}" if doi else ""
+
+
 def parse_openalex_work(work: dict, query: str = "", domain_id: str | None = None) -> PaperCandidate:
     title = work.get("display_name") or work.get("title") or ""
     host = ((work.get("primary_location") or {}).get("source") or {}).get("display_name") or ""
@@ -94,7 +113,7 @@ def parse_openalex_work(work: dict, query: str = "", domain_id: str | None = Non
         abstract=_abstract_from_inverted_index(work),
         source="openalex",
         source_id=work.get("id") or "",
-        url=work.get("id") or "",
+        url=_landing_url(work),
         pdf_url=_pdf_url(work),
         open_access=bool(open_access.get("is_oa")),
         citation_count=work.get("cited_by_count"),

@@ -5,6 +5,8 @@ import runpy
 import sys
 from pathlib import Path
 
+import pytest
+
 from src.fetch.access_policy import classify_pdf_fetch_candidate
 from src.fetch.models import FetchResult
 from src.library.paper_number_ledger import PaperNumberLedger
@@ -269,3 +271,135 @@ def test_access_mode_rejected_by_argparse(tmp_path):
     ])
 
     assert rc != 0  # argparse rejects unknown arguments
+
+
+# ── batch selection and interruption safety ────────────────────────────
+#
+# The eligible backlog is far larger than one run, so a run must reach
+# never-attempted work without replaying known-hard failures, and must not
+# lose completed results when it is interrupted.
+
+def _attempted(folder: Path, *, fetched_at: str) -> None:
+    records = folder / "source_records"
+    records.mkdir(exist_ok=True)
+    (records / "fetch_result.json").write_text(
+        json.dumps({"fetch_result": {"success": False, "fetched_at": fetched_at}}),
+        encoding="utf-8")
+
+
+def test_skip_attempted_leaves_previously_tried_workspaces_alone(tmp_path):
+    paper_raw = tmp_path / "paper_raw"
+    fresh = _workspace(paper_raw, "0000000000000001", doi="10.5194/acp-1-1-2020")
+    tried = _workspace(paper_raw, "0000000000000002", doi="10.5194/acp-2-2-2020")
+    _attempted(tried, fetched_at="2026-07-01T00:00:00+00:00")
+    report = tmp_path / "report.json"
+
+    _run(["fetch_pdf_for_paper_raw.py", "--all", "--paper-raw-dir", str(paper_raw),
+          "--skip-attempted", "--dry-run", "--report", str(report)])
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    by_number = {item["paper_number"]: item for item in payload["items"]}
+    assert by_number[fresh.name]["status"] == "planned"
+    assert by_number[tried.name]["status"] == "skipped"
+    assert by_number[tried.name]["reason"] == "already attempted"
+    assert payload["selection"]["skip_attempted"] is True
+
+
+def test_doi_prefix_and_limit_bound_the_batch(tmp_path):
+    paper_raw = tmp_path / "paper_raw"
+    _workspace(paper_raw, "0000000000000001", doi="10.5194/acp-1-1-2020")
+    _workspace(paper_raw, "0000000000000002", doi="10.5194/acp-2-2-2020")
+    _workspace(paper_raw, "0000000000000003", doi="10.3390/su18031645")
+    report = tmp_path / "report.json"
+
+    _run(["fetch_pdf_for_paper_raw.py", "--all", "--paper-raw-dir", str(paper_raw),
+          "--doi-prefix", "10.5194", "--limit", "1", "--dry-run", "--report", str(report)])
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    planned = [i["paper_number"] for i in payload["items"] if i["status"] == "planned"]
+    assert planned == ["0000000000000001"]
+    assert payload["selection"]["doi_prefixes"] == ["10.5194"]
+    assert payload["selection"]["limit"] == 1
+
+
+def test_interrupted_run_keeps_already_completed_results(tmp_path, monkeypatch):
+    """A backlog run of thousands of workspaces will be interrupted; an
+    all-or-nothing report would throw away every completed item when it is.
+
+    With a single worker the pool runs the two items strictly in order, so
+    the first result is flushed before the second is even requested — no
+    sleeps or timing assumptions needed.
+    """
+    paper_raw = tmp_path / "paper_raw"
+    _workspace(paper_raw, "0000000000000001", doi="10.5194/acp-1-1-2020")
+    _workspace(paper_raw, "0000000000000002", doi="10.5194/acp-2-2-2020")
+    report = tmp_path / "report.json"
+    seen: list[str] = []
+
+    def fake_fetch(doi, output_root=None, **kwargs):
+        seen.append(doi)
+        if len(seen) > 1:
+            raise KeyboardInterrupt("operator stopped the run")
+        output = Path(output_root) / "download.pdf"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"%PDF fetched")
+        return FetchResult(doi=doi, success=True, output_path=str(output),
+                           resolver="static", resolver_chain=["static"])
+
+    monkeypatch.setattr("src.fetch.fetch_pipeline.fetch_pdf", fake_fetch)
+    with pytest.raises(KeyboardInterrupt):
+        _run(["fetch_pdf_for_paper_raw.py", "--all", "--paper-raw-dir", str(paper_raw),
+              "--max-workers", "1", "--apply", "--report", str(report)])
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["summary"]["attached"] == 1, "the completed item survived the interrupt"
+
+
+def test_full_run_reports_every_item(tmp_path, monkeypatch):
+    paper_raw = tmp_path / "paper_raw"
+    _workspace(paper_raw, "0000000000000001", doi="10.5194/acp-1-1-2020")
+    _workspace(paper_raw, "0000000000000002", doi="10.5194/acp-2-2-2020")
+    report = tmp_path / "report.json"
+
+    serial = iter(range(100))
+
+    def fake_fetch(doi, output_root=None, **kwargs):
+        output = Path(output_root) / "download.pdf"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # Distinct bytes per call, but WITHOUT the DOI: identical PDFs would
+        # (correctly) trip the duplicate guard, and a DOI in the text layer
+        # would make the match receipt trigger a freeze this minimal fixture
+        # metadata cannot satisfy. Neither is what this test is about.
+        output.write_bytes(b"%PDF fetched body " + str(next(serial)).encode())
+        return FetchResult(doi=doi, success=True, output_path=str(output),
+                           resolver="static", resolver_chain=["static"])
+
+    monkeypatch.setattr("src.fetch.fetch_pipeline.fetch_pdf", fake_fetch)
+    _run(["fetch_pdf_for_paper_raw.py", "--all", "--paper-raw-dir", str(paper_raw),
+          "--max-workers", "1", "--apply", "--report", str(report)])
+
+    assert json.loads(report.read_text(encoding="utf-8"))["summary"]["attached"] == 2
+
+
+def test_blocked_publisher_worklist_lists_only_unreachable_failures(tmp_path, monkeypatch):
+    paper_raw = tmp_path / "paper_raw"
+    _workspace(paper_raw, "0000000000000001", doi="10.3390/su18031645")
+    _workspace(paper_raw, "0000000000000002", doi="10.5194/acp-2-2-2020")
+    worklist = tmp_path / "blocked.csv"
+
+    def fake_fetch(doi, output_root=None, **kwargs):
+        host = ("https://www.mdpi.com/x/pdf" if doi.startswith("10.3390")
+                else "https://acp.copernicus.org/x.pdf")
+        return FetchResult(doi=doi, success=False, error="HTTP 403",
+                           resolver_chain=["original_link"],
+                           transport_attempts=[{"mode": "direct", "request_url": host,
+                                                "final_url": host, "status_code": 403}])
+
+    monkeypatch.setattr("src.fetch.fetch_pipeline.fetch_pdf", fake_fetch)
+    _run(["fetch_pdf_for_paper_raw.py", "--all", "--paper-raw-dir", str(paper_raw),
+          "--max-workers", "1", "--apply", "--report-blocked", str(worklist)])
+
+    rows = worklist.read_text(encoding="utf-8").strip().splitlines()
+    assert rows[0] == "paper_number,doi,doi_url,reason"
+    assert len(rows) == 2, "only the ASN-blocked publisher belongs on the worklist"
+    assert "10.3390/su18031645" in rows[1]

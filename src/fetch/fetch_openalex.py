@@ -9,6 +9,7 @@ from loguru import logger
 from src.utils.identifiers import normalize_doi
 from src.discovery.providers.provider_client import ProviderRuntime, RequestSpec
 from src.fetch.models import FetchResult
+from src.fetch.oa_locations import candidates_from_openalex
 from src.fetch.openalex_credentials import (
     load_openalex_credentials,
     safe_request_error_summary,
@@ -48,24 +49,23 @@ def resolve_openalex_pdf(doi: str) -> FetchResult:
         return FetchResult(doi=doi, source="openalex", error="not found", metadata=data)
     work = results[0]
     oa = work.get("open_access") or {}
-    primary = work.get("primary_location") or {}
-    pdf_url = primary.get("pdf_url")
-    is_landing_fallback = False
-    if not pdf_url:
-        # fallback 到 oa_url（可能是 landing page），标记以便下载阶段校验
-        pdf_url = oa.get("oa_url") or ""
-        is_landing_fallback = bool(pdf_url)
-    if not (oa.get("is_oa") and pdf_url):
+    # Keep every open location, not just primary_location: a repository copy
+    # downloads where the publisher copy is refused (see src/fetch/oa_locations).
+    candidates = candidates_from_openalex(work)
+    if not (oa.get("is_oa") and candidates):
         return FetchResult(doi=doi, source="openalex", oa_status=oa.get("oa_status") or "", metadata=work, error="no OA PDF URL")
+    best = candidates[0]
     meta = dict(work)
-    if is_landing_fallback:
+    if not best.is_direct_pdf:
         meta["maybe_landing_page"] = True
     return FetchResult(
         doi=doi,
         success=True,
         source="openalex",
         candidate_url=OPENALEX_WORKS_URL,
-        pdf_url=pdf_url,
+        pdf_url=best.url,
+        pdf_candidates=[candidate.to_dict() for candidate in candidates],
         oa_status=oa.get("oa_status") or "oa",
+        license=best.license,
         metadata=meta,
     )

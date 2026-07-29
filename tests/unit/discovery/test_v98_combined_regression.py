@@ -164,19 +164,13 @@ def test_candidate_drain_formal_entry_via_batch(
         PatchedDrain,
     )
 
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "风吹雪")
 
     opts = DiscoveryOptions(
         mode="backfill", max_candidates=10,
-        workspace=make_test_workspace(
-            tmp_path,
-            notebook_dir=nb_dir,
-            page_journals_dir=tmp_path / "pages",
-            locks_dir=tmp_path / "locks",
-            exports_dir=tmp_path / "exports",
-        ),
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -427,7 +421,7 @@ def test_dynamic_backpressure_formal_production_path(
     )
 
     # Setup 2 keywords for 8 lanes (2 kw × 2 queries × 2 providers × backfill)
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "深度学习")
     _seed_ready_notebook(store, "神经网络")
@@ -437,13 +431,7 @@ def test_dynamic_backpressure_formal_production_path(
         max_candidates=50,
         max_pending_candidates=5,
         resume_pending_candidates=2,
-        workspace=make_test_workspace(
-            tmp_path,
-            notebook_dir=nb_dir,
-            page_journals_dir=tmp_path / "pages",
-            locks_dir=tmp_path / "locks",
-            exports_dir=tmp_path / "exports",
-        ),
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",
@@ -523,13 +511,7 @@ nb_dir = Path(r'{nb_dir}')
 store = KeywordNotebookStore(nb_dir)
 _seed(store, "深度学习")
 
-workspace = make_test_workspace(
-    Path(r'{work_dir}'),
-    notebook_dir=nb_dir,
-    page_journals_dir=Path(r'{pages_dir}'),
-    locks_dir=Path(r'{locks_dir}'),
-    exports_dir=Path(r'{exports_dir}'),
-)
+workspace = make_test_workspace(Path(r'{work_dir}'))
 opts = DiscoveryOptions(
     mode="backfill", max_candidates=10,
     workspace=workspace,
@@ -599,10 +581,7 @@ def test_keyboard_interrupt_subprocess_regression(tmp_path: Path):
 
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
 
-    nb_dir = tmp_path / "notebooks"
-    pages_dir = tmp_path / "pages"
-    locks_dir = tmp_path / "locks"
-    exports_dir = tmp_path / "exports"
+    nb_dir = tmp_path / "keyword_notebooks"
     out_dir = tmp_path / "out"
     paper_raw_dir = tmp_path / "paper_raw"
     papers_dir = tmp_path / "papers"
@@ -613,9 +592,6 @@ def test_keyboard_interrupt_subprocess_regression(tmp_path: Path):
         repo_root=str(repo_root),
         work_dir=str(tmp_path),
         nb_dir=str(nb_dir),
-        pages_dir=str(pages_dir),
-        locks_dir=str(locks_dir),
-        exports_dir=str(exports_dir),
         out_dir=str(out_dir),
         paper_raw_dir=str(paper_raw_dir),
         papers_dir=str(papers_dir),
@@ -803,7 +779,7 @@ def test_zero_durable_progress_returns_failed_exit_1(
     On current v100 this test MUST FAIL — the ReportBuilder may not
     correctly derive durable_progress from LaneOutcome + DrainReport facts.
     """
-    nb_dir = tmp_path / "notebooks"
+    nb_dir = tmp_path / "keyword_notebooks"
     store = KeywordNotebookStore(nb_dir)
     _seed_ready_notebook(store, "深度学习")
     _seed_ready_notebook(store, "神经网络")
@@ -844,13 +820,7 @@ def test_zero_durable_progress_returns_failed_exit_1(
     opts = DiscoveryOptions(
         mode="backfill",
         max_candidates=10,
-        workspace=make_test_workspace(
-            tmp_path,
-            notebook_dir=nb_dir,
-            page_journals_dir=tmp_path / "pages",
-            locks_dir=tmp_path / "locks",
-            exports_dir=tmp_path / "exports",
-        ),
+        workspace=make_test_workspace(tmp_path),
         output_dir=tmp_path / "out",
         paper_raw_dir=tmp_path / "paper_raw",
         papers_dir=tmp_path / "papers",

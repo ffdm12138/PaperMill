@@ -4,10 +4,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
 from loguru import logger
 
 from config.settings import MINERU_FETCH_MAX_BYTES
@@ -17,7 +17,12 @@ from src.fetch.models import FetchResult
 from src.fetch.pdf_transport import TRANSPORT_POLICY, fetch_url_direct_then_proxy, sanitize_for_persistence
 from src.fetch.resolver_registry import build_resolvers
 from src.fetch.resolvers.base import ResolveContext
-from src.fetch.resolvers.url_safety import is_unsafe_url, validate_pdf_bytes
+from src.fetch.resolvers.url_safety import (
+    is_pdf_response,
+    is_unsafe_url,
+    looks_like_pdf_url,
+    validate_pdf_bytes,
+)
 
 
 _build_resolvers = build_resolvers
@@ -40,11 +45,6 @@ def _make_attempt(resolver_name: str, status: str, result, *, reason: str = "") 
 def safe_doi_slug(doi: str) -> str:
     normalized = normalize_doi(doi)
     return re.sub(r"[^A-Za-z0-9._-]+", "_", normalized).strip("_") or "unknown_doi"
-
-
-def _looks_like_pdf(response: requests.Response, url: str) -> bool:
-    content_type = response.headers.get("content-type", "").lower()
-    return "pdf" in content_type or url.lower().split("?")[0].endswith(".pdf")
 
 
 def _write_bytes_pdf(content: bytes, target: Path) -> tuple[Path, str]:
@@ -133,7 +133,7 @@ def _download_pdf(
             final_url = response.url or url
             if is_unsafe_url(final_url):
                 raise ValueError(f"unsafe final URL blocked: {final_url}")
-            if not _looks_like_pdf(response, final_url):
+            if not (is_pdf_response(response) or looks_like_pdf_url(final_url)):
                 raise ValueError(f"response is not a PDF: {response.headers.get('content-type', '')}")
             # 流式缓冲前 4 字节用于 %PDF 魔数检查（支持跨 chunk 分片）。
             # 若首个 chunk 只有 b"%P" 而第二个是 b"DF-1.4"，缓冲区会累积到
@@ -174,6 +174,101 @@ def _download_pdf(
         tmp.unlink(missing_ok=True)
 
 
+@dataclass
+class _DownloadCandidate:
+    """One URL the pipeline may try, plus why it failed if it did."""
+
+    url: str
+    is_direct_pdf: bool = True
+    error: str = ""
+
+
+def _download_candidates(result: FetchResult) -> list[_DownloadCandidate]:
+    """Return the ranked URLs to try for *result*.
+
+    Resolvers that know about several OA locations publish them in
+    ``pdf_candidates``; the rest publish a single ``pdf_url``.  Both are
+    normalized here so the download loop has one shape.
+    """
+    ranked = [
+        _DownloadCandidate(
+            url=str(item.get("url") or "").strip(),
+            is_direct_pdf=bool(item.get("is_direct_pdf", True)),
+        )
+        for item in (result.pdf_candidates or [])
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
+    if ranked:
+        return ranked
+    if result.pdf_url:
+        return [_DownloadCandidate(url=result.pdf_url, is_direct_pdf=bool(result.is_direct_pdf))]
+    return []
+
+
+def _candidate_error(candidates: list[_DownloadCandidate]) -> str:
+    """Return the first real failure reason across *candidates*."""
+    for candidate in candidates:
+        if candidate.error:
+            return candidate.error
+    return ""
+
+
+def _try_download_candidates(
+    candidates: list[_DownloadCandidate],
+    target: Path,
+    *,
+    policy: AccessPolicy,
+    transport_attempts: list[dict[str, Any]],
+    doi: str,
+    resolver_name: str,
+    maybe_landing: bool,
+) -> tuple[Path, str, str, bool] | None:
+    """Try each candidate in order; return the first that yields PDF bytes.
+
+    Returns ``(path, sha256, url_used, resolved_from_landing_page)`` on
+    success, or ``None`` when every candidate failed.  Each candidate records
+    its own failure reason so the caller can report the real cause rather than
+    whichever error happened to come last.
+    """
+    for candidate in candidates:
+        if is_unsafe_url(candidate.url):
+            candidate.error = f"unsafe source blocked: {candidate.url}"
+            continue
+        try:
+            pdf_path, sha = _download_pdf(
+                candidate.url,
+                target,
+                timeout=policy.timeout_seconds,
+                transport_attempts=transport_attempts,
+            )
+            return pdf_path, sha, candidate.url, False
+        except Exception as exc:
+            logger.warning("download failed from {} for {!r}: {}", resolver_name, doi, exc)
+            candidate.error = str(exc)
+
+        # A location that is not a direct PDF is a landing page; parse it for
+        # the real PDF link rather than discarding the candidate.
+        if not (maybe_landing or not candidate.is_direct_pdf):
+            continue
+        if "not a PDF" not in candidate.error and "%PDF" not in candidate.error:
+            continue
+        from src.fetch.resolvers.landing_page import try_resolve_landing_to_pdf
+        content, landing_error = try_resolve_landing_to_pdf(
+            candidate.url,
+            timeout_seconds=policy.timeout_seconds,
+            transport_attempts=transport_attempts,
+        )
+        if content is None:
+            continue
+        try:
+            pdf_path, sha = _write_bytes_pdf(content, target)
+            return pdf_path, sha, candidate.url, True
+        except Exception as landing_exc:
+            logger.warning("landing page resolution failed for {}: {}", candidate.url, landing_exc)
+            candidate.error = str(landing_exc)
+    return None
+
+
 def fetch_pdf(
     doi: str,
     domain_id: str | None = None,
@@ -211,11 +306,18 @@ def fetch_pdf(
     output_root = Path(output_root or ".")
     target = output_root / f"{safe_doi_slug(normalized)}.pdf"
     chain: list[str] = []
+    skipped: list[str] = []
     last_error = ""
     attempts: list[dict[str, Any]] = []
     transport_attempts: list[dict[str, Any]] = []
 
     for resolver in resolvers:
+        # A resolver that cannot serve this DOI is skipped before any I/O and
+        # stays out of both the chain and the attempt log, so the record shows
+        # real failures rather than constant no-ops.
+        if not resolver.applies_to(ctx):
+            skipped.append(resolver.name)
+            continue
         chain.append(resolver.name)
         result = resolver.resolve(ctx)
         result.resolver_chain = list(chain)
@@ -231,84 +333,88 @@ def fetch_pdf(
             result.output_path = ""
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="requires_user_action")]
             result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
+            result.resolvers_skipped = list(skipped)
             return result
         if dry_run:
             result.output_path = ""
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="dry_run")]
             result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
+            result.resolvers_skipped = list(skipped)
             return result
-        try:
-            # prefer bytes already fetched by the resolver (e.g. header_based,
-            # which uses authorized headers) over re-downloading via pdf_url
-            # with a headerless request -- avoids the second no-auth download.
-            if result.raw and result.raw.get("content"):
+        # prefer bytes already fetched by the resolver (e.g. header_based,
+        # which uses authorized headers) over re-downloading via pdf_url
+        # with a headerless request -- avoids the second no-auth download.
+        if result.raw and result.raw.get("content"):
+            try:
                 pdf_path, sha = _write_bytes_pdf(result.raw["content"], target)
                 result.raw.pop("content", None)
-            elif result.pdf_url:
-                # resolver 返回的 pdf_url（含 OA API 来源）下载前二次检查 unsafe host
-                if is_unsafe_url(result.pdf_url):
-                    last_error = f"unsafe source blocked: {result.pdf_url}"
-                    attempts.append(_make_attempt(resolver.name, "failed", result, reason=last_error))
-                    continue
-                try:
-                    pdf_path, sha = _download_pdf(
-                        result.pdf_url,
-                        target,
-                        timeout=policy.timeout_seconds,
-                        transport_attempts=transport_attempts,
-                    )
-                except TypeError as exc:
-                    if "transport_attempts" not in str(exc):
-                        raise
-                    pdf_path, sha = _download_pdf(
-                        result.pdf_url,
-                        target,
-                        timeout=policy.timeout_seconds,
-                    )
-            elif result.output_path and Path(result.output_path).exists():
-                pdf_path, sha = _copy_pdf(Path(result.output_path), target)
-            else:
-                last_error = "resolver returned no downloadable PDF"
-                attempts.append(_make_attempt(resolver.name, "failed", result, reason=last_error))
+            except Exception as exc:
+                logger.warning("download failed from {} for {!r}: {}", resolver.name, doi, exc)
+                last_error = str(exc)
+                attempts.append(_make_attempt(resolver.name, "failed", result, reason=str(exc)))
                 continue
             result.output_path = pdf_path.as_posix()
             result.sha256 = sha
             result.attempts = attempts + [_make_attempt(resolver.name, "success", result)]
             result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
+            result.resolvers_skipped = list(skipped)
             return result
-        except Exception as exc:
-            logger.warning("download failed from {} for {!r}: {}", resolver.name, doi, exc)
-            # If the OA resolver returned a landing page (not a direct PDF),
-            # try to resolve it through multi-level landing page parsing.
-            maybe_landing = (result.metadata or {}).get("maybe_landing_page")
-            if maybe_landing and result.pdf_url and "not a PDF" in str(exc):
-                from src.fetch.resolvers.landing_page import try_resolve_landing_to_pdf
-                content, landing_error = try_resolve_landing_to_pdf(
-                    result.pdf_url,
-                    timeout_seconds=policy.timeout_seconds,
-                    transport_attempts=transport_attempts,
-                )
-                if content is not None:
-                    try:
-                        pdf_path, sha = _write_bytes_pdf(content, target)
-                        result.output_path = pdf_path.as_posix()
-                        result.sha256 = sha
-                        result.is_direct_pdf = False
-                        result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason="resolved from landing page")]
-                        result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
-                        return result
-                    except Exception as landing_exc:
-                        logger.warning(
-                            "landing page resolution failed for {}: {}", result.pdf_url, landing_exc
-                        )
-            last_error = str(exc)
-            attempts.append(_make_attempt(resolver.name, "failed", result, reason=str(exc)))
-            continue
+
+        # A resolver may report several places the same paper can be
+        # downloaded from, already ranked so that reachable repository copies
+        # come before publisher copies that refuse this egress. Walk the whole
+        # list: a 403 on the publisher must not end the resolver's turn.
+        candidates = _download_candidates(result)
+        if candidates:
+            downloaded = _try_download_candidates(
+                candidates,
+                target,
+                policy=policy,
+                transport_attempts=transport_attempts,
+                doi=doi,
+                resolver_name=resolver.name,
+                maybe_landing=bool((result.metadata or {}).get("maybe_landing_page")),
+            )
+            if downloaded is None:
+                last_error = _candidate_error(candidates) or "no candidate yielded a PDF"
+                attempts.append(_make_attempt(resolver.name, "failed", result, reason=last_error))
+                continue
+            pdf_path, sha, used_url, from_landing = downloaded
+            result.pdf_url = used_url
+            if from_landing:
+                result.is_direct_pdf = False
+            result.output_path = pdf_path.as_posix()
+            result.sha256 = sha
+            reason = "resolved from landing page" if from_landing else ""
+            result.attempts = attempts + [_make_attempt(resolver.name, "success", result, reason=reason)]
+            result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
+            result.resolvers_skipped = list(skipped)
+            return result
+
+        if result.output_path and Path(result.output_path).exists():
+            try:
+                pdf_path, sha = _copy_pdf(Path(result.output_path), target)
+            except Exception as exc:
+                logger.warning("download failed from {} for {!r}: {}", resolver.name, doi, exc)
+                last_error = str(exc)
+                attempts.append(_make_attempt(resolver.name, "failed", result, reason=str(exc)))
+                continue
+            result.output_path = pdf_path.as_posix()
+            result.sha256 = sha
+            result.attempts = attempts + [_make_attempt(resolver.name, "success", result)]
+            result.transport_attempts = sanitize_for_persistence(list(transport_attempts))
+            result.resolvers_skipped = list(skipped)
+            return result
+
+        last_error = "resolver returned no downloadable PDF"
+        attempts.append(_make_attempt(resolver.name, "failed", result, reason=last_error))
+        continue
 
     return FetchResult(
         doi=normalized,
         error=last_error or "no PDF found",
         resolver_chain=chain,
+        resolvers_skipped=list(skipped),
         access_mode=policy.mode.value,
         attempts=attempts,
         transport_attempts=sanitize_for_persistence(list(transport_attempts)),

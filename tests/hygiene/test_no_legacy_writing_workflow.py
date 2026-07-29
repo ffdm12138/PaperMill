@@ -113,6 +113,7 @@ def test_api_exposes_prepare_workset_and_no_old_copy_endpoint(monkeypatch, tmp_p
     client = TestClient(server.app)
     jm = JobManager(write_dir=tmp_path / "write" / "jobs")
     monkeypatch.setattr(server, "job_manager", jm)
+    monkeypatch.setattr(server, "catalog", object())  # fake_prepare ignores it
 
     def fake_prepare(job_id, *, jm, catalog, overwrite=False, apply=True):
         job_dir = jm.job_dir(job_id)

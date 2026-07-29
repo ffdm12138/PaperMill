@@ -33,8 +33,8 @@ from src.discovery.staging_gateway import MetadataStagingGateway  # noqa: E402
 from src.discovery.stores.bundle import DiscoveryStoreBundleV4  # noqa: E402
 from src.discovery.workspace import DiscoveryWorkspace, WorkspaceResolver  # noqa: E402
 from src.discovery.maintenance_gate import (  # noqa: E402
-    MigrationMaintenanceLockError,
-    assert_discovery_write_allowed,
+    DiscoveryMaintenanceLockError,
+    DiscoveryWriterLease,
 )
 
 
@@ -115,25 +115,13 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 
 
 def _workspace_from_path(root: Path) -> DiscoveryWorkspace:
-    """Build a v4 workspace reference from an explicit root path (test/staging).
+    """Resolve an explicit v4 workspace root (test/staging), fail closed.
 
-    The directory name becomes the generation id.  All standard v4
-    subdirectories are created if absent.
+    The root must be a complete v4 workspace: ``workspace.json`` present,
+    strict-parsed, and bound to the root directory name, with every
+    required subdirectory in place.  Nothing is created silently.
     """
-    root = root.resolve()
-    ws = DiscoveryWorkspace(
-        generation_id=root.name,
-        root=root,
-        keyword_notebook_dir=root / "keyword_notebooks",
-        lane_states_dir=root / "lane_states",
-        page_journals_dir=root / "page_journals",
-        indexes_dir=root / "indexes",
-        exports_dir=root / "exports",
-        reports_dir=root / "reports",
-        locks_dir=root / "locks",
-    )
-    ws.ensure_dirs()
-    return ws
+    return WorkspaceResolver.resolve_explicit_workspace(root)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,27 +129,35 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _validate_args(parser, args)
 
-    # Fail closed while a discovery migration maintenance window is active.
-    # The gate is unconditional: --workspace-root (test/staging path) does
-    # NOT exempt a run.  The in-process migration smoke passes because it
-    # owns the lock in this process; no external CLI can forge that.
+    # Hold a shared writer lease for the ENTIRE batch run.  While any lease
+    # is held, no maintenance command (bootstrap, keyword/profile mutations,
+    # repair) can start; a maintenance window already in progress fails this
+    # run closed.  The lease is acquired BEFORE the workspace is resolved
+    # (ordering rule: never resolve-before-lock) and is unconditional:
+    # --workspace-root (test/staging path) does NOT exempt a run.  A
+    # maintenance command that runs discovery in-process passes because it
+    # owns the maintenance lock in this process; no external CLI can forge
+    # that.
     try:
-        assert_discovery_write_allowed()
-    except MigrationMaintenanceLockError as exc:
+        with DiscoveryWriterLease("discover-papers"):
+            return _run(args)
+    except DiscoveryMaintenanceLockError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 
+
+def _run(args: argparse.Namespace) -> int:
     # Resolve workspace — production uses the active v4 pointer; tests may
     # override with an explicit workspace root.  No silent fallback to legacy
     # flat directories.
-    if args.workspace_root:
-        ws = _workspace_from_path(args.workspace_root)
-    else:
-        try:
+    try:
+        if args.workspace_root:
+            ws = _workspace_from_path(args.workspace_root)
+        else:
             ws = WorkspaceResolver().resolve_active()
-        except Exception as exc:
-            print(f"[ERROR] discovery workspace resolution failed: {exc}", file=sys.stderr)
-            return 1
+    except Exception as exc:
+        print(f"[ERROR] discovery workspace resolution failed: {exc}", file=sys.stderr)
+        return 1
 
     try:
         plan = load_keyword_plan(
