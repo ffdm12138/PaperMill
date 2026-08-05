@@ -24,11 +24,15 @@ def _args(resolver: str, *, base_url: str = "", url_template: str = "") -> argpa
 def test_auto_fetch_policy_order():
     policy = fetch_cli._build_policy(_args("auto"), {})
 
+    # semantic_scholar is intentionally absent from the auto chain
+    # (2026-08-01): the API is unreachable from this egress
+    # (ProviderPermanentError on every lookup) and each paper still pays
+    # ~9 serialized 3s-paced lookups/retries for it, capping the whole
+    # batch at ~2 papers/min.  `--resolver oa` keeps the full OA list.
     assert policy.enabled_resolver_names() == [
         "original_link",
         "unpaywall",
         "openalex",
-        "semantic_scholar",
         "arxiv",
         "publisher_oa",
         "springer_direct",

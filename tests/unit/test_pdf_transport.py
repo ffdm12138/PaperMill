@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import requests
 import pytest
+from urllib3.exceptions import ProtocolError
 
 from src.fetch.pdf_transport import (
     PROXY_SKIP_BOT_BLOCKED,
     PdfTransportConfig,
     fetch_url_direct_then_proxy,
+    inspect_response_content,
     load_pdf_transport_config,
     sanitize_for_persistence,
     sanitize_url_for_persistence,
@@ -333,6 +335,54 @@ def test_blocked_host_still_retries_on_connection_error(monkeypatch):
 
     with fetch_url_direct_then_proxy("https://www.mdpi.com/x/pdf", expected_content="pdf") as transport:
         assert transport.response is proxy_resp
+        assert [a.mode for a in transport.attempts] == ["direct", "proxy"]
+
+
+class _BrokenRaw:
+    def read(self, limit=0, decode_content=None):
+        raise ProtocolError("Connection broken: InvalidChunkLength(got length b'x', 512 bytes read)")
+
+
+class _RespBrokenContent(_Resp):
+    """A response whose bounded prefix read raises a chunked-encoding
+    ProtocolError — the connection breaks while the transport reads the
+    body (real corpus: 108 papers failed this way, 73 of them AMS)."""
+
+    def __init__(self):
+        super().__init__()
+        self._content = False  # force the raw.read() path
+        self.raw = _BrokenRaw()
+
+
+def test_broken_prefix_read_is_typed_not_raised():
+    """A mid-read connection break must surface as ``connection_broken``
+    instead of a bare exception escaping the transport (which used to kill
+    the whole paper with no attempt records)."""
+    resp = _RespBrokenContent()
+    inspection = inspect_response_content(response=resp, expected_content="pdf")
+    assert inspection.accepted is False
+    assert inspection.reason_code == "connection_broken"
+
+
+def test_broken_prefix_read_falls_back_to_proxy(monkeypatch):
+    """The broken direct read is retryable: the proxy gets its chance."""
+    proxy_resp = _Resp(200, url="https://journals.ametsoc.org/x.pdf")
+    _install(monkeypatch, _RespBrokenContent(), proxy_resp)
+
+    with fetch_url_direct_then_proxy("https://journals.ametsoc.org/x.pdf", expected_content="pdf") as transport:
+        assert transport.response is proxy_resp
+        assert [a.mode for a in transport.attempts] == ["direct", "proxy"]
+        assert transport.attempts[0].reason_code == "connection_broken"
+
+
+def test_broken_read_on_both_attempts_is_typed_failure(monkeypatch):
+    """Proxy breaks too: a typed failure with a connection_broken reason,
+    not a bare exception."""
+    _install(monkeypatch, _RespBrokenContent(), _RespBrokenContent())
+
+    with fetch_url_direct_then_proxy("https://journals.ametsoc.org/x.pdf", expected_content="pdf") as transport:
+        assert transport.response is None
+        assert transport.error == "connection_broken"
         assert [a.mode for a in transport.attempts] == ["direct", "proxy"]
 
 

@@ -153,6 +153,12 @@ _READY_ARTIFACT_ALLOWED = {
     "tests/integration/test_validate_v2_library.py",
     # Lifecycle state-machine tests below intentionally exercise marker recovery.
     "tests/integration/test_discovery_index_unsettled_refresh.py",
+    # rematch fixtures build minimal numeric workspaces with markers by hand.
+    "tests/unit/test_rematch_paper_raw_pdf_identity.py",
+    # identity migration/confirmation fixtures build minimal numeric
+    # workspaces with markers by hand (receipts/freezes are the target).
+    "tests/integration/test_pdf_identity_migration_transaction.py",
+    "tests/integration/test_confirm_pdf_identity.py",
 }
 
 

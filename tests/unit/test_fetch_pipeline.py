@@ -407,6 +407,50 @@ def test_oa_helper_uses_unified_provider_client(monkeypatch, oa_fake_transport):
     assert spec.purpose == "metadata_resolution"
 
 
+def test_limit_content_connection_break_is_typed_value_error():
+    """A connection breaking mid-read must surface as a ValueError, never
+    escape as a raw connection-level exception — it used to kill the whole
+    paper from the landing-page resolver with no attempt records (108
+    papers, 73 AMS).  Both exception classes requests can raise here are
+    covered: urllib3 ProtocolError (raw read) and requests
+    ChunkedEncodingError (iter_content) — the latter is NOT a
+    ConnectionError subclass in requests 2.34 (MRO: RequestException ->
+    OSError), so it must be listed explicitly."""
+    import requests
+    from urllib3.exceptions import ProtocolError
+
+    from src.fetch.resolvers.url_safety import limit_content
+
+    class _BrokenResponse:
+        headers = {}
+        url = "http://journals.ametsoc.org/paper.pdf"
+
+        def iter_content(self, chunk_size=65536):
+            yield b"%PDF-1.4\n"
+            raise ProtocolError(
+                "Connection broken: InvalidChunkLength(got length b'x', 512 bytes read)"
+            )
+
+    class _BrokenChunkedResponse:
+        headers = {}
+        url = "http://journals.ametsoc.org/paper.pdf"
+
+        def iter_content(self, chunk_size=65536):
+            yield b"%PDF-1.4\n"
+            raise requests.exceptions.ChunkedEncodingError(
+                "Connection broken: InvalidChunkLength(got length b'x', 512 bytes read)"
+            )
+
+    for broken in (_BrokenResponse(), _BrokenChunkedResponse()):
+        with pytest.raises(ValueError, match="connection broken during content read"):
+            limit_content(broken)
+    # sanity: ChunkedEncodingError is not a ConnectionError subclass here
+    assert not issubclass(
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ConnectionError,
+    )
+
+
 def test_limit_content_rejects_oversize_content_length_without_reading_body():
     """limit_content must fail on an oversized Content-Length header BEFORE
     reading any of the body — so a huge PDF/error page is never loaded."""

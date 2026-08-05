@@ -172,6 +172,15 @@ def test_apply_attaches_pdf_and_writes_sanitized_provenance(tmp_path, monkeypatc
     assert stage["pdf_source"]["pdf_url"] == "https://example.test/p.pdf"
     assert stage["staged_pdf"]["sha256"]
     assert (folder/f"{PN}.metadata_match.json").exists()
+    # Fetch decoupling: the match receipt is written but the freeze is a
+    # separate phase — no metadata_freeze.json may appear here, and the
+    # workspace metadata state reflects the receipt decision.
+    assert not (folder / f"{PN}.metadata_freeze.json").exists()
+    import_status = json.loads((folder / ".import_status.json").read_text(encoding="utf-8"))
+    assert import_status["metadata"]["state"] in {
+        "matched", "related_version", "ambiguous", "unverifiable", "extraction_failed",
+    }
+    assert import_status["metadata"].get("match_status")
 
 
 def test_existing_pdf_skips_resolver_even_when_custom_or_unsafe(tmp_path, monkeypatch):
@@ -367,9 +376,9 @@ def test_full_run_reports_every_item(tmp_path, monkeypatch):
         output = Path(output_root) / "download.pdf"
         output.parent.mkdir(parents=True, exist_ok=True)
         # Distinct bytes per call, but WITHOUT the DOI: identical PDFs would
-        # (correctly) trip the duplicate guard, and a DOI in the text layer
-        # would make the match receipt trigger a freeze this minimal fixture
-        # metadata cannot satisfy. Neither is what this test is about.
+        # (correctly) trip the duplicate guard, and fetch writes the match
+        # receipt WITHOUT freezing (freeze is a separate phase). Neither is
+        # what this test is about.
         output.write_bytes(b"%PDF fetched body " + str(next(serial)).encode())
         return FetchResult(doi=doi, success=True, output_path=str(output),
                            resolver="static", resolver_chain=["static"])

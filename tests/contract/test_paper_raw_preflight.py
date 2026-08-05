@@ -14,6 +14,29 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PN1 = "0000000000000001"
 PN2 = "0000000000000002"
 
+# PyMuPDF embeds a random /ID and timestamps per save, so identical content
+# still produces different bytes.  The fixture caches one canonical PDF per
+# (doi, marker) so duplicate-detection tests get byte-identical PDFs.
+_PDF_CACHE: dict[tuple[str, str], bytes] = {}
+
+
+def _canonical_pdf(doi: str, marker: str) -> bytes:
+    key = (doi, marker)
+    cached = _PDF_CACHE.get(key)
+    if cached is not None:
+        return cached
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Preflight Paper")
+    page.insert_text((72, 100), f"doi:{doi}")
+    page.insert_text((72, 114), "Jane Smith")
+    page.insert_text((72, 128), marker[:40])
+    pdf_bytes = doc.tobytes(deflate=True)
+    doc.close()
+    _PDF_CACHE[key] = pdf_bytes
+    return pdf_bytes
+
 
 def _run_script(script: str, argv: list[str]) -> int:
     saved = sys.argv
@@ -27,25 +50,32 @@ def _run_script(script: str, argv: list[str]) -> int:
         sys.argv = saved
 
 
-def _raw_folder(root: Path, source_id: str = PN1, *, doi: str = "10.1000/ok",
+def _raw_folder(root: Path, source_id: str = PN1, *, doi: str = "10.1000/ok2024",
                 matched: bool = True, pdf_bytes: bytes = b"%PDF") -> Path:
+    fitz = pytest.importorskip("fitz")
     folder = root / source_id
     folder.mkdir(parents=True)
     metadata = empty_metadata(source_id)
     metadata["title"]["original"] = "Preflight Paper"
     metadata["year"] = 2024
-    metadata["authors"] = [{"full_name": "Wang A", "family": "Wang", "given": "A", "orcid": "", "affiliation": ""}]
-    metadata["first_author"] = {"family": "Wang", "display": "Wang A"}
+    metadata["authors"] = [{"full_name": "Jane Smith", "family": "Smith", "given": "Jane", "orcid": "", "affiliation": ""}]
+    metadata["first_author"] = {"family": "Smith", "display": "Jane Smith"}
     metadata["container"]["journal"] = "Test Journal"
     metadata["identifiers"]["doi"] = doi
     metadata["source"].update({"provider": "fixture", "raw_record_path": "source_records/metadata_source.fixture.json"})
     (folder / f"{source_id}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    (folder / f"{source_id}.pdf").write_bytes(pdf_bytes + (f" DOI {doi}".encode() if doi else b""))
+    # A real PDF with title/DOI/author in the decoded text layer (the v2
+    # extractor needs the bibliographic fields for strong evidence).  The
+    # pdf_bytes marker keeps distinct callers' PDFs byte-distinct, while
+    # identical (doi, marker) pairs share one canonical PDF for the
+    # duplicate-sha guard.
+    marker = pdf_bytes.decode("latin-1", "ignore").strip()
+    (folder / f"{source_id}.pdf").write_bytes(_canonical_pdf(doi, marker))
     (folder / "source_records").mkdir()
     (folder / metadata["source"]["raw_record_path"]).write_text(json.dumps({"doi": doi}), encoding="utf-8")
     if matched and doi.startswith("10.") and "/" in doi:
         evidence = extract_pdf_identity_evidence(pdf_path=folder / f"{source_id}.pdf")
-        write_match_receipt(folder, build_match_receipt(folder, source_id, metadata, evidence, provider_records=[metadata["source"]["raw_record_path"]]))
+        write_match_receipt(folder, build_match_receipt(folder, source_id, metadata, evidence, requested_doi=doi, provider_records=[metadata["source"]["raw_record_path"]]))
         freeze_metadata(folder, source_id)
     return folder
 
@@ -79,10 +109,10 @@ def test_preflight_ready_and_invalid_doi(tmp_path, monkeypatch):
 
 def test_preflight_detects_formal_and_internal_duplicates(tmp_path, monkeypatch):
     paper_raw = tmp_path / "paper_raw"
-    first = _raw_folder(paper_raw, PN1, doi="10.1000/dup", pdf_bytes=b"%PDF-same")
-    second = _raw_folder(paper_raw, PN2, doi="10.1000/dup", pdf_bytes=b"%PDF-same")
+    first = _raw_folder(paper_raw, PN1, doi="10.1000/dup2024", pdf_bytes=b"%PDF-same")
+    second = _raw_folder(paper_raw, PN2, doi="10.1000/dup2024", pdf_bytes=b"%PDF-same")
     formal = tmp_path / "papers"
-    _formal_metadata(formal, "2024_wang_existing", doi="10.1000/dup")
+    _formal_metadata(formal, "2024_wang_existing", doi="10.1000/dup2024")
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
 
     rc = _run_script(
@@ -151,7 +181,7 @@ def _run_batch_dryrun(paper_raw: Path, monkeypatch, *extra: str) -> tuple[int, l
 def test_convert_report_metadata_fields(tmp_path, monkeypatch, capsys):
     paper_raw = tmp_path / "paper_raw"
     _status_folder(paper_raw, PN1, "doi_invalid", doi="")
-    _status_folder(paper_raw, PN2, "metadata_matched", doi="10.1000/ok")
+    _status_folder(paper_raw, PN2, "metadata_matched", doi="10.1000/ok2024")
 
     rc = _run_batch_dryrun(paper_raw, monkeypatch)
     assert rc == 0
@@ -175,7 +205,7 @@ def test_convert_report_metadata_fields(tmp_path, monkeypatch, capsys):
 
 def test_only_convertible_skips_commit_stage_workspace(tmp_path, monkeypatch, capsys):
     paper_raw = tmp_path / "paper_raw"
-    _status_folder(paper_raw, PN1, "ready_for_commit", doi="10.1000/ok")
+    _status_folder(paper_raw, PN1, "ready_for_commit", doi="10.1000/ok2024")
     _status_folder(paper_raw, PN2, "doi_invalid", doi="")
 
     rc = _run_batch_dryrun(paper_raw, monkeypatch, "--only-convertible")
@@ -233,7 +263,7 @@ def test_readiness_blocks_converted_but_unmatched_workspace(tmp_path):
     stays blocked until metadata is matched/manual_confirmed. Conversion-without-
     metadata is allowed; formal ingestion is not."""
     paper_raw = tmp_path / "paper_raw"
-    folder = _raw_folder(paper_raw, PN1, doi="10.1000/ok", matched=False)
+    folder = _raw_folder(paper_raw, PN1, doi="10.1000/ok2024", matched=False)
     # Simulate already-converted assets (md + images present).
     (folder / f"{PN1}.md").write_text("# Converted", encoding="utf-8")
     (folder / "images").mkdir()
