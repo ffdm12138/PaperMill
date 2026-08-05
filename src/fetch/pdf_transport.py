@@ -16,6 +16,7 @@ from typing import Any, Literal, Mapping
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
+from urllib3.exceptions import ProtocolError
 
 from src.fetch.host_policy import is_bot_blocked_host
 
@@ -410,6 +411,11 @@ def inspect_response_content(
     is_html = content_type in {"text/html", "application/xhtml+xml"} or html_marker
     detected: Literal["pdf", "html", "unknown"] = "pdf" if is_pdf else ("html" if is_html else "unknown")
     if not prefix:
+        if getattr(response, "_mineru_connection_broken", False):
+            # The connection broke while reading the bounded prefix (see
+            # ``_response_prefix``): a typed, retryable failure — never an
+            # exception escaping the transport and killing the whole paper.
+            return ContentInspection(False, detected, "connection_broken", content_type, prefix)
         return ContentInspection(False, detected, "empty_body", content_type, prefix)
     if expected_content == "any":
         return ContentInspection(True, detected, None, content_type, prefix)
@@ -437,10 +443,27 @@ def _response_prefix(response: requests.Response, limit: int = 512) -> bytes:
             prefix = raw.read(limit, decode_content=True)
         except TypeError:
             prefix = raw.read(limit)
+        except (ProtocolError, requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
+            # Connection broke mid-read (urllib3 InvalidChunkLength on a
+            # mangled chunked stream, connection reset, ...).  Mark the
+            # response so the inspection reports ``connection_broken``: the
+            # direct attempt then falls back through the proxy, and a proxy
+            # that also breaks is recorded as a typed failure instead of a
+            # bare exception escaping the transport (measured: 108 papers
+            # failed this way, 73 of them AMS).
+            # NOTE: ChunkedEncodingError is NOT a ConnectionError subclass
+            # in requests 2.34 (MRO: RequestException -> OSError) — list it
+            # explicitly.
+            setattr(response, "_mineru_connection_broken", True)
+            prefix = b""
         prefix = bytes(prefix or b"")
         setattr(response, "_mineru_prefetched_prefix", prefix)
         return prefix
-    content = getattr(response, "content", b"")
+    try:
+        content = getattr(response, "content", b"")
+    except (ProtocolError, requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError):
+        setattr(response, "_mineru_connection_broken", True)
+        content = b""
     return bytes(content[:limit]) if isinstance(content, (bytes, bytearray)) else b""
 
 

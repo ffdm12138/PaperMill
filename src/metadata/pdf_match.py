@@ -1,4 +1,13 @@
-"""Strict, replayable metadata/PDF match receipts."""
+"""Strict, replayable metadata/PDF match receipts (schema 2.0).
+
+Receipts carry the automatic decision (evidence-tiered policy in
+``identity_match``) plus an optional manual confirmation; the final decision
+is what the workspace state and freeze eligibility use.  Validation replays
+the automatic decision from the SAVED evidence — it never re-extracts from
+the PDF, so a frozen closure does not depend on a future PyMuPDF version
+reproducing the same text.  Explicit re-audits (rematch plan phase) are the
+only path that re-extracts.
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,121 +17,74 @@ from pathlib import Path
 from src.discovery.models import normalize_doi
 from src.utils.file_fingerprint import compute_sha256
 from src.utils.timestamps import now_iso
-from src.metadata.normalization import canonical_title
 from src.metadata.pdf_identity import (
     CONFIDENCE_LEVELS,
     PdfIdentityEvidence,
-    extract_pdf_identity_evidence,
+)
+from src.metadata.identity_match import (
+    DECISION_POLICY_VERSION,
+    MATCH_METHODS,
+    MATCHED_METHODS,
+    RECEIPT_STATUS_TO_METADATA_STATE,
+    IdentityDecision,
+    decide_identity,
 )
 from src.utils.atomic_io import atomic_write_json
 
+__all__ = [
+    "MATCH_METHODS",
+    "MATCHED_METHODS",
+    "RECEIPT_STATUS_TO_METADATA_STATE",
+    "build_match_receipt",
+    "write_match_receipt",
+    "validate_metadata_match_receipt",
+]
 
-MATCH_METHODS = {
-    "doi_exact",
-    "stable_identifier_exact",
-    "title_author_year_strict",
-    "manual_confirmed",
-    "identifier_conflict",
-    "mismatch",
-}
-MATCHED_METHODS = {"doi_exact", "stable_identifier_exact", "title_author_year_strict"}
+SCHEMA_VERSION = "2.0"
+
+# Statuses a manual confirmation may override (identifier_conflict is a
+# hard, non-overridable automatic conclusion).
+MANUAL_OVERRIDABLE_STATUSES = {"ambiguous", "unverifiable", "related_version"}
 
 
-def _metadata_identity(metadata: dict) -> dict:
-    identifiers = metadata.get("identifiers") if isinstance(metadata.get("identifiers"), dict) else {}
-    doi = normalize_doi(str(identifiers.get("doi") or ""))
-    stable = {
-        str(key).casefold(): str(value).strip().casefold()
-        for key, value in identifiers.items()
-        if str(key).casefold() != "doi" and str(value).strip()
-    }
-    authors = [a for a in metadata.get("authors") or [] if isinstance(a, dict)]
-    families = [str(a.get("family") or a.get("full_name") or "").strip() for a in authors]
-    families = [value for value in families if value]
-    first = str((metadata.get("first_author") or {}).get("family") or "").strip()
-    if not first and families:
-        first = families[0]
+def _automatic_decision_dict(decision: IdentityDecision) -> dict:
     return {
-        "doi": doi,
-        "stable_identifiers": stable,
-        "title": canonical_title(str((metadata.get("title") or {}).get("original") or "")),
-        "year": int(metadata.get("year")) if str(metadata.get("year") or "").isdigit() else None,
-        "first_author": first,
-        "author_families": families,
+        "match_status": decision.match_status,
+        "match_method": decision.match_method,
+        "pdf_primary_doi": decision.pdf_primary_doi,
+        "relation": decision.relation,
+        "decision_evidence": decision.details,
     }
 
 
-def _evidence_stable_identifiers(evidence: PdfIdentityEvidence) -> dict[str, str]:
-    return {kind.casefold(): value.strip().casefold() for kind, value in evidence.extracted_identifiers if value.strip()}
-
-
-def _automatic_decision(metadata: dict, evidence: PdfIdentityEvidence) -> tuple[str, dict]:
-    identity = _metadata_identity(metadata)
-    metadata_doi = identity["doi"]
-    pdf_dois = set(evidence.extracted_dois)
-    metadata_stable = identity["stable_identifiers"]
-    pdf_stable = _evidence_stable_identifiers(evidence)
-    details = {
-        "metadata_doi": metadata_doi,
-        "pdf_extracted_dois": sorted(pdf_dois),
-        "metadata_stable_identifiers": metadata_stable,
-        "pdf_stable_identifiers": pdf_stable,
-        "metadata_title": identity["title"],
-        "pdf_title": evidence.canonical_title,
-        "metadata_year": identity["year"],
-        "pdf_year": evidence.publication_year,
-        "metadata_first_author": identity["first_author"],
-        "pdf_first_author": evidence.first_author_family,
-    }
-
-    # Both sides have an explicit DOI: equality is decisive and conflict stops.
-    if metadata_doi and pdf_dois:
-        return ("doi_exact" if metadata_doi in pdf_dois else "identifier_conflict"), details
-    if metadata_doi or pdf_dois:
-        return "mismatch", details
-
-    shared_kinds = set(metadata_stable) & set(pdf_stable)
-    if metadata_stable and pdf_stable:
-        if any(metadata_stable[kind] != pdf_stable[kind] for kind in shared_kinds) or not shared_kinds:
-            return "identifier_conflict", details
-        return "stable_identifier_exact", details
-    if metadata_stable or pdf_stable:
-        return "mismatch", details
-
-    metadata_authors = {x.casefold() for x in identity["author_families"]}
-    evidence_authors = {x.casefold() for x in evidence.author_families}
-    title_ok = bool(evidence.canonical_title) and identity["title"] == evidence.canonical_title
-    year_ok = evidence.publication_year is not None and identity["year"] == evidence.publication_year
-    first_ok = bool(evidence.first_author_family and identity["first_author"]) and (
-        evidence.first_author_family.casefold() == identity["first_author"].casefold()
-    )
-    overlap = bool(metadata_authors & evidence_authors)
-    details.update({"canonical_title_exact": title_ok, "year_match": year_ok, "first_author_match": first_ok, "author_overlap": overlap})
-    if title_ok and year_ok and first_ok and overlap and evidence.confidence not in {"heuristic_text", "missing"}:
-        return "title_author_year_strict", details
-    return "mismatch", details
+def _expected_status_for(method: str) -> str | None:
+    if method in {"doi_exact", "doi_medium_bibliographic", "stable_identifier_exact", "manual_confirmed"}:
+        return "matched"
+    if method == "version_relation":
+        return "related_version"
+    return method if method in MATCH_METHODS else None
 
 
 def _validate_manual(manual: object, *, metadata_sha256: str, pdf_sha256: str) -> list[str]:
     if not isinstance(manual, dict):
         return ["manual confirmation must be an object"]
     errors: list[str] = []
-    if not str(manual.get("operator") or "").strip(): errors.append("manual confirmation operator is required")
-    if not str(manual.get("reason") or "").strip(): errors.append("manual confirmation reason is required")
-    evidence = manual.get("evidence")
-    if not isinstance(evidence, list) or not evidence:
-        errors.append("manual confirmation evidence must be a non-empty array")
-    else:
-        for index, item in enumerate(evidence):
-            if not isinstance(item, dict) or not str(item.get("type") or "").strip() or not str(item.get("detail") or "").strip():
-                errors.append(f"manual confirmation evidence[{index}] requires type/detail")
+    if not str(manual.get("confirmed_by") or "").strip():
+        errors.append("manual confirmation confirmed_by is required")
+    if not str(manual.get("reason") or "").strip():
+        errors.append("manual confirmation reason is required")
     try:
-        parsed = datetime.fromisoformat(str(manual.get("confirmed_at") or "").replace("Z", "+00:00"))
-        if parsed.tzinfo is None: errors.append("manual confirmation confirmed_at must include timezone")
+        parsed = datetime.fromisoformat(
+            str(manual.get("confirmed_at") or "").replace("Z", "+00:00")
+        )
+        if parsed.tzinfo is None:
+            errors.append("manual confirmation confirmed_at must include timezone")
     except ValueError:
         errors.append("manual confirmation confirmed_at must be RFC3339")
-    if manual.get("metadata_sha256") != metadata_sha256: errors.append("manual confirmation metadata hash mismatch")
-    if manual.get("pdf_sha256") != pdf_sha256: errors.append("manual confirmation PDF hash mismatch")
+    if manual.get("metadata_sha256") != metadata_sha256:
+        errors.append("manual confirmation metadata hash mismatch")
+    if manual.get("pdf_sha256") != pdf_sha256:
+        errors.append("manual confirmation PDF hash mismatch")
     return errors
 
 
@@ -135,38 +97,57 @@ def build_match_receipt(
     requested_doi: str = "",
     provider_records: list[str] | None = None,
     manual: dict | None = None,
+    matched_at: str | None = None,
 ) -> dict:
+    """Build a schema-2.0 receipt.
+
+    ``matched_at`` is injectable so migration plans pin one timestamp and
+    re-apply byte-identically; production callers default to now.
+    """
     metadata_path = folder / f"{paper_number}.metadata.json"
     pdf_path = folder / f"{paper_number}.pdf"
-    automatic_method, details = _automatic_decision(metadata, evidence)
     metadata_sha256 = compute_sha256(metadata_path)
     pdf_sha256 = compute_sha256(pdf_path)
-    method = automatic_method
+    if not requested_doi:
+        # Match the legacy behavior: the requested DOI is the metadata DOI
+        # unless a caller (e.g. the migration tool) pins it explicitly.
+        requested_doi = str((metadata.get("identifiers") or {}).get("doi") or "")
+    decision = decide_identity(metadata, evidence, requested_doi=requested_doi)
+    automatic = _automatic_decision_dict(decision)
+    final_status = automatic["match_status"]
+    final_method = automatic["match_method"]
     manual_errors: list[str] = []
     if manual is not None:
-        if automatic_method == "identifier_conflict":
+        if automatic["match_status"] == "identifier_conflict":
             manual_errors.append("manual confirmation cannot override identifier conflict")
         else:
-            manual_errors = _validate_manual(manual, metadata_sha256=metadata_sha256, pdf_sha256=pdf_sha256)
+            manual_errors = _validate_manual(
+                manual, metadata_sha256=metadata_sha256, pdf_sha256=pdf_sha256
+            )
             if not manual_errors:
-                method = "manual_confirmed"
-            else:
-                method = "mismatch"
-    status = "matched" if method in MATCHED_METHODS else "manual_confirmed" if method == "manual_confirmed" else "identifier_conflict" if method == "identifier_conflict" else "mismatch"
+                final_status, final_method = "matched", "manual_confirmed"
     return {
-        "schema_version": "1.0",
+        "schema_version": SCHEMA_VERSION,
         "paper_number": paper_number,
         "metadata_sha256": metadata_sha256,
         "pdf_sha256": pdf_sha256,
-        "match_status": status,
-        "match_method": method,
+        "match_status": final_status,
+        "match_method": final_method,
         "requested_doi": normalize_doi(requested_doi),
+        "pdf_primary_doi": automatic["pdf_primary_doi"],
+        "identity_extractor_version": evidence.identity_extractor_version,
+        "decision_policy_version": DECISION_POLICY_VERSION,
+        "automatic_decision": automatic,
+        "final_decision": {
+            "match_status": final_status,
+            "match_method": final_method,
+        },
         "identity_evidence": evidence.to_dict(),
-        "decision_evidence": details,
+        "decision_evidence": decision.details,
         "provider_records": list(provider_records or []),
         "manual_confirmation": manual,
         "manual_errors": manual_errors,
-        "matched_at": now_iso(),
+        "matched_at": matched_at or now_iso(),
     }
 
 
@@ -185,53 +166,98 @@ def validate_metadata_match_receipt(
     paper_number: str | None = None,
     asset_prefix: str | None = None,
 ) -> list[str]:
-    """Replay the decision from current assets; never trust receipt status alone."""
+    """Replay the decision from the SAVED evidence; never re-extract.
+
+    v1 receipts are rejected: they require the pdf_identity migration.
+    """
+    if receipt.get("schema_version") != SCHEMA_VERSION:
+        return [
+            f"match receipt schema_version {receipt.get('schema_version')} "
+            "requires pdf_identity migration"
+        ]
     errors: list[str] = []
-    required = {"paper_number", "metadata_sha256", "pdf_sha256", "match_status", "match_method", "identity_evidence", "provider_records"}
+    required = {
+        "paper_number",
+        "metadata_sha256",
+        "pdf_sha256",
+        "match_status",
+        "match_method",
+        "automatic_decision",
+        "final_decision",
+        "identity_evidence",
+        "provider_records",
+    }
     for key in sorted(required - set(receipt)):
         errors.append(f"match receipt missing {key}")
     paper_number = paper_number or metadata_path.name.removesuffix(".metadata.json")
-    prefix = asset_prefix or metadata_path.name.removesuffix(".metadata.json")
-    if receipt.get("paper_number") != paper_number: errors.append("match receipt paper_number mismatch")
-    if receipt.get("match_method") not in MATCH_METHODS: errors.append("unknown match method")
+    if receipt.get("paper_number") != paper_number:
+        errors.append("match receipt paper_number mismatch")
+    method = receipt.get("match_method")
+    if method not in MATCH_METHODS:
+        errors.append("unknown match method")
     metadata_sha256 = compute_sha256(metadata_path)
     pdf_sha256 = compute_sha256(pdf_path)
-    if receipt.get("metadata_sha256") != metadata_sha256: errors.append("match receipt metadata hash mismatch")
-    if receipt.get("pdf_sha256") != pdf_sha256: errors.append("match receipt PDF hash mismatch")
+    if receipt.get("metadata_sha256") != metadata_sha256:
+        errors.append("match receipt metadata hash mismatch")
+    if receipt.get("pdf_sha256") != pdf_sha256:
+        errors.append("match receipt PDF hash mismatch")
 
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        stored_evidence = PdfIdentityEvidence.from_dict(receipt.get("identity_evidence") or {})
+        stored_evidence = PdfIdentityEvidence.from_dict(
+            receipt.get("identity_evidence") or {}
+        )
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         return errors + [f"invalid match evidence: {exc}"]
-    if stored_evidence.confidence not in CONFIDENCE_LEVELS: errors.append("invalid evidence confidence")
-    markdown = workspace / f"{prefix}.md"
-    conversion = workspace / f"{prefix}.conversion.json"
-    used_markdown = any(source.startswith("markdown.") for source in stored_evidence.extraction_sources)
-    used_conversion = "conversion.manifest" in stored_evidence.extraction_sources
-    current_evidence = extract_pdf_identity_evidence(
-        pdf_path=pdf_path,
-        markdown_path=markdown if used_markdown and markdown.exists() else None,
-        conversion_manifest_path=conversion if used_conversion and conversion.exists() else None,
+    if stored_evidence.confidence not in CONFIDENCE_LEVELS:
+        errors.append("invalid evidence confidence")
+
+    # Replay the automatic decision from the saved evidence only.
+    automatic = decide_identity(
+        metadata, stored_evidence, requested_doi=str(receipt.get("requested_doi") or "")
     )
-    if stored_evidence.to_dict() != current_evidence.to_dict(): errors.append("match identity evidence no longer reproduces from current assets")
-    automatic_method, _ = _automatic_decision(metadata, current_evidence)
-    claimed_method = receipt.get("match_method")
-    expected_status = "mismatch"
-    if claimed_method == "manual_confirmed":
-        if automatic_method == "identifier_conflict": errors.append("manual confirmation cannot override identifier conflict")
-        errors.extend(_validate_manual(receipt.get("manual_confirmation"), metadata_sha256=metadata_sha256, pdf_sha256=pdf_sha256))
-        expected_status = "manual_confirmed"
+    if receipt.get("automatic_decision") != _automatic_decision_dict(automatic):
+        errors.append("automatic decision replay mismatch")
+
+    expected_status = _expected_status_for(method)
+    if expected_status is None:
+        errors.append("match method/status consistency violation")
+    final_decision = receipt.get("final_decision") or {}
+    if final_decision.get("match_status") != receipt.get("match_status") or final_decision.get(
+        "match_method"
+    ) != method:
+        errors.append("final decision mismatch")
+    if method == "manual_confirmed":
+        if automatic.match_status == "identifier_conflict":
+            errors.append("manual confirmation cannot override identifier conflict")
+        errors.extend(
+            _validate_manual(
+                receipt.get("manual_confirmation"),
+                metadata_sha256=metadata_sha256,
+                pdf_sha256=pdf_sha256,
+            )
+        )
+        if receipt.get("match_status") != "matched":
+            errors.append("manual confirmed receipt must have final status matched")
     else:
-        if claimed_method != automatic_method: errors.append(f"match method replay mismatch: expected {automatic_method}")
-        expected_status = "matched" if automatic_method in MATCHED_METHODS else automatic_method if automatic_method == "identifier_conflict" else "mismatch"
-    if receipt.get("match_status") != expected_status: errors.append(f"match status replay mismatch: expected {expected_status}")
-    if claimed_method not in MATCHED_METHODS | {"manual_confirmed"}: errors.append("metadata/PDF identity is not matched")
+        if method != automatic.match_method:
+            errors.append(f"match method replay mismatch: expected {automatic.match_method}")
+        if receipt.get("match_status") != automatic.match_status:
+            errors.append(f"match status replay mismatch: expected {automatic.match_status}")
+    if expected_status is not None and receipt.get("match_status") != expected_status:
+        errors.append(f"match status replay mismatch: expected {expected_status}")
+    if method not in MATCHED_METHODS:
+        errors.append("metadata/PDF identity is not matched")
 
     root = workspace.resolve()
     for relative in receipt.get("provider_records") or []:
         path = Path(str(relative))
         target = (workspace / path).resolve()
-        if path.is_absolute() or ".." in path.parts or root not in (target, *target.parents) or not target.is_file():
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or root not in (target, *target.parents)
+            or not target.is_file()
+        ):
             errors.append(f"unsafe or missing provider record: {relative}")
     return errors

@@ -97,7 +97,14 @@ class HeaderBasedDoiResolver(PdfResolver):
                     transport_attempts=transport_attempts,
                 )
             if is_pdf_response(response):
-                content = limit_content(response)
+                try:
+                    content = limit_content(response)
+                except ValueError as exc:
+                    return FetchResult(doi=context.doi, source=self.name, resolver=self.name,
+                                       candidate_url=candidate_url, final_url=landing_url,
+                                       status_code=status_code, content_type=content_type,
+                                       error=str(exc),
+                                       transport_attempts=transport_attempts)
                 error = validate_pdf_bytes(content)
                 if error:
                     return FetchResult(doi=context.doi, source=self.name, resolver=self.name,

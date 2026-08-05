@@ -73,7 +73,10 @@ def atomic_write_json_unlocked(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        with tmp.open("w", encoding="utf-8") as fh:
+        # newline="\n": JSON artifacts must be line-ending stable across
+        # platforms — Windows text mode would otherwise write CRLF and
+        # change every file hash between machines.
+        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
             fh.write(
                 json.dumps(data, ensure_ascii=False, indent=indent, sort_keys=sort_keys)
             )
@@ -130,7 +133,7 @@ def atomic_write_text(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        with tmp.open("w", encoding="utf-8") as fh:
+        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
             if fsync:
                 fh.flush()

@@ -60,7 +60,19 @@ def _content_result(
             error=f"{resolver} failed: HTTP {response.status_code}",
             transport_attempts=list(transport_attempts),
         )
-    content = limit_content(response)
+    try:
+        content = limit_content(response)
+    except ValueError as exc:
+        return FetchResult(
+            doi=doi,
+            resolver=resolver,
+            source=resolver,
+            status_code=response.status_code,
+            final_url=final_url,
+            content_type=response.headers.get("Content-Type", ""),
+            error=str(exc),
+            transport_attempts=list(transport_attempts),
+        )
     error = validate_pdf_bytes(content)
     if error:
         return FetchResult(

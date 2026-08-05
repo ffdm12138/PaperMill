@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
+from urllib3.exceptions import ProtocolError
 
 from config.settings import MINERU_FETCH_MAX_BYTES
 
@@ -64,13 +65,23 @@ def limit_content(response: requests.Response) -> bytes:
     prefetched = bytes(getattr(response, "_mineru_prefetched_prefix", b"") or b"")
     chunks: list[bytes] = [prefetched] if prefetched else []
     total = len(prefetched)
-    for chunk in response.iter_content(chunk_size=64 * 1024):
-        if not chunk:
-            continue
-        total += len(chunk)
-        if total > MINERU_FETCH_MAX_BYTES:
-            raise ValueError(f"PDF exceeds MINERU_FETCH_MAX_BYTES={MINERU_FETCH_MAX_BYTES}")
-        chunks.append(chunk)
+    try:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MINERU_FETCH_MAX_BYTES:
+                raise ValueError(f"PDF exceeds MINERU_FETCH_MAX_BYTES={MINERU_FETCH_MAX_BYTES}")
+            chunks.append(chunk)
+    except (ProtocolError, requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError) as exc:
+        # The connection broke mid-read (urllib3 InvalidChunkLength on a
+        # mangled chunked stream).  Type it instead of letting it escape
+        # the landing-page resolver, which used to kill the whole paper
+        # with no attempt records (measured: 108 papers, 73 AMS).
+        # NOTE: ChunkedEncodingError is NOT a ConnectionError subclass in
+        # requests 2.34 (MRO: RequestException -> OSError) — list it
+        # explicitly.
+        raise ValueError(f"connection broken during content read: {exc}") from exc
     return b"".join(chunks)
 
 

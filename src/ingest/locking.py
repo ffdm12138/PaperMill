@@ -94,3 +94,88 @@ def transaction_requests(lock_root: Path, paper_numbers: Sequence[str]) -> list[
 def held_lock_ranks() -> tuple[int, ...]:
     """Expose ranks for deterministic tests and debug assertions."""
     return tuple(request.rank for request in _HELD.get())
+
+
+# ── PDF-identity migration maintenance guard ──────────────────────────
+
+IDENTITY_MIGRATION_MARKER = ".pdf_identity_migration.json"
+
+
+def identity_migration_marker_path(paper_raw_dir: Path | str) -> Path:
+    """Path of the identity-migration maintenance marker."""
+    return Path(paper_raw_dir) / IDENTITY_MIGRATION_MARKER
+
+
+def read_identity_migration_marker(paper_raw_dir: Path | str) -> dict | None:
+    """Read the maintenance marker; ``None`` when no migration is active."""
+    marker = identity_migration_marker_path(paper_raw_dir)
+    if not marker.is_file():
+        return None
+    import json
+
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def assert_no_active_identity_migration(paper_raw_dir: Path | str) -> None:
+    """Fail closed while the identity migration maintenance mode is active.
+
+    Every production entry point that writes ``metadata_match.json``,
+    ``metadata_freeze.json``, or ``.import_status.json`` must call this at
+    entry AND again after acquiring its real write lock (TOCTOU guard).
+    Only the migration tool itself bypasses it, and only with a matching
+    run_id + plan hash.
+    """
+    marker = read_identity_migration_marker(paper_raw_dir)
+    if marker is None:
+        return
+    run_id = marker.get("run_id") or "unknown"
+    raise RuntimeError(
+        f"identity migration in progress (run {run_id}): "
+        f"paper_raw writes are closed while receipts/freezes are migrated"
+    )
+
+
+def create_identity_migration_marker(
+    paper_raw_dir: Path | str, payload: dict
+) -> Path:
+    """Atomically create the maintenance marker (caller holds the global
+    paper_raw write lock; a second active migration fails closed)."""
+    from src.utils.atomic_io import atomic_write_json
+
+    marker = identity_migration_marker_path(paper_raw_dir)
+    if marker.exists():
+        existing = read_identity_migration_marker(paper_raw_dir) or {}
+        raise RuntimeError(
+            "another identity migration is already active: "
+            f"{existing.get('run_id') or 'unknown'}"
+        )
+    atomic_write_json(marker, payload, indent=2)
+    return marker
+
+
+def remove_identity_migration_marker(
+    paper_raw_dir: Path | str,
+    *,
+    run_id: str,
+    plan_content_hash: str,
+) -> None:
+    """Remove the maintenance marker, validating run_id and plan hash.
+
+    A marker whose run_id/plan hash does not match is never auto-deleted
+    (fail closed); the operator must reconcile journal and marker first.
+    """
+    marker = identity_migration_marker_path(paper_raw_dir)
+    if not marker.exists():
+        return
+    existing = read_identity_migration_marker(paper_raw_dir) or {}
+    if existing.get("run_id") != run_id or existing.get("plan_content_hash") != plan_content_hash:
+        raise RuntimeError(
+            f"identity migration marker mismatch: marker run "
+            f"{existing.get('run_id')} / plan {existing.get('plan_content_hash')} "
+            f"does not match run {run_id} / plan {plan_content_hash}"
+        )
+    marker.unlink()

@@ -110,9 +110,10 @@ def write_import_status(
         workspace = PaperRawWorkspace.from_path(folder)
         mapping = {
             READY_FOR_CONVERT:("pdf","attached"), CONVERTED:("conversion","complete"), STALE_CONVERSION:("conversion","failed"), PARTIAL_CONVERSION:("conversion","failed"), STAGE_FAILED:("pdf","failed"),
-            METADATA_CANDIDATES_FOUND:("metadata","resolving"), METADATA_RESOLVE_FAILED:("metadata","invalid"), METADATA_CANDIDATE_CONFLICT:("metadata","mismatch"), METADATA_MATCHED:("metadata","matched"), METADATA_MANUAL_REVIEW_REQUIRED:("metadata","mismatch"), METADATA_INVALID:("metadata","invalid"), METADATA_UNMATCHED:("metadata","mismatch"), METADATA_INCOMPLETE:("metadata","invalid"),
+            METADATA_CANDIDATES_FOUND:("metadata","resolving"), METADATA_RESOLVE_FAILED:("metadata","invalid"), METADATA_CANDIDATE_CONFLICT:("metadata","ambiguous"), METADATA_MATCHED:("metadata","matched"), METADATA_MANUAL_REVIEW_REQUIRED:("metadata","ambiguous"), METADATA_INVALID:("metadata","invalid"), METADATA_UNMATCHED:("metadata","unverifiable"), METADATA_INCOMPLETE:("metadata","invalid"),
             "staged_metadata":("metadata","resolved"),
             "metadata_resolved":("metadata","resolved"),
+            "duplicate":("pdf","duplicate"), POSSIBLE_DUPLICATE:("pdf","duplicate"),
             CATALOG_GENERATION_FAILED:("catalog","invalid"), CATALOG_INVALID:("catalog","invalid"), CATALOG_READY:("catalog","validated"), FORMALIZE_FAILED:("formalization","failed"), PAPER_NAME_MISMATCH:("catalog","invalid"), READY_FOR_COMMIT:("formalization","ready"), COMMIT_FAILED:("commit","failed"), COMMITTED:("commit","imported"), IMPORTED:("commit","imported"),
         }
         try:
@@ -175,7 +176,7 @@ def read_import_status(folder: str | Path) -> dict:
         elif states["catalog"] in {"validated","frozen"}: status=CATALOG_READY
         elif states["catalog"]=="invalid": status=CATALOG_INVALID
         elif states["metadata"] in {"matched","frozen"}: status=METADATA_MATCHED
-        elif states["metadata"]=="mismatch": status=METADATA_MANUAL_REVIEW_REQUIRED
+        elif states["metadata"] in {"mismatch","related_version","ambiguous","unverifiable","extraction_failed"}: status=METADATA_MANUAL_REVIEW_REQUIRED
         elif states["conversion"]=="complete": status=CONVERTED
         elif states["pdf"]=="attached": status=READY_FOR_CONVERT
         else: status=""

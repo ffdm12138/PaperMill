@@ -15,7 +15,7 @@ from src.utils.atomic_io import atomic_write_json_unlocked
 from src.utils.timestamps import now_iso
 
 STATUS_SCHEMA_VERSION="2.0"
-ALLOWED={"metadata":{"missing","resolving","resolved","matched","frozen","invalid","mismatch"},"pdf":{"missing","fetching","attached","duplicate","failed"},"conversion":{"pending","running","complete","failed"},"catalog":{"missing","waiting_for_llm","generated","validated","invalid","frozen","stale"},"formalization":{"pending","ready","stale","failed"},"commit":{"pending","committing","failed","imported"}}
+ALLOWED={"metadata":{"missing","resolving","resolved","matched","frozen","invalid","related_version","ambiguous","unverifiable","extraction_failed"},"pdf":{"missing","fetching","attached","duplicate","failed"},"conversion":{"pending","running","complete","failed"},"catalog":{"missing","waiting_for_llm","generated","validated","invalid","frozen","stale"},"formalization":{"pending","ready","stale","failed"},"commit":{"pending","committing","failed","imported"}}
 
 def initial_status(paper_number: str)->dict:
     return {"schema_version":STATUS_SCHEMA_VERSION,"paper_number":paper_number,"metadata":{"state":"missing","revision":0},"pdf":{"state":"missing"},"conversion":{"state":"pending"},"catalog":{"state":"missing"},"formalization":{"state":"pending"},"commit":{"state":"pending"},"updated_at":now_iso()}
