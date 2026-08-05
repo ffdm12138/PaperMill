@@ -54,7 +54,6 @@ from src.metadata.schema import metadata_doi
 from src.utils.atomic_io import atomic_write_json
 from src.metadata.pdf_identity import extract_pdf_identity_evidence
 from src.metadata.pdf_match import build_match_receipt, write_match_receipt
-from src.metadata.freeze import freeze_metadata
 
 
 def _source_ids(root: Path, all_unmatched: bool, all_papers: bool, one: str | None) -> list[str]:
@@ -276,6 +275,9 @@ def main() -> int:
                         help="re-resolve even when metadata is already citation-ready (matched + valid DOI)")
     args = parser.parse_args()
 
+    from src.ingest.locking import assert_no_active_identity_migration
+
+    assert_no_active_identity_migration(args.paper_raw_dir)
     allow_network = args.allow_network and not args.no_network
     # default dry-run: nothing written unless --write-candidates or --apply
     write_side_files = (args.apply or args.write_candidates) and not args.rate_probe
@@ -396,12 +398,32 @@ def main() -> int:
                 item.update(applied)
                 item["status"] = applied.get("status", "applied") if applied.get("applied") else "manual_review_required"
                 if applied.get("applied") and (folder / f"{source_id}.pdf").exists():
+                    from src.ingest.locking import (
+                        assert_no_active_identity_migration,
+                        paper_raw_write_lock,
+                    )
+                    from src.metadata.pdf_match import RECEIPT_STATUS_TO_METADATA_STATE
+                    from src.ingest.status import update_status
+                    from src.ingest.workspace import PaperRawWorkspace
+                    assert_no_active_identity_migration(args.paper_raw_dir)
                     resolved_meta=json.loads((folder / f"{source_id}.metadata.json").read_text(encoding="utf-8"))
                     evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{source_id}.pdf",markdown_path=folder/f"{source_id}.md",conversion_manifest_path=next(iter(folder.glob(f"{source_id}.conversion.json")),None))
                     receipt = build_match_receipt(folder, source_id, resolved_meta, evidence)
-                    write_match_receipt(folder, receipt)
-                    if receipt.get("match_status") == "matched":
-                        freeze_metadata(folder, source_id)
+                    # Metadata resolution writes the identity receipt only;
+                    # the freeze is a separate phase.
+                    with paper_raw_write_lock(args.paper_raw_dir):
+                        assert_no_active_identity_migration(args.paper_raw_dir)
+                        write_match_receipt(folder, receipt)
+                        state = RECEIPT_STATUS_TO_METADATA_STATE.get(
+                            receipt["match_status"], "resolved"
+                        )
+                        update_status(
+                            PaperRawWorkspace.from_path(folder),
+                            "metadata",
+                            state,
+                            match_method=receipt["match_method"],
+                            match_status=receipt["match_status"],
+                        )
             else:
                 item["applied"] = False
                 item["status"] = report.decision

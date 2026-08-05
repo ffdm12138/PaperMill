@@ -531,17 +531,27 @@ def _convert_one(
                 # Conversion is metadata-independent, but when a citation
                 # record already exists this is the first point at which
                 # independent Markdown identity evidence is available.
+                # Conversion writes the identity receipt only; the freeze
+                # is a separate phase.
                 try:
                     from src.metadata.pdf_identity import extract_pdf_identity_evidence
-                    from src.metadata.pdf_match import build_match_receipt, write_match_receipt
-                    from src.metadata.freeze import freeze_metadata
+                    from src.metadata.pdf_match import (
+                        RECEIPT_STATUS_TO_METADATA_STATE,
+                        build_match_receipt,
+                        write_match_receipt,
+                    )
                     from src.metadata.freeze import assert_metadata_frozen
                     from src.ingest.status import update_status
                     from src.ingest.workspace import PaperRawWorkspace
+                    from src.ingest.locking import (
+                        assert_no_active_identity_migration,
+                        paper_raw_write_lock,
+                    )
                     folder = args.paper_raw_dir / source_id
                     metadata_path = folder / f"{source_id}.metadata.json"
                     pdf_path = folder / f"{source_id}.pdf"
                     if metadata_path.exists() and pdf_path.exists():
+                        assert_no_active_identity_migration(args.paper_raw_dir)
                         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                         freeze_path=folder/f"{source_id}.metadata_freeze.json"
                         if freeze_path.exists():
@@ -556,16 +566,23 @@ def _convert_one(
                             provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
                             receipt = build_match_receipt(folder, source_id, metadata, evidence,
                                                           requested_doi=((metadata.get("identifiers") or {}).get("doi") or ""),provider_records=[provider_record] if provider_record else [])
-                            write_match_receipt(folder, receipt)
+                            with paper_raw_write_lock(args.paper_raw_dir):
+                                assert_no_active_identity_migration(args.paper_raw_dir)
+                                write_match_receipt(folder, receipt)
+                                state = RECEIPT_STATUS_TO_METADATA_STATE.get(
+                                    receipt["match_status"], "resolved"
+                                )
+                                update_status(
+                                    PaperRawWorkspace.from_path(folder),
+                                    "metadata",
+                                    state,
+                                    match_method=receipt["match_method"],
+                                    match_status=receipt["match_status"],
+                                )
                             item["metadata_match_method"] = receipt["match_method"]
-                            if receipt["match_status"] in {"matched","manual_confirmed"}:
-                                frozen=freeze_metadata(folder, source_id); update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
-                                item["metadata_frozen"] = True
-                            else:
-                                update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=receipt["match_method"])
-                                item["metadata_match_status"] = receipt["match_status"]
+                            item["metadata_match_status"] = receipt["match_status"]
                 except Exception as exc:
-                    item.setdefault("warnings", []).append(f"metadata match/freeze deferred: {exc}")
+                    item.setdefault("warnings", []).append(f"metadata match deferred: {exc}")
             else:
                 item["status"] = "failed"
                 item["stage"] = "failed"
@@ -640,6 +657,9 @@ def main() -> int:
     args = _parse_args()
     _apply_env_flags(args)
 
+    from src.ingest.locking import assert_no_active_identity_migration
+
+    assert_no_active_identity_migration(args.paper_raw_dir)
     write = args.apply and not args.dry_run
     source_ids = _source_ids(args.paper_raw_dir, args)
 

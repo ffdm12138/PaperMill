@@ -101,6 +101,13 @@ FAST_ACCEPTANCE_TESTS = [
     "tests/integration/test_writer_catalog_safety_gate.py",
     "tests/integration/test_catalog_apply_recovery.py",
     "tests/integration/test_validate_v2_library.py",
+    "tests/unit/test_doi_normalization.py",
+    "tests/unit/test_pdf_identity_v2.py",
+    "tests/unit/test_pdf_identity_text_layer.py",
+    "tests/unit/test_identity_match.py",
+    "tests/unit/test_identity_migration_guard.py",
+    "tests/integration/test_pdf_identity_migration_transaction.py",
+    "tests/integration/test_confirm_pdf_identity.py",
 ]
 # Logical groups for fast acceptance — each group runs as its own pytest
 # invocation with a per-group timeout so a single hung test file doesn't
@@ -116,6 +123,15 @@ FAST_GROUPS: list[tuple[str, list[str]]] = [
         "tests/integration/test_catalog_folder_classification_lifecycle.py",
         "tests/integration/test_catalog_doctor_fail_closed.py",
         "tests/integration/test_catalog_apply_recovery.py",
+    ]),
+    ("identity", [
+        "tests/unit/test_doi_normalization.py",
+        "tests/unit/test_pdf_identity_v2.py",
+        "tests/unit/test_pdf_identity_text_layer.py",
+        "tests/unit/test_identity_match.py",
+        "tests/unit/test_identity_migration_guard.py",
+        "tests/integration/test_pdf_identity_migration_transaction.py",
+        "tests/integration/test_confirm_pdf_identity.py",
     ]),
     ("discovery", [
         "tests/unit/test_discovery_models.py",

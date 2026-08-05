@@ -24,6 +24,8 @@ def _candidates(root: Path,args)->list[PaperRawWorkspace]:
 def main()->int:
     parser=argparse.ArgumentParser(); parser.add_argument("--paper-dir",type=Path); parser.add_argument("--paper-number"); parser.add_argument("--all-ready",action="store_true"); parser.add_argument("--reconcile",action="store_true"); parser.add_argument("--paper-raw-dir",type=Path,default=PAPER_RAW_DIR); parser.add_argument("--papers-dir",type=Path,default=PAPERS_DIR); parser.add_argument("--ledger-path",type=Path,default=PAPER_NUMBER_LEDGER_PATH); parser.add_argument("--catalog-root",type=Path,default=CATALOG_FOLDER_ROOT); parser.add_argument("--transactions-dir",type=Path,default=None); parser.add_argument("--apply",action="store_true"); parser.add_argument("--dry-run",action="store_true"); parser.add_argument("--report",type=Path)
     args=parser.parse_args(); transactions=args.transactions_dir or args.paper_raw_dir.parent/"transactions"; write=args.apply and not args.dry_run; report=[]
+    from src.ingest.locking import assert_no_active_identity_migration
+    assert_no_active_identity_migration(args.paper_raw_dir)
     try:
         if args.reconcile:
             report=reconcile_commits(transactions_dir=transactions,paper_raw_root=args.paper_raw_dir,papers_dir=args.papers_dir,ledger_path=args.ledger_path,catalog_root=args.catalog_root,paper_number=args.paper_number,apply=write)

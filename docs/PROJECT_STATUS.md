@@ -144,7 +144,8 @@ network Metadata or local PDF
 -> permanent 16-digit paper_number
 -> data/paper_raw/<paper_number>/
 -> PDF attach and optional early conversion
--> citation-ready Metadata + strict PDF match receipt
+-> citation-ready Metadata + evidence-tiered PDF identity match receipt (v2)
+-> standalone freeze phase (freeze_paper_raw_metadata.py --all-eligible)
 -> Metadata freeze
 -> current Markdown/images conversion
 -> Catalog v3.2 task, generation, validation, freeze
@@ -157,6 +158,77 @@ network Metadata or local PDF
 Local PDF conversion may precede Metadata resolution. Catalog requires both
 Metadata frozen and conversion complete. Formalize never renames. Commit alone
 renames copied staging assets to `paper_name`.
+
+## PDF identity v2 migration (2026-07-31)
+
+Receipt schema 2.0 replaced the flat-set DOI matcher with an evidence-tiered
+decision (`identity_match.py`): structured DoiEvidence (XMP / Document Info /
+first page / front matter / body / reference list / raw bytes), split
+match/conflict title thresholds (0.85 / 0.60), four-state bibliographic
+strength, and the automatic/final decision model for manual confirmation.
+The 1067 PDFs in `data/paper_raw` were migrated transactionally
+(`rematch_paper_raw_pdf_identity.py`: plan → receipts-only → freeze-eligible,
+journaled, abortable, idempotent); the maintenance marker closed all other
+paper_raw writers between phases, and the legacy `mismatch` metadata state
+was readable only by the migration tool during the window (removed
+afterwards).
+
+### Final strategy audit (2026-07-31, second pass)
+
+A read-only corpus audit of the 585 matched papers showed 405 resting on
+year-only or author-only corroboration (title similarities as low as
+0.10-0.28, no author overlap).  The strong-evidence rule was tightened to
+the contract form — labeled first-page DOI → strong only on
+`title match` OR `reliable author overlap AND compatible year` — and the
+corpus was re-migrated transactionally: matched 585 → 180, ambiguous 224 →
+629, unverifiable 258 (unchanged), identifier_conflict 0 (unchanged);
+179 freezes rebuilt, 179/179 closures verified, zero dangling freezes.
+The 405 downgraded papers keep their labeled-DOI + year evidence in the
+receipts and are the manual-review list (`confirm_paper_raw_pdf_identity.py`).
+
+### Corpus-wide PDF fetch sweep (2026-08-01)
+
+The remaining 2643 no-PDF workspaces were attempted to 100% coverage
+(every workspace now has either an attached PDF or a `fetch_result.json`
+sidecar).  Two fetch-path defects found and fixed during the sweep:
+
+- `semantic_scholar` was removed from the `auto` resolver chain: the API is
+  unreachable from this egress (ProviderPermanentError on every lookup),
+  yet each paper still paid ~9 serialized 3s-paced lookups/retries for it,
+  capping the whole batch at ~2 papers/min.  After removal the batch runs
+  ~5x faster (11-14 papers/min); `--resolver oa` keeps the full OA list.
+- Mid-read connection breaks (urllib3 `InvalidChunkLength` on mangled
+  chunked streams — 108 papers, 73 of them AMS) escaped the transport and
+  landing-page resolver as bare exceptions, killing the paper with no
+  attempt records.  Root cause: `ChunkedEncodingError` is NOT a
+  `ConnectionError` subclass in requests 2.34 (MRO: RequestException →
+  OSError).  The transport prefix read, `limit_content`, and the
+  header_based/TDM call sites now type the break (`connection_broken` /
+  ValueError) so the direct attempt falls back through the proxy and every
+  failure records properly.
+
+Outcome: 14 new PDFs (2 matched via `doi_exact` — 0200/header_based and
+0857/original_link — 1 ambiguous, 11 unverifiable), 180 frozen (+1 new,
+closure verified), 36 duplicate-PDF guard hits, 0 escapes in the final
+pass.  The 2 newly matched papers 0857 (techreport) and 1377 (phdthesis)
+are blocked from freezing on citation-readiness (institution/publisher
+missing) until their Metadata is repaired.  Fast gate green
+(562 files, runtime-zero snapshot, no pollution).
+
+### Citation-readiness repair for 0857/1377 (2026-08-01)
+
+The two matched-but-unfreezable papers were repaired as an operator
+intervention: their OpenAlex records genuinely lack venue data (both
+`primary_location` are null — re-resolution via the canonical resolver
+lands on `manual_review`, never auto-apply), so the missing
+`container.publisher`/`container.institution` (Illinois Center for
+Transportation; San José State University) and the missing
+`source_records/metadata_source.openalex.json` provenance file were
+written under the paper_raw write lock with schema validation, then the
+match receipts were rebuilt (metadata hash changed → the closure requires
+a fresh receipt; same evidence, `doi_exact` preserved) and both papers
+froze.  Frozen 180 → 182; closures verified (source record now inside the
+hash closure).
 
 Only Metadata v2.0 and Catalog v3.2 are supported. Older Metadata, Catalog, and
 non-numeric workspace layouts must be regenerated outside the active pipeline;

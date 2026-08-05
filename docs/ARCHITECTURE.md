@@ -13,7 +13,10 @@ utils                     leaf: atomic_io, identifiers, timestamps, jsonio,
 mineru                    MinerU runtime: converter, cleaner, runtime, lock,
                           service_manager, smoke
 metadata                  schema v2.0, freeze, citation, source_records,
-                          quality, pdf identity/match
+                          quality, pdf identity/match; identity_match.py is
+                          the evidence-tiered decision policy (DoiEvidence
+                          tiers, four-state bibliographic strength, version
+                          families, automatic/final manual model)
 catalog ~ workspace       Catalog v3.2 schema/task/freeze + asset_refs;
                           workspace facts (evidence/readiness/lifecycle/receipt)
 library                   PaperNumberLedger + formal_publication + marker

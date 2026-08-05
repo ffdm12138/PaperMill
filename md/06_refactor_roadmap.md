@@ -148,3 +148,66 @@
   未跨递归层共享（同一 URL 会被不同分支重复抓），并给候选广度加上限。
 - [ ] 约 239 篇"OA 但只有出版商副本"与约 160 篇闭源，需换出口或机构访问；
   `--report-blocked` 已能导出清单，走人工/校园网通道，代码侧无解。
+
+## PDF 身份验证器重构（2026-07-31，最终合同版）
+
+起因：1067 篇 PDF 实测暴露旧提取/匹配三层错误——字节扫描 miss FlateDecode
+压缩流（正确 PDF 判 mismatch）；"字节扫描有结果就不走文本层"补丁抓到未压缩
+引用流里的参考文献 DOI（247 篇 identifier_conflict 中 ~110 篇是引用误报、
+~98 篇是预印本↔正式版变体、39 篇尾随标点）；DOI 平面集合 + 宽正则吞残片。
+执行历史还证明 rematch --apply 与 freeze 耦合、中途崩溃留部分落盘、已冻结
+被跳过导致新旧提取器结果混杂。
+
+验收标准（18 条不变量，见 `C:\Users\Admin\.claude\plans\foamy-cooking-manatee.md`）：
+弱/中证据永不触发 conflict；强证据精确 DOI 必 matched；related_version =
+家族候选 + 书目单一口径（标题≥0.85 强一致 + 作者重叠 + 年份 ±2 或缺失记
+insufficient）；identifier_conflict 为高精度低召回结论（冲突阈值 0.55 与
+匹配阈值 0.85 分离，仅唯一可信结构化主 DOI + 完整负面书目证据）；trusted
+（strong∪medium）≥2 → ambiguous 先于版本关系；stable identifier 先分流且
+ISBN 不能单独证明章节；manual 确认 = automatic/final 双层（覆盖集
+{ambiguous, unverifiable, related_version}，identifier_conflict 不可覆盖）；
+fetch 与 freeze 解耦（fetch 写 receipt 不冻结，日常 freeze 走
+`freeze_paper_raw_metadata.py --all-eligible`）；迁移 = plan-hash →
+receipts-only → freeze-eligible 三段式，journaled multi-file transaction、
+细粒度子状态、阶段 fail-closed、abort manifest（含 originally-missing 处理）、
+workspace_inventory_hash 防目录漂移、同 plan 重跑幂等（不增 revision）、
+维护模式代码强制 fail-closed（入口 + 锁内复检）；迁移工具宽容读取旧
+mismatch，完成后删除该读取路径（核销点）；全部相关测试 + fast gate +
+--full + packer 通过后才允许真实 apply。
+
+- [x] I1 `src/utils/identifiers.py` 候选清洗层（normalize_doi 语义不变；
+  clean_extracted_doi_candidate / join_line_broken_doi_lines /
+  extract_doi_candidates / is_valid_doi）。验收：`tests/unit/test_doi_normalization.py`。
+- [x] I2 `src/metadata/pdf_identity.py` v2 提取器（DoiEvidence +
+  extracted_identifiers + parser_failures 全路径后判 extraction_failed；
+  XMP 明确键 strong、文本层 labeled 判定、字节扫描仅诊断；确定性约束）。
+  验收：`tests/unit/test_pdf_identity_v2.py` + `test_pdf_identity_text_layer.py` 重写。
+- [x] I3 `src/metadata/identity_match.py` 决策器（四态书目分离阈值、
+  trusted 计数、唯一结构化主字段优势、stable 分支、家族表 + 前缀迁移表）。
+  验收：`tests/unit/test_identity_match.py`。
+- [x] I4 `src/metadata/pdf_match.py` receipt v2.0（automatic/final 双层 +
+  manual_confirmation；验证器重放已存证据不重提取）+ `src/ingest/status.py`
+  ALLOWED 扩展 + `import_status.py` 映射重映射与 duplicate 修复 +
+  `locking.py` 迁移守卫。验收：契约测试更新 + `test_frozen_v32_transaction_pipeline.py`。
+- [x] I5 调用点解耦（fetch/convert/resolve 不冻结、锁内复检守卫）+
+  `freeze_paper_raw_metadata.py --all-eligible`（先 freeze 后 status，
+  崩溃只补状态）+ `confirm_paper_raw_pdf_identity.py`（--confirmed-by /
+  --expected-receipt-sha256 写入协议）+ formalize/commit 入口守卫。
+  验收：集成测试 + 守卫 fail-closed 测试。
+- [x] I6 `rematch_paper_raw_pdf_identity.py` 事务式迁移工具（plan 含基线 +
+  inventory hash + plan_content_hash；journal 子状态机 + 阶段 fail-closed +
+  abort manifest + 幂等 freeze + 宽容读取器）。验收：
+  `tests/integration/test_pdf_identity_migration_transaction.py`。
+- [x] I7 真实迁移两轮（2026-07-31）。第一轮：574 冻结重建、574/574 闭包通过。
+  第二轮（最终策略复审）：只读审计发现 585 matched 中 405 篇仅靠年份/作者
+  单一佐证（title_sim 低至 0.10-0.28），按最终合同收紧强证据规则
+  （首页 labeled DOI → strong 仅限：标题强一致，或 可靠作者重叠 + 年份兼容；
+  仅年份/仅常见姓氏不升 strong；冲突阈值 0.60）。事务重迁移：matched 585→180、
+  ambiguous 224→629、unverifiable 258 不变、conflict 0 不变；179 冻结重建且
+  179/179 闭包通过、零悬挂、零 v1、零 mismatch。405 篇降级论文保留
+  labeled DOI + 年份证据进 receipt，为人工复核清单。
+- [~] I8 文档契约同步（PROJECT_CONTRACT/PROJECT_STATUS/SCRIPT_USAGE/
+  ARCHITECTURE/md_01_architecture 已同步；CLAUDE↔AGENTS 核对无需改动）。
+  宽容读取器核销：迁移完成后 `_read_status_tolerant`/`_tolerant_update_status`
+  仍在迁移工具内（一次性工具保留，未进入 runtime）；runtime 写入已 v2-only。
+  验收：fast gate + --full + packer 解包抽查。

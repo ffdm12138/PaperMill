@@ -21,7 +21,9 @@ actions, never discovery staging.
 | `fetch_pdf_for_paper_raw.py` | duplicate-guarded PDF attach; batch selection below | `--apply` |
 | `convert_paper_raw_gpu.py` | MinerU conversion; Metadata freeze not required | `--apply` |
 | `resolve_paper_raw_metadata.py` | deterministic Metadata candidate resolution | `--apply` |
-| `freeze_paper_raw_metadata.py` | strict match replay and Metadata freeze | `--apply` |
+| `rematch_paper_raw_pdf_identity.py` | transactional v2 identity migration: plan → receipts-only → freeze-eligible (journaled, abort/resume) | `--plan`/`--receipts-only`/`--freeze-eligible` |
+| `confirm_paper_raw_pdf_identity.py` | manual identity confirmation for ambiguous/unverifiable/related_version (identifier_conflict never overridable) | `--apply` |
+| `freeze_paper_raw_metadata.py` | standalone freeze phase for matched receipts; `--all-eligible` batch | `--apply` |
 | `prepare_paper_raw_catalog_task.py` | write read-only Catalog task envelope | `--apply` |
 | `validate_paper_raw_catalog.py` | validate/freeze complete Catalog v3.2 | `--apply` |
 | `formalize_paper_raw.py` | write numeric installation plan only | `--apply` |

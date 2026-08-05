@@ -53,6 +53,9 @@ def main() -> int:
     parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args()
 
+    from src.ingest.locking import assert_no_active_identity_migration
+
+    assert_no_active_identity_migration(args.paper_raw_dir)
     write = args.apply and not args.dry_run
     report = []
     for folder in _candidates(args.paper_raw_dir, args):

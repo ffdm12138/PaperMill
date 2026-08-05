@@ -56,8 +56,13 @@ utils < mineru < metadata < catalog ~ workspace < library < ingest
 每个契约只在一层权威（呼应 CLAUDE.md "Keep each contract authoritative in
 one layer"）：runtime-zero 规则在 `src/utils/repository_hygiene.py`；
 `.import_status.json` 唯一写者在 `src/ingest/import_status.py`；DOI/身份
-磁盘扫描唯一入口是 `WorkspaceRegistry`；纸号真相只在 `PaperNumberLedger`。
-新代码发现自己在"顺手"重复某层契约时，应当改为调用权威层。
+磁盘扫描唯一入口是 `WorkspaceRegistry`；纸号真相只在 `PaperNumberLedger`；
+PDF 身份决策唯一权威在 `src/metadata/identity_match.py`（证据分层、
+四态书目、版本家族、automatic/final 人工确认模型），`pdf_match.py` 只做
+receipt 壳与重放验证（重放已存证据、绝不重提取）；PDF 身份迁移期间，
+`data/paper_raw/.pdf_identity_migration.json` 维护标志关闭所有其他
+paper_raw 写入者（入口 + 写锁内复检），仅迁移工具凭 run_id + plan hash
+操作。新代码发现自己在"顺手"重复某层契约时，应当改为调用权威层。
 
 ## 与路线图的联动
 

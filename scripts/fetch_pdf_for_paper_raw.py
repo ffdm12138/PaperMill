@@ -131,9 +131,14 @@ def _build_policy(args: argparse.Namespace, headers: dict[str, str]) -> AccessPo
     # --resolver auto: original_link + OA + publisher + header_based fallback (always).
     # header_based now defaults to https://doi.org/{doi} when no --base-url
     # or --url-template is given, so it is always a viable DOI fallback.
+    # ``semantic_scholar`` is intentionally absent: the API is unreachable
+    # from this egress (ProviderPermanentError on every lookup) and each
+    # paper still pays ~9 serialized 3s-paced lookups/retries for it,
+    # capping the whole batch at ~2 papers/min.  `--resolver oa` still
+    # keeps the full OA list including semantic_scholar.
     resolver_names = [
         "original_link",
-        "unpaywall", "openalex", "semantic_scholar", "arxiv",
+        "unpaywall", "openalex", "arxiv",
         "publisher_oa", "springer_direct",
         "sciengine_direct",
         "biorxiv", "pmc_oa",
@@ -347,48 +352,71 @@ def _record_result(
     item: dict[str, Any],
 ) -> None:
     """Persist provenance for an attached PDF and finalize ``item``:
-    fetch record, stage_manifest pdf_source, match receipt, and (when
-    matched) the metadata freeze — in that order."""
+    fetch record, stage_manifest pdf_source, and the identity match
+    receipt — in that order.
+
+    Fetch NEVER freezes metadata: the identity decision is recorded in the
+    receipt and the workspace state, and the freeze is a separate phase
+    (``freeze_paper_raw_metadata.py --all-eligible`` or the migration
+    tool).  All artifact writes run under the global paper_raw write lock
+    with a maintenance-mode re-check (TOCTOU guard).
+    """
     folder = candidate.folder
     meta_path = folder / f"{candidate.paper_number}.metadata.json"
 
+    from src.ingest.locking import (
+        assert_no_active_identity_migration,
+        paper_raw_write_lock,
+    )
+
+    assert_no_active_identity_migration(folder.parent)
     metadata = read_json(meta_path, {})
     fetch_record = _sanitized_fetch_record(result, attached, header_keys)
-    # fetch_result.json is a SEPARATE file from metadata source records.
-    # Never write the fetch result to metadata.source.raw_record_path.
-    write_fetch_result(folder, fetch_record)
-    # Enrich the stage_manifest pdf_source with fetch-specific details.
-    existing_manifest = read_stage_manifest(folder)
-    pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
-    if pdf_source is None:
-        pdf_source = doi_fetch_pdf_source(operation="attach")
-    pdf_source.update(doi_fetch_pdf_source(
-        operation="replace" if force_refetch else "attach",
-        fetch_record_path=fetch_result_rel_path(),
-        resolver=result.resolver,
-        pdf_url=sanitize_url_for_persistence(result.pdf_url or ""),
-        doi=candidate.doi,
-    ))
-    update_stage_manifest(folder, updates={"pdf_source": pdf_source})
-    # Build the sole authoritative match sidecar from independent PDF
-    # bytes. If the PDF text layer exposes the DOI, network ingest can
-    # freeze immediately; otherwise conversion will regenerate richer
-    # evidence from Markdown before Catalog generation.
-    from src.metadata.pdf_identity import extract_pdf_identity_evidence
-    from src.metadata.pdf_match import build_match_receipt, write_match_receipt
-    from src.metadata.freeze import freeze_metadata
-    from src.ingest.status import update_status
-    from src.ingest.workspace import PaperRawWorkspace
-    evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{candidate.paper_number}.pdf")
-    provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
-    match=build_match_receipt(folder,candidate.paper_number,metadata,evidence,requested_doi=candidate.doi,provider_records=[provider_record] if provider_record else [])
-    write_match_receipt(folder,match)
-    if match["match_status"] in {"matched","manual_confirmed"}:
-        frozen=freeze_metadata(folder,candidate.paper_number)
-        update_status(PaperRawWorkspace.from_path(folder),"metadata","frozen",revision=frozen["revision"])
-        item["metadata_frozen"]=True
-    else:
-        update_status(PaperRawWorkspace.from_path(folder),"metadata","mismatch",match_method=match["match_method"])
+    with paper_raw_write_lock(folder.parent):
+        # TOCTOU re-check: a migration may have started since the entry check.
+        assert_no_active_identity_migration(folder.parent)
+        # fetch_result.json is a SEPARATE file from metadata source records.
+        # Never write the fetch result to metadata.source.raw_record_path.
+        write_fetch_result(folder, fetch_record)
+        # Enrich the stage_manifest pdf_source with fetch-specific details.
+        existing_manifest = read_stage_manifest(folder)
+        pdf_source = existing_manifest.get("pdf_source") if isinstance(existing_manifest.get("pdf_source"), dict) else None
+        if pdf_source is None:
+            pdf_source = doi_fetch_pdf_source(operation="attach")
+        pdf_source.update(doi_fetch_pdf_source(
+            operation="replace" if force_refetch else "attach",
+            fetch_record_path=fetch_result_rel_path(),
+            resolver=result.resolver,
+            pdf_url=sanitize_url_for_persistence(result.pdf_url or ""),
+            doi=candidate.doi,
+        ))
+        update_stage_manifest(folder, updates={"pdf_source": pdf_source})
+        # Build the sole authoritative match sidecar from independent PDF
+        # bytes.  Fetch writes the identity receipt only; freeze stays a
+        # separate phase.
+        from src.metadata.pdf_identity import extract_pdf_identity_evidence
+        from src.metadata.pdf_match import (
+            RECEIPT_STATUS_TO_METADATA_STATE,
+            build_match_receipt,
+            write_match_receipt,
+        )
+        from src.ingest.status import update_status
+        from src.ingest.workspace import PaperRawWorkspace
+        evidence=extract_pdf_identity_evidence(pdf_path=folder/f"{candidate.paper_number}.pdf")
+        provider_record=str((metadata.get("source") or {}).get("raw_record_path") or "")
+        match=build_match_receipt(folder,candidate.paper_number,metadata,evidence,requested_doi=candidate.doi,provider_records=[provider_record] if provider_record else [])
+        write_match_receipt(folder,match)
+        state = RECEIPT_STATUS_TO_METADATA_STATE.get(
+            match["match_status"],
+            "resolved",
+        )
+        update_status(
+            PaperRawWorkspace.from_path(folder),
+            "metadata",
+            state,
+            match_method=match["match_method"],
+            match_status=match["match_status"],
+        )
     item.update({
         **attached,
         "status": "attached",
@@ -450,10 +478,52 @@ def _fetch_one(
         return item
     except Exception as exc:
         item.update({"status": "failed", "reason": str(exc)})
+        _persist_exception_failure(folder, candidate, exc)
         return item
     finally:
         item["duration_seconds"] = round(time.monotonic() - start, 3)
         shutil.rmtree(fetch_root, ignore_errors=True)
+
+
+def _persist_exception_failure(
+    folder: Path,
+    candidate: FetchCandidateStatus,
+    exc: Exception,
+) -> None:
+    """Persist a failed ``fetch_result.json`` on unexpected exceptions.
+
+    Mid-transfer failures (e.g. ``Connection broken: InvalidChunkLength``)
+    previously left no fetch result, so the workspace was forever retried
+    as "never attempted".  The failure record makes the retry policy
+    converge.  Persisting must never mask the original exception.
+    """
+    try:
+        record = sanitize_for_persistence({
+            "success": False,
+            "final_reason": f"exception: {str(exc)[:300]}",
+            "resolver": "auto",
+            "resolver_chain": [],
+            "attempts": [],
+            "transport_policy": TRANSPORT_POLICY,
+            "transport_attempts": [],
+            "access_mode": "unknown",
+            "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+            "pdf_url": "",
+            "landing_url": "",
+            "is_direct_pdf": False,
+            "fixed_user_agent": False,
+            "header_keys": [],
+            "headers_masked": False,
+            "pdf_md5": "",
+            "pdf_sha256": "",
+        })
+        write_fetch_result(folder, record)
+        logger.warning(
+            "persisted exception failure for {}: {}",
+            candidate.paper_number, str(exc)[:200],
+        )
+    except Exception:
+        pass
 
 
 def _merge(
@@ -618,6 +688,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from src.ingest.locking import assert_no_active_identity_migration
+
+    assert_no_active_identity_migration(args.paper_raw_dir)
     try:
         headers = _load_headers(args.headers_json, args.header, ua_warn_only=not args.strict_headers)
         policy = _build_policy(args, headers)

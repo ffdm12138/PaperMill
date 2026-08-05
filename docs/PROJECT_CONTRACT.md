@@ -20,8 +20,34 @@ audit/repair. Discovery still rejects every `complete=False` Registry.
    independently generate CSL-JSON, BibTeX, and styled references.
 2. Journal articles require valid DOI; conference/chapter/thesis/report records
    require their type-specific stable identifier or URL.
-3. PDF matching writes an independent receipt and never edits Metadata. DOI
-   conflict cannot fall back to title matching or manual override.
+3. PDF matching writes an independent receipt (schema 2.0) and never edits
+   Metadata. The decision is evidence-tiered: weak/medium DOI evidence never
+   triggers `identifier_conflict`; a strong exact requested-DOI hit wins over
+   all weak evidence; `related_version` requires a known DOI family plus
+   strong bibliographic consistency; no usable evidence is `unverifiable`.
+   The strong-evidence rule for a first-page labeled DOI (`doi:` /
+   `https://doi.org/` form) is fixed:
+   `title strong match` OR `reliable author overlap AND compatible year`;
+   year-only, author-only, or single-common-surname corroboration stays
+   medium and can never upgrade a DOI to strong (audited 2026-07-31: the
+   previous title-OR-author-OR-year rule left 405/585 matched papers
+   resting on year/author-only corroboration). A unique explicit
+   structured DOI (prism:doi / pdfx:doi / explicit DOI-valued dc:identifier
+   / Document-Info DOI field) is strong without bibliographic
+   corroboration; two different structured DOIs are `ambiguous`.
+   `identifier_conflict` is a high-precision conclusion (unique structured
+   primary DOI plus fully contradictory bibliographic fields) and can never be
+   overridden by manual confirmation. Manual confirmation may override
+   `ambiguous` / `unverifiable` / `related_version` (automatic/final
+   decision model; `final_decision.match_status == matched` with method
+   `manual_confirmed`). The receipt validator replays the automatic decision
+   from the SAVED evidence — it never re-extracts, so frozen closures do not
+   depend on a future PyMuPDF. Fetch/conversion/metadata-resolution write the
+   receipt only; the freeze is a separate phase
+   (`freeze_paper_raw_metadata.py --all-eligible` or the migration tool),
+   and the maintenance marker closes all other paper_raw writers while the
+   transactional migration (`rematch_paper_raw_pdf_identity.py` plan →
+   receipts-only → freeze-eligible) is active.
 4. Freeze validates schema, citation artifacts, PDF/match hashes, provider
    provenance, raw records, year, and first author. Normal services cannot edit
    any frozen closure asset.
